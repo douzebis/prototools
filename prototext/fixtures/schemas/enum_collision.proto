@@ -1,0 +1,35 @@
+// SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+// SPDX-FileCopyrightText: 2025-2026 Thales Cloud Sécurisé
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+// An enum whose name collides with a primitive keyword.
+// Under the old annotation format this would be encoded as fixed32 (wrong).
+// Under the new format the (N) suffix makes it unambiguously a varint.
+enum float {
+  FLOAT_ZERO = 0;
+  FLOAT_ONE  = 1;
+  FLOAT_TWO  = 2;
+}
+
+// A normal enum with a non-colliding name, for the happy-path and
+// ENUM_UNKNOWN cases.
+enum Color {
+  RED   = 0;
+  GREEN = 1;
+  BLUE  = 2;
+}
+
+message EnumCollision {
+  optional float  kind          = 1;  // enum named after primitive keyword
+  optional Color  color         = 2;  // normal enum, known value
+  optional Color  unknown_color = 3;  // will be populated with value 99
+  repeated Color  colors        = 4;
+  repeated Color  colors_pk     = 5 [packed=true];
+  optional EnumCollision nested = 6;  // for spec 0006 §4.5 (enum in nested message)
+  optional group EnumGroup = 7 {      // for spec 0006 §4.6 (enum in group)
+    optional Color group_color = 1;
+  }
+}

@@ -1,0 +1,229 @@
+// SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+// SPDX-FileCopyrightText: 2025-2026 Thales Cloud Sécurisé
+//
+// SPDX-License-Identifier: MIT
+
+// protoc --proto_path=src/craft --python_out=src/craft --pyi_out=src/craft bar.proto
+// sed -i 's/^\(from google.protobuf import runtime_version as _runtime_version\)$/\1 # type: ignore/' src/craft/bar_pb2.py
+// protoc --proto_path=src/craft --include_imports --descriptor_set_out=src/craft/bar.desc bar.proto
+
+syntax = "proto2";
+
+
+message SwissArmyKnife {
+
+  // --- Wire-level fields ----------------------------------------------------
+
+  optional uint64            VARINT     =  10;
+  optional fixed64           FIXED64    =  11;
+  optional bytes             BYTES      =  12;
+  optional group             GROUP      =  13 {
+    optional SwissArmyKnife  nested     = 113;}
+  optional fixed32           FIXED32    =  15;
+
+  // --- Optional fields ------------------------------------------------------
+
+  optional double            doubleOp   =  21;
+  optional float             floatOp    =  22;
+  optional int64             int64Op    =  23;
+  optional uint64            uint64Op   =  24;
+  optional int32             int32Op    =  25;
+  optional fixed64           fixed64Op  =  26;
+  optional fixed32           fixed32Op  =  27;
+  optional bool              boolOp     =  28;
+  optional string            stringOp   =  29;
+  optional group             GroupOp    =  30 {
+    optional uint64          uint64Op   = 130;
+    optional SwissArmyKnife  messageOp  = 131;}
+  optional SwissArmyKnife    messageOp  =  31;
+  optional bytes             bytesOp    =  32;
+  optional uint32            uint32Op   =  33;
+  optional int32             enumOp     =  34;
+  optional sfixed32          sfixed32Op =  35;
+  optional sfixed64          sfixed64Op =  36;
+  optional sint32            sint32Op   =  37;
+  optional sint64            sint64Op   =  38;
+
+  // --- Repeated fields ------------------------------------------------------
+  
+  repeated double            doubleRp    =  41;
+  repeated float             floatRp     =  42;
+  repeated int64             int64Rp     =  43;
+  repeated uint64            uint64Rp    =  44;
+  repeated int32             int32Rp     =  45;
+  repeated fixed64           fixed64Rp   =  46;
+  repeated fixed32           fixed32Rp   =  47;
+  repeated bool              boolRp      =  48;
+  repeated string            stringRp    =  49;
+  repeated group             GroupRp     =  50 {
+    optional uint64          uint64Op    = 150;
+    optional SwissArmyKnife  messageOp   = 151;}
+  repeated SwissArmyKnife    messageRp   =  51;
+  repeated bytes             bytesRp     =  52;
+  repeated uint32            uint32Rp    =  53;
+  repeated int32             enumRp      =  54;
+  repeated sfixed32          sfixed32Rp  =  55;
+  repeated sfixed64          sfixed64Rp  =  56;
+  repeated sint32            sint32Rp    =  57;
+  repeated sint64            sint64Rp    =  58;
+
+//  // --- Required fields ------------------------------------------------------
+//
+//  required double            doubleRq    =  61;
+//  required float             floatRq     =  62;
+//  required int64             int64Rq     =  63;
+//  required uint64            uint64Rq    =  64;
+//  required int32             int32Rq     =  65;
+//  required fixed64           fixed64Rq   =  66;
+//  required fixed32           fixed32Rq   =  67;
+//  required bool              boolRq      =  68;
+//  required string            stringRq    =  69;
+//  required group             GroupRq     =  70 {
+//    optional uint64          uint64Op    = 170;
+//    optional SwissArmyKnife  messageOp   = 171;}
+//  required SwissArmyKnife   messageRq    =  71;
+//  required bytes             bytesRq     =  72;
+//  required uint32            uint32Rq    =  73;
+//  required int32             enumRq      =  74;
+//  required sfixed32          sfixed32Rq  =  75;
+//  required sfixed64          sfixed64Rq  =  76;
+//  required sint32            sint32Rq    =  77;
+//  required sint64            sint64Rq    =  78;
+
+  // --- Packed records -------------------------------------------------------
+
+  repeated double            doublePk    =  81 [packed=true];
+  repeated float             floatPk     =  82 [packed=true];
+  repeated int64             int64Pk     =  83 [packed=true];
+  repeated uint64            uint64Pk    =  84 [packed=true];
+  repeated int32             int32Pk     =  85 [packed=true];
+  repeated fixed64           fixed64Pk   =  86 [packed=true];
+  repeated fixed32           fixed32Pk   =  87 [packed=true];
+  repeated bool              boolPk      =  88 [packed=true];
+  repeated uint32            uint32Pk    =  93 [packed=true];
+  repeated int32             enumPk      =  94 [packed=true];
+  repeated sfixed32          sfixed32Pk  =  95 [packed=true];
+  repeated sfixed64          sfixed64Pk  =  96 [packed=true];
+  repeated sint32            sint32Pk    =  97 [packed=true];
+  repeated sint64            sint64Pk    =  98 [packed=true];
+}
+
+message SwissArmyKnifeRq {
+
+  // --- Wire-level fields ----------------------------------------------------
+
+  optional uint64            VARINT     =  10;
+  optional fixed64           FIXED64    =  11;
+  optional bytes             BYTES      =  12;
+  optional group             GROUP      =  13 {
+    optional SwissArmyKnife  nested     = 113;}
+  optional fixed32           FIXED32    =  15;
+
+  // --- Optional fields ------------------------------------------------------
+
+  optional double            doubleOp   =  21;
+  optional float             floatOp    =  22;
+  optional int64             int64Op    =  23;
+  optional uint64            uint64Op   =  24;
+  optional int32             int32Op    =  25;
+  optional fixed64           fixed64Op  =  26;
+  optional fixed32           fixed32Op  =  27;
+  optional bool              boolOp     =  28;
+  optional string            stringOp   =  29;
+  optional group             GroupOp    =  30 {
+    optional uint64          uint64Op   = 130;
+    optional SwissArmyKnife  messageOp  = 131;}
+  optional SwissArmyKnife    messageOp  =  31;
+  optional bytes             bytesOp    =  32;
+  optional uint32            uint32Op   =  33;
+  optional int32             enumOp     =  34;
+  optional sfixed32          sfixed32Op =  35;
+  optional sfixed64          sfixed64Op =  36;
+  optional sint32            sint32Op   =  37;
+  optional sint64            sint64Op   =  38;
+
+  // --- Repeated fields ------------------------------------------------------
+  
+  repeated double            doubleRp    =  41;
+  repeated float             floatRp     =  42;
+  repeated int64             int64Rp     =  43;
+  repeated uint64            uint64Rp    =  44;
+  repeated int32             int32Rp     =  45;
+  repeated fixed64           fixed64Rp   =  46;
+  repeated fixed32           fixed32Rp   =  47;
+  repeated bool              boolRp      =  48;
+  repeated string            stringRp    =  49;
+  repeated group             GroupRp     =  50 {
+    optional uint64          uint64Op    = 150;
+    optional SwissArmyKnife  messageOp   = 151;}
+  repeated SwissArmyKnife    messageRp   =  51;
+  repeated bytes             bytesRp     =  52;
+  repeated uint32            uint32Rp    =  53;
+  repeated int32             enumRp      =  54;
+  repeated sfixed32          sfixed32Rp  =  55;
+  repeated sfixed64          sfixed64Rp  =  56;
+  repeated sint32            sint32Rp    =  57;
+  repeated sint64            sint64Rp    =  58;
+
+  // --- Required fields ------------------------------------------------------
+
+  required double            doubleRq    =  61;
+  required float             floatRq     =  62;
+  required int64             int64Rq     =  63;
+  required uint64            uint64Rq    =  64;
+  required int32             int32Rq     =  65;
+  required fixed64           fixed64Rq   =  66;
+  required fixed32           fixed32Rq   =  67;
+  required bool              boolRq      =  68;
+  required string            stringRq    =  69;
+  required group             GroupRq     =  70 {
+    optional uint64          uint64Op    = 170;
+    optional SwissArmyKnife  messageOp   = 171;}
+  required SwissArmyKnife   messageRq    =  71;
+  required bytes             bytesRq     =  72;
+  required uint32            uint32Rq    =  73;
+  required int32             enumRq      =  74;
+  required sfixed32          sfixed32Rq  =  75;
+  required sfixed64          sfixed64Rq  =  76;
+  required sint32            sint32Rq    =  77;
+  required sint64            sint64Rq    =  78;
+
+  // --- Packed records -------------------------------------------------------
+
+  repeated double            doublePk    =  81 [packed=true];
+  repeated float             floatPk     =  82 [packed=true];
+  repeated int64             int64Pk     =  83 [packed=true];
+  repeated uint64            uint64Pk    =  84 [packed=true];
+  repeated int32             int32Pk     =  85 [packed=true];
+  repeated fixed64           fixed64Pk   =  86 [packed=true];
+  repeated fixed32           fixed32Pk   =  87 [packed=true];
+  repeated bool              boolPk      =  88 [packed=true];
+  repeated uint32            uint32Pk    =  93 [packed=true];
+  repeated int32             enumPk      =  94 [packed=true];
+  repeated sfixed32          sfixed32Pk  =  95 [packed=true];
+  repeated sfixed64          sfixed64Pk  =  96 [packed=true];
+  repeated sint32            sint32Pk    =  97 [packed=true];
+  repeated sint64            sint64Pk    =  98 [packed=true];
+}
+
+message Payload {
+  optional string nested_payload = 1;
+}
+message SchemaSimple {
+  optional Payload payload = 1;
+}
+
+message SchemaOverhang {
+  optional uint64 noncanonical = 1;
+}
+
+message SchemaInterleaved {
+  repeated int64 foo = 1;
+  repeated int64 bar = 2;
+}
+
+message SchemaHidden {
+  optional string foo = 1;
+  optional string hidden = 2;
+  optional string bar = 3;
+}

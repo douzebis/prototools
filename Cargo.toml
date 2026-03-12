@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025-2026 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+# prototools workspace
+#
+# A collection of protobuf utilities.
+# Each tool is an independent crate with its own version on crates.io.
+#
+# Current members:
+#   prototext-core   — pure-Rust library (codec + schema)
+#   prototext        — binary: enhanced-textproto ↔ wire converter
+#
+# Future members slot in as siblings without restructuring:
+#   reproto/         → crates.io: reproto
+
+[workspace]
+resolver = "2"
+members = [
+    "prototext-core",
+    "prototext",
+]
+
+[profile.release]
+codegen-units = 1
+lto           = "thin"

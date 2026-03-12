@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: prototools
+Upstream-Contact: Frederic Ruget <fred@atlant.is>
+Source: https://github.com/douzebis/prototools
+
+Files: fixtures/cases/*.pb
+Copyright: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+           2025-2026 Thales Cloud Sécurisé
+License: MIT

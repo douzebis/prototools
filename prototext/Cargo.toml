@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025-2026 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototext"
+version     = "0.1.1"
+edition     = "2021"
+description = "Lossless protobuf ↔ enhanced-textproto converter"
+license     = "MIT"
+repository  = "https://github.com/douzebis/prototools"
+readme      = "../README.md"
+keywords    = ["protobuf", "proto", "textproto", "cli"]
+categories  = ["command-line-utilities", "encoding"]
+
+[[bin]]
+name = "prototext"
+path = "src/main.rs"
+
+[dependencies]
+prototext-core = { path = "../prototext-core", version = "0.1" }
+clap            = { version = "4.5", features = ["derive"] }
+clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
+globset         = "0.4"
+prost           = "0.13"
+prost-types     = "0.13"
+walkdir         = "2"
+
+[build-dependencies]
+protox = "0.9"
+prost  = "0.14"
+
+[dev-dependencies]
+toml = "0.8"

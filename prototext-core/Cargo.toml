@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2025-2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025-2026 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototext-core"
+version     = "0.1.0"
+edition     = "2021"
+description = "Pure-Rust library for lossless protobuf ↔ enhanced-textproto conversion"
+license     = "MIT"
+repository  = "https://github.com/douzebis/prototools"
+readme      = "../README.md"
+keywords    = ["protobuf", "proto", "textproto", "serialization"]
+categories  = ["encoding", "parser-implementations"]
+
+[lib]
+name       = "prototext_core"
+crate-type = ["rlib"]
+
+[dependencies]
+prost       = "0.13"
+prost-types = "0.13"
+memchr      = "2"
