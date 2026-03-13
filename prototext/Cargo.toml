@@ -5,7 +5,7 @@
 
 [package]
 name        = "prototext"
-version     = "0.1.1"
+version     = "0.1.2"
 edition     = "2021"
 description = "Lossless protobuf ↔ enhanced-textproto converter"
 license     = "MIT"
@@ -13,6 +13,9 @@ repository  = "https://github.com/douzebis/prototools"
 readme      = "../README.md"
 keywords    = ["protobuf", "proto", "textproto", "cli"]
 categories  = ["command-line-utilities", "encoding"]
+
+[package.metadata.docs.rs]
+targets = []
 
 [[bin]]
 name = "prototext"
