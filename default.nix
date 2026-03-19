@@ -113,6 +113,7 @@ let
       rustfmt
       clippy
       reuse
+      gh
     ];
 
     shellHook = ''
