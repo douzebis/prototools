@@ -37,12 +37,7 @@ fn main() {
         &out_dir,
         "descriptor.pb",
     );
-    compile(
-        &["knife.proto"],
-        &[&schemas_dir],
-        &out_dir,
-        "knife.pb",
-    );
+    compile(&["knife.proto"], &[&schemas_dir], &out_dir, "knife.pb");
     compile(
         &["enum_collision.proto"],
         &[&schemas_dir],
