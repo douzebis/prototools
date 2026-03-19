@@ -116,9 +116,8 @@ $ cat fixtures/cases/qs_canonical.pb
 Encode to binary, inspect the two bytes, then round-trip back to text:
 
 ```
-$ prototext -e fixtures/cases/qs_canonical.pb | hexdump -C
-00000000  08 2a                                             |.*|
-00000002
+$ prototext -e fixtures/cases/qs_canonical.pb | od -A n -t x1
+ 08 2a
 
 $ prototext -e fixtures/cases/qs_canonical.pb | prototext -d
 #@ prototext: protoc
@@ -138,9 +137,8 @@ The annotation tells the encoder to preserve the extra byte.  The binary is
 three bytes instead of two — same value, different encoding:
 
 ```
-$ prototext -e fixtures/cases/qs_noncanonical.pb | hexdump -C
-00000000  08 aa 00                                          |...|
-00000003
+$ prototext -e fixtures/cases/qs_noncanonical.pb | od -A n -t x1
+ 08 aa 00
 
 $ prototext -e fixtures/cases/qs_noncanonical.pb | prototext -d
 #@ prototext: protoc

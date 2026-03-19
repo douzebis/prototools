@@ -18,6 +18,10 @@ categories  = ["encoding", "parser-implementations"]
 name       = "prototext_core"
 crate-type = ["rlib"]
 
+[build-dependencies]
+protox = "0.9"
+prost  = "0.14"
+
 [dependencies]
 prost       = "0.13"
 prost-types = "0.13"

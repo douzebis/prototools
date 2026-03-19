@@ -424,23 +424,15 @@ pub(super) fn render_message(
 #[cfg(test)]
 mod tests {
     use crate::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
-    use std::path::Path;
 
-    fn repo_root() -> std::path::PathBuf {
-        // CARGO_MANIFEST_DIR = prototext-core/
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap() // repo root
-            .to_path_buf()
-    }
-
-    fn load_schema(rel: &str, msg: &str) -> crate::ParsedSchema {
-        let bytes = std::fs::read(repo_root().join(rel)).unwrap();
+    fn load_schema(name: &str, msg: &str) -> crate::ParsedSchema {
+        let path = std::path::Path::new(env!("OUT_DIR")).join(name);
+        let bytes = std::fs::read(&path).unwrap();
         parse_schema(&bytes, msg).unwrap()
     }
 
     fn enum_schema() -> crate::ParsedSchema {
-        load_schema("fixtures/schemas/enum_collision.pb", "EnumCollision")
+        load_schema("enum_collision.pb", "EnumCollision")
     }
 
     fn opts(annotations: bool) -> RenderOpts {
