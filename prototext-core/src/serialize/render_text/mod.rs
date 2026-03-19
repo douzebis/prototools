@@ -161,10 +161,9 @@ pub(super) fn render_message(
 
         let tag = parse_wiretag(buf, pos);
 
-        if tag.wtag_gar.is_some() {
+        if let Some(ref wtag_gar) = tag.wtag_gar {
             // Invalid wire tag: consume rest of buffer as INVALID_TAG_TYPE
-            let raw = tag.wtag_gar.as_ref().unwrap();
-            render_invalid_tag_type(raw, out);
+            render_invalid_tag_type(wtag_gar, out);
             return (buflen, None);
         }
 
@@ -185,15 +184,14 @@ pub(super) fn render_message(
             // ── VARINT ───────────────────────────────────────────────────────
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
-                if vr.varint_gar.is_some() {
-                    let raw = vr.varint_gar.as_ref().unwrap();
+                if let Some(ref varint_gar) = vr.varint_gar {
                     render_invalid(
                         field_number,
                         field_schema,
                         tag_ohb,
                         tag_oor,
                         "INVALID_VARINT",
-                        raw,
+                        varint_gar,
                         out,
                     );
                     return (buflen, None);
@@ -279,15 +277,14 @@ pub(super) fn render_message(
             // ── LENGTH-DELIMITED ─────────────────────────────────────────────
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
-                if lr.varint_gar.is_some() {
-                    let raw = lr.varint_gar.as_ref().unwrap();
+                if let Some(ref varint_gar) = lr.varint_gar {
                     render_invalid(
                         field_number,
                         field_schema,
                         tag_ohb,
                         tag_oor,
                         "INVALID_LEN",
-                        raw,
+                        varint_gar,
                         out,
                     );
                     return (buflen, None);

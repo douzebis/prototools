@@ -156,13 +156,13 @@ pub fn parse_message(
 
         let tag = parse_wiretag(buf, pos);
 
-        if tag.wtag_gar.is_some() {
+        if let Some(wtag_gar) = tag.wtag_gar {
             // Invalid wire type: consume rest of buffer
             if annotations {
                 field.annotations.push("invalid field".to_string());
             }
             field.field_number = Some(0);
-            field.content = ProtoTextContent::InvalidTagType(tag.wtag_gar.unwrap());
+            field.content = ProtoTextContent::InvalidTagType(wtag_gar);
             pos = buflen;
             message.fields.push(field);
             continue;
@@ -200,8 +200,8 @@ pub fn parse_message(
             // ── VARINT ───────────────────────────────────────────────────────
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
-                if vr.varint_gar.is_some() {
-                    field.content = ProtoTextContent::InvalidVarint(vr.varint_gar.unwrap());
+                if let Some(varint_gar) = vr.varint_gar {
+                    field.content = ProtoTextContent::InvalidVarint(varint_gar);
                     pos = buflen;
                     message.fields.push(field);
                     continue;
