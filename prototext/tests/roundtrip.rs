@@ -73,7 +73,118 @@ fn load_schema(schema_rel: &str, message: &str) -> prototext_core::ParsedSchema 
         .unwrap_or_else(|e| panic!("cannot parse schema {schema_rel}:{message}: {e}"))
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn enum_schema() -> prototext_core::ParsedSchema {
+    load_schema("fixtures/schemas/enum_collision.pb", "EnumCollision")
+}
+
+fn opts(annotations: bool) -> RenderOpts {
+    RenderOpts::new(true, annotations, 1)
+}
+
+// ── §7 Enum rendering tests ───────────────────────────────────────────────────
+
+#[test]
+fn enum_known_value_renders_symbolic_name() {
+    // EnumCollision field 2 'color' (Color enum): wire value 1 = GREEN.
+    // Tag: field 2, wire type varint = 0x10. Value: 0x01.
+    let wire = vec![0x10, 0x01];
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("GREEN"),
+        "expected symbolic name GREEN in: {text_str}"
+    );
+    assert!(
+        text_str.contains("Color(1)"),
+        "expected Color(1) in annotation: {text_str}"
+    );
+}
+
+#[test]
+fn enum_unknown_value_renders_numeric_with_enum_unknown() {
+    // EnumCollision field 2 'color' (Color enum): wire value 99 — not in enum.
+    let wire = vec![0x10, 0x63]; // field 2 varint, value 99
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("99"),
+        "expected numeric 99 in: {text_str}"
+    );
+    assert!(
+        text_str.contains("ENUM_UNKNOWN"),
+        "expected ENUM_UNKNOWN in annotation: {text_str}"
+    );
+}
+
+#[test]
+fn packed_enum_renders_symbolic_names() {
+    // EnumCollision field 5 'colors_pk' (repeated Color, packed).
+    // Tag: field 5, wire type LEN = (5<<3)|2 = 0x2A. Payload: varint 1 (GREEN), varint 2 (BLUE).
+    let wire = vec![0x2A, 0x02, 0x01, 0x02]; // tag, len=2, GREEN=1, BLUE=2
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("GREEN"),
+        "expected GREEN in packed: {text_str}"
+    );
+    assert!(
+        text_str.contains("BLUE"),
+        "expected BLUE in packed: {text_str}"
+    );
+    assert!(
+        text_str.contains("Color([1, 2])"),
+        "expected Color([1, 2]) in annotation: {text_str}"
+    );
+}
+
+#[test]
+fn enum_annotation_roundtrips_wire() {
+    // EnumCollision field 2 'color' = GREEN (1).
+    let wire = vec![0x10, 0x01];
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(wire2, wire, "enum annotation must round-trip byte-for-byte");
+}
+
+#[test]
+fn no_annotations_omits_unknown_fields() {
+    // Unknown field (no schema): wire type varint, field 99.
+    let wire = vec![0xb8, 0x06, 0x01]; // field 99, varint, value 1
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        !text_str.contains("99"),
+        "unknown field should be omitted without annotations: {text_str}"
+    );
+}
+
+#[test]
+fn enum_named_float_roundtrip_is_varint() {
+    // EnumCollision field 1 'kind' (enum float): value 1 = FLOAT_ONE.
+    // Wire: tag field 1 varint = 0x08, value 0x01. Total 2 bytes.
+    let wire = vec![0x08, 0x01];
+    let schema = enum_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(
+        wire2, wire,
+        "enum named 'float' must round-trip as varint (2 bytes), not fixed32 (5 bytes)"
+    );
+    assert_eq!(
+        wire2.len(),
+        2,
+        "re-encoded wire must be 2 bytes (varint), not 5 (fixed32)"
+    );
+}
+
+// ── Fixture roundtrip tests ───────────────────────────────────────────────────
 
 fn to_wire(text: &[u8]) -> Vec<u8> {
     let opts = RenderOpts::new(true, true, 1);
