@@ -14,7 +14,7 @@ fn main() {
     // Proto sources live in the sibling prototext crate.
     let schemas_dir = format!("{manifest_dir}/../prototext/fixtures/schemas");
 
-    let descriptor = protox::compile(&["enum_collision.proto"], &[&schemas_dir])
+    let descriptor = protox::compile(["enum_collision.proto"], [&schemas_dir])
         .unwrap_or_else(|e| panic!("failed to compile enum_collision.proto: {e}"));
     let bytes = descriptor.encode_to_vec();
     std::fs::write(format!("{out_dir}/enum_collision.pb"), bytes)

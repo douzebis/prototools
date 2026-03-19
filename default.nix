@@ -3,28 +3,86 @@
 #
 # SPDX-License-Identifier: MIT
 
-{ lib ? (import <nixpkgs> {}).lib
-, rustPlatform ? (import <nixpkgs> {}).rustPlatform
-, pkgs ? (import <nixpkgs> {})
-}:
+{ pkgs ? (import <nixpkgs> {}) }:
 
 let
-  prototools = rustPlatform.buildRustPackage {
+  crane = pkgs.callPackage (pkgs.fetchgit {
+    url    = "https://github.com/ipetkov/crane.git";
+    rev    = "80ceeec0dc94ef967c371dcdc56adb280328f591";
+    sha256 = "sha256-e1idZdpnnHWuosI3KsBgAgrhMR05T2oqskXCmNzGPq0=";
+  }) { inherit pkgs; };
+
+  # ---------------------------------------------------------------------------
+  # Source filtered to only what Cargo needs, keeping the hash stable when
+  # unrelated files (docs, fixtures, etc.) change.
+  # ---------------------------------------------------------------------------
+  src = pkgs.lib.cleanSourceWith {
+    src    = pkgs.lib.cleanSource ./.;
+    # Keep Cargo sources plus fixtures/ (integration tests + proto schemas).
+    filter = path: type:
+      (crane.filterCargoSources path type) ||
+      (pkgs.lib.hasInfix "/fixtures/" path);
+  };
+
+  # Common arguments shared by all Crane derivations.
+  commonArgs = {
+    inherit src;
     pname   = "prototools";
     version = "0.1.0";
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.cargo pkgs.rustc ];
+  };
 
-    src = lib.cleanSource ./.;
+  # ---------------------------------------------------------------------------
+  # Shared dependency cache — built once, reused by tests, clippy, and the
+  # final package.  Only rebuilt when Cargo.lock or dependency sources change.
+  # ---------------------------------------------------------------------------
+  depsCache = crane.buildDepsOnly (commonArgs // {
+    pname = "prototools-deps";
+  });
 
-    # Update with: nix-prefetch-url --unpack <src>
-    # or leave as lib.fakeHash and run nix-build to get the correct hash.
-    cargoHash = "sha256-/i6+Mlu/7EwzsQZSix1wzkP8LEkAZNZ2K788GWTuI/k=";
+  # ---------------------------------------------------------------------------
+  # Lint checks — separate derivations for Nix-level caching and parallelism.
+  #
+  # cargoFmt needs no compiled artifacts.
+  # cargoClippy reuses depsCache so only the thin analysis layer is added.
+  # ---------------------------------------------------------------------------
+  rustFmt = crane.cargoFmt (commonArgs // {
+    pname = "prototools-fmt";
+  });
 
-    # Build only the prototext binary crate; prototext-core is a library dep.
-    buildAndTestSubdir = null;
-    cargoBuildFlags = [ "-p" "prototext" ];
-    cargoTestFlags  = [ "--workspace" ];
+  rustClippy = crane.cargoClippy (commonArgs // {
+    pname              = "prototools-clippy";
+    cargoArtifacts     = depsCache;
+    cargoClippyExtraArgs = "-- --deny warnings";
+  });
 
-    meta = with lib; {
+  # ---------------------------------------------------------------------------
+  # Tests — workspace-wide, reusing depsCache.
+  # ---------------------------------------------------------------------------
+  rustTests = crane.cargoTest (commonArgs // {
+    pname          = "prototools-tests";
+    cargoArtifacts = depsCache;
+  });
+
+  # ---------------------------------------------------------------------------
+  # Final package — builds only the prototext binary.
+  # checkPhase asserts that fmt, clippy, and tests all passed by referencing
+  # their store paths (Nix fails the build if any derivation is missing).
+  # ---------------------------------------------------------------------------
+  prototools = crane.buildPackage (commonArgs // {
+    pname          = "prototools";
+    version        = "0.1.0";
+    cargoArtifacts = depsCache;
+    cargoExtraArgs = "-p prototext";
+
+    checkPhase = ''
+      echo "fmt:    ${rustFmt}"
+      echo "clippy: ${rustClippy}"
+      echo "tests:  ${rustTests}"
+    '';
+
+    meta = with pkgs.lib; {
       description  = "Command-line utilities for Protocol Buffer messages (prototext binary)";
       longDescription = ''
         prototools is a collection of CLI utilities for working with Protocol
@@ -38,8 +96,11 @@ let
       mainProgram = "prototext";
       platforms   = platforms.unix;
     };
-  };
+  });
 
+  # ---------------------------------------------------------------------------
+  # Development shell
+  # ---------------------------------------------------------------------------
   dev-shell = pkgs.mkShell {
     name = "prototools-dev";
 
@@ -81,6 +142,10 @@ let
 
 in
 {
-  default  = prototools;
-  dev-shell = dev-shell;
+  default      = prototools;
+  prototools   = prototools;
+  rust-fmt     = rustFmt;
+  rust-clippy  = rustClippy;
+  rust-tests   = rustTests;
+  dev-shell    = dev-shell;
 }
