@@ -1,0 +1,5 @@
+version = 1
+SPDX-PackageName = "prototools"
+SPDX-PackageSupplier = "Frederic Ruget <fred@atlant.is>"
+SPDX-PackageDownloadLocation = "https://github.com/douzebis/prototools"
+

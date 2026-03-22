@@ -195,6 +195,9 @@ fn write_tag_ohb_local(field_number: u64, wire_type: u32, ohb: Option<u64>, out:
 enum Num {
     Int(i64),
     Float(f64),
+    /// Raw NaN bit pattern from `nan(0x…)` — bypasses float conversion to
+    /// preserve the exact bit pattern for float and double fields.
+    NanBits(u64),
 }
 
 impl Num {
@@ -203,6 +206,7 @@ impl Num {
         match self {
             Num::Int(i) => i as f64,
             Num::Float(f) => f,
+            Num::NanBits(b) => f64::from_bits(b),
         }
     }
     #[inline]
@@ -210,6 +214,7 @@ impl Num {
         match self {
             Num::Int(i) => i,
             Num::Float(f) => f as i64,
+            Num::NanBits(_) => 0,
         }
     }
     #[inline]
@@ -227,6 +232,16 @@ fn parse_num(s: &str) -> Option<Num> {
     }
     if s == "nan" {
         return Some(Num::Float(f64::NAN));
+    }
+    if let Some(inner) = s.strip_prefix("nan(").and_then(|t| t.strip_suffix(')')) {
+        let hex = inner
+            .strip_prefix("0x")
+            .or_else(|| inner.strip_prefix("0X"))?;
+        let bits = u64::from_str_radix(hex, 16).ok()?;
+        // The exponent bits are forced to all-ones at encode time (float or
+        // double path), so any hex value is accepted here — the caller does
+        // not need to supply a valid NaN bit pattern.
+        return Some(Num::NanBits(bits));
     }
     if s == "inf" {
         return Some(Num::Float(f64::INFINITY));
@@ -513,16 +528,25 @@ fn encode_num(
     match field_type {
         "double" => {
             write_tag_ohb_local(field_number, WT_I64, tag_ohb, out);
-            out.extend_from_slice(&num.as_f64().to_le_bytes());
+            let bits = if let Num::NanBits(b) = num {
+                b | 0x7FF0000000000000 // force exponent to all-ones
+            } else {
+                num.as_f64().to_bits()
+            };
+            out.extend_from_slice(&bits.to_le_bytes());
         }
         "fixed64" | "sfixed64" => {
             write_tag_ohb_local(field_number, WT_I64, tag_ohb, out);
             out.extend_from_slice(&num.as_u64().to_le_bytes());
         }
         "float" => {
-            let f = num.as_f64() as f32;
             write_tag_ohb_local(field_number, WT_I32, tag_ohb, out);
-            out.extend_from_slice(&f.to_le_bytes());
+            let bits = if let Num::NanBits(b) = num {
+                (b as u32) | 0x7F800000 // force exponent to all-ones
+            } else {
+                (num.as_f64() as f32).to_bits()
+            };
+            out.extend_from_slice(&bits.to_le_bytes());
         }
         "fixed32" | "sfixed32" => {
             write_tag_ohb_local(field_number, WT_I32, tag_ohb, out);
@@ -605,13 +629,22 @@ fn encode_packed_array_line(field_number: u64, value_str: &str, ann: &Ann<'_>, o
         match ft {
             "double" => {
                 if let Some(n) = parse_num(elem) {
-                    payload.extend_from_slice(&n.as_f64().to_le_bytes());
+                    let bits = if let Num::NanBits(b) = n {
+                        b | 0x7FF0000000000000 // force exponent to all-ones
+                    } else {
+                        n.as_f64().to_bits()
+                    };
+                    payload.extend_from_slice(&bits.to_le_bytes());
                 }
             }
             "float" => {
                 if let Some(n) = parse_num(elem) {
-                    let f = n.as_f64() as f32;
-                    payload.extend_from_slice(&f.to_le_bytes());
+                    let bits = if let Num::NanBits(b) = n {
+                        (b as u32) | 0x7F800000 // force exponent to all-ones
+                    } else {
+                        (n.as_f64() as f32).to_bits()
+                    };
+                    payload.extend_from_slice(&bits.to_le_bytes());
                 }
             }
             "fixed64" | "sfixed64" => {

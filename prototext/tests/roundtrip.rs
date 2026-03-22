@@ -184,6 +184,302 @@ fn enum_named_float_roundtrip_is_varint() {
     );
 }
 
+// ── §8 NaN encoding tests ────────────────────────────────────────────────────
+
+fn knife_schema() -> prototext_core::ParsedSchema {
+    load_schema("fixtures/schemas/knife.pb", "SwissArmyKnife")
+}
+
+// Wire helpers: encode a single scalar field.
+//   floatOp  = field 22, wire type FIXED32 (5) → tag = (22 << 3) | 5 = 0xB5 0x01
+//   doubleOp = field 21, wire type FIXED64 (1) → tag = (21 << 3) | 1 = 0xA9 0x01
+fn float_wire(bits: u32) -> Vec<u8> {
+    let mut v = vec![0xB5, 0x01]; // tag for floatOp (field 22, FIXED32)
+    v.extend_from_slice(&bits.to_le_bytes());
+    v
+}
+
+fn double_wire(bits: u64) -> Vec<u8> {
+    let mut v = vec![0xA9, 0x01]; // tag for doubleOp (field 21, FIXED64)
+    v.extend_from_slice(&bits.to_le_bytes());
+    v
+}
+
+// Wire helpers: packed repeated fields.
+//   floatPk  = field 82, wire type LEN (2) → tag = (82 << 3) | 2 = 0x92 0x05 (varint)
+//   doublePk = field 81, wire type LEN (2) → tag = (81 << 3) | 2 = 0x8A 0x05 (varint)
+fn float_packed_wire(bits: &[u32]) -> Vec<u8> {
+    let payload: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+    let mut v = vec![0x92, 0x05]; // tag
+    v.push(payload.len() as u8);
+    v.extend_from_slice(&payload);
+    v
+}
+
+fn double_packed_wire(bits: &[u64]) -> Vec<u8> {
+    let payload: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+    let mut v = vec![0x8A, 0x05]; // tag
+    v.push(payload.len() as u8);
+    v.extend_from_slice(&payload);
+    v
+}
+
+// f32 canonical quiet NaN: 0x7FC00000
+const F32_CANONICAL_NAN: u32 = 0x7FC00000;
+// f32 non-canonical NaNs used in tests
+const F32_SIGNALING_NAN: u32 = 0x7F800001; // signaling NaN, payload 1
+const F32_SIGNED_NAN: u32 = 0xFFC00000; // quiet NaN with sign bit set
+const F32_PAYLOAD_NAN: u32 = 0x7FC0CAFE; // quiet NaN with custom payload
+
+// f64 canonical quiet NaN: 0x7FF8000000000000
+const F64_CANONICAL_NAN: u64 = 0x7FF8000000000000;
+// f64 non-canonical NaNs used in tests
+const F64_SIGNALING_NAN: u64 = 0x7FF0000000000001; // signaling NaN, payload 1
+const F64_SIGNED_NAN: u64 = 0xFFF8000000000000; // quiet NaN with sign bit set
+const F64_PAYLOAD_NAN: u64 = 0x7FF800000BADC0DE; // quiet NaN with custom payload
+
+#[test]
+fn float_canonical_nan_renders_bare_nan() {
+    let wire = float_wire(F32_CANONICAL_NAN);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("nan"),
+        "expected bare 'nan' for canonical NaN, got: {text_str}"
+    );
+    assert!(
+        !text_str.contains("nan("),
+        "canonical NaN must not have a modifier, got: {text_str}"
+    );
+}
+
+#[test]
+fn float_noncanonical_nan_renders_with_modifier() {
+    for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
+        let wire = float_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+        let text_str = String::from_utf8(text).unwrap();
+        let expected = format!("nan(0x{:08x})", bits);
+        assert!(
+            text_str.contains(&expected),
+            "bits 0x{:08x}: expected '{}' in: {text_str}",
+            bits,
+            expected
+        );
+    }
+}
+
+#[test]
+fn float_noncanonical_nan_roundtrips() {
+    for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
+        let wire = float_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        assert_eq!(
+            wire2, wire,
+            "float NaN 0x{:08x} must round-trip bit-exact",
+            bits
+        );
+    }
+}
+
+#[test]
+fn double_canonical_nan_renders_bare_nan() {
+    let wire = double_wire(F64_CANONICAL_NAN);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("nan"),
+        "expected bare 'nan' for canonical NaN, got: {text_str}"
+    );
+    assert!(
+        !text_str.contains("nan("),
+        "canonical NaN must not have a modifier, got: {text_str}"
+    );
+}
+
+#[test]
+fn double_noncanonical_nan_renders_with_modifier() {
+    for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
+        let wire = double_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+        let text_str = String::from_utf8(text).unwrap();
+        let expected = format!("nan(0x{:016x})", bits);
+        assert!(
+            text_str.contains(&expected),
+            "bits 0x{:016x}: expected '{}' in: {text_str}",
+            bits,
+            expected
+        );
+    }
+}
+
+#[test]
+fn double_noncanonical_nan_roundtrips() {
+    for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
+        let wire = double_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        assert_eq!(
+            wire2, wire,
+            "double NaN 0x{:016x} must round-trip bit-exact",
+            bits
+        );
+    }
+}
+
+#[test]
+fn float_packed_noncanonical_nan_renders_with_modifier() {
+    // packed floatPk: canonical NaN, signaling NaN, payload NaN
+    let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    // canonical: bare nan; non-canonical: nan(0x...)
+    assert!(
+        text_str.contains("nan,") || text_str.contains("nan]"),
+        "expected bare nan element in packed, got: {text_str}"
+    );
+    assert!(
+        text_str.contains(&format!("nan(0x{:08x})", F32_SIGNALING_NAN)),
+        "expected signaling NaN modifier in packed, got: {text_str}"
+    );
+    assert!(
+        text_str.contains(&format!("nan(0x{:08x})", F32_PAYLOAD_NAN)),
+        "expected payload NaN modifier in packed, got: {text_str}"
+    );
+}
+
+#[test]
+fn float_packed_noncanonical_nan_roundtrips() {
+    let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(
+        wire2, wire,
+        "packed float NaN array must round-trip bit-exact"
+    );
+}
+
+#[test]
+fn double_packed_noncanonical_nan_renders_with_modifier() {
+    let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("nan,") || text_str.contains("nan]"),
+        "expected bare nan element in packed, got: {text_str}"
+    );
+    assert!(
+        text_str.contains(&format!("nan(0x{:016x})", F64_SIGNALING_NAN)),
+        "expected signaling NaN modifier in packed, got: {text_str}"
+    );
+    assert!(
+        text_str.contains(&format!("nan(0x{:016x})", F64_PAYLOAD_NAN)),
+        "expected payload NaN modifier in packed, got: {text_str}"
+    );
+}
+
+#[test]
+fn double_packed_noncanonical_nan_roundtrips() {
+    let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(
+        wire2, wire,
+        "packed double NaN array must round-trip bit-exact"
+    );
+}
+
+#[test]
+fn float_packed_all_nan_variants_roundtrip() {
+    // All four NaN variants together in one packed array.
+    let wire = float_packed_wire(&[
+        F32_CANONICAL_NAN,
+        F32_SIGNALING_NAN,
+        F32_SIGNED_NAN,
+        F32_PAYLOAD_NAN,
+    ]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(
+        wire2, wire,
+        "packed float all-NaN-variants must round-trip bit-exact"
+    );
+}
+
+#[test]
+fn double_packed_all_nan_variants_roundtrip() {
+    // All four NaN variants together in one packed array.
+    let wire = double_packed_wire(&[
+        F64_CANONICAL_NAN,
+        F64_SIGNALING_NAN,
+        F64_SIGNED_NAN,
+        F64_PAYLOAD_NAN,
+    ]);
+    let schema = knife_schema();
+    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    assert_eq!(
+        wire2, wire,
+        "packed double all-NaN-variants must round-trip bit-exact"
+    );
+}
+
+// ── §8b Subnormal encoding tests ─────────────────────────────────────────────
+
+#[test]
+fn float_subnormals_roundtrip() {
+    let cases: &[u32] = &[
+        0x00000001, // min positive subnormal
+        0x007fffff, // max subnormal
+        0x80000001, // min negative subnormal
+        0x003fffff, // mid subnormal
+    ];
+    for &bits in cases {
+        let wire = float_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        assert_eq!(
+            wire2, wire,
+            "float subnormal 0x{:08x} must round-trip bit-exact",
+            bits
+        );
+    }
+}
+
+#[test]
+fn double_subnormals_roundtrip() {
+    let cases: &[u64] = &[
+        0x0000000000000001, // min positive subnormal
+        0x000fffffffffffff, // max subnormal
+        0x8000000000000001, // min negative subnormal
+        0x0004000000000000, // mid subnormal
+    ];
+    for &bits in cases {
+        let wire = double_wire(bits);
+        let schema = knife_schema();
+        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        assert_eq!(
+            wire2, wire,
+            "double subnormal 0x{:016x} must round-trip bit-exact",
+            bits
+        );
+    }
+}
+
 // ── Fixture roundtrip tests ───────────────────────────────────────────────────
 
 fn to_wire(text: &[u8]) -> Vec<u8> {

@@ -5,4 +5,5 @@
 
 /target/
 /result
+/result-*
 Cargo.lock
