@@ -5,6 +5,8 @@ SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
 SPDX-License-Identifier: MIT
 -->
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/douzebis/prototools)
+
 # prototools
 
 A collection of protobuf utilities written in Rust.
