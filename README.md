@@ -6,6 +6,7 @@ SPDX-License-Identifier: MIT
 -->
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/douzebis/prototools)
+[![crates.io](https://img.shields.io/crates/v/prototext.svg)](https://crates.io/crates/prototext)
 
 # prototools
 
