@@ -88,19 +88,9 @@ int32Pk: 2
 int32Pk: 3
 ```
 
-The annotation on the **first** element carries the full field declaration
-and any anomaly modifiers. Subsequent elements carry a minimal annotation
-(field declaration only, no repeated modifiers):
-
-```
-int32Pk: 1  #@ repeated int32 [packed=true] = 85
-int32Pk: 2  #@ repeated int32 [packed=true] = 85
-int32Pk: 3  #@ repeated int32 [packed=true] = 85
-```
-
-However, per-element anomaly modifiers (`packed_ohb`, `packed_truncated_neg`)
-must be attached to the correct element.  The cleanest approach: emit one
-annotation per element, carrying its own modifiers:
+Every element line carries its own annotation with the full field declaration.
+Each annotation also carries any **element-level** anomaly modifiers that
+apply to that specific element (`ohb`, `neg`, `nan_bits`, etc.):
 
 ```
 int32Pk: 1  #@ repeated int32 [packed=true] = 85
@@ -108,49 +98,88 @@ int32Pk: 2  #@ repeated int32 [packed=true] = 85; ohb: 3
 int32Pk: 3  #@ repeated int32 [packed=true] = 85
 ```
 
-Tag-level modifiers (`tag_ohb`, `TAG_OOR`, `len_ohb`) apply to the entire
-packed field (the wire tag and the LEN payload), not to individual elements.
-They belong on the first element's annotation:
+#### A.2 Wire record boundaries and `pack_size`
+
+A protobuf message may contain **multiple consecutive packed wire records**
+for the same field number.  Each is a distinct `(tag, LEN, payload)` triplet
+on the wire.  The per-line format is ambiguous about boundaries: three lines
+for `int32Pk` could be one record of three elements, three records of one
+element each, or any other split.
+
+To preserve this information and enable lossless round-trip, the **first
+element of each wire record** carries a `pack_size: N` modifier, where N is
+the number of elements in that record:
 
 ```
-int32Pk: 1  #@ repeated int32 [packed=true] = 85; tag_ohb: 2; len_ohb: 1
+int32Pk: 1  #@ repeated int32 [packed=true] = 85; pack_size: 3
+int32Pk: 2  #@ repeated int32 [packed=true] = 85
+int32Pk: 3  #@ repeated int32 [packed=true] = 85
+int32Pk: 4  #@ repeated int32 [packed=true] = 85; pack_size: 2
+int32Pk: 5  #@ repeated int32 [packed=true] = 85
+```
+
+This represents two wire records: `[1, 2, 3]` and `[4, 5]`.
+
+**Record-level** anomaly modifiers (`tag_ohb`, `TAG_OOR`, `len_ohb`) apply
+to the wire tag and LEN varint of a single record.  They are placed on the
+**first element** of that record (alongside `pack_size`):
+
+```
+int32Pk: 1  #@ repeated int32 [packed=true] = 85; pack_size: 3; tag_ohb: 2; len_ohb: 1
 int32Pk: 2  #@ repeated int32 [packed=true] = 85
 int32Pk: 3  #@ repeated int32 [packed=true] = 85
 ```
 
-Empty packed field (`[]` today) becomes a zero-element sequence — nothing is
-emitted. The wire bytes for an empty packed field (tag + len=0) are currently
-rendered as `field: []`. Under the new scheme, nothing would appear in the
-output. This is also what protoc does: an empty packed array produces no
-output lines.
+#### A.3 Empty packed records
+
+An empty packed wire record (`tag + len=0`) contains no elements, so there
+is no value line to carry the annotation.  It is rendered as a
+**comment-only annotation line**:
+
+```
+#@ repeated int32 [packed=true] = 85; pack_size: 0
+```
+
+Record-level anomaly modifiers go on this comment-only line as well:
+
+```
+#@ repeated int32 [packed=true] = 85; pack_size: 0; tag_ohb: 1
+```
+
+The encoder recognises a `pack_size: 0` comment-only line and emits
+`tag + len=0` with any accompanying anomaly modifiers.
 
 **Special case: `INVALID_PACKED_RECORDS`.**  If the packed payload cannot be
 decoded (truncated varint, etc.), the field is rendered as a single
 `INVALID_PACKED_RECORDS` line as today — no change.
 
-#### A.2 Encoder (text → wire)
+#### A.4 Encoder (text → wire)
 
-The encoder must recognize **N consecutive lines** with the same field name
-annotated as `repeated … [packed=true]` and accumulate them into a single
-packed LEN field:
+The encoder uses `pack_size: N` on the first element line (or the
+comment-only line for empty records) to know exactly how many element lines
+to consume for each wire record.
+
+For the example above:
 
 ```
-int32Pk: 1  #@ repeated int32 [packed=true] = 85
+int32Pk: 1  #@ repeated int32 [packed=true] = 85; pack_size: 3
 int32Pk: 2  #@ repeated int32 [packed=true] = 85
 int32Pk: 3  #@ repeated int32 [packed=true] = 85
+int32Pk: 4  #@ repeated int32 [packed=true] = 85; pack_size: 2
+int32Pk: 5  #@ repeated int32 [packed=true] = 85
 ```
 
-→ tag `(85<<3)|2`, length 3, payload `[0x01, 0x02, 0x03]`.
+→ two wire records: tag `(85<<3)|2` len=3 `[0x01,0x02,0x03]`, then
+tag `(85<<3)|2` len=2 `[0x04,0x05]`.
 
-The encoder already parses annotations to detect `is_packed` from the field
-declaration.  The key change is that it must buffer consecutive packed
-elements before writing the wire output.
+The encoder does not need lookahead: `pack_size` tells it exactly how many
+lines to buffer before flushing a record.  A comment-only line with
+`pack_size: 0` flushes a zero-element record immediately.
 
-**Ordering invariant:** In the prototext format, all elements of a packed
-field are contiguous.  The encoder may assert this (interleaving packed
-elements of different fields is not supported).
+**Ordering invariant:** All elements of a packed field are contiguous within
+a wire record.  The encoder may assert this.
 
-#### A.3 Impact on existing tests and fixtures
+#### A.5 Impact on existing tests and fixtures
 
 All existing packed fixture files must be regenerated to use the new per-line
 format.  The `craft_a_matches_committed_fixtures` test (spec 0009) will catch
@@ -226,39 +255,55 @@ syntax.  Replacing it with N individual scalar lines requires:
 - Iterating over decoded elements one by one (already done internally).
 - Calling `render_scalar()` for each element instead of accumulating into a
   bracket string.
-- Distributing anomaly modifiers (tag_ohb, len_ohb on first element;
-  per-element ohb on each respective element).
+- Emitting `pack_size: N` on the first element's annotation and record-level
+  anomaly modifiers (`tag_ohb`, `len_ohb`) alongside it.
+- Emitting element-level anomaly modifiers (`ohb`, `neg`, `nan_bits`) on
+  each respective element's annotation.
+- For empty records: emitting a comment-only annotation line with `pack_size: 0`.
 
 The `decode_packed_to_str()` function currently returns a `String`.  It
-would need to be restructured to return an iterator or `Vec` of
-`(value_str, modifiers)` pairs.  This is a moderate refactor of ~100 lines.
+would need to be restructured to return a `Vec` of `(value_str, modifiers)`
+pairs, plus a record-level modifiers struct for the first element.  This is
+a moderate refactor of ~100 lines.
 
-**Encoder side: significant effort.**
+**Encoder side: moderate effort** (reduced from "significant" by `pack_size`).
 
-The current encoder processes one line at a time.  Recognising that N
-consecutive lines form a single packed field requires lookahead or a
-two-pass approach.
+`pack_size` eliminates the need for lookahead or a two-pass approach.  The
+encoder reads `pack_size: N` off the first element (or comment-only line),
+buffers exactly N element lines, then flushes one wire record.  The main
+loop structure is unchanged; the new logic is a small state machine that
+activates when a `[packed=true]` annotation with `pack_size` is encountered.
 
-The encoder is currently line-driven (parses one field at a time in a loop).
-To accumulate packed elements, it needs to:
-1. Detect when a line has `[packed=true]` in its annotation.
-2. Buffer elements until the field name changes or a non-packed line appears.
-3. Emit the single wire LEN field at flush time.
+Steps:
+1. Detect `pack_size: N` on a line with `[packed=true]`.
+2. If N=0 (comment-only line): emit `tag + len=0` immediately.
+3. If N>0: buffer N element lines, then emit the packed wire record.
 
-This is a **significant structural change** to the encoder.  The encoder's
-main loop currently has no lookahead.  An alternative is a two-pass approach:
-collect all lines, group consecutive packed fields, then encode.
-
-**Risk:** the encoder change touches the most complex part of the codebase.
-Existing tests will catch regressions, but the refactor is non-trivial.
+**Risk:** moderate.  The encoder change is well-scoped thanks to `pack_size`.
+Existing tests will catch regressions.
 
 **Interaction with `INVALID_PACKED_RECORDS`:** the current single-line
 fallback is unaffected — it stays as a single bytes-literal line.
 
-**Empty packed fields:** currently emit `field: []`.  Under the new scheme,
-an empty packed field produces no output.  The encoder must not try to emit
-an empty packed LEN field when no elements are present.  Likely non-issue
-since the encoder only writes what it reads.
+**Empty packed fields:** rendered as a comment-only line with `pack_size: 0`.
+The encoder emits `tag + len=0` when it encounters this line.
+
+**Performance note:** At implementation time, carefully assess the impact on
+the encoder's and decoder's performance properties:
+
+- **Decoder:** the current packed decoder is single-pass and allocation-free
+  for the output path.  Switching to per-line output requires buffering N
+  `(value_str, modifiers)` pairs before emitting — this introduces a
+  per-record allocation.  Evaluate whether the `Vec` can be replaced by an
+  iterator that yields lines one at a time to preserve the single-pass,
+  low-allocation character.
+
+- **Encoder:** buffering N element lines before flushing a wire record
+  requires holding N parsed values in memory simultaneously.  For large
+  packed arrays this could be significant.  Evaluate whether the wire output
+  (tag + length prefix + payload) can be written in two passes over the same
+  input slice (first to compute the payload length, second to emit bytes)
+  rather than accumulating a `Vec` of decoded values.
 
 ### B. Non-canonical NaN in annotation — feasibility
 
@@ -294,7 +339,7 @@ packed NaN problem.  The two changes must be implemented together.
 
 | Change | Compatibility impact | Effort | Depends on |
 |--------|---------------------|--------|------------|
-| A. Per-line packed rendering | Restores protoc compatibility for packed fields | Moderate (decoder) + Significant (encoder) | — |
+| A. Per-line packed rendering | Restores protoc compatibility for packed fields | Moderate (decoder) + Moderate (encoder) | — |
 | B. NaN bits in annotation | Restores protoc compatibility for canonical NaN; no impact on canonical input | Low | A |
 
 **Recommended order:** implement A first, then B.  Neither is a blocker for
@@ -305,24 +350,15 @@ is in place, since that suite will make regressions visible immediately.
 
 ## Open questions
 
-1. **Annotation on every element vs. first element only.**  Emitting the full
-   field declaration on every line is verbose but unambiguous.  Emitting it
-   only on the first element is more compact but requires the encoder to
-   track "current packed field" state across lines.  Recommendation: emit on
-   every element for simplicity; revisit if output verbosity is a concern.
-
-2. **Empty packed fields.**  Should an empty packed field (`tag + len=0`)
-   produce a comment-only line (`#@ repeated int32 [packed=true] = 85`) for
-   discoverability, or silently produce no output?  protoc produces no
-   output.  Recommendation: match protoc (no output).
-
-3. **Interaction with `--no-annotations` mode.**  Without annotations, packed
+1. **Interaction with `--no-annotations` mode.**  Without annotations, packed
    fields become indistinguishable from non-packed repeated fields in the
-   text output.  The encoder has no way to know whether to emit a packed or
-   non-packed wire encoding.  This is an existing limitation (not introduced
-   by this spec) and is acceptable: without annotations, round-trip lossless-
-   ness is only guaranteed for canonical input, and canonical packed fields
-   re-encode correctly as packed if the schema says `[packed=true]`.
+   text output, and wire record boundaries are lost.  The encoder has no way
+   to know whether to emit a packed or non-packed wire encoding, nor how to
+   split elements across records.  This is an existing limitation (not
+   introduced by this spec) and is acceptable: without annotations,
+   lossless round-trip is only guaranteed for canonical input, and canonical
+   packed fields re-encode correctly as a single packed record if the schema
+   says `[packed=true]`.
 
 ---
 
