@@ -6,17 +6,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prost::Message as ProstMessage;
-use prost_types::{field_descriptor_proto::Type, FileDescriptorProto, FileDescriptorSet};
+use prost_reflect::{Cardinality, DescriptorPool, FieldDescriptor, Kind, MessageDescriptor};
 
-// ── Enum value collection ──────────────────────────────────────────────────────
+// ── Compatibility shim types ───────────────────────────────────────────────────
+//
+// FieldInfo and MessageSchema are kept during the transition so that
+// decoder.rs / render_text / etc. continue to compile unchanged.
+// They are populated from prost-reflect descriptors and will be removed
+// once all callers are migrated to use FieldDescriptor directly.
 
-/// Temporary map from fully-qualified enum type name → sorted `(i32, name)` table.
-type EnumValueMap = HashMap<String, Vec<(i32, Box<str>)>>;
-
-// ── Public types ──────────────────────────────────────────────────────────────
-
-/// Per-field information extracted from a FieldDescriptorProto.
+/// Per-field information extracted from a FieldDescriptor.
 #[derive(Debug, Clone)]
 pub struct FieldInfo {
     /// Field name (for annotations).
@@ -25,10 +24,9 @@ pub struct FieldInfo {
     pub proto_type: i32,
     /// Label constant (LABEL_OPTIONAL = 1, LABEL_REQUIRED = 2, LABEL_REPEATED = 3).
     pub label: i32,
-    /// `true` for repeated scalar fields encoded as packed (proto2 [packed=true]
-    /// or proto3 implicit packing).
+    /// `true` for repeated scalar fields encoded as packed.
     pub is_packed: bool,
-    /// Fully-qualified type name for MESSAGE / GROUP fields (e.g. ".pkg.Inner").
+    /// Fully-qualified type name for MESSAGE / GROUP fields (with leading dot).
     pub nested_type_name: Option<String>,
     /// Enum type name for ENUM fields (for annotations).
     pub enum_type_name: Option<String>,
@@ -36,7 +34,6 @@ pub struct FieldInfo {
     pub type_display_name: Option<String>,
     /// Numeric value → symbolic name table for ENUM fields.
     /// Sorted by numeric value for O(log n) lookup via binary_search_by_key.
-    /// Empty for non-ENUM fields.
     pub enum_values: Box<[(i32, Box<str>)]>,
 }
 
@@ -49,40 +46,64 @@ pub struct MessageSchema {
     pub fields: HashMap<u32, FieldInfo>,
 }
 
-/// The parsed, indexed form of a FileDescriptorProto/Set.
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// The parsed, indexed form of a `FileDescriptorSet`.
 ///
-/// `root_type_name` is the fully-qualified name of the root message (the one
-/// that corresponds to a `foo.pb` payload).  `messages` maps every reachable
-/// type to its `MessageSchema`.
+/// Owns a `DescriptorPool` and a cached root message name.
+/// The compatibility shim also pre-builds the `MessageSchema` maps used
+/// by the current renderer; these will be removed after full migration.
 pub struct ParsedSchema {
-    pub root_type_name: String,
+    pool: DescriptorPool,
+    root_full_name: String,
+
+    // ── Compatibility shim (to be removed after migration) ───────────────────
     pub messages: HashMap<String, Arc<MessageSchema>>,
-    /// OPT-6: Pre-built Arc<HashMap> for the protoc renderer so `get_schemas()`
-    /// in lib.rs does not rebuild it on every `encode_pb("protoc")` call.
-    /// Built once at `parse_schema()` time and shared across all calls.
     pub all_schemas: Arc<HashMap<String, Arc<MessageSchema>>>,
 }
 
 impl ParsedSchema {
     /// Construct an empty (no-schema) `ParsedSchema`.
-    ///
-    /// Equivalent to `parse_schema(b"", "")` but infallible and allocation-free.
     pub fn empty() -> Self {
         ParsedSchema {
-            root_type_name: String::new(),
+            pool: DescriptorPool::new(),
+            root_full_name: String::new(),
             messages: HashMap::new(),
             all_schemas: Arc::new(HashMap::new()),
         }
     }
 
     /// Return the `MessageSchema` for the root message, or `None` for an empty
-    /// schema (no-schema mode, equivalent to `ctx.schema = None`).
+    /// schema (no-schema mode).
+    ///
+    /// Returns an `Arc<MessageSchema>` from the shim cache for backward
+    /// compatibility with the current renderer.
     pub fn root_schema(&self) -> Option<Arc<MessageSchema>> {
-        if self.root_type_name.is_empty() {
+        if self.root_full_name.is_empty() {
             None
         } else {
-            self.messages.get(&self.root_type_name).cloned()
+            // shim: look up by prost-reflect FQN (no leading dot)
+            self.messages.get(&self.root_full_name).cloned()
         }
+    }
+
+    /// Return the `MessageDescriptor` for the root message, or `None`.
+    pub fn root_descriptor(&self) -> Option<MessageDescriptor> {
+        if self.root_full_name.is_empty() {
+            None
+        } else {
+            self.pool.get_message_by_name(&self.root_full_name)
+        }
+    }
+
+    /// Look up a message by fully-qualified name.
+    pub fn get_descriptor(&self, fqn: &str) -> Option<MessageDescriptor> {
+        self.pool.get_message_by_name(fqn)
+    }
+
+    /// Access the underlying pool.
+    pub fn pool(&self) -> &DescriptorPool {
+        &self.pool
     }
 }
 
@@ -92,8 +113,7 @@ impl ParsedSchema {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum SchemaError {
-    /// `schema_bytes` could not be decoded as a `FileDescriptorSet` or
-    /// `FileDescriptorProto`.
+    /// `schema_bytes` could not be decoded as a `FileDescriptorSet`.
     InvalidDescriptor(String),
     /// The requested root message was not found in the parsed descriptor.
     MessageNotFound(String),
@@ -114,73 +134,34 @@ impl std::error::Error for SchemaError {}
 
 /// Parse `schema_bytes` into a `ParsedSchema`.
 ///
-/// Tries `FileDescriptorSet` first, falls back to `FileDescriptorProto`,
-/// mirroring the Python `load_schema_descriptor` behaviour.
-///
 /// An empty `schema_bytes` or empty `root_msg_name` returns a schema whose
 /// `root_schema()` is `None` (no-schema mode).
 pub fn parse_schema(schema_bytes: &[u8], root_msg_name: &str) -> Result<ParsedSchema, SchemaError> {
     if schema_bytes.is_empty() || root_msg_name.is_empty() {
-        return Ok(ParsedSchema {
-            root_type_name: String::new(),
-            messages: HashMap::new(),
-            all_schemas: Arc::new(HashMap::new()), // OPT-6: empty cache
-        });
+        return Ok(ParsedSchema::empty());
     }
 
-    // Collect all FileDescriptorProtos: try FDS first, then bare FDP.
-    let files: Vec<FileDescriptorProto> = if let Ok(fds) = FileDescriptorSet::decode(schema_bytes) {
-        fds.file
-    } else if let Ok(fdp) = FileDescriptorProto::decode(schema_bytes) {
-        vec![fdp]
-    } else {
-        return Err(SchemaError::InvalidDescriptor(
-            "schema_bytes is neither a valid FileDescriptorSet nor FileDescriptorProto".into(),
-        ));
-    };
+    let pool = DescriptorPool::decode(schema_bytes)
+        .map_err(|e| SchemaError::InvalidDescriptor(e.to_string()))?;
 
-    // Build a global registry of type_name → DescriptorProto (flat, all files).
-    // Keys are fully-qualified names like ".package.MessageName".
-    let mut raw: HashMap<String, prost_types::DescriptorProto> = HashMap::new();
-    for file in &files {
-        let pkg = file.package.as_deref().unwrap_or("");
-        collect_message_types(pkg, &file.message_type, &mut raw);
-    }
+    // prost-reflect uses no leading dot; strip one if the caller passed it.
+    let root_full_name = root_msg_name.trim_start_matches('.').to_string();
 
-    // Pass 1: collect all enum value tables from all files.
-    // Keys are fully-qualified enum type names like ".google.protobuf.FieldDescriptorProto.Type".
-    let mut enum_map: EnumValueMap = HashMap::new();
-    for file in &files {
-        let pkg = file.package.as_deref().unwrap_or("");
-        collect_enum_types(pkg, &file.enum_type, &mut enum_map);
-        // Also collect enums nested inside message types.
-        collect_nested_enum_types(pkg, &file.message_type, &mut enum_map);
-    }
-
-    // Now build MessageSchema for every collected type.
-    let mut messages: HashMap<String, Arc<MessageSchema>> = HashMap::new();
-    for (fqn, dp) in &raw {
-        let schema = build_message_schema(dp, &raw, &enum_map);
-        messages.insert(fqn.clone(), Arc::new(schema));
-    }
-
-    // Normalise root_msg_name: add leading dot if missing.
-    let root_type_name = if root_msg_name.starts_with('.') {
-        root_msg_name.to_string()
-    } else {
-        format!(".{}", root_msg_name)
-    };
-
-    if !messages.contains_key(&root_type_name) {
+    if pool.get_message_by_name(&root_full_name).is_none() {
+        let available = pool
+            .all_messages()
+            .map(|m| m.full_name().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(SchemaError::MessageNotFound(format!(
             "root message '{}' not found in schema (available: {})",
-            root_type_name,
-            messages.keys().cloned().collect::<Vec<_>>().join(", ")
+            root_full_name, available
         )));
     }
 
-    // OPT-6: build all_schemas once here so get_schemas() in lib.rs can just
-    // clone the Arc instead of rebuilding the HashMap on every encode_pb("protoc").
+    // Build the compatibility shim: populate MessageSchema / FieldInfo for every
+    // message in the pool, keyed by prost-reflect FQN (no leading dot).
+    let messages = build_shim(&pool);
     let all_schemas = Arc::new(
         messages
             .iter()
@@ -189,169 +170,134 @@ pub fn parse_schema(schema_bytes: &[u8], root_msg_name: &str) -> Result<ParsedSc
     );
 
     Ok(ParsedSchema {
-        root_type_name,
+        pool,
+        root_full_name,
         messages,
         all_schemas,
     })
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// ── Compatibility shim builder ────────────────────────────────────────────────
 
-/// Recursively collect all DescriptorProtos from a list of top-level or nested
-/// message types, building their fully-qualified names.
-fn collect_message_types(
-    parent_prefix: &str,
-    descriptors: &[prost_types::DescriptorProto],
-    out: &mut HashMap<String, prost_types::DescriptorProto>,
-) {
-    for dp in descriptors {
-        let name = dp.name.as_deref().unwrap_or("");
-        let fqn = if parent_prefix.is_empty() {
-            format!(".{}", name)
-        } else {
-            format!(".{}.{}", parent_prefix, name)
-        };
-        // Recurse into nested types before inserting (order doesn't matter for HashMap).
-        let nested_prefix = if parent_prefix.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}.{}", parent_prefix, name)
-        };
-        collect_message_types(&nested_prefix, &dp.nested_type, out);
-        out.insert(fqn, dp.clone());
+/// Build a `HashMap<FQN, Arc<MessageSchema>>` from all messages in the pool.
+///
+/// Keys use prost-reflect FQNs (no leading dot).  The rest of the codebase
+/// still uses leading-dot FQNs for nested_type_name lookups; those are
+/// stored with the leading dot in `FieldInfo::nested_type_name` and looked
+/// up via the shim translation layer in `ParsedSchema::messages` (which
+/// stores both FQN variants — see lookup_nested_schema).
+fn build_shim(pool: &DescriptorPool) -> HashMap<String, Arc<MessageSchema>> {
+    let mut out: HashMap<String, Arc<MessageSchema>> = HashMap::new();
+    for msg in pool.all_messages() {
+        let schema = message_schema_from_descriptor(&msg);
+        // Store under prost-reflect FQN (no leading dot).
+        out.insert(msg.full_name().to_string(), Arc::new(schema));
+        // Also store under leading-dot FQN for backward-compat lookups.
+        out.insert(
+            format!(".{}", msg.full_name()),
+            out[msg.full_name()].clone(),
+        );
     }
+    out
 }
 
-/// Build a `MessageSchema` from a `DescriptorProto`.
-fn build_message_schema(
-    dp: &prost_types::DescriptorProto,
-    _all: &HashMap<String, prost_types::DescriptorProto>,
-    enum_map: &EnumValueMap,
-) -> MessageSchema {
-    let mut fields = HashMap::new();
-    for fdp in &dp.field {
-        let number = match fdp.number {
-            Some(n) => n as u32,
-            None => continue,
-        };
-        let proto_type = fdp.r#type.unwrap_or(0);
-        let label = fdp.label.unwrap_or(0);
+/// Build a `MessageSchema` from a `MessageDescriptor`.
+fn message_schema_from_descriptor(msg: &MessageDescriptor) -> MessageSchema {
+    let mut fields: HashMap<u32, FieldInfo> = HashMap::new();
 
-        // Determine if the field is packed.
-        // The options.packed flag is set by protoc for both proto2 [packed=true]
-        // and proto3 implicit packed fields.
-        let is_packed = fdp.options.as_ref().and_then(|o| o.packed).unwrap_or(false);
-
-        // For proto3, repeated scalar fields are packed by default even if
-        // options.packed is not set in the descriptor.  Check syntax.
-        // (We use a simple heuristic: if label==REPEATED and type is scalar,
-        //  treat it as packed for proto3 files.  We don't have the file syntax
-        //  here, so we rely on protoc having already set options.packed.)
-        // In practice, protoc sets options.packed=true for all packed fields.
-
-        let nested_type_name = fdp.type_name.clone();
-
-        // Short display name for annotations (last component of type_name).
-        let type_display_name = nested_type_name
-            .as_ref()
-            .map(|tn| tn.rsplit('.').next().unwrap_or(tn).to_string());
-
-        // Enum type name (only for ENUM fields).
-        let enum_type_name = if proto_type == Type::Enum as i32 {
-            nested_type_name.clone()
-        } else {
-            None
-        };
-
-        // Resolve enum value table for ENUM fields (pass 2 — enum_map already built).
-        let enum_values: Box<[(i32, Box<str>)]> = if proto_type == Type::Enum as i32 {
-            if let Some(etn) = &enum_type_name {
-                if let Some(vals) = enum_map.get(etn.as_str()) {
-                    vals.iter()
-                        .map(|(n, s)| (*n, s.clone()))
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice()
-                } else {
-                    Box::default()
-                }
-            } else {
-                Box::default()
-            }
-        } else {
-            Box::default()
-        };
-
-        let fi = FieldInfo {
-            name: fdp.name.clone().unwrap_or_default(),
-            proto_type,
-            label,
-            is_packed,
-            nested_type_name: if proto_type == Type::Message as i32
-                || proto_type == Type::Group as i32
-            {
-                nested_type_name
-            } else {
-                None
-            },
-            enum_type_name,
-            type_display_name,
-            enum_values,
-        };
-        fields.insert(number, fi);
+    for field in msg.fields() {
+        let fi = field_info_from_descriptor(&field);
+        fields.insert(field.number(), fi);
     }
 
     MessageSchema {
-        name: dp.name.clone().unwrap_or_default(),
+        name: msg.name().to_string(),
         fields,
     }
 }
 
-/// Collect top-level enum types from a file into the enum_map.
-fn collect_enum_types(
-    parent_prefix: &str,
-    enums: &[prost_types::EnumDescriptorProto],
-    out: &mut EnumValueMap,
-) {
-    for edp in enums {
-        let name = edp.name.as_deref().unwrap_or("");
-        let fqn = if parent_prefix.is_empty() {
-            format!(".{}", name)
-        } else {
-            format!(".{}.{}", parent_prefix, name)
-        };
-        let mut vals: Vec<(i32, Box<str>)> = edp
-            .value
-            .iter()
-            .filter_map(|vdp| {
-                let n = vdp.number?;
-                let s: Box<str> = vdp.name.as_deref().unwrap_or("").into();
-                Some((n, s))
-            })
-            .collect();
-        vals.sort_by_key(|(n, _)| *n);
-        out.insert(fqn, vals);
+/// Build a `FieldInfo` from a `FieldDescriptor`.
+fn field_info_from_descriptor(field: &FieldDescriptor) -> FieldInfo {
+    let proto_type = kind_to_proto_type_for_field(field);
+    let label = cardinality_to_label(field.cardinality());
+    let is_packed = field.is_packed();
+
+    let (nested_type_name, enum_type_name, type_display_name, enum_values) = match field.kind() {
+        Kind::Message(msg_desc) => {
+            // Groups are represented as Kind::Message in prost-reflect; detect via is_group().
+            let fqn = format!(".{}", msg_desc.full_name());
+            let display = msg_desc.name().to_string();
+            (Some(fqn), None, Some(display), Box::default())
+        }
+        Kind::Enum(enum_desc) => {
+            let fqn = format!(".{}", enum_desc.full_name());
+            let display = enum_desc.name().to_string();
+            let mut vals: Vec<(i32, Box<str>)> = enum_desc
+                .values()
+                .map(|v| (v.number(), v.name().into()))
+                .collect();
+            vals.sort_by_key(|(n, _)| *n);
+            vals.dedup_by_key(|(n, _)| *n); // keep first name for duplicate numbers
+            (None, Some(fqn), Some(display), vals.into_boxed_slice())
+        }
+        _ => (None, None, None, Box::default()),
+    };
+
+    FieldInfo {
+        name: field.name().to_string(),
+        proto_type,
+        label,
+        is_packed,
+        nested_type_name,
+        enum_type_name,
+        type_display_name,
+        enum_values,
     }
 }
 
-/// Recursively collect enum types nested inside message types.
-fn collect_nested_enum_types(
-    parent_prefix: &str,
-    descriptors: &[prost_types::DescriptorProto],
-    out: &mut EnumValueMap,
-) {
-    for dp in descriptors {
-        let name = dp.name.as_deref().unwrap_or("");
-        let prefix = if parent_prefix.is_empty() {
-            name.to_string()
-        } else {
-            format!("{}.{}", parent_prefix, name)
-        };
-        collect_enum_types(&prefix, &dp.enum_type, out);
-        collect_nested_enum_types(&prefix, &dp.nested_type, out);
+// ── Proto type / label integer constants (compatibility) ─────────────────────
+
+/// Map a prost-reflect `Kind` to the legacy `proto_type` integer constant.
+/// Map a prost-reflect `Kind` to the legacy `proto_type` integer constant.
+///
+/// Groups appear as `Kind::Message`; the caller must check `field.is_group()`
+/// separately to distinguish GROUP from MESSAGE.
+fn kind_to_proto_type_for_field(field: &FieldDescriptor) -> i32 {
+    match field.kind() {
+        Kind::Double => proto_type::DOUBLE,
+        Kind::Float => proto_type::FLOAT,
+        Kind::Int64 => proto_type::INT64,
+        Kind::Uint64 => proto_type::UINT64,
+        Kind::Int32 => proto_type::INT32,
+        Kind::Fixed64 => proto_type::FIXED64,
+        Kind::Fixed32 => proto_type::FIXED32,
+        Kind::Bool => proto_type::BOOL,
+        Kind::String => proto_type::STRING,
+        Kind::Message(_) => {
+            if field.is_group() {
+                proto_type::GROUP
+            } else {
+                proto_type::MESSAGE
+            }
+        }
+        Kind::Bytes => proto_type::BYTES,
+        Kind::Uint32 => proto_type::UINT32,
+        Kind::Enum(_) => proto_type::ENUM,
+        Kind::Sfixed32 => proto_type::SFIXED32,
+        Kind::Sfixed64 => proto_type::SFIXED64,
+        Kind::Sint32 => proto_type::SINT32,
+        Kind::Sint64 => proto_type::SINT64,
     }
 }
 
-// ── Proto type constants (matching Python's FieldDescriptor.TYPE_*) ────────────
+/// Map a prost-reflect `Cardinality` to the legacy `proto_label` integer constant.
+fn cardinality_to_label(cardinality: Cardinality) -> i32 {
+    match cardinality {
+        Cardinality::Optional => proto_label::OPTIONAL,
+        Cardinality::Required => proto_label::REQUIRED,
+        Cardinality::Repeated => proto_label::REPEATED,
+    }
+}
 
 pub mod proto_type {
     pub const DOUBLE: i32 = 1;

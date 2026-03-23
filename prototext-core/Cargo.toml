@@ -19,6 +19,9 @@ name       = "prototext_core"
 crate-type = ["rlib"]
 
 [dependencies]
-prost       = "0.13"
-prost-types = "0.13"
-memchr      = "2"
+prost         = "0.14"
+prost-reflect = "0.16"
+memchr        = "2"
+
+[dev-dependencies]
+prost-types = "0.14"
