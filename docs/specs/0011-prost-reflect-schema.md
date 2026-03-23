@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 # 0011 — Replace hand-rolled schema with prost-reflect
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-03-23
 **App:** prototext
 
 ---

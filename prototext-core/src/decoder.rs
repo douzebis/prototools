@@ -672,7 +672,7 @@ fn format_annotation(fs: &FieldDescriptor) -> String {
         Cardinality::Required => "required",
         Cardinality::Repeated => "repeated",
     };
-    let (type_str, type_display) = kind_to_annotation_strs(fs);
+    let (_type_str, type_display) = kind_to_annotation_strs(fs);
     let packed_suffix = if fs.is_packed() { " [packed=true]" } else { "" };
     format!("{}: {} {}{}", fs.name(), label, type_display, packed_suffix)
 }
