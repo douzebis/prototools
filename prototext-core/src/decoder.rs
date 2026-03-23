@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::sync::Arc;
+use prost_reflect::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
 
 use crate::helpers::{
     decode_bool, decode_double, decode_fixed32, decode_fixed64, decode_float, decode_int32,
@@ -11,7 +11,7 @@ use crate::helpers::{
     decode_uint64, parse_varint, parse_wiretag, WiretagResult, WT_END_GROUP, WT_I32, WT_I64,
     WT_LEN, WT_START_GROUP, WT_VARINT,
 };
-use crate::schema::{proto_label, proto_type as pt, FieldInfo, MessageSchema, ParsedSchema};
+use crate::schema::ParsedSchema;
 
 // ── Data structures ───────────────────────────────────────────────────────────
 
@@ -119,8 +119,8 @@ pub fn ingest_pb(
     full_schema: &ParsedSchema,
     annotations: bool,
 ) -> ProtoTextMessage {
-    let root = full_schema.root_schema();
-    let (msg, _, _) = parse_message(pb_bytes, 0, None, root.as_deref(), full_schema, annotations);
+    let root = full_schema.root_descriptor();
+    let (msg, _, _) = parse_message(pb_bytes, 0, None, root.as_ref(), full_schema, annotations);
     msg
 }
 
@@ -137,7 +137,7 @@ pub fn parse_message(
     buf: &[u8],
     start: usize,
     my_group: Option<u64>, // Some(field_number) when inside a group
-    schema: Option<&MessageSchema>,
+    schema: Option<&MessageDescriptor>,
     full_schema: &ParsedSchema, // full registry for nested type lookups
     annotations: bool,
 ) -> (ProtoTextMessage, usize, Option<WiretagResult>) {
@@ -181,13 +181,13 @@ pub fn parse_message(
 
         // ── Schema lookup ─────────────────────────────────────────────────────
 
-        let field_schema: Option<&FieldInfo> =
-            schema.and_then(|s| s.fields.get(&(field_number as u32)));
+        let field_schema: Option<FieldDescriptor> =
+            schema.and_then(|s| s.get_field(field_number as u32));
 
         if annotations {
             if schema.is_none() {
                 field.annotations.push("no schema".to_string());
-            } else if let Some(fs) = field_schema {
+            } else if let Some(ref fs) = field_schema {
                 field.annotations.push(format_annotation(fs));
             } else {
                 field.annotations.push("unknown field".to_string());
@@ -212,8 +212,8 @@ pub fn parse_message(
                 }
                 let val = vr.varint.unwrap();
 
-                if let Some(fs) = field_schema {
-                    match decode_varint_by_type(val, fs.proto_type) {
+                if let Some(ref fs) = field_schema {
+                    match decode_varint_by_kind(val, fs.kind()) {
                         Ok(content) => field.content = content,
                         Err(TypeMismatch) => {
                             field.proto2_has_type_mismatch = true;
@@ -236,11 +236,11 @@ pub fn parse_message(
                 let data = &buf[pos..pos + 8];
                 pos += 8;
 
-                if let Some(fs) = field_schema {
-                    field.content = match fs.proto_type {
-                        pt::DOUBLE => ProtoTextContent::Double(decode_double(data)),
-                        pt::FIXED64 => ProtoTextContent::PFixed64(decode_fixed64(data)),
-                        pt::SFIXED64 => ProtoTextContent::Sfixed64(decode_sfixed64(data)),
+                if let Some(ref fs) = field_schema {
+                    field.content = match fs.kind() {
+                        Kind::Double => ProtoTextContent::Double(decode_double(data)),
+                        Kind::Fixed64 => ProtoTextContent::PFixed64(decode_fixed64(data)),
+                        Kind::Sfixed64 => ProtoTextContent::Sfixed64(decode_sfixed64(data)),
                         _ => ProtoTextContent::WireFixed64(decode_fixed64(data)),
                     };
                 } else {
@@ -273,23 +273,34 @@ pub fn parse_message(
                 let data = &buf[pos..pos + length];
                 pos += length;
 
-                decode_len_field(data, field_schema, full_schema, annotations, &mut field);
+                decode_len_field(
+                    data,
+                    field_schema.as_ref(),
+                    full_schema,
+                    annotations,
+                    &mut field,
+                );
             }
 
             // ── START GROUP ──────────────────────────────────────────────────
             WT_START_GROUP => {
                 // Resolve nested schema via the full registry.
-                let nested_arc: Option<Arc<MessageSchema>> = field_schema
-                    .filter(|fs| fs.proto_type == pt::GROUP)
-                    .and_then(|fs| fs.nested_type_name.as_deref())
-                    .and_then(|name| full_schema.messages.get(name))
-                    .cloned();
+                let nested_desc: Option<MessageDescriptor> = field_schema
+                    .as_ref()
+                    .filter(|fs| fs.is_group())
+                    .and_then(|fs| {
+                        if let Kind::Message(msg_desc) = fs.kind() {
+                            Some(msg_desc)
+                        } else {
+                            None
+                        }
+                    });
 
                 let (nested_msg, new_pos, end_tag) = parse_message(
                     buf,
                     pos,
                     Some(field_number),
-                    nested_arc.as_deref(),
+                    nested_desc.as_ref(),
                     full_schema,
                     annotations,
                 );
@@ -337,11 +348,11 @@ pub fn parse_message(
                 let data = &buf[pos..pos + 4];
                 pos += 4;
 
-                if let Some(fs) = field_schema {
-                    field.content = match fs.proto_type {
-                        pt::FLOAT => ProtoTextContent::Float(decode_float(data)),
-                        pt::FIXED32 => ProtoTextContent::PFixed32(decode_fixed32(data)),
-                        pt::SFIXED32 => ProtoTextContent::Sfixed32(decode_sfixed32(data)),
+                if let Some(ref fs) = field_schema {
+                    field.content = match fs.kind() {
+                        Kind::Float => ProtoTextContent::Float(decode_float(data)),
+                        Kind::Fixed32 => ProtoTextContent::PFixed32(decode_fixed32(data)),
+                        Kind::Sfixed32 => ProtoTextContent::Sfixed32(decode_sfixed32(data)),
                         // Fallback: Python uses field.fixed32 (proto2-level, field 37)
                         _ => ProtoTextContent::PFixed32(decode_fixed32(data)),
                     };
@@ -366,47 +377,47 @@ pub fn parse_message(
 struct TypeMismatch;
 
 /// Map a varint value to the appropriate `ProtoTextContent` variant given
-/// the field's proto type.  Returns `Err(TypeMismatch)` when the value is out
+/// the field's proto Kind.  Returns `Err(TypeMismatch)` when the value is out
 /// of range for the declared type, mirroring the Python `WireTypeMismatch`.
-fn decode_varint_by_type(val: u64, proto_type: i32) -> Result<ProtoTextContent, TypeMismatch> {
-    match proto_type {
-        pt::INT64 => {
+fn decode_varint_by_kind(val: u64, kind: Kind) -> Result<ProtoTextContent, TypeMismatch> {
+    match kind {
+        Kind::Int64 => {
             // val is u64 so it is always < 2^64; parse_varint already returns
             // varint_gar for values that would overflow u64.  No range check needed.
             Ok(ProtoTextContent::Int64(decode_int64(val)))
         }
-        pt::UINT64 => Ok(ProtoTextContent::Uint64(decode_uint64(val))),
-        pt::INT32 => {
+        Kind::Uint64 => Ok(ProtoTextContent::Uint64(decode_uint64(val))),
+        Kind::Int32 => {
             if val >= (1u64 << 32) {
                 return Err(TypeMismatch);
             }
             Ok(ProtoTextContent::Int32(decode_int32(val)))
         }
-        pt::BOOL => {
+        Kind::Bool => {
             if val > 1 {
                 return Err(TypeMismatch);
             }
             Ok(ProtoTextContent::Bool(decode_bool(val)))
         }
-        pt::UINT32 => {
+        Kind::Uint32 => {
             if val >= (1u64 << 32) {
                 return Err(TypeMismatch);
             }
             Ok(ProtoTextContent::Uint32(decode_uint32(val)))
         }
-        pt::ENUM => {
+        Kind::Enum(_) => {
             if val >= (1u64 << 32) {
                 return Err(TypeMismatch);
             }
             Ok(ProtoTextContent::Enum(decode_int32(val)))
         }
-        pt::SINT32 => {
+        Kind::Sint32 => {
             if val >= (1u64 << 32) {
                 return Err(TypeMismatch);
             }
             Ok(ProtoTextContent::Sint32(decode_sint32(val)))
         }
-        pt::SINT64 => Ok(ProtoTextContent::Sint64(decode_sint64(val))),
+        Kind::Sint64 => Ok(ProtoTextContent::Sint64(decode_sint64(val))),
         _ => Err(TypeMismatch),
     }
 }
@@ -416,7 +427,7 @@ fn decode_varint_by_type(val: u64, proto_type: i32) -> Result<ProtoTextContent, 
 /// Mirrors the `case w.BYTES:` block in `parse_message()`.
 fn decode_len_field(
     data: &[u8],
-    field_schema: Option<&FieldInfo>,
+    field_schema: Option<&FieldDescriptor>,
     full_schema: &ParsedSchema,
     annotations: bool,
     field: &mut ProtoTextField,
@@ -426,16 +437,16 @@ fn decode_len_field(
         return;
     };
 
-    let is_repeated = fs.label == proto_label::REPEATED;
+    let is_repeated = fs.cardinality() == Cardinality::Repeated;
 
     // ── Packed repeated ───────────────────────────────────────────────────────
-    if is_repeated && fs.is_packed {
+    if is_repeated && fs.is_packed() {
         decode_packed(data, fs, field);
         return;
     }
 
     // ── String ────────────────────────────────────────────────────────────────
-    if fs.proto_type == pt::STRING {
+    if fs.kind() == Kind::String {
         match std::str::from_utf8(data) {
             Ok(s) => field.content = ProtoTextContent::StringVal(s.to_string()),
             Err(_) => field.content = ProtoTextContent::InvalidString(data.to_vec()),
@@ -444,20 +455,21 @@ fn decode_len_field(
     }
 
     // ── Bytes ─────────────────────────────────────────────────────────────────
-    if fs.proto_type == pt::BYTES {
+    if fs.kind() == Kind::Bytes {
         field.content = ProtoTextContent::BytesVal(data.to_vec());
         return;
     }
 
     // ── Nested message ────────────────────────────────────────────────────────
-    if fs.proto_type == pt::MESSAGE {
-        let nested_schema = fs
-            .nested_type_name
-            .as_deref()
-            .and_then(|name| full_schema.messages.get(name))
-            .map(|arc| arc.as_ref());
-        let (nested_msg, _, _) =
-            parse_message(data, 0, None, nested_schema, full_schema, annotations);
+    if let Kind::Message(nested_msg_desc) = fs.kind() {
+        let (nested_msg, _, _) = parse_message(
+            data,
+            0,
+            None,
+            Some(&nested_msg_desc),
+            full_schema,
+            annotations,
+        );
         field.content = ProtoTextContent::MessageVal(Box::new(nested_msg));
         return;
     }
@@ -467,13 +479,13 @@ fn decode_len_field(
 }
 
 /// Decode a packed repeated field, mirroring the Python packed-records block.
-fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
+fn decode_packed(data: &[u8], fs: &FieldDescriptor, field: &mut ProtoTextField) {
     let length = data.len();
 
     // When length == 0, set content to an empty vector (matching Python behavior:
     // field.sfixed64s.extend([]) still marks the field as "set", producing "sfixed64Pk: []")
-    match fs.proto_type {
-        pt::DOUBLE => {
+    match fs.kind() {
+        Kind::Double => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -486,7 +498,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
             }
             field.content = ProtoTextContent::Doubles(vals);
         }
-        pt::FLOAT => {
+        Kind::Float => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -499,7 +511,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
             }
             field.content = ProtoTextContent::Floats(vals);
         }
-        pt::FIXED64 => {
+        Kind::Fixed64 => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -512,7 +524,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
             }
             field.content = ProtoTextContent::Fixed64s(vals);
         }
-        pt::SFIXED64 => {
+        Kind::Sfixed64 => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -525,7 +537,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
             }
             field.content = ProtoTextContent::Sfixed64s(vals);
         }
-        pt::FIXED32 => {
+        Kind::Fixed32 => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -538,7 +550,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
             }
             field.content = ProtoTextContent::Fixed32s(vals);
         }
-        pt::SFIXED32 => {
+        Kind::Sfixed32 => {
             let mut vals = Vec::new();
             let mut i = 0;
             while i < length {
@@ -558,7 +570,7 @@ fn decode_packed(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
 
 /// Decode varint-packed repeated fields (int32, int64, uint32, uint64, bool,
 /// enum, sint32, sint64).  Tracks overhang bytes per record.
-fn decode_packed_varints(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField) {
+fn decode_packed_varints(data: &[u8], fs: &FieldDescriptor, field: &mut ProtoTextField) {
     let length = data.len();
 
     // When length == 0, fall through to set content to an empty vector
@@ -583,49 +595,49 @@ fn decode_packed_varints(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField
         ohbs.push(vr.varint_ohb.unwrap_or(0));
         let v = vr.varint.unwrap();
 
-        match fs.proto_type {
-            pt::INT64 => {
+        match fs.kind() {
+            Kind::Int64 => {
                 vals_i64.push(decode_int64(v));
-            } // v is u64 ⇒ always < 2^64
-            pt::UINT64 => {
+            }
+            Kind::Uint64 => {
                 vals_u64.push(v);
             }
-            pt::INT32 => {
+            Kind::Int32 => {
                 if v >= (1u64 << 32) {
                     field.content = ProtoTextContent::InvalidPackedRecords(data.to_vec());
                     return;
                 }
                 vals_i32.push(decode_int32(v));
             }
-            pt::BOOL => {
+            Kind::Bool => {
                 if v > 1 {
                     field.content = ProtoTextContent::InvalidPackedRecords(data.to_vec());
                     return;
                 }
                 vals_bool.push(v != 0);
             }
-            pt::UINT32 => {
+            Kind::Uint32 => {
                 if v >= (1u64 << 32) {
                     field.content = ProtoTextContent::InvalidPackedRecords(data.to_vec());
                     return;
                 }
                 vals_u32.push(decode_uint32(v));
             }
-            pt::ENUM => {
+            Kind::Enum(_) => {
                 if v >= (1u64 << 32) {
                     field.content = ProtoTextContent::InvalidPackedRecords(data.to_vec());
                     return;
                 }
                 vals_enum.push(decode_int32(v));
             }
-            pt::SINT32 => {
+            Kind::Sint32 => {
                 if v >= (1u64 << 32) {
                     field.content = ProtoTextContent::InvalidPackedRecords(data.to_vec());
                     return;
                 }
                 vals_i32.push(decode_sint32(v));
             }
-            pt::SINT64 => {
+            Kind::Sint64 => {
                 vals_i64.push(decode_sint64(v));
             }
             _ => {
@@ -640,54 +652,60 @@ fn decode_packed_varints(data: &[u8], fs: &FieldInfo, field: &mut ProtoTextField
         field.records_overhung_count = ohbs;
     }
 
-    field.content = match fs.proto_type {
-        pt::INT64 => ProtoTextContent::Int64s(vals_i64),
-        pt::UINT64 => ProtoTextContent::Uint64s(vals_u64),
-        pt::INT32 => ProtoTextContent::Int32s(vals_i32),
-        pt::BOOL => ProtoTextContent::Bools(vals_bool),
-        pt::UINT32 => ProtoTextContent::Uint32s(vals_u32),
-        pt::ENUM => ProtoTextContent::Enums(vals_enum),
-        pt::SINT32 => ProtoTextContent::Sint32s(vals_i32),
-        pt::SINT64 => ProtoTextContent::Sint64s(vals_i64),
+    field.content = match fs.kind() {
+        Kind::Int64 => ProtoTextContent::Int64s(vals_i64),
+        Kind::Uint64 => ProtoTextContent::Uint64s(vals_u64),
+        Kind::Int32 => ProtoTextContent::Int32s(vals_i32),
+        Kind::Bool => ProtoTextContent::Bools(vals_bool),
+        Kind::Uint32 => ProtoTextContent::Uint32s(vals_u32),
+        Kind::Enum(_) => ProtoTextContent::Enums(vals_enum),
+        Kind::Sint32 => ProtoTextContent::Sint32s(vals_i32),
+        Kind::Sint64 => ProtoTextContent::Sint64s(vals_i64),
         _ => ProtoTextContent::InvalidPackedRecords(data.to_vec()),
     };
 }
 
 /// Format the annotation string for a field, mirroring the Python code.
-fn format_annotation(fs: &FieldInfo) -> String {
-    let label = match fs.label {
-        1 => "optional",
-        2 => "required",
-        3 => "repeated",
-        _ => "?",
+fn format_annotation(fs: &FieldDescriptor) -> String {
+    let label = match fs.cardinality() {
+        Cardinality::Optional => "optional",
+        Cardinality::Required => "required",
+        Cardinality::Repeated => "repeated",
     };
-    let type_str = match fs.proto_type {
-        1 => "double",
-        2 => "float",
-        3 => "int64",
-        4 => "uint64",
-        5 => "int32",
-        6 => "fixed64",
-        7 => "fixed32",
-        8 => "bool",
-        9 => "string",
-        10 => "group",
-        11 => "message",
-        12 => "bytes",
-        13 => "uint32",
-        14 => "enum",
-        15 => "sfixed32",
-        16 => "sfixed64",
-        17 => "sint32",
-        18 => "sint64",
-        _ => "?",
-    };
-    // For message/group/enum, use the short type name if available
-    let type_display = if matches!(fs.proto_type, 10 | 11 | 14) {
-        fs.type_display_name.as_deref().unwrap_or(type_str)
-    } else {
-        type_str
-    };
-    let packed_suffix = if fs.is_packed { " [packed=true]" } else { "" };
-    format!("{}: {} {}{}", fs.name, label, type_display, packed_suffix)
+    let (type_str, type_display) = kind_to_annotation_strs(fs);
+    let packed_suffix = if fs.is_packed() { " [packed=true]" } else { "" };
+    format!("{}: {} {}{}", fs.name(), label, type_display, packed_suffix)
+}
+
+/// Return `(type_str, type_display)` for a field's kind.
+///
+/// For message/group/enum fields, `type_display` is the short type name.
+/// For all other fields, `type_display == type_str`.
+fn kind_to_annotation_strs(fs: &FieldDescriptor) -> (&'static str, String) {
+    match fs.kind() {
+        Kind::Double => ("double", "double".to_string()),
+        Kind::Float => ("float", "float".to_string()),
+        Kind::Int64 => ("int64", "int64".to_string()),
+        Kind::Uint64 => ("uint64", "uint64".to_string()),
+        Kind::Int32 => ("int32", "int32".to_string()),
+        Kind::Fixed64 => ("fixed64", "fixed64".to_string()),
+        Kind::Fixed32 => ("fixed32", "fixed32".to_string()),
+        Kind::Bool => ("bool", "bool".to_string()),
+        Kind::String => ("string", "string".to_string()),
+        Kind::Bytes => ("bytes", "bytes".to_string()),
+        Kind::Uint32 => ("uint32", "uint32".to_string()),
+        Kind::Sfixed32 => ("sfixed32", "sfixed32".to_string()),
+        Kind::Sfixed64 => ("sfixed64", "sfixed64".to_string()),
+        Kind::Sint32 => ("sint32", "sint32".to_string()),
+        Kind::Sint64 => ("sint64", "sint64".to_string()),
+        Kind::Message(msg_desc) => {
+            let display = if fs.is_group() {
+                msg_desc.name().to_string()
+            } else {
+                msg_desc.name().to_string()
+            };
+            ("message", display)
+        }
+        Kind::Enum(enum_desc) => ("enum", enum_desc.name().to_string()),
+    }
 }
