@@ -3,11 +3,12 @@
 //
 // SPDX-License-Identifier: MIT
 
+use prost_reflect::{FieldDescriptor, Kind};
+
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_int32, decode_sfixed32,
     decode_sfixed64, decode_sint32, decode_sint64, decode_uint32, parse_varint,
 };
-use crate::schema::{proto_type as pt, FieldInfo};
 use crate::serialize::common::{
     format_bool_protoc, format_double_protoc, format_enum_protoc, format_fixed32_protoc,
     format_fixed64_protoc, format_float_protoc, format_int32_protoc, format_int64_protoc,
@@ -49,41 +50,43 @@ where
 /// for use in the annotation `EnumTypeName([n1, n2])`.
 fn decode_packed_to_str(
     data: &[u8],
-    fs: &FieldInfo,
+    fs: &FieldDescriptor,
 ) -> (String, bool, Vec<u64>, Vec<bool>, Vec<i32>) {
     let ok = |s| (s, false, vec![], vec![], vec![]);
     let err = || (String::new(), true, vec![], vec![], vec![]);
 
-    match fs.proto_type {
-        pt::DOUBLE => {
+    match fs.kind() {
+        Kind::Double => {
             match decode_packed_fixed(data, 8, |b| format_double_protoc(decode_double(b))) {
                 Ok(s) => ok(s),
                 Err(()) => err(),
             }
         }
-        pt::FLOAT => match decode_packed_fixed(data, 4, |b| format_float_protoc(decode_float(b))) {
-            Ok(s) => ok(s),
-            Err(()) => err(),
-        },
-        pt::FIXED64 => {
+        Kind::Float => {
+            match decode_packed_fixed(data, 4, |b| format_float_protoc(decode_float(b))) {
+                Ok(s) => ok(s),
+                Err(()) => err(),
+            }
+        }
+        Kind::Fixed64 => {
             match decode_packed_fixed(data, 8, |b| format_fixed64_protoc(decode_fixed64(b))) {
                 Ok(s) => ok(s),
                 Err(()) => err(),
             }
         }
-        pt::SFIXED64 => {
+        Kind::Sfixed64 => {
             match decode_packed_fixed(data, 8, |b| format_sfixed64_protoc(decode_sfixed64(b))) {
                 Ok(s) => ok(s),
                 Err(()) => err(),
             }
         }
-        pt::FIXED32 => {
+        Kind::Fixed32 => {
             match decode_packed_fixed(data, 4, |b| format_fixed32_protoc(decode_fixed32(b))) {
                 Ok(s) => ok(s),
                 Err(()) => err(),
             }
         }
-        pt::SFIXED32 => {
+        Kind::Sfixed32 => {
             match decode_packed_fixed(data, 4, |b| format_sfixed32_protoc(decode_sfixed32(b))) {
                 Ok(s) => ok(s),
                 Err(()) => err(),
@@ -96,9 +99,9 @@ fn decode_packed_to_str(
 
 fn decode_packed_varints_to_str(
     data: &[u8],
-    fs: &FieldInfo,
+    fs: &FieldDescriptor,
 ) -> (String, bool, Vec<u64>, Vec<bool>, Vec<i32>) {
-    let is_enum = fs.proto_type == pt::ENUM;
+    let is_enum = matches!(fs.kind(), Kind::Enum(_));
     let mut strs: Vec<String> = Vec::new();
     let mut ohbs: Vec<u64> = Vec::new();
     let mut neg_truncs: Vec<bool> = Vec::new();
@@ -115,10 +118,10 @@ fn decode_packed_varints_to_str(
         i = vr.next_pos;
         ohbs.push(vr.varint_ohb.unwrap_or(0));
         let v = vr.varint.unwrap();
-        let s = match fs.proto_type {
-            pt::INT64 => format_int64_protoc(crate::helpers::decode_int64(v)),
-            pt::UINT64 => format_uint64_protoc(v),
-            pt::INT32 => {
+        let s = match fs.kind() {
+            Kind::Int64 => format_int64_protoc(crate::helpers::decode_int64(v)),
+            Kind::Uint64 => format_uint64_protoc(v),
+            Kind::Int32 => {
                 if v <= 0x7FFF_FFFF {
                     neg_truncs.push(false);
                     format_int32_protoc(decode_int32(v))
@@ -132,19 +135,19 @@ fn decode_packed_varints_to_str(
                     return (String::new(), true, vec![], vec![], vec![]);
                 }
             }
-            pt::BOOL => {
+            Kind::Bool => {
                 if v > 1 {
                     return (String::new(), true, vec![], vec![], vec![]);
                 }
                 format_bool_protoc(v != 0).to_owned()
             }
-            pt::UINT32 => {
+            Kind::Uint32 => {
                 if v >= (1 << 32) {
                     return (String::new(), true, vec![], vec![], vec![]);
                 }
                 format_uint32_protoc(decode_uint32(v))
             }
-            pt::ENUM => {
+            Kind::Enum(ref enum_desc) => {
                 let n_i32 = if v <= 0x7FFF_FFFF {
                     neg_truncs.push(false);
                     decode_int32(v)
@@ -159,21 +162,21 @@ fn decode_packed_varints_to_str(
                 };
                 enum_nums.push(n_i32);
                 // Look up symbolic name; fall back to numeric string.
-                match fs.enum_values.binary_search_by_key(&n_i32, |(n, _)| *n) {
-                    Ok(idx) => fs.enum_values[idx].1.as_ref().to_owned(),
-                    Err(_) => {
+                match enum_desc.get_value(n_i32) {
+                    Some(ev) => ev.name().to_owned(),
+                    None => {
                         has_enum_unknown = true;
                         format_enum_protoc(n_i32)
                     }
                 }
             }
-            pt::SINT32 => {
+            Kind::Sint32 => {
                 if v >= (1 << 32) {
                     return (String::new(), true, vec![], vec![], vec![]);
                 }
                 format_sint32_protoc(decode_sint32(v))
             }
-            pt::SINT64 => format_sint64_protoc(decode_sint64(v)),
+            Kind::Sint64 => format_sint64_protoc(decode_sint64(v)),
             _ => return (String::new(), true, vec![], vec![], vec![]),
         };
         strs.push(s);
@@ -191,8 +194,8 @@ fn decode_packed_varints_to_str(
         vec![]
     };
     // enum_nums is non-empty only for ENUM fields; has_enum_unknown is determined
-    // by the caller (render_packed) by checking fs.enum_values against enum_nums.
-    let _ = has_enum_unknown; // caller recomputes from enum_nums + fi.enum_values
+    // by the caller (render_packed) by checking enum_desc against enum_nums.
+    let _ = has_enum_unknown; // caller recomputes from enum_nums + enum_desc
     let enum_nums_out = if is_enum { enum_nums } else { vec![] };
     (
         format!("[{}]", strs.join(", ")),
@@ -208,7 +211,7 @@ fn decode_packed_varints_to_str(
 /// Render a packed repeated field.
 pub(super) fn render_packed(
     field_number: u64,
-    fs: &FieldInfo,
+    fs: &FieldDescriptor,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -235,12 +238,11 @@ pub(super) fn render_packed(
     }
 
     // For ENUM packed fields: check whether any element has no schema name.
-    let enum_unknown = !enum_nums.is_empty()
-        && enum_nums.iter().any(|&n| {
-            fs.enum_values
-                .binary_search_by_key(&n, |(k, _)| *k)
-                .is_err()
-        });
+    let enum_unknown = if let Kind::Enum(ref enum_desc) = fs.kind() {
+        !enum_nums.is_empty() && enum_nums.iter().any(|&n| enum_desc.get_value(n).is_none())
+    } else {
+        false
+    };
 
     // Write line directly — no intermediate String allocations.
     wfl_prefix_n(field_number, Some(fs), false, out);

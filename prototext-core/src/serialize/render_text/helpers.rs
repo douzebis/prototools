@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::schema::{proto_label, proto_type as pt, FieldInfo, MessageSchema};
+use prost_reflect::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
+
 use crate::serialize::common::{escape_bytes_into, escape_string_into};
 
 use super::packed::render_packed;
@@ -65,17 +66,17 @@ pub(super) fn wfl_prefix(name: &str, out: &mut Vec<u8>) {
 /// Write field-line prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name directly from `fs.name`.  Otherwise writes `num` as decimal.
+/// field name directly from `fs.name()`.  Otherwise writes `num` as decimal.
 #[inline]
 pub(super) fn wfl_prefix_n(
     num: u64,
-    fs: Option<&FieldInfo>,
+    fs: Option<&FieldDescriptor>,
     is_wire_or_mismatch: bool,
     out: &mut Vec<u8>,
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.name.as_bytes()),
+        Some(fi) => out.extend_from_slice(fi.name().as_bytes()),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b": ");
@@ -93,17 +94,17 @@ pub(super) fn wob_prefix(name: &str, out: &mut Vec<u8>) {
 /// Write open-brace prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name directly from `fs.name`.  Otherwise writes `num` as decimal.
+/// field name directly from `fs.name()`.  Otherwise writes `num` as decimal.
 #[inline]
 pub(super) fn wob_prefix_n(
     num: u64,
-    fs: Option<&FieldInfo>,
+    fs: Option<&FieldDescriptor>,
     is_wire_or_mismatch: bool,
     out: &mut Vec<u8>,
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.name.as_bytes()),
+        Some(fi) => out.extend_from_slice(fi.name().as_bytes()),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b" {");
@@ -120,50 +121,58 @@ pub(super) fn write_close_brace(out: &mut Vec<u8>) {
 
 // ── Annotation helpers ────────────────────────────────────────────────────────
 
-/// Return the protobuf type name string for a proto_type integer.
+/// Return the protobuf type name string for a field's Kind.
 #[inline]
-pub(super) fn proto_type_str(proto_type: i32) -> &'static str {
-    match proto_type {
-        1 => "double",
-        2 => "float",
-        3 => "int64",
-        4 => "uint64",
-        5 => "int32",
-        6 => "fixed64",
-        7 => "fixed32",
-        8 => "bool",
-        9 => "string",
-        10 => "group",
-        11 => "message",
-        12 => "bytes",
-        13 => "uint32",
-        14 => "enum",
-        15 => "sfixed32",
-        16 => "sfixed64",
-        17 => "sint32",
-        18 => "sint64",
-        _ => "?",
+pub(super) fn proto_type_str(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Double => "double",
+        Kind::Float => "float",
+        Kind::Int64 => "int64",
+        Kind::Uint64 => "uint64",
+        Kind::Int32 => "int32",
+        Kind::Fixed64 => "fixed64",
+        Kind::Fixed32 => "fixed32",
+        Kind::Bool => "bool",
+        Kind::String => "string",
+        Kind::Message(_) => "message", // groups also appear as Message in prost-reflect
+        Kind::Bytes => "bytes",
+        Kind::Uint32 => "uint32",
+        Kind::Enum(_) => "enum",
+        Kind::Sfixed32 => "sfixed32",
+        Kind::Sfixed64 => "sfixed64",
+        Kind::Sint32 => "sint32",
+        Kind::Sint64 => "sint64",
     }
 }
 
 /// Build the `"[repeated |required ]type[ [packed=true]] = N"` field declaration string.
 /// v2 format: `optional` omitted as default; no trailing `;`.
 /// Used only by `render_group_field` for post-hoc splice insertion.
-pub(super) fn field_decl(field_number: u64, field_schema: Option<&FieldInfo>) -> Option<String> {
+pub(super) fn field_decl(
+    field_number: u64,
+    field_schema: Option<&FieldDescriptor>,
+) -> Option<String> {
     let fi = field_schema?;
     // v2: `optional` is the default — omit it; emit `repeated` / `required` explicitly.
-    let label_prefix = match fi.label {
-        2 => "required ",
-        3 => "repeated ",
-        _ => "",
+    let label_prefix = match fi.cardinality() {
+        Cardinality::Required => "required ",
+        Cardinality::Repeated => "repeated ",
+        Cardinality::Optional => "",
     };
-    let type_str = proto_type_str(fi.proto_type);
-    let type_display = if matches!(fi.proto_type, 10 | 11 | 14) {
-        fi.type_display_name.as_deref().unwrap_or(type_str)
-    } else {
-        type_str
+    let kind = fi.kind();
+    let type_str = proto_type_str(&kind);
+    let type_display = match &kind {
+        Kind::Message(msg_desc) => {
+            if fi.is_group() {
+                msg_desc.name().to_string()
+            } else {
+                msg_desc.name().to_string()
+            }
+        }
+        Kind::Enum(enum_desc) => enum_desc.name().to_string(),
+        _ => type_str.to_string(),
     };
-    let packed = if fi.is_packed { " [packed=true]" } else { "" };
+    let packed = if fi.is_packed() { " [packed=true]" } else { "" };
     // v2: no trailing `;`
     Some(format!(
         "{}{}{} = {}",
@@ -240,26 +249,26 @@ impl AnnWriter {
         &mut self,
         out: &mut Vec<u8>,
         num: u64,
-        fs: Option<&FieldInfo>,
+        fs: Option<&FieldDescriptor>,
         enum_raw: Option<i32>,
         enum_packed_nums: Option<&[i32]>,
     ) {
         let Some(fi) = fs else { return };
         self.sep(out);
         // v2: `optional` is the default — omit it; emit `repeated` / `required` explicitly.
-        match fi.label {
-            2 => {
+        match fi.cardinality() {
+            Cardinality::Required => {
                 out.extend_from_slice(b"required ");
             }
-            3 => {
+            Cardinality::Repeated => {
                 out.extend_from_slice(b"repeated ");
             }
-            _ => {}
+            Cardinality::Optional => {}
         }
-        let type_str = proto_type_str(fi.proto_type);
-        if fi.proto_type == 14 {
+        let kind = fi.kind();
+        if let Kind::Enum(ref enum_desc) = kind {
             // ENUM: emit EnumTypeName(N) or EnumTypeName([n1, n2]) for packed
-            let type_display = fi.type_display_name.as_deref().unwrap_or(type_str);
+            let type_display = enum_desc.name();
             out.extend_from_slice(type_display.as_bytes());
             if let Some(nums) = enum_packed_nums {
                 // Packed enum: EnumTypeName([n1, n2, ...])
@@ -280,14 +289,13 @@ impl AnnWriter {
                 out.push(b')');
             }
         } else {
-            let type_display = if matches!(fi.proto_type, 10 | 11) {
-                fi.type_display_name.as_deref().unwrap_or(type_str)
-            } else {
-                type_str
+            let type_display = match &kind {
+                Kind::Message(msg_desc) => msg_desc.name().to_string(),
+                _ => proto_type_str(&kind).to_string(),
             };
             out.extend_from_slice(type_display.as_bytes());
         }
-        if fi.is_packed {
+        if fi.is_packed() {
             out.extend_from_slice(b" [packed=true]");
         }
         out.extend_from_slice(b" = ");
@@ -304,7 +312,7 @@ impl AnnWriter {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_scalar(
     field_number: u64,
-    field_schema: Option<&FieldInfo>,
+    field_schema: Option<&FieldDescriptor>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -362,7 +370,7 @@ pub(super) fn render_scalar(
 /// v2: always uses numeric key; emits INVALID_* wire type name; no field_decl.
 pub(super) fn render_invalid(
     field_number: u64,
-    _field_schema: Option<&FieldInfo>,
+    _field_schema: Option<&FieldDescriptor>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     inv_name: &str,
@@ -446,8 +454,8 @@ pub(super) fn render_truncated_bytes(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_len_field(
     field_number: u64,
-    field_schema: Option<&FieldInfo>,
-    all_schemas: Option<&HashMap<String, Arc<MessageSchema>>>,
+    field_schema: Option<&FieldDescriptor>,
+    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -481,16 +489,16 @@ pub(super) fn render_len_field(
         return;
     };
 
-    let is_repeated = fs.label == proto_label::REPEATED;
+    let is_repeated = fs.cardinality() == Cardinality::Repeated;
 
     // ── Packed repeated ───────────────────────────────────────────────────────
-    if is_repeated && fs.is_packed {
+    if is_repeated && fs.is_packed() {
         render_packed(field_number, fs, tag_ohb, tag_oor, len_ohb, data, out);
         return;
     }
 
     // ── String ────────────────────────────────────────────────────────────────
-    if fs.proto_type == pt::STRING {
+    if fs.kind() == Kind::String {
         match std::str::from_utf8(data) {
             Ok(s) => {
                 // Valid UTF-8: write directly — no format! or escape_string allocation.
@@ -532,7 +540,7 @@ pub(super) fn render_len_field(
     }
 
     // ── Bytes ─────────────────────────────────────────────────────────────────
-    if fs.proto_type == pt::BYTES {
+    if fs.kind() == Kind::Bytes {
         wfl_prefix_n(field_number, Some(fs), false, out);
         out.push(b'"');
         escape_bytes_into(data, out);
@@ -557,36 +565,39 @@ pub(super) fn render_len_field(
     }
 
     // ── Nested message ────────────────────────────────────────────────────────
-    if fs.proto_type == pt::MESSAGE {
-        let nested_schema: Option<&MessageSchema> = fs
-            .nested_type_name
-            .as_deref()
-            .and_then(|name| all_schemas?.get(name))
-            .map(|arc| arc.as_ref());
+    // Note: groups are represented as Kind::Message in prost-reflect.  A GROUP
+    // field received on a LEN wire record is a wire-type mismatch — fall through
+    // to the mismatch handler below.
+    if let Kind::Message(nested_msg_desc) = fs.kind() {
+        if !fs.is_group() {
+            let nested_schema: Option<&MessageDescriptor> = all_schemas
+                .and_then(|m| m.get(nested_msg_desc.full_name()))
+                .map(|v| &**v);
 
-        wob_prefix_n(field_number, Some(fs), false, out);
-        if annotations {
-            let mut aw = AnnWriter::new();
-            // v2: NO wire type for known MESSAGE; field_decl FIRST, then modifiers.
-            aw.push_field_decl(out, field_number, Some(fs), None, None);
-            if let Some(v) = tag_ohb {
-                aw.push_u64_mod(out, b"tag_ohb: ", v);
+            wob_prefix_n(field_number, Some(fs), false, out);
+            if annotations {
+                let mut aw = AnnWriter::new();
+                // v2: NO wire type for known MESSAGE; field_decl FIRST, then modifiers.
+                aw.push_field_decl(out, field_number, Some(fs), None, None);
+                if let Some(v) = tag_ohb {
+                    aw.push_u64_mod(out, b"tag_ohb: ", v);
+                }
+                if tag_oor {
+                    aw.push(out, b"TAG_OOR");
+                }
+                if let Some(v) = len_ohb {
+                    aw.push_u64_mod(out, b"len_ohb: ", v);
+                }
             }
-            if tag_oor {
-                aw.push(out, b"TAG_OOR");
+            out.push(b'\n');
+            CBL_START.with(|c| c.set(out.len())); // open-brace line: set past-end to inhibit folding
+            {
+                let _guard = enter_level();
+                render_message(data, 0, None, nested_schema, all_schemas, out);
             }
-            if let Some(v) = len_ohb {
-                aw.push_u64_mod(out, b"len_ohb: ", v);
-            }
+            write_close_brace(out);
+            return;
         }
-        out.push(b'\n');
-        CBL_START.with(|c| c.set(out.len())); // open-brace line: set past-end to inhibit folding
-        {
-            let _guard = enter_level();
-            render_message(data, 0, None, nested_schema, all_schemas, out);
-        }
-        write_close_brace(out);
-        return;
     }
 
     // ── Wire-type mismatch (schema says non-LEN type but wire says LEN) ───────
@@ -619,8 +630,8 @@ pub(super) fn render_group_field(
     buf: &[u8],
     pos: &mut usize,
     field_number: u64,
-    field_schema: Option<&FieldInfo>,
-    all_schemas: Option<&HashMap<String, Arc<MessageSchema>>>,
+    field_schema: Option<&FieldDescriptor>,
+    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     out: &mut Vec<u8>,
@@ -629,13 +640,16 @@ pub(super) fn render_group_field(
     // Determine nested schema and whether this is a wire-type mismatch
     // (GROUP wire but schema declares a non-GROUP type).
     // A mismatch is treated as unknown: field number as name, no field_decl.
-    let is_mismatch = field_schema.is_some_and(|fs| fs.proto_type != pt::GROUP);
-    let nested_schema_opt: Option<&MessageSchema> = if let Some(fs) = field_schema {
-        if fs.proto_type == pt::GROUP {
-            fs.nested_type_name
-                .as_deref()
-                .and_then(|name| all_schemas?.get(name))
-                .map(|arc| arc.as_ref())
+    let is_mismatch = field_schema.is_some_and(|fs| !fs.is_group());
+    let nested_schema_opt: Option<&MessageDescriptor> = if let Some(fs) = field_schema {
+        if fs.is_group() {
+            if let Kind::Message(msg_desc) = fs.kind() {
+                all_schemas
+                    .and_then(|m| m.get(msg_desc.full_name()))
+                    .map(|v| &**v)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -656,9 +670,12 @@ pub(super) fn render_group_field(
     //
     // Known GROUP → borrow type display name from schema; mismatch/unknown → decimal number.
     push_indent(out);
-    if let Some(fs) = field_schema.filter(|fs| fs.proto_type == pt::GROUP) {
-        let dname: &str = fs.type_display_name.as_deref().unwrap_or(&fs.name);
-        out.extend_from_slice(dname.as_bytes());
+    if let Some(fs) = field_schema.filter(|fs| fs.is_group()) {
+        if let Kind::Message(msg_desc) = fs.kind() {
+            out.extend_from_slice(msg_desc.name().as_bytes());
+        } else {
+            write_dec_u64(field_number, out);
+        }
     } else {
         write_dec_u64(field_number, out);
     }

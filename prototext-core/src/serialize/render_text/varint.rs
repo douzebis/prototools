@@ -3,11 +3,12 @@
 //
 // SPDX-License-Identifier: MIT
 
+use prost_reflect::{FieldDescriptor, Kind};
+
 use crate::helpers::{
     decode_bool, decode_int32, decode_int64, decode_sint32, decode_sint64, decode_uint32,
     decode_uint64,
 };
-use crate::schema::{proto_type as pt, FieldInfo};
 use crate::serialize::common::{
     format_bool_protoc, format_enum_protoc, format_int32_protoc, format_int64_protoc,
     format_sint32_protoc, format_sint64_protoc, format_uint32_protoc, format_uint64_protoc,
@@ -35,11 +36,11 @@ pub(super) enum VarintKind {
 }
 
 #[inline]
-pub(super) fn decode_varint_typed(val: u64, fs: &FieldInfo) -> (VarintKind, u64) {
-    match fs.proto_type {
-        pt::INT64 => (VarintKind::Int64, val),
-        pt::UINT64 => (VarintKind::Uint64, val),
-        pt::INT32 => {
+pub(super) fn decode_varint_typed(val: u64, fs: &FieldDescriptor) -> (VarintKind, u64) {
+    match fs.kind() {
+        Kind::Int64 => (VarintKind::Int64, val),
+        Kind::Uint64 => (VarintKind::Uint64, val),
+        Kind::Int32 => {
             if val <= 0x7FFF_FFFF {
                 (VarintKind::Int32, val) // non-negative
             } else if val <= 0xFFFF_FFFF {
@@ -50,21 +51,21 @@ pub(super) fn decode_varint_typed(val: u64, fs: &FieldInfo) -> (VarintKind, u64)
                 (VarintKind::Mismatch, val)
             }
         }
-        pt::BOOL => {
+        Kind::Bool => {
             if val > 1 {
                 (VarintKind::Mismatch, val)
             } else {
                 (VarintKind::Bool, val)
             }
         }
-        pt::UINT32 => {
+        Kind::Uint32 => {
             if val >= (1 << 32) {
                 (VarintKind::Mismatch, val)
             } else {
                 (VarintKind::Uint32, val)
             }
         }
-        pt::ENUM => {
+        Kind::Enum(_) => {
             if val <= 0x7FFF_FFFF {
                 (VarintKind::Enum, val) // non-negative
             } else if val <= 0xFFFF_FFFF {
@@ -75,14 +76,14 @@ pub(super) fn decode_varint_typed(val: u64, fs: &FieldInfo) -> (VarintKind, u64)
                 (VarintKind::Mismatch, val)
             }
         }
-        pt::SINT32 => {
+        Kind::Sint32 => {
             if val >= (1 << 32) {
                 (VarintKind::Mismatch, val)
             } else {
                 (VarintKind::Sint32, val)
             }
         }
-        pt::SINT64 => (VarintKind::Sint64, val),
+        Kind::Sint64 => (VarintKind::Sint64, val),
         _ => (VarintKind::Mismatch, val),
     }
 }
@@ -113,7 +114,7 @@ pub(super) fn fmt_varint(kind: VarintKind, raw: u64) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_varint_field(
     field_number: u64,
-    field_schema: Option<&FieldInfo>,
+    field_schema: Option<&FieldDescriptor>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     val_ohb: Option<u64>,
@@ -139,9 +140,13 @@ pub(super) fn render_varint_field(
 
     let (value_str, enum_unknown) = if is_enum {
         if let Some(fi) = field_schema {
-            match fi.enum_values.binary_search_by_key(&enum_i32, |(n, _)| *n) {
-                Ok(idx) => (fi.enum_values[idx].1.as_ref().to_owned(), false),
-                Err(_) => (fmt_varint(kind, raw_val), true),
+            if let Kind::Enum(enum_desc) = fi.kind() {
+                match enum_desc.get_value(enum_i32) {
+                    Some(v) => (v.name().to_owned(), false),
+                    None => (fmt_varint(kind, raw_val), true),
+                }
+            } else {
+                (fmt_varint(kind, raw_val), false)
             }
         } else {
             (fmt_varint(kind, raw_val), false)

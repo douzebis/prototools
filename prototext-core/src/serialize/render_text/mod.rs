@@ -11,6 +11,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use prost_reflect::{FieldDescriptor, Kind, MessageDescriptor};
+
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
 };
@@ -18,7 +20,7 @@ use crate::helpers::{
     parse_varint, parse_wiretag, WiretagResult, WT_END_GROUP, WT_I32, WT_I64, WT_LEN,
     WT_START_GROUP, WT_VARINT,
 };
-use crate::schema::{proto_type as pt, FieldInfo, MessageSchema, ParsedSchema};
+use crate::schema::ParsedSchema;
 use crate::serialize::common::{
     format_double_protoc, format_fixed32_protoc, format_fixed64_protoc, format_float_protoc,
     format_sfixed32_protoc, format_sfixed64_protoc, format_wire_fixed32_protoc,
@@ -97,14 +99,15 @@ pub fn decode_and_render(
     INDENT_SIZE.with(|c| c.set(indent_size));
     LEVEL.with(|c| c.set(0));
 
-    // Hold Arc to keep root MessageSchema alive for the duration of this call.
-    let root_arc: Option<Arc<MessageSchema>> = schema.and_then(|s| s.root_schema());
-    let root_ref: Option<&MessageSchema> = root_arc.as_deref();
+    // Build a flat name→MessageDescriptor map for nested-type lookups.
+    // Keyed by bare FQN (no leading dot), matching prost-reflect's convention.
+    let all_descriptors: Option<HashMap<String, Arc<MessageDescriptor>>> =
+        schema.map(|s| build_descriptor_map(s));
+    let all_schemas = all_descriptors.as_ref();
 
-    let all_schemas: Option<&HashMap<String, Arc<MessageSchema>>> =
-        schema.map(|s| s.all_schemas.as_ref());
+    let root_desc: Option<MessageDescriptor> = schema.and_then(|s| s.root_descriptor());
 
-    render_message(buf, 0, None, root_ref, all_schemas, &mut out);
+    render_message(buf, 0, None, root_desc.as_ref(), all_schemas, &mut out);
 
     // Development instrumentation — truncate event
     #[cfg(debug_assertions)]
@@ -124,6 +127,15 @@ pub fn decode_and_render(
     out
 }
 
+/// Build a `HashMap<bare_fqn, Arc<MessageDescriptor>>` from a `ParsedSchema`.
+fn build_descriptor_map(schema: &ParsedSchema) -> HashMap<String, Arc<MessageDescriptor>> {
+    schema
+        .pool()
+        .all_messages()
+        .map(|msg| (msg.full_name().to_string(), Arc::new(msg)))
+        .collect()
+}
+
 // ── Core recursive render-while-decode ───────────────────────────────────────
 
 /// Parse and render one protobuf message into `out`.
@@ -136,8 +148,8 @@ pub(super) fn render_message(
     buf: &[u8],
     start: usize,
     my_group: Option<u64>,
-    schema: Option<&MessageSchema>,
-    all_schemas: Option<&HashMap<String, Arc<MessageSchema>>>,
+    schema: Option<&MessageDescriptor>,
+    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
     out: &mut Vec<u8>,
 ) -> (usize, Option<WiretagResult>) {
     let buflen = buf.len();
@@ -166,8 +178,8 @@ pub(super) fn render_message(
 
         // ── Schema lookup ─────────────────────────────────────────────────────
 
-        let field_schema: Option<&FieldInfo> =
-            schema.and_then(|s| s.fields.get(&(field_number as u32)));
+        let field_schema: Option<FieldDescriptor> =
+            schema.and_then(|s| s.get_field(field_number as u32));
 
         // ── Wire-type dispatch ────────────────────────────────────────────────
 
@@ -178,7 +190,7 @@ pub(super) fn render_message(
                 if let Some(ref varint_gar) = vr.varint_gar {
                     render_invalid(
                         field_number,
-                        field_schema,
+                        field_schema.as_ref(),
                         tag_ohb,
                         tag_oor,
                         "INVALID_VARINT",
@@ -191,7 +203,7 @@ pub(super) fn render_message(
                 let val_ohb = vr.varint_ohb;
                 let val = vr.varint.unwrap();
 
-                let (content_kind, typed_val) = if let Some(fs) = field_schema {
+                let (content_kind, typed_val) = if let Some(ref fs) = field_schema {
                     decode_varint_typed(val, fs)
                 } else {
                     (VarintKind::Wire, val)
@@ -199,7 +211,7 @@ pub(super) fn render_message(
 
                 render_varint_field(
                     field_number,
-                    field_schema,
+                    field_schema.as_ref(),
                     tag_ohb,
                     tag_oor,
                     val_ohb,
@@ -215,7 +227,7 @@ pub(super) fn render_message(
                     let raw = &buf[pos..];
                     render_invalid(
                         field_number,
-                        field_schema,
+                        field_schema.as_ref(),
                         tag_ohb,
                         tag_oor,
                         "INVALID_FIXED64",
@@ -228,17 +240,17 @@ pub(super) fn render_message(
                 pos += 8;
 
                 let is_mismatch;
-                let value_str = if let Some(fs) = field_schema {
-                    match fs.proto_type {
-                        pt::DOUBLE => {
+                let value_str = if let Some(ref fs) = field_schema {
+                    match fs.kind() {
+                        Kind::Double => {
                             is_mismatch = false;
                             format_double_protoc(decode_double(data))
                         }
-                        pt::FIXED64 => {
+                        Kind::Fixed64 => {
                             is_mismatch = false;
                             format_fixed64_protoc(decode_fixed64(data))
                         }
-                        pt::SFIXED64 => {
+                        Kind::Sfixed64 => {
                             is_mismatch = false;
                             format_sfixed64_protoc(decode_sfixed64(data))
                         }
@@ -254,7 +266,7 @@ pub(super) fn render_message(
 
                 render_scalar(
                     field_number,
-                    field_schema,
+                    field_schema.as_ref(),
                     tag_ohb,
                     tag_oor,
                     None,
@@ -271,7 +283,7 @@ pub(super) fn render_message(
                 if let Some(ref varint_gar) = lr.varint_gar {
                     render_invalid(
                         field_number,
-                        field_schema,
+                        field_schema.as_ref(),
                         tag_ohb,
                         tag_oor,
                         "INVALID_LEN",
@@ -303,7 +315,7 @@ pub(super) fn render_message(
 
                 render_len_field(
                     field_number,
-                    field_schema,
+                    field_schema.as_ref(),
                     all_schemas,
                     tag_ohb,
                     tag_oor,
@@ -319,7 +331,7 @@ pub(super) fn render_message(
                     buf,
                     &mut pos,
                     field_number,
-                    field_schema,
+                    field_schema.as_ref(),
                     all_schemas,
                     tag_ohb,
                     tag_oor,
@@ -334,7 +346,7 @@ pub(super) fn render_message(
                     let raw = &buf[pos..];
                     render_invalid(
                         field_number,
-                        field_schema,
+                        field_schema.as_ref(),
                         tag_ohb,
                         tag_oor,
                         "INVALID_GROUP_END",
@@ -353,7 +365,7 @@ pub(super) fn render_message(
                     let raw = &buf[pos..];
                     render_invalid(
                         field_number,
-                        field_schema,
+                        field_schema.as_ref(),
                         tag_ohb,
                         tag_oor,
                         "INVALID_FIXED32",
@@ -366,17 +378,17 @@ pub(super) fn render_message(
                 pos += 4;
 
                 let is_mismatch;
-                let value_str = if let Some(fs) = field_schema {
-                    match fs.proto_type {
-                        pt::FLOAT => {
+                let value_str = if let Some(ref fs) = field_schema {
+                    match fs.kind() {
+                        Kind::Float => {
                             is_mismatch = false;
                             format_float_protoc(decode_float(data))
                         }
-                        pt::FIXED32 => {
+                        Kind::Fixed32 => {
                             is_mismatch = false;
                             format_fixed32_protoc(decode_fixed32(data))
                         }
-                        pt::SFIXED32 => {
+                        Kind::Sfixed32 => {
                             is_mismatch = false;
                             format_sfixed32_protoc(decode_sfixed32(data))
                         }
@@ -392,7 +404,7 @@ pub(super) fn render_message(
 
                 render_scalar(
                     field_number,
-                    field_schema,
+                    field_schema.as_ref(),
                     tag_ohb,
                     tag_oor,
                     None,
