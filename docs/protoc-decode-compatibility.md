@@ -222,12 +222,13 @@ prototext uses `{` `}` with no colon.
 
 protoc emits each `}` on its own line at the correct indentation level.
 
-prototext has infrastructure (`CBL_START`) designed for folding consecutive
-`}` lines onto one line, but current `write_close_brace` emits each `}` on
-its own line.  The folding code is not currently active.
+prototext emits each `}` on its own line.  The codebase contains a
+`CBL_START` thread-local and comments describing a close-brace folding
+mechanism, but the folding logic itself has been removed.  `write_close_brace`
+(helpers.rs:117) simply writes `}\n`; no patching or folding occurs.
+`CBL_START` is maintained as dead scaffolding.
 
-**No divergence** in current behavior.  If brace folding were activated, it
-would become a divergence.
+**No divergence.**
 
 ---
 
