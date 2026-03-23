@@ -110,12 +110,8 @@ pub(super) fn wob_prefix_n(
 }
 
 /// Write `{indent}}\n`.
-///
-/// Uses `CBL_START` to track the start of the most recent close-brace line.
-/// See the `CBL_START` thread-local documentation for the update discipline.
 #[inline]
 pub(super) fn write_close_brace(out: &mut Vec<u8>) {
-    // Record the start of this close-brace line before writing.
     CBL_START.with(|c| c.set(out.len()));
     push_indent(out);
     out.push(b'}');

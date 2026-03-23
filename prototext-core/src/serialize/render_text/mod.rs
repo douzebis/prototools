@@ -36,19 +36,10 @@ const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
 
 // ── Render-mode state ─────────────────────────────────────────────────────────
 //
-// `CBL_START` tracks the byte offset of the start of the most recently started
-// output line.  It is used by `write_close_brace` to fold consecutive `}`
-// lines into one.
-//
-// Update discipline (key to correctness):
-//   - Non-close-brace writes: set `CBL_START = out.len()` **after** `out.push(b'\n')`.
-//     This puts `CBL_START` past the end of `out`, so the bounds check in
-//     `write_close_brace` always fails → no spurious folding.
-//   - Fresh close-brace write: set `CBL_START = out.len()` **before** writing
-//     the `}\n` line, so `CBL_START` points to the start of that line and the
-//     next close-brace can patch it.
-//   - Folded close-brace write: do **not** update `CBL_START` — it still
-//     points to the close-brace line being extended.
+// `CBL_START` is set to `out.len()` by `write_close_brace` before writing a
+// `}\n` line, and reset to `out.len()` (past-end) by every other write.  It
+// is currently unused beyond being maintained; the close-brace folding feature
+// it was intended to support has been removed.
 //
 thread_local! {
     pub(super) static CBL_START:    Cell<usize> = const { Cell::new(0) };
