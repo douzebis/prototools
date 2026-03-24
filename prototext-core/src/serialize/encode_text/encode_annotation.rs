@@ -28,6 +28,16 @@ pub(crate) struct Ann<'a> {
     /// For scalar ENUM fields: the raw i32 extracted from `EnumType(N)` in the annotation.
     /// Overrides the LHS value token for encoding.
     pub(crate) enum_scalar_value: Option<i64>,
+    /// Non-canonical NaN bit pattern from `nan_bits: 0x…` annotation modifier.
+    /// Applies to float (32-bit, stored as u64) and double (64-bit) fields.
+    pub(crate) nan_bits: Option<u64>,
+    /// Number of elements in a per-line packed wire record (`pack_size: N`).
+    /// `None` means this is not the first element of a packed record.
+    pub(crate) pack_size: Option<usize>,
+    /// Per-element varint OHB for a per-line packed element (`ohb: N`).
+    pub(crate) elem_ohb: Option<u64>,
+    /// True when this per-line packed element is a truncated-negative int32/enum (`neg`).
+    pub(crate) elem_neg_trunc: bool,
 }
 
 // ── Annotation parser ─────────────────────────────────────────────────────────
@@ -80,6 +90,9 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                         ann.records_neg_int32_truncated =
                             inner.split(',').map(|s| s.trim() == "1").collect();
                     }
+                    "nan_bits" => ann.nan_bits = Some(parse_u64_str(value)),
+                    "pack_size" => ann.pack_size = Some(parse_u64_str(value) as usize),
+                    "ohb" => ann.elem_ohb = Some(parse_u64_str(value)),
                     _ => {}
                 }
                 continue;
@@ -98,6 +111,9 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                 }
                 "truncated_neg" => {
                     ann.neg_int32_truncated = true;
+                }
+                "neg" => {
+                    ann.elem_neg_trunc = true;
                 }
                 // Flags that don't affect binary encoding — ignore.
                 "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" => {}
@@ -228,7 +244,8 @@ fn parse_enum_field_decl(token: &str, paren_pos: usize, ann: &mut Ann<'_>) {
         // Scalar enum: inner = "N".
         let n: i64 = inner.trim().parse::<i64>().unwrap_or(0);
         ann.enum_scalar_value = Some(n);
-        ann.is_packed = false;
+        // Detect [packed=true] in after_paren.
+        ann.is_packed = after_paren.contains("[packed=true]");
         // Parse "= N" from after_paren.
         let field_num_str = if let Some(eq_pos) = after_paren.rfind('=') {
             after_paren[eq_pos + 1..].trim()

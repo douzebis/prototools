@@ -139,6 +139,7 @@ fn enum_unknown_value_renders_numeric_with_enum_unknown() {
 fn packed_enum_renders_symbolic_names() {
     // EnumCollision field 5 'colors_pk' (repeated Color, packed).
     // Tag: field 5, wire type LEN = (5<<3)|2 = 0x2A. Payload: varint 1 (GREEN), varint 2 (BLUE).
+    // Per-line format: each element on its own line with per-element enum annotation.
     let wire = vec![0x2A, 0x02, 0x01, 0x02]; // tag, len=2, GREEN=1, BLUE=2
     let schema = enum_schema();
     let text = render_as_text(
@@ -160,9 +161,18 @@ fn packed_enum_renders_symbolic_names() {
         text_str.contains("BLUE"),
         "expected BLUE in packed: {text_str}"
     );
+    // Per-line format: each element has its own Color(N) annotation.
     assert!(
-        text_str.contains("Color([1, 2])"),
-        "expected Color([1, 2]) in annotation: {text_str}"
+        text_str.contains("Color(1)"),
+        "expected Color(1) per-element annotation: {text_str}"
+    );
+    assert!(
+        text_str.contains("Color(2)"),
+        "expected Color(2) per-element annotation: {text_str}"
+    );
+    assert!(
+        text_str.contains("pack_size: 2"),
+        "expected pack_size: 2 on first element: {text_str}"
     );
 }
 
@@ -332,10 +342,13 @@ fn float_canonical_nan_renders_bare_nan() {
 
 #[test]
 fn float_noncanonical_nan_renders_with_modifier() {
+    // With annotations=false non-canonical NaN renders as bare `nan` (no modifier in value).
+    // The modifier moves to the annotation (nan_bits: 0x…) which is only present with annotations=true.
     for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
         let wire = float_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(
+        // annotations=false: bare `nan` only
+        let text_no_ann = render_as_text(
             &wire,
             Some(&schema),
             RenderOpts {
@@ -345,13 +358,35 @@ fn float_noncanonical_nan_renders_with_modifier() {
             },
         )
         .unwrap();
-        let text_str = String::from_utf8(text).unwrap();
-        let expected = format!("nan(0x{:08x})", bits);
+        let text_no_ann_str = String::from_utf8(text_no_ann).unwrap();
         assert!(
-            text_str.contains(&expected),
-            "bits 0x{:08x}: expected '{}' in: {text_str}",
+            text_no_ann_str.contains("nan"),
+            "bits 0x{:08x}: expected 'nan' in no-annotations output: {text_no_ann_str}",
+            bits
+        );
+        assert!(
+            !text_no_ann_str.contains("nan("),
+            "bits 0x{:08x}: non-canonical NaN must not appear as nan(…) in value: {text_no_ann_str}",
+            bits
+        );
+        // annotations=true: nan_bits modifier in annotation
+        let text_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let text_ann_str = String::from_utf8(text_ann).unwrap();
+        let expected_mod = format!("nan_bits: 0x{:08x}", bits);
+        assert!(
+            text_ann_str.contains(&expected_mod),
+            "bits 0x{:08x}: expected '{}' in annotation: {text_ann_str}",
             bits,
-            expected
+            expected_mod
         );
     }
 }
@@ -415,10 +450,13 @@ fn double_canonical_nan_renders_bare_nan() {
 
 #[test]
 fn double_noncanonical_nan_renders_with_modifier() {
+    // With annotations=false non-canonical NaN renders as bare `nan`.
+    // The modifier moves to the annotation (nan_bits: 0x…) with annotations=true.
     for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
         let wire = double_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(
+        // annotations=false: bare `nan` only
+        let text_no_ann = render_as_text(
             &wire,
             Some(&schema),
             RenderOpts {
@@ -428,13 +466,35 @@ fn double_noncanonical_nan_renders_with_modifier() {
             },
         )
         .unwrap();
-        let text_str = String::from_utf8(text).unwrap();
-        let expected = format!("nan(0x{:016x})", bits);
+        let text_no_ann_str = String::from_utf8(text_no_ann).unwrap();
         assert!(
-            text_str.contains(&expected),
-            "bits 0x{:016x}: expected '{}' in: {text_str}",
+            text_no_ann_str.contains("nan"),
+            "bits 0x{:016x}: expected 'nan' in no-annotations output: {text_no_ann_str}",
+            bits
+        );
+        assert!(
+            !text_no_ann_str.contains("nan("),
+            "bits 0x{:016x}: non-canonical NaN must not appear as nan(…) in value: {text_no_ann_str}",
+            bits
+        );
+        // annotations=true: nan_bits modifier in annotation
+        let text_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let text_ann_str = String::from_utf8(text_ann).unwrap();
+        let expected_mod = format!("nan_bits: 0x{:016x}", bits);
+        assert!(
+            text_ann_str.contains(&expected_mod),
+            "bits 0x{:016x}: expected '{}' in annotation: {text_ann_str}",
             bits,
-            expected
+            expected_mod
         );
     }
 }
@@ -473,10 +533,12 @@ fn double_noncanonical_nan_roundtrips() {
 
 #[test]
 fn float_packed_noncanonical_nan_renders_with_modifier() {
-    // packed floatPk: canonical NaN, signaling NaN, payload NaN
+    // packed floatPk: canonical NaN, signaling NaN, payload NaN.
+    // Per-line format: each element on its own line; non-canonical NaN → nan_bits: 0x… in annotation.
     let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(
+    // annotations=false: all NaN values render as bare `nan` (no per-element annotation).
+    let text_no_ann = render_as_text(
         &wire,
         Some(&schema),
         RenderOpts {
@@ -486,19 +548,34 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
         },
     )
     .unwrap();
-    let text_str = String::from_utf8(text).unwrap();
-    // canonical: bare nan; non-canonical: nan(0x...)
+    let text_no_ann_str = String::from_utf8(text_no_ann).unwrap();
     assert!(
-        text_str.contains("nan,") || text_str.contains("nan]"),
-        "expected bare nan element in packed, got: {text_str}"
+        text_no_ann_str.contains("nan"),
+        "expected bare nan in no-annotations packed output, got: {text_no_ann_str}"
     );
     assert!(
-        text_str.contains(&format!("nan(0x{:08x})", F32_SIGNALING_NAN)),
-        "expected signaling NaN modifier in packed, got: {text_str}"
+        !text_no_ann_str.contains("nan("),
+        "packed NaN must not appear as nan(…) without annotations: {text_no_ann_str}"
+    );
+    // annotations=true: nan_bits modifier on non-canonical element lines.
+    let text_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let text_ann_str = String::from_utf8(text_ann).unwrap();
+    assert!(
+        text_ann_str.contains(&format!("nan_bits: 0x{:08x}", F32_SIGNALING_NAN)),
+        "expected nan_bits for signaling NaN in annotation: {text_ann_str}"
     );
     assert!(
-        text_str.contains(&format!("nan(0x{:08x})", F32_PAYLOAD_NAN)),
-        "expected payload NaN modifier in packed, got: {text_str}"
+        text_ann_str.contains(&format!("nan_bits: 0x{:08x}", F32_PAYLOAD_NAN)),
+        "expected nan_bits for payload NaN in annotation: {text_ann_str}"
     );
 }
 
@@ -533,9 +610,11 @@ fn float_packed_noncanonical_nan_roundtrips() {
 
 #[test]
 fn double_packed_noncanonical_nan_renders_with_modifier() {
+    // Per-line format; non-canonical NaN → nan_bits: 0x… in annotation.
     let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(
+    // annotations=false: all NaN values render as bare `nan`.
+    let text_no_ann = render_as_text(
         &wire,
         Some(&schema),
         RenderOpts {
@@ -545,18 +624,34 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
         },
     )
     .unwrap();
-    let text_str = String::from_utf8(text).unwrap();
+    let text_no_ann_str = String::from_utf8(text_no_ann).unwrap();
     assert!(
-        text_str.contains("nan,") || text_str.contains("nan]"),
-        "expected bare nan element in packed, got: {text_str}"
+        text_no_ann_str.contains("nan"),
+        "expected bare nan in no-annotations packed output, got: {text_no_ann_str}"
     );
     assert!(
-        text_str.contains(&format!("nan(0x{:016x})", F64_SIGNALING_NAN)),
-        "expected signaling NaN modifier in packed, got: {text_str}"
+        !text_no_ann_str.contains("nan("),
+        "packed double NaN must not appear as nan(…) without annotations: {text_no_ann_str}"
+    );
+    // annotations=true: nan_bits modifier on non-canonical element lines.
+    let text_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let text_ann_str = String::from_utf8(text_ann).unwrap();
+    assert!(
+        text_ann_str.contains(&format!("nan_bits: 0x{:016x}", F64_SIGNALING_NAN)),
+        "expected nan_bits for signaling NaN in annotation: {text_ann_str}"
     );
     assert!(
-        text_str.contains(&format!("nan(0x{:016x})", F64_PAYLOAD_NAN)),
-        "expected payload NaN modifier in packed, got: {text_str}"
+        text_ann_str.contains(&format!("nan_bits: 0x{:016x}", F64_PAYLOAD_NAN)),
+        "expected nan_bits for payload NaN in annotation: {text_ann_str}"
     );
 }
 
@@ -792,6 +887,541 @@ fn fixture_roundtrip_annotated() {
     assert!(
         ran > 0,
         "no fixtures ran — index.toml empty or all case files missing"
+    );
+}
+
+// ── §9 protoc --decode compatibility (spec 0010) ─────────────────────────────
+//
+// For canonical wire input, prototext output must be byte-for-byte identical
+// to `protoc --decode` output (modulo the `#@ …` annotation comments).
+//
+// Two properties are verified for each case:
+//   A) render with annotations=true, then strip the `#@ prototext: protoc`
+//      header and all ` #@ …` comment suffixes → must equal protoc output.
+//   B) render with annotations=false directly → must equal protoc output.
+//
+// "protoc output" means the exact text that `protoc --decode SchemaMsg`
+// would emit for the given wire bytes.
+
+/// Strip annotation comments from prototext output to get plain protoc-style text.
+///
+/// Removes:
+/// - Any line whose non-whitespace content starts with `#@` (header and
+///   comment-only annotation lines such as pack_size:0 lines).
+/// - Any `  #@ …` suffix on value lines.
+fn strip_annotations(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for line in text.split(|&b| b == b'\n') {
+        // Skip lines that are pure annotation comments (no value token).
+        if line.iter().all(|&b| b == b' ' || b == b'\t') {
+            continue;
+        }
+        let trimmed = line
+            .iter()
+            .position(|&b| b != b' ' && b != b'\t')
+            .unwrap_or(0);
+        if line[trimmed..].starts_with(b"#@") {
+            continue;
+        }
+        // Strip trailing `  #@ …` annotation from value lines.
+        let stripped = if let Some(pos) = line.windows(5).rposition(|w| w == b"  #@ ") {
+            &line[..pos]
+        } else {
+            line
+        };
+        out.extend_from_slice(stripped);
+        out.push(b'\n');
+    }
+    out
+}
+
+// Wire helpers for packed int32 (field 85, tag [0xAA, 0x05]).
+fn int32_packed_wire(values: &[i32]) -> Vec<u8> {
+    let payload: Vec<u8> = values
+        .iter()
+        .flat_map(|&v| {
+            let mut buf = [0u8; 10];
+            let n = encode_varint(v as u64, &mut buf);
+            buf[..n].to_vec()
+        })
+        .collect();
+    let mut v = vec![0xAA, 0x05]; // tag: field 85, wire type LEN
+    v.push(payload.len() as u8);
+    v.extend_from_slice(&payload);
+    v
+}
+
+fn encode_varint(mut val: u64, buf: &mut [u8; 10]) -> usize {
+    let mut i = 0;
+    loop {
+        if val < 0x80 {
+            buf[i] = val as u8;
+            i += 1;
+            break;
+        }
+        buf[i] = (val as u8) | 0x80;
+        val >>= 7;
+        i += 1;
+    }
+    i
+}
+
+/// Run `protoc --decode SwissArmyKnife` on `wire` bytes and return its stdout.
+///
+/// Skips the test (with a warning) if `protoc` is not in PATH, so the test
+/// suite still passes in environments where protoc is unavailable.
+fn protoc_decode(wire: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let proto_path = repo_root().join("fixtures/schemas");
+    let mut child = match Command::new("protoc")
+        .args([
+            "--decode=SwissArmyKnife",
+            &format!("--proto_path={}", proto_path.display()),
+            "knife.proto",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("SKIP: protoc not found in PATH — skipping compatibility check");
+            return None;
+        }
+        Err(e) => panic!("failed to spawn protoc: {e}"),
+    };
+    child.stdin.take().unwrap().write_all(wire).unwrap();
+    let out = child.wait_with_output().expect("protoc wait failed");
+    assert!(
+        out.status.success(),
+        "protoc --decode failed: {:?}",
+        out.status
+    );
+    Some(out.stdout)
+}
+
+// ── Packed field compatibility ─────────────────────────────────────────────────
+
+#[test]
+fn packed_int32_matches_protoc_output() {
+    // Canonical packed int32 field: int32Pk = [1, 2, 3] (field 85).
+    // protoc --decode renders as three separate lines, one per element.
+    let wire = int32_packed_wire(&[1, 2, 3]);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations from annotated output
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "packed int32: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations output directly
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "packed int32: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+#[test]
+fn packed_float_matches_protoc_output() {
+    // Canonical packed float field: floatPk = [0.0, 1.0, -1.0] (field 82).
+    // protoc --decode renders as three separate lines with field name.
+    let wire = float_packed_wire(&[0.0f32.to_bits(), 1.0f32.to_bits(), (-1.0f32).to_bits()]);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "packed float: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "packed float: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+#[test]
+fn packed_double_matches_protoc_output() {
+    // Canonical packed double field: doublePk = [0.0, 1.0, -1.0] (field 81).
+    let wire = double_packed_wire(&[0.0f64.to_bits(), 1.0f64.to_bits(), (-1.0f64).to_bits()]);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "packed double: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "packed double: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+// ── NaN compatibility ──────────────────────────────────────────────────────────
+
+#[test]
+fn canonical_float_nan_matches_protoc_output() {
+    // Canonical quiet NaN (0x7FC00000): protoc renders as bare `nan`.
+    let wire = float_wire(F32_CANONICAL_NAN);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "canonical float NaN: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "canonical float NaN: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+#[test]
+fn noncanonical_float_nan_matches_protoc_output() {
+    // Non-canonical NaN: protoc still renders as bare `nan` (it ignores bit pattern).
+    for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
+        let wire = float_wire(bits);
+        let schema = knife_schema();
+        let Some(expected) = protoc_decode(&wire) else {
+            return;
+        };
+
+        // A) strip annotations
+        let with_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            strip_annotations(&with_ann),
+            expected,
+            "non-canonical float NaN 0x{bits:08x}: stripped annotated output does not match protoc\n  got:\n{}",
+            String::from_utf8_lossy(&strip_annotations(&with_ann)),
+        );
+
+        // B) no-annotations
+        let no_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            strip_annotations(&no_ann).as_slice(),
+            expected,
+            "non-canonical float NaN 0x{bits:08x}: no-annotations output does not match protoc\n  got:\n{}",
+            String::from_utf8_lossy(&no_ann),
+        );
+    }
+}
+
+#[test]
+fn canonical_double_nan_matches_protoc_output() {
+    let wire = double_wire(F64_CANONICAL_NAN);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "canonical double NaN: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "canonical double NaN: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+#[test]
+fn noncanonical_double_nan_matches_protoc_output() {
+    for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
+        let wire = double_wire(bits);
+        let schema = knife_schema();
+        let Some(expected) = protoc_decode(&wire) else {
+            return;
+        };
+
+        // A) strip annotations
+        let with_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            strip_annotations(&with_ann),
+            expected,
+            "non-canonical double NaN 0x{bits:016x}: stripped annotated output does not match protoc\n  got:\n{}",
+            String::from_utf8_lossy(&strip_annotations(&with_ann)),
+        );
+
+        // B) no-annotations
+        let no_ann = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            strip_annotations(&no_ann).as_slice(),
+            expected,
+            "non-canonical double NaN 0x{bits:016x}: no-annotations output does not match protoc\n  got:\n{}",
+            String::from_utf8_lossy(&no_ann),
+        );
+    }
+}
+
+#[test]
+fn packed_float_nan_matches_protoc_output() {
+    // Mixed canonical and non-canonical NaNs in a packed float field.
+    // protoc renders all as bare `nan` regardless of bit pattern.
+    let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "packed float NaN: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "packed float NaN: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
+    );
+}
+
+#[test]
+fn packed_double_nan_matches_protoc_output() {
+    let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
+    let schema = knife_schema();
+    let Some(expected) = protoc_decode(&wire) else {
+        return;
+    };
+
+    // A) strip annotations
+    let with_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&with_ann),
+        expected,
+        "packed double NaN: stripped annotated output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&strip_annotations(&with_ann)),
+    );
+
+    // B) no-annotations
+    let no_ann = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        strip_annotations(&no_ann).as_slice(),
+        expected,
+        "packed double NaN: no-annotations output does not match protoc\n  got:\n{}",
+        String::from_utf8_lossy(&no_ann),
     );
 }
 

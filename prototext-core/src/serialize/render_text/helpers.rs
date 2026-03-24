@@ -183,24 +183,44 @@ pub(super) fn field_decl(field_number: u64, field_schema: Option<&FieldOrExt>) -
 /// v2 annotation format: tokens separated by `"; "`, NO trailing `";"`.
 pub(super) struct AnnWriter {
     started: bool,
+    /// When true, the opening prefix is `"#@ "` instead of `"  #@ "`.
+    no_leading_spaces: bool,
 }
 
 impl AnnWriter {
     #[inline]
     pub(super) fn new() -> Self {
-        Self { started: false }
+        Self {
+            started: false,
+            no_leading_spaces: false,
+        }
+    }
+
+    /// Like `new()`, but the opening `#@` prefix is written without the two
+    /// leading spaces (for lines that carry no value token before the annotation).
+    #[inline]
+    pub(super) fn new_no_leading_spaces() -> Self {
+        Self {
+            started: false,
+            no_leading_spaces: true,
+        }
     }
 
     /// Write the inter-part separator into `out`.
     ///
-    /// First call: writes `"  #@ "` to open the annotation.
+    /// First call: writes `"  #@ "` (or `"#@ "` for no-leading-spaces writers)
+    /// to open the annotation.
     /// Subsequent calls: writes `"; "` to separate tokens (v2 format).
     #[inline]
     pub(super) fn sep(&mut self, out: &mut Vec<u8>) {
         if self.started {
             out.extend_from_slice(b"; ");
         } else {
-            out.extend_from_slice(b"  #@ ");
+            if self.no_leading_spaces {
+                out.extend_from_slice(b"#@ ");
+            } else {
+                out.extend_from_slice(b"  #@ ");
+            }
             self.started = true;
         }
     }

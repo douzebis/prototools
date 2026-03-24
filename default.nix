@@ -61,8 +61,9 @@ let
   # Tests — workspace-wide, reusing depsCache.
   # ---------------------------------------------------------------------------
   rustTests = crane.cargoTest (commonArgs // {
-    pname          = "prototools-tests";
-    cargoArtifacts = depsCache;
+    pname             = "prototools-tests";
+    cargoArtifacts    = depsCache;
+    nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.protobuf ];
   });
 
   # ---------------------------------------------------------------------------
@@ -114,6 +115,7 @@ let
       clippy
       reuse
       gh
+      protobuf
     ];
 
     shellHook = ''

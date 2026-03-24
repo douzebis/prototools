@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 # 0010 — protoc --decode compatibility for canonical wire input
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-03-24
 **App:** prototext
 
 ---

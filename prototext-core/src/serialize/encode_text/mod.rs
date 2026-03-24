@@ -195,8 +195,8 @@ fn write_tag_ohb_local(field_number: u64, wire_type: u32, ohb: Option<u64>, out:
 enum Num {
     Int(i64),
     Float(f64),
-    /// Raw NaN bit pattern from `nan(0x…)` — bypasses float conversion to
-    /// preserve the exact bit pattern for float and double fields.
+    /// Raw NaN bit pattern from a `nan_bits: 0x…` annotation — bypasses float
+    /// conversion to preserve the exact bit pattern for float and double fields.
     NanBits(u64),
 }
 
@@ -232,16 +232,6 @@ fn parse_num(s: &str) -> Option<Num> {
     }
     if s == "nan" {
         return Some(Num::Float(f64::NAN));
-    }
-    if let Some(inner) = s.strip_prefix("nan(").and_then(|t| t.strip_suffix(')')) {
-        let hex = inner
-            .strip_prefix("0x")
-            .or_else(|| inner.strip_prefix("0X"))?;
-        let bits = u64::from_str_radix(hex, 16).ok()?;
-        // The exponent bits are forced to all-ones at encode time (float or
-        // double path), so any hex value is accepted here — the caller does
-        // not need to supply a valid NaN bit pattern.
-        return Some(Num::NanBits(bits));
     }
     if s == "inf" {
         return Some(Num::Float(f64::INFINITY));
@@ -496,8 +486,18 @@ fn encode_scalar_line(field_number: u64, value_str: &str, ann: &Ann<'_>, out: &m
         return;
     }
 
-    // Numeric value — dispatch by field_type
-    let Some(num) = parse_num(value_str) else {
+    // Numeric value — dispatch by field_type.
+    // For float/double `nan` values, check for a `nan_bits` annotation modifier.
+    let num_opt = if value_str == "nan" {
+        if let Some(bits) = ann.nan_bits {
+            Some(Num::NanBits(bits))
+        } else {
+            parse_num(value_str)
+        }
+    } else {
+        parse_num(value_str)
+    };
+    let Some(num) = num_opt else {
         return;
     };
     encode_num(
@@ -706,6 +706,94 @@ fn encode_packed_array_line(field_number: u64, value_str: &str, ann: &Ann<'_>, o
     out.extend_from_slice(&payload);
 }
 
+/// Encode one per-line packed element into `payload`.
+///
+/// Used by the per-line packed state machine in `encode_text_to_binary`.
+fn encode_packed_elem(value_str: &str, ann: &Ann<'_>, payload: &mut Vec<u8>) {
+    let ft = ann.field_type;
+    let ohb = ann.elem_ohb.filter(|&o| o > 0);
+
+    match ft {
+        "double" => {
+            if let Some(n) = parse_num(value_str) {
+                let bits = if let Num::NanBits(b) = n {
+                    b | 0x7FF0000000000000
+                } else if let Some(raw) = ann.nan_bits {
+                    raw | 0x7FF0000000000000
+                } else {
+                    n.as_f64().to_bits()
+                };
+                payload.extend_from_slice(&bits.to_le_bytes());
+            }
+        }
+        "float" => {
+            if let Some(n) = parse_num(value_str) {
+                let bits = if let Num::NanBits(b) = n {
+                    (b as u32) | 0x7F800000
+                } else if let Some(raw) = ann.nan_bits {
+                    (raw as u32) | 0x7F800000
+                } else {
+                    (n.as_f64() as f32).to_bits()
+                };
+                payload.extend_from_slice(&bits.to_le_bytes());
+            }
+        }
+        "fixed64" | "sfixed64" => {
+            if let Some(n) = parse_num(value_str) {
+                payload.extend_from_slice(&n.as_u64().to_le_bytes());
+            }
+        }
+        "fixed32" | "sfixed32" => {
+            if let Some(n) = parse_num(value_str) {
+                payload.extend_from_slice(&(n.as_u64() as u32).to_le_bytes());
+            }
+        }
+        "sint32" => {
+            if let Some(n) = parse_num(value_str) {
+                let v = n.as_i64() as i32;
+                let enc = ((v << 1) ^ (v >> 31)) as u32 as u64;
+                write_varint_ohb(enc, ohb, payload);
+            }
+        }
+        "sint64" => {
+            if let Some(n) = parse_num(value_str) {
+                let v = n.as_i64();
+                let enc = ((v << 1) ^ (v >> 63)) as u64;
+                write_varint_ohb(enc, ohb, payload);
+            }
+        }
+        "bool" => {
+            let v: u64 = if value_str == "true" { 1 } else { 0 };
+            write_varint_ohb(v, ohb, payload);
+        }
+        "int32" | "enum" => {
+            // For ENUM: use enum_scalar_value from the per-element annotation if present.
+            let raw_val = ann.enum_scalar_value;
+            let trunc = ann.elem_neg_trunc;
+            if let Some(rv) = raw_val {
+                let v = if trunc {
+                    rv as i32 as u32 as u64
+                } else {
+                    rv as u64
+                };
+                write_varint_ohb(v, ohb, payload);
+            } else if let Some(n) = parse_num(value_str) {
+                let v = if trunc {
+                    n.as_i64() as i32 as u32 as u64
+                } else {
+                    n.as_i64() as u64
+                };
+                write_varint_ohb(v, ohb, payload);
+            }
+        }
+        _ => {
+            if let Some(n) = parse_num(value_str) {
+                write_varint_ohb(n.as_u64(), ohb, payload);
+            }
+        }
+    }
+}
+
 // ── Helpers: field number and line classification ─────────────────────────────
 
 /// Extract the field number from the LHS of a line and/or annotation.
@@ -741,6 +829,15 @@ fn split_at_annotation(line: &str) -> (&str, &str) {
             // "  #@ " confirmed: field part ends at p-2, annotation starts at p+3
             return (&line[..p - 2], &line[p + 3..]);
         }
+        // Also recognize a line whose non-whitespace content starts with "#@ "
+        // (comment-only annotation line, no value token before it).
+        if b[..p].iter().all(|c| *c == b' ' || *c == b'\t')
+            && p + 2 < b.len()
+            && b[p + 1] == b'@'
+            && b[p + 2] == b' '
+        {
+            return ("", &line[p + 3..]);
+        }
         end = p; // keep searching leftward
     }
     (line, "")
@@ -763,6 +860,19 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
     let mut stack: Vec<Frame> = Vec::new();
     let mut first_placeholder: Option<usize> = None;
     let mut last_placeholder: Option<usize> = None;
+
+    // ── Per-line packed state ─────────────────────────────────────────────────
+    // When non-None, we are buffering elements for a per-line packed record.
+    // `packed_field_number`: the field number of the active record.
+    // `packed_tag_ohb`: tag overhang for the record's wire tag.
+    // `packed_len_ohb`: length overhang for the record's LEN prefix.
+    // `packed_remaining`: how many more element lines to consume.
+    // `packed_payload`: accumulated payload bytes.
+    let mut packed_field_number: u64 = 0;
+    let mut packed_tag_ohb: Option<u64> = None;
+    let mut packed_len_ohb: Option<u64> = None;
+    let mut packed_remaining: usize = 0;
+    let mut packed_payload: Vec<u8> = Vec::new();
 
     // The text is always valid ASCII (a subset of UTF-8).
     let text_str = match std::str::from_utf8(text) {
@@ -883,6 +993,25 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
 
         // ── Scalar field line ─────────────────────────────────────────────────
 
+        // Detect a comment-only annotation line (no LHS colon, starts with `#@ `).
+        // This is used for empty packed records: `pack_size: 0`.
+        let trimmed_vp = value_part.trim();
+        if trimmed_vp.is_empty() && !ann_str.is_empty() {
+            // Comment-only line — parse annotation to handle pack_size: 0.
+            let ann = parse_annotation(ann_str);
+            if let Some(0) = ann.pack_size {
+                // Empty packed record: emit tag + len=0.
+                write_tag_ohb_local(
+                    ann.field_number.unwrap_or(0),
+                    WT_LEN,
+                    ann.tag_overhang_count,
+                    &mut out,
+                );
+                write_varint_ohb(0, ann.length_overhang_count, &mut out);
+            }
+            continue;
+        }
+
         // Find the colon separating LHS from value.
         let Some(colon_pos) = value_part.find(':') else {
             continue;
@@ -892,6 +1021,47 @@ pub fn encode_text_to_binary(text: &[u8]) -> Vec<u8> {
 
         let ann = parse_annotation(ann_str);
         let field_number = extract_field_number(lhs, &ann);
+
+        // ── Per-line packed: continuation element ─────────────────────────────
+        if packed_remaining > 0 {
+            encode_packed_elem(value_str, &ann, &mut packed_payload);
+            packed_remaining -= 1;
+            if packed_remaining == 0 {
+                // Flush the completed wire record.
+                write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, &mut out);
+                write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, &mut out);
+                out.extend_from_slice(&packed_payload);
+                packed_payload.clear();
+            }
+            continue;
+        }
+
+        // ── Per-line packed: first element (pack_size: N) ─────────────────────
+        if ann.is_packed {
+            if let Some(n) = ann.pack_size {
+                if n == 0 {
+                    // Empty record — emit immediately.
+                    write_tag_ohb_local(field_number, WT_LEN, ann.tag_overhang_count, &mut out);
+                    write_varint_ohb(0, ann.length_overhang_count, &mut out);
+                } else {
+                    // Start buffering.
+                    packed_field_number = field_number;
+                    packed_tag_ohb = ann.tag_overhang_count;
+                    packed_len_ohb = ann.length_overhang_count;
+                    packed_remaining = n - 1; // this line is element 0
+                    packed_payload.clear();
+                    encode_packed_elem(value_str, &ann, &mut packed_payload);
+                    if packed_remaining == 0 {
+                        // Single-element record — flush immediately.
+                        write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, &mut out);
+                        write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, &mut out);
+                        out.extend_from_slice(&packed_payload);
+                        packed_payload.clear();
+                    }
+                }
+                continue;
+            }
+        }
 
         encode_scalar_line(field_number, value_str, &ann, &mut out);
     }
@@ -983,6 +1153,10 @@ mod tests {
             records_neg_int32_truncated: vec![],
             enum_scalar_value: None,
             enum_packed_values: vec![],
+            nan_bits: None,
+            pack_size: None,
+            elem_ohb: None,
+            elem_neg_trunc: false,
         }
     }
 
