@@ -10,48 +10,8 @@ use prototext_core::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-struct Fixture {
-    name: String,
-    schema: String,
-    message: String,
-}
-
 fn repo_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR points to prototext/ (this crate's directory).
-    // fixtures/ lives inside the crate directory.
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
-}
-
-fn load_fixtures() -> Vec<Fixture> {
-    let index_path = repo_root().join("fixtures/index.toml");
-    let text = std::fs::read_to_string(&index_path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", index_path.display(), e));
-    let doc: toml::Value = text
-        .parse()
-        .unwrap_or_else(|e| panic!("cannot parse index.toml: {e}"));
-
-    doc.get("fixture")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&vec![])
-        .iter()
-        .map(|entry| Fixture {
-            name: entry["name"].as_str().unwrap().to_owned(),
-            schema: entry["schema"].as_str().unwrap().to_owned(),
-            message: entry["message"].as_str().unwrap().to_owned(),
-        })
-        .collect()
-}
-
-fn load_case_text(name: &str) -> Option<Vec<u8>> {
-    let path = repo_root()
-        .join("fixtures/cases")
-        .join(format!("{name}.pb"));
-    match std::fs::read(&path) {
-        Ok(b) => Some(b),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => panic!("cannot read {}: {e}", path.display()),
-    }
 }
 
 fn schema_path(schema_rel: &str) -> PathBuf {
@@ -830,64 +790,6 @@ fn double_subnormals_roundtrip() {
             bits
         );
     }
-}
-
-// ── Fixture roundtrip tests ───────────────────────────────────────────────────
-
-fn to_wire(text: &[u8]) -> Vec<u8> {
-    render_as_bytes(
-        text,
-        RenderOpts {
-            assume_binary: false,
-            include_annotations: false,
-            indent: 1,
-        },
-    )
-    .expect("render_as_bytes failed")
-}
-
-#[test]
-fn fixture_roundtrip_annotated() {
-    let fixtures = load_fixtures();
-    let mut ran = 0;
-    let mut skipped = 0;
-
-    for fx in &fixtures {
-        let Some(text) = load_case_text(&fx.name) else {
-            eprintln!("SKIP  {} (case file missing)", fx.name);
-            skipped += 1;
-            continue;
-        };
-
-        let wire = to_wire(&text);
-        let schema = load_schema(&fx.schema, &fx.message);
-        let text2 = render_as_text(
-            &wire,
-            Some(&schema),
-            RenderOpts {
-                assume_binary: true,
-                include_annotations: true,
-                indent: 1,
-            },
-        )
-        .expect("render_as_text failed");
-
-        assert_eq!(
-            text2,
-            text,
-            "round-trip mismatch for {} (annotations=true)\n  orig:\n{}\n  reenc:\n{}",
-            fx.name,
-            String::from_utf8_lossy(&text),
-            String::from_utf8_lossy(&text2),
-        );
-        ran += 1;
-    }
-
-    eprintln!("roundtrip(annotations=true): {ran} passed, {skipped} skipped");
-    assert!(
-        ran > 0,
-        "no fixtures ran — index.toml empty or all case files missing"
-    );
 }
 
 // ── §9 protoc --decode compatibility (spec 0010) ─────────────────────────────

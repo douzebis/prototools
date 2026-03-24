@@ -12,179 +12,137 @@ SPDX-License-Identifier: MIT
 
 A collection of protobuf utilities written in Rust.
 
-## Tools
+## `prototext`
 
-### `prototext`
+Lossless, bidirectional converter between binary protobuf wire format and
+human-readable text.  Three promises:
 
-Lossless, bidirectional converter between binary protobuf wire format and a
-human-readable text representation.
-
-Three promises:
-
-1. **Schema-aware** — supply a compiled `.pb` descriptor and a root message
-   type to get field names, proto types, and enum values.  A schema is never
-   required; without one every field is decoded by wire type and field number.
-2. **Lossless round-trip** — `binary → text → binary` is byte-for-byte
+1. **Lossless round-trip** — `binary → text → binary` is byte-for-byte
    identical for any input: well-formed, non-canonical, or malformed.
-3. **protoc-compatible** — for canonical protobuf messages the text output is
+2. **protoc-compatible** — for canonical protobuf messages the text output is
    identical to `protoc --decode`.
+3. **Schema-aware** — supply a compiled `.pb` descriptor and a root message
+   type to get field names, proto types, and enum values.  Works without a
+   schema too: every field is then decoded by wire type and field number.
 
-#### Text format
+### Installation
 
-The text side is a superset of the
-[protobuf text format](https://protobuf.dev/reference/protobuf/textformat-spec/)
-as produced by `protoc`.  Every field line carries an inline annotation comment
-that encodes enough metadata to reconstruct the exact binary bytes on
-re-encoding:
+#### NixOS / nix-shell
 
-```
-#@ prototext: protoc
-doubleOp: 2.718  #@ optional double = 21;
-floatRp: [1.5, 2.5, 3.5]  #@ repeated float [packed=true] = 42;
-messageOp {  #@ optional SwissArmyKnife = 31;
-  int32Op: 200  #@ optional int32 = 25;
-}
-GroupOp {  #@ GROUP; optional GroupOp = 30;
-  uint64Op: 111  #@ optional uint64 = 130;
-}
-999: 12345  #@ VARINT;
-stringOp: "hello"  #@ optional string = 29; tag_overhang_count: 2;
-99: "\001\002"  #@ TRUNCATED_BYTES; missing_bytes_count: 5; optional bytes = 99;
-type: TYPE_STRING  #@ Type(9) = 5
-type: 99  #@ Type(99) = 5; ENUM_UNKNOWN
+Build and install from the repo:
+
+```shell
+git clone https://github.com/douzebis/prototools
+cd prototools
+nix-build            # result/bin/prototext
 ```
 
-The annotation format is documented in
-[`docs/annotation-format.md`](docs/annotation-format.md).
+Man page and shell completions are installed automatically.
 
-`google.protobuf.*` types are available without supplying a descriptor
-(embedded at compile time).
+Or enter a development shell with `prototext` on `PATH`, completions and man
+page activated for the current session:
 
-#### Usage
-
-```
-prototext -d [-D descriptor.pb -t pkg.Message] [FILE ...]   # binary → text
-prototext -e [FILE ...]                                      # text   → binary
+```shell
+nix-shell
 ```
 
-Key flags:
+#### cargo install
 
-| Flag | Meaning |
-|---|---|
-| `-d` / `--decode` | Binary → text (exclusive with `-e`) |
-| `-e` / `--encode` | Text → binary (exclusive with `-d`) |
-| `-D` / `--descriptor PATH` | Compiled `.pb` descriptor file |
-| `-t` / `--type NAME` | Root message type (e.g. `pkg.MyMessage`) |
-| `-o PATH` | Write output to file (single input) |
-| `-O DIR` | Output root directory (batch mode) |
-| `-I DIR` | Input root directory |
-| `-i` / `--in-place` | Rewrite each input file in place |
-| `-q` / `--quiet` | Suppress warnings |
-
-#### Install
-
-**Nix (recommended)** — installs the binary, man page, and shell completions
-for bash, zsh, and fish:
-
-```
-nix-build https://github.com/douzebis/prototools/archive/main.tar.gz
+```shell
+cargo install --locked prototext
 ```
 
-**Nix dev shell** — builds from source, generates the man page, and activates
-bash completion in the current shell:
+`--locked` is required: it uses the dependency versions that were tested at
+release time.
 
-```
-nix-shell https://github.com/douzebis/prototools/archive/main.tar.gz
-```
+> **Man pages:** `cargo install` does not install man pages.  To generate
+> them locally, run:
+>
+> ```shell
+> cargo install --locked --bin prototext-gen-man prototext
+> prototext-gen-man ~/.local/share/man/man1
+> ```
 
-**cargo install** — installs the binary and a helper for generating the man
-page; shell completions must be activated manually:
+### Shell Completions
 
-```
-cargo install prototext
-```
+When installed via `nix-build`, completion scripts are installed automatically.
+When using `nix-shell`, bash completions are activated for the current session.
 
-After `cargo install`, activate completions in your shell:
+For a `cargo install` setup, add one line to your shell's startup file:
 
 ```bash
-# bash
-source <(PROTOTEXT_COMPLETE=bash prototext)
+# bash (~/.bashrc)
+source <(PROTOTEXT_COMPLETE=bash prototext | sed \
+  -e '/^\s*) )$/a\    compopt -o filenames 2>/dev/null' \
+  -e 's|words\[COMP_CWORD\]="$2"|local _cur="${COMP_LINE:0:${COMP_POINT}}"; _cur="${_cur##* }"; words[COMP_CWORD]="${_cur}"|')
+```
 
-# zsh
+```zsh
+# zsh (~/.zshrc)
 source <(PROTOTEXT_COMPLETE=zsh prototext)
+```
 
-# fish
+```fish
+# fish (~/.config/fish/config.fish)
 PROTOTEXT_COMPLETE=fish prototext | source
 ```
 
-Generate and install the man page:
+### Quick start
 
-```bash
-cargo install prototext          # also installs prototext-gen-man
-prototext-gen-man ~/.local/share/man/man1
-```
-
-From the GitHub repository:
+`google.protobuf.*` types are embedded — no descriptor file needed.  Decode
+any `.pb` descriptor that `protoc` produces:
 
 ```
-cargo install --git https://github.com/douzebis/prototools prototext
-```
+$ protoc -o timestamp.pb google/protobuf/timestamp.proto
 
-#### Quick start
-
-The examples below use two tiny fixture files from `fixtures/cases/` in the
-cloned repository.  No schema is needed — `prototext` decodes them
-schemalessly, rendering each field by wire type and field number.
-
-**Canonical encoding** — `fixtures/cases/qs_canonical.pb` holds the text
-representation of a single varint field:
-
-```
-$ cat fixtures/cases/qs_canonical.pb
+$ prototext -d -t google.protobuf.FileDescriptorSet timestamp.pb
 #@ prototext: protoc
-1: 42  #@ varint
+file {  #@ repeated FileDescriptorProto = 1
+ name: "google/protobuf/timestamp.proto"  #@ string = 1
+ package: "google.protobuf"  #@ string = 2
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "Timestamp"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "seconds"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_INT64  #@ Type(3) = 5
+   json_name: "seconds"  #@ string = 10
+  }
+  ...
+ }
+}
 ```
 
-Encode to binary, inspect the two bytes, then round-trip back to text:
+Encode back to binary and verify the round-trip is byte-exact:
 
 ```
-$ prototext -e fixtures/cases/qs_canonical.pb | od -A n -t x1
- 08 2a
-
-$ prototext -e fixtures/cases/qs_canonical.pb | prototext -d
-#@ prototext: protoc
-1: 42  #@ varint
+$ prototext -d -t google.protobuf.FileDescriptorSet timestamp.pb | \
+    prototext -e | diff - timestamp.pb && echo "byte-exact"
+byte-exact
 ```
 
-**Non-canonical encoding** — `fixtures/cases/qs_noncanonical.pb` encodes the
-same value with one redundant continuation byte (`val_ohb: 1`):
+**Non-canonical encoding** — protobuf varints can carry redundant continuation
+bytes and still decode to the same value.  Standard tools discard these bytes;
+`prototext` preserves them via inline annotations:
 
 ```
-$ cat fixtures/cases/qs_noncanonical.pb
+$ printf '\x08\xaa\x00' | prototext -d
 #@ prototext: protoc
 1: 42  #@ varint; val_ohb: 1
 ```
 
-The annotation tells the encoder to preserve the extra byte.  The binary is
-three bytes instead of two — same value, different encoding:
+Field 1 = 42, but encoded in three bytes instead of the canonical two
+(`val_ohb: 1` records the one redundant byte).  The round-trip is still
+byte-exact:
 
 ```
-$ prototext -e fixtures/cases/qs_noncanonical.pb | od -A n -t x1
+$ printf '\x08\xaa\x00' | prototext -d | prototext -e | od -A n -t x1
  08 aa 00
-
-$ prototext -e fixtures/cases/qs_noncanonical.pb | prototext -d
-#@ prototext: protoc
-1: 42  #@ varint; val_ohb: 1
 ```
 
-#### Shell completion
-
-```bash
-# bash (workaround for known clap_complete path-completion bugs):
-source <(PROTOTEXT_COMPLETE=bash prototext | sed \
-  -e '/^\s*) )$/a\    compopt -o filenames 2>/dev/null' \
-  -e 's|words\[COMP_CWORD\]="$2"|local _cur="${COMP_LINE:0:$COMP_POINT}"; _cur="${_cur##* }"; words[COMP_CWORD]="$_cur"|')
-```
+For full usage see `man prototext` or the
+[online docs](https://douzebis.github.io/prototools).
 
 ## License
 

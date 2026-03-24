@@ -35,16 +35,6 @@ impl Default for RenderOpts {
     }
 }
 
-impl RenderOpts {
-    pub fn new(assume_binary: bool, include_annotations: bool, indent: usize) -> Self {
-        RenderOpts {
-            assume_binary,
-            include_annotations,
-            indent,
-        }
-    }
-}
-
 /// Errors that can occur while decoding or encoding a protobuf payload.
 #[non_exhaustive]
 #[derive(Debug)]

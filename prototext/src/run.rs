@@ -43,7 +43,11 @@ pub fn process(
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
 ) -> Result<Vec<u8>, String> {
-    let opts = RenderOpts::new(true, annotations, 1);
+    let opts = RenderOpts {
+        assume_binary: decode,
+        include_annotations: annotations,
+        indent: 1,
+    };
     if decode {
         render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
     } else {

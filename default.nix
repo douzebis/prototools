@@ -28,7 +28,7 @@ let
   commonArgs = {
     inherit src;
     pname   = "prototools";
-    version = "0.1.0";
+    version = "0.1.3";
     strictDeps = true;
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc ];
   };
@@ -132,6 +132,7 @@ let
       gh
       protobuf
       mandoc
+      zola
     ];
 
     shellHook = ''
@@ -146,7 +147,7 @@ let
       export PATH="${toString ./.}/target/release:$PATH"
 
       # Build prototext if not already built.
-      cargo build --release -p prototext
+      cargo build --release --locked -p prototext
 
       # Generate man page into man/man1/ and expose it via MANPATH.
       if command -v prototext-gen-man &>/dev/null; then

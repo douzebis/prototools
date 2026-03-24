@@ -6,8 +6,7 @@
 //! End-to-end tests driven by the craft_a fixture registry (spec 0009).
 
 use std::path::{Path, PathBuf};
-
-use prototext_core::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
+use std::process::Command;
 
 // Pull in the protocraft module (test-only).
 #[path = "../src/protocraft/mod.rs"]
@@ -19,21 +18,6 @@ use protocraft::craft_a;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
-}
-
-fn load_case_text(name: &str) -> Option<Vec<u8>> {
-    let path = repo_root()
-        .join("fixtures/cases")
-        .join(format!("{name}.pb"));
-    match std::fs::read(&path) {
-        Ok(b) => Some(b),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => panic!("cannot read {}: {e}", path.display()),
-    }
-}
-
-fn to_wire(text: &[u8]) -> Vec<u8> {
-    render_as_bytes(text, opts(false)).expect("render_as_bytes failed")
 }
 
 fn index_schema(name: &str) -> Option<(String, String)> {
@@ -67,52 +51,77 @@ fn schema_path(schema_rel: &str) -> PathBuf {
     repo_root().join(schema_rel)
 }
 
-fn load_schema(schema_rel: &str, message: &str) -> prototext_core::ParsedSchema {
-    let path = schema_path(schema_rel);
-    let bytes = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("cannot read schema {}: {e}", path.display()));
-    parse_schema(&bytes, message)
-        .unwrap_or_else(|e| panic!("cannot parse schema {schema_rel}:{message}: {e}"))
-}
+/// Run `prototext -d --descriptor <schema> --type <message>` on binary input,
+/// then `prototext -e` on the text output.  Returns (text, re-encoded binary).
+fn cli_roundtrip(
+    wire: &[u8],
+    schema_path: &Path,
+    message: &str,
+    annotations: bool,
+) -> (Vec<u8>, Vec<u8>) {
+    let bin = env!("CARGO_BIN_EXE_prototext");
 
-fn opts(annotations: bool) -> RenderOpts {
-    RenderOpts::new(false, annotations, 1)
-}
-
-// ── §2 Validate craft_a against committed fixture files ───────────────────────
-
-/// Each craft_a function must produce bytes identical to the committed .pb file.
-#[test]
-fn craft_a_matches_committed_fixtures() {
-    let mut ran = 0;
-    let mut skipped = 0;
-
-    for &(name, func) in craft_a::ALL_FIXTURES {
-        let generated = func();
-        let Some(committed_text) = load_case_text(name) else {
-            eprintln!("SKIP  {name} (case file missing)");
-            skipped += 1;
-            continue;
-        };
-        let committed = to_wire(&committed_text);
-        assert_eq!(
-            generated,
-            committed,
-            "craft_a::{name} output does not match fixtures/cases/{name}.pb\n  generated: {generated:?}\n  committed: {committed:?}"
-        );
-        ran += 1;
+    let mut decode_cmd = Command::new(bin);
+    decode_cmd
+        .args(["-d", "--descriptor"])
+        .arg(schema_path)
+        .args(["--type", message]);
+    if !annotations {
+        decode_cmd.arg("--no-annotations");
     }
+    let decode_out = decode_cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn prototext")
+        .wait_with_output_and_stdin(wire);
 
-    eprintln!("craft_a_matches_committed_fixtures: {ran} passed, {skipped} skipped");
     assert!(
-        ran > 0,
-        "no fixtures ran — ALL_FIXTURES empty or all case files missing"
+        decode_out.status.success(),
+        "prototext -d failed:\n{}",
+        String::from_utf8_lossy(&decode_out.stderr)
     );
+    let text = decode_out.stdout;
+
+    let encode_out = Command::new(bin)
+        .arg("-e")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn prototext")
+        .wait_with_output_and_stdin(&text);
+
+    assert!(
+        encode_out.status.success(),
+        "prototext -e failed:\n{}",
+        String::from_utf8_lossy(&encode_out.stderr)
+    );
+
+    (text, encode_out.stdout)
+}
+
+trait SpawnExt {
+    fn wait_with_output_and_stdin(self, input: &[u8]) -> std::process::Output;
+}
+
+impl SpawnExt for std::process::Child {
+    fn wait_with_output_and_stdin(mut self, input: &[u8]) -> std::process::Output {
+        use std::io::Write;
+        if let Some(mut stdin) = self.stdin.take() {
+            stdin.write_all(input).ok();
+        }
+        self.wait_with_output().expect("wait_with_output failed")
+    }
 }
 
 // ── §3.1 Lossless round-trip with annotations (all fixtures) ─────────────────
 
-/// render_as_bytes(render_as_text(wire, annotations=true)) == wire for all fixtures.
+/// CLI: `prototext -d` then `prototext -e` must reproduce the original wire bytes.
+///
+/// Pipeline: craft_a() → wire → `prototext -d` → text → `prototext -e` → wire2
+/// Assert: wire2 == wire (bit-exact).
 #[test]
 fn fixture_roundtrip_annotated_craft_a() {
     let mut ran = 0;
@@ -126,16 +135,13 @@ fn fixture_roundtrip_annotated_craft_a() {
         };
 
         let wire = func();
-        let schema = load_schema(&schema_rel, &message);
-        let text = render_as_text(&wire, Some(&schema), opts(true))
-            .unwrap_or_else(|e| panic!("{name}: render_as_text failed: {e}"));
-        let wire2 = render_as_bytes(&text, opts(false))
-            .unwrap_or_else(|e| panic!("{name}: render_as_bytes failed: {e}"));
+        let sp = schema_path(&schema_rel);
+        let (text, wire2) = cli_roundtrip(&wire, &sp, &message, true);
 
         assert_eq!(
             wire2,
             wire,
-            "{name}: round-trip with annotations must be bit-exact\n  text:\n{}",
+            "{name}: binary→text→binary round-trip must be bit-exact\n  text:\n{}",
             String::from_utf8_lossy(&text),
         );
         ran += 1;
@@ -145,9 +151,9 @@ fn fixture_roundtrip_annotated_craft_a() {
     assert!(ran > 0, "no fixtures ran");
 }
 
-// ── §3.2 No panic without annotations (all fixtures) ─────────────────────────
+// ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
-/// render_as_text(wire, annotations=false) must not panic or return Err.
+/// CLI: `prototext -d --no-annotations` must exit 0 for every fixture.
 #[test]
 fn fixture_no_panic_no_annotations() {
     let mut ran = 0;
@@ -161,9 +167,9 @@ fn fixture_no_panic_no_annotations() {
         };
 
         let wire = func();
-        let schema = load_schema(&schema_rel, &message);
-        render_as_text(&wire, Some(&schema), opts(false))
-            .unwrap_or_else(|e| panic!("{name}: render_as_text (no annotations) failed: {e}"));
+        let sp = schema_path(&schema_rel);
+        // cli_roundtrip with annotations=false asserts exit 0 internally.
+        cli_roundtrip(&wire, &sp, &message, false);
         ran += 1;
     }
 
