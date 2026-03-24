@@ -203,6 +203,66 @@ mod tests {
         assert_eq!(id_fd.kind(), Kind::Int32, "field 2 must be int32");
     }
 
+    // ── §8.3 Extension field visibility ───────────────────────────────────────
+
+    /// Demonstrates that after spec-0011, `ParsedSchema` exposes extension
+    /// descriptors registered on a message, making them available for
+    /// rendering as `[pkg.ext_name]`.
+    ///
+    /// Schema:
+    ///   package acme;
+    ///   message Gadget { extensions 1000 to 1999; }
+    ///   extend Gadget { optional int32 blade_count = 1000; }
+    ///
+    /// Wire bytes: field 1000, wire-type varint (0), value 42.
+    ///   tag  = (1000 << 3) | 0 = 8000 → varint 0xC0 0x3E
+    ///   value = 42 → varint 0x2A
+    #[test]
+    fn extension_field_visible_via_get_extension() {
+        use prost_types::descriptor_proto::ExtensionRange;
+
+        let extension_field = FieldDescriptorProto {
+            name: Some("blade_count".into()),
+            number: Some(1000),
+            r#type: Some(TYPE_INT32),
+            label: Some(LABEL_OPTIONAL),
+            extendee: Some(".acme.Gadget".into()),
+            ..Default::default()
+        };
+
+        let gadget_msg = DescriptorProto {
+            name: Some("Gadget".into()),
+            extension_range: vec![ExtensionRange {
+                start: Some(1000),
+                end: Some(2000),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let file = prost_types::FileDescriptorProto {
+            name: Some("gadget.proto".into()),
+            syntax: Some("proto2".into()),
+            package: Some("acme".into()),
+            message_type: vec![gadget_msg],
+            extension: vec![extension_field],
+            ..Default::default()
+        };
+        let fds = prost_types::FileDescriptorSet { file: vec![file] };
+        let mut buf = Vec::new();
+        fds.encode(&mut buf).unwrap();
+
+        let schema = parse_schema(&buf, "acme.Gadget").unwrap();
+        let root = schema.root_descriptor().unwrap();
+
+        // The extension must be visible via get_extension().
+        let ext = root
+            .get_extension(1000)
+            .expect("extension field 1000 must be visible");
+        assert_eq!(ext.full_name(), "acme.blade_count");
+        assert_eq!(ext.kind(), prost_reflect::Kind::Int32);
+    }
+
     // ── §8.2 Enum named after primitive keyword ────────────────────────────────
 
     #[test]

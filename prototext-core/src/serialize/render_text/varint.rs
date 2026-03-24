@@ -3,7 +3,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::{FieldDescriptor, Kind};
+use prost_reflect::Kind;
+
+use super::FieldOrExt;
 
 use crate::helpers::{
     decode_bool, decode_int32, decode_int64, decode_sint32, decode_sint64, decode_uint32,
@@ -36,7 +38,7 @@ pub(super) enum VarintKind {
 }
 
 #[inline]
-pub(super) fn decode_varint_typed(val: u64, fs: &FieldDescriptor) -> (VarintKind, u64) {
+pub(super) fn decode_varint_typed(val: u64, fs: &FieldOrExt) -> (VarintKind, u64) {
     match fs.kind() {
         Kind::Int64 => (VarintKind::Int64, val),
         Kind::Uint64 => (VarintKind::Uint64, val),
@@ -114,7 +116,7 @@ pub(super) fn fmt_varint(kind: VarintKind, raw: u64) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_varint_field(
     field_number: u64,
-    field_schema: Option<&FieldDescriptor>,
+    field_schema: Option<&FieldOrExt>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     val_ohb: Option<u64>,

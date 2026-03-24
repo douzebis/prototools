@@ -14,6 +14,9 @@ mod complete;
 mod inputs;
 mod run;
 
+#[cfg(test)]
+mod protocraft;
+
 // ── Embedded descriptor ───────────────────────────────────────────────────────
 
 /// `descriptor.pb` compiled from `google/protobuf/descriptor.proto`.

@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prost_reflect::{Cardinality, FieldDescriptor, Kind, MessageDescriptor};
+use prost_reflect::{Cardinality, Kind, MessageDescriptor};
+
+use super::FieldOrExt;
 
 use crate::serialize::common::{escape_bytes_into, escape_string_into};
 
@@ -66,17 +68,18 @@ pub(super) fn wfl_prefix(name: &str, out: &mut Vec<u8>) {
 /// Write field-line prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name directly from `fs.name()`.  Otherwise writes `num` as decimal.
+/// field name (or `[pkg.ext]` for extensions) directly from `fs.display_name()`.
+/// Otherwise writes `num` as decimal.
 #[inline]
 pub(super) fn wfl_prefix_n(
     num: u64,
-    fs: Option<&FieldDescriptor>,
+    fs: Option<&FieldOrExt>,
     is_wire_or_mismatch: bool,
     out: &mut Vec<u8>,
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.name().as_bytes()),
+        Some(fi) => out.extend_from_slice(fi.display_name().as_bytes()),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b": ");
@@ -94,17 +97,18 @@ pub(super) fn wob_prefix(name: &str, out: &mut Vec<u8>) {
 /// Write open-brace prefix without String allocation.
 ///
 /// When `is_wire_or_mismatch` is false and `fs` is `Some`, writes the schema
-/// field name directly from `fs.name()`.  Otherwise writes `num` as decimal.
+/// field name (or `[pkg.ext]` for extensions) directly from `fs.display_name()`.
+/// Otherwise writes `num` as decimal.
 #[inline]
 pub(super) fn wob_prefix_n(
     num: u64,
-    fs: Option<&FieldDescriptor>,
+    fs: Option<&FieldOrExt>,
     is_wire_or_mismatch: bool,
     out: &mut Vec<u8>,
 ) {
     push_indent(out);
     match fs.filter(|_| !is_wire_or_mismatch) {
-        Some(fi) => out.extend_from_slice(fi.name().as_bytes()),
+        Some(fi) => out.extend_from_slice(fi.display_name().as_bytes()),
         None => write_dec_u64(num, out),
     }
     out.extend_from_slice(b" {");
@@ -148,10 +152,7 @@ pub(super) fn proto_type_str(kind: &Kind) -> &'static str {
 /// Build the `"[repeated |required ]type[ [packed=true]] = N"` field declaration string.
 /// v2 format: `optional` omitted as default; no trailing `;`.
 /// Used only by `render_group_field` for post-hoc splice insertion.
-pub(super) fn field_decl(
-    field_number: u64,
-    field_schema: Option<&FieldDescriptor>,
-) -> Option<String> {
+pub(super) fn field_decl(field_number: u64, field_schema: Option<&FieldOrExt>) -> Option<String> {
     let fi = field_schema?;
     // v2: `optional` is the default — omit it; emit `repeated` / `required` explicitly.
     let label_prefix = match fi.cardinality() {
@@ -162,13 +163,7 @@ pub(super) fn field_decl(
     let kind = fi.kind();
     let type_str = proto_type_str(&kind);
     let type_display = match &kind {
-        Kind::Message(msg_desc) => {
-            if fi.is_group() {
-                msg_desc.name().to_string()
-            } else {
-                msg_desc.name().to_string()
-            }
-        }
+        Kind::Message(msg_desc) => msg_desc.name().to_string(),
         Kind::Enum(enum_desc) => enum_desc.name().to_string(),
         _ => type_str.to_string(),
     };
@@ -249,7 +244,7 @@ impl AnnWriter {
         &mut self,
         out: &mut Vec<u8>,
         num: u64,
-        fs: Option<&FieldDescriptor>,
+        fs: Option<&FieldOrExt>,
         enum_raw: Option<i32>,
         enum_packed_nums: Option<&[i32]>,
     ) {
@@ -309,16 +304,18 @@ impl AnnWriter {
 ///
 /// `wire_type_name` (lowercase v2 name) is only emitted for unknown or raw-wire
 /// fields.  Known fields emit field_decl FIRST, then modifiers.
+/// `nan_bits`: when `Some`, emits `nan_bits: 0x…` as an annotation modifier (non-canonical NaN).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_scalar(
     field_number: u64,
-    field_schema: Option<&FieldDescriptor>,
+    field_schema: Option<&FieldOrExt>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
     wire_type_name: &str, // lowercase v2 name ("fixed64", "fixed32", "bytes", …)
     value_str: &str,
     is_wire: bool, // true for WireBytes/WireFixed* or wire-type mismatch
+    nan_bits: Option<u64>,
     out: &mut Vec<u8>,
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
@@ -358,6 +355,16 @@ pub(super) fn render_scalar(
             if let Some(v) = len_ohb {
                 aw.push_u64_mod(out, b"len_ohb: ", v);
             }
+            if let Some(bits) = nan_bits {
+                aw.sep(out);
+                out.extend_from_slice(b"nan_bits: 0x");
+                // Write hex digits: 16 for double (u64), 8 for float (u32 stored as u64)
+                if bits > 0xFFFF_FFFF {
+                    out.extend_from_slice(format!("{:016x}", bits).as_bytes());
+                } else {
+                    out.extend_from_slice(format!("{:08x}", bits).as_bytes());
+                }
+            }
         }
     }
     out.push(b'\n');
@@ -370,7 +377,7 @@ pub(super) fn render_scalar(
 /// v2: always uses numeric key; emits INVALID_* wire type name; no field_decl.
 pub(super) fn render_invalid(
     field_number: u64,
-    _field_schema: Option<&FieldDescriptor>,
+    _field_schema: Option<&FieldOrExt>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     inv_name: &str,
@@ -454,7 +461,7 @@ pub(super) fn render_truncated_bytes(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_len_field(
     field_number: u64,
-    field_schema: Option<&FieldDescriptor>,
+    field_schema: Option<&FieldOrExt>,
     all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
     tag_ohb: Option<u64>,
     tag_oor: bool,
@@ -493,7 +500,9 @@ pub(super) fn render_len_field(
 
     // ── Packed repeated ───────────────────────────────────────────────────────
     if is_repeated && fs.is_packed() {
-        render_packed(field_number, fs, tag_ohb, tag_oor, len_ohb, data, out);
+        // Extensions cannot be packed; unwrap is safe here.
+        let fd = fs.as_field().expect("packed field must be a regular field");
+        render_packed(field_number, fd, tag_ohb, tag_oor, len_ohb, data, out);
         return;
     }
 
@@ -630,7 +639,7 @@ pub(super) fn render_group_field(
     buf: &[u8],
     pos: &mut usize,
     field_number: u64,
-    field_schema: Option<&FieldDescriptor>,
+    field_schema: Option<&FieldOrExt>,
     all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
     tag_ohb: Option<u64>,
     tag_oor: bool,

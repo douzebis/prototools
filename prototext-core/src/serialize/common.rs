@@ -172,12 +172,7 @@ pub fn format_float(v: f32) -> String {
 /// `f'{value:.15g}'`, falling back to `f'{value:.17g}'` if needed for exact round-trip.
 pub fn format_double_protoc(v: f64) -> String {
     if v.is_nan() {
-        let bits = v.to_bits();
-        return if bits == f64::NAN.to_bits() {
-            "nan".to_owned()
-        } else {
-            format!("nan(0x{:016x})", bits)
-        };
+        return "nan".to_owned();
     }
     if v.is_infinite() {
         return if v > 0.0 {
@@ -205,12 +200,7 @@ pub fn format_double_protoc(v: f64) -> String {
 /// the bit patterns differ.  This replaces the former approximate `1e-7` tolerance (D3 fix).
 pub fn format_float_protoc(v: f32) -> String {
     if v.is_nan() {
-        let bits = v.to_bits();
-        return if bits == f32::NAN.to_bits() {
-            "nan".to_owned()
-        } else {
-            format!("nan(0x{:08x})", bits)
-        };
+        return "nan".to_owned();
     }
     if v.is_infinite() {
         return if v > 0.0 {

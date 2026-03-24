@@ -5,6 +5,8 @@
 
 use prost_reflect::{FieldDescriptor, Kind};
 
+use super::FieldOrExt;
+
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_int32, decode_sfixed32,
     decode_sfixed64, decode_sint32, decode_sint64, decode_uint32, parse_varint,
@@ -224,10 +226,14 @@ pub(super) fn render_packed(
     let (value_str, is_invalid_packed, records_ohb, records_neg_trunc, enum_nums) =
         decode_packed_to_str(data, fs);
 
+    // Wrap fs for functions that take Option<&FieldOrExt>.
+    // Packed fields are always regular fields (never extensions).
+    let foe = FieldOrExt::Field(fs.clone());
+
     if is_invalid_packed {
         render_invalid(
             field_number,
-            Some(fs),
+            Some(&foe),
             tag_ohb,
             tag_oor,
             "INVALID_PACKED_RECORDS",
@@ -245,7 +251,7 @@ pub(super) fn render_packed(
     };
 
     // Write line directly — no intermediate String allocations.
-    wfl_prefix_n(field_number, Some(fs), false, out);
+    wfl_prefix_n(field_number, Some(&foe), false, out);
     out.extend_from_slice(value_str.as_bytes());
     if annotations {
         let mut aw = AnnWriter::new();
@@ -256,7 +262,7 @@ pub(super) fn render_packed(
         } else {
             None
         };
-        aw.push_field_decl(out, field_number, Some(fs), None, enum_packed);
+        aw.push_field_decl(out, field_number, Some(&foe), None, enum_packed);
         if let Some(v) = tag_ohb {
             aw.push_u64_mod(out, b"tag_ohb: ", v);
         }

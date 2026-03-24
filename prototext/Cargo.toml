@@ -35,4 +35,7 @@ protox = "0.9"
 prost  = "0.14"
 
 [dev-dependencies]
-toml = "0.8"
+prost-reflect = "0.16"
+toml        = "0.8"
+prost       = "0.14"
+prost-types = "0.14"

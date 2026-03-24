@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prost_reflect::{FieldDescriptor, Kind, MessageDescriptor};
+use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
 
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
@@ -35,6 +35,68 @@ use varint::{decode_varint_typed, render_varint_field, VarintKind};
 
 // Magic prefix that identifies a textual prototext payload.
 const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
+
+// ── FieldOrExt adapter ────────────────────────────────────────────────────────
+
+/// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
+/// (extension field) for the subset of accessors used by the renderer.
+pub(super) enum FieldOrExt {
+    Field(FieldDescriptor),
+    Ext(ExtensionDescriptor),
+}
+
+impl FieldOrExt {
+    pub(super) fn kind(&self) -> Kind {
+        match self {
+            FieldOrExt::Field(f) => f.kind(),
+            FieldOrExt::Ext(e) => e.kind(),
+        }
+    }
+
+    pub(super) fn cardinality(&self) -> Cardinality {
+        match self {
+            FieldOrExt::Field(f) => f.cardinality(),
+            FieldOrExt::Ext(e) => e.cardinality(),
+        }
+    }
+
+    /// Returns `true` only for regular group fields; extensions cannot be groups.
+    pub(super) fn is_group(&self) -> bool {
+        match self {
+            FieldOrExt::Field(f) => f.is_group(),
+            FieldOrExt::Ext(_) => false,
+        }
+    }
+
+    pub(super) fn is_packed(&self) -> bool {
+        match self {
+            FieldOrExt::Field(f) => f.is_packed(),
+            FieldOrExt::Ext(_) => false,
+        }
+    }
+
+    /// The name to use in field-line output.
+    ///
+    /// Regular field: `"name"` (bare field name).
+    /// Extension field: `"[full.qualified.name]"`.
+    pub(super) fn display_name(&self) -> String {
+        match self {
+            FieldOrExt::Field(f) => f.name().to_owned(),
+            FieldOrExt::Ext(e) => format!("[{}]", e.full_name()),
+        }
+    }
+
+    /// Returns the underlying `FieldDescriptor` if this is a regular field,
+    /// or `None` for extension fields.
+    ///
+    /// Used to pass to functions that still take `Option<&FieldDescriptor>`.
+    pub(super) fn as_field(&self) -> Option<&FieldDescriptor> {
+        match self {
+            FieldOrExt::Field(f) => Some(f),
+            FieldOrExt::Ext(_) => None,
+        }
+    }
+}
 
 // ── Render-mode state ─────────────────────────────────────────────────────────
 //
@@ -178,8 +240,13 @@ pub(super) fn render_message(
 
         // ── Schema lookup ─────────────────────────────────────────────────────
 
-        let field_schema: Option<FieldDescriptor> =
-            schema.and_then(|s| s.get_field(field_number as u32));
+        let field_schema: Option<FieldOrExt> = schema.and_then(|s| {
+            if let Some(f) = s.get_field(field_number as u32) {
+                Some(FieldOrExt::Field(f))
+            } else {
+                s.get_extension(field_number as u32).map(FieldOrExt::Ext)
+            }
+        });
 
         // ── Wire-type dispatch ────────────────────────────────────────────────
 
@@ -240,11 +307,19 @@ pub(super) fn render_message(
                 pos += 8;
 
                 let is_mismatch;
+                let mut nan_bits: Option<u64> = None;
                 let value_str = if let Some(ref fs) = field_schema {
                     match fs.kind() {
                         Kind::Double => {
                             is_mismatch = false;
-                            format_double_protoc(decode_double(data))
+                            let v = decode_double(data);
+                            if v.is_nan() {
+                                let bits = v.to_bits();
+                                if bits != f64::NAN.to_bits() {
+                                    nan_bits = Some(bits);
+                                }
+                            }
+                            format_double_protoc(v)
                         }
                         Kind::Fixed64 => {
                             is_mismatch = false;
@@ -273,6 +348,7 @@ pub(super) fn render_message(
                     "fixed64",
                     &value_str,
                     is_mismatch,
+                    nan_bits,
                     out,
                 );
             }
@@ -378,11 +454,19 @@ pub(super) fn render_message(
                 pos += 4;
 
                 let is_mismatch;
+                let mut nan_bits: Option<u64> = None;
                 let value_str = if let Some(ref fs) = field_schema {
                     match fs.kind() {
                         Kind::Float => {
                             is_mismatch = false;
-                            format_float_protoc(decode_float(data))
+                            let v = decode_float(data);
+                            if v.is_nan() {
+                                let bits = v.to_bits();
+                                if bits != f32::NAN.to_bits() {
+                                    nan_bits = Some(bits as u64);
+                                }
+                            }
+                            format_float_protoc(v)
                         }
                         Kind::Fixed32 => {
                             is_mismatch = false;
@@ -411,6 +495,7 @@ pub(super) fn render_message(
                     "fixed32",
                     &value_str,
                     is_mismatch,
+                    nan_bits,
                     out,
                 );
             }

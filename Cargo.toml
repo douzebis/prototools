@@ -19,7 +19,7 @@
 resolver = "2"
 members = [
     "prototext-core",
-    "prototext",
+    "prototext", "mockup",
 ]
 
 [profile.release]
