@@ -13,7 +13,6 @@ pub use schema::{ParsedSchema, SchemaError};
 // ── Public API types ──────────────────────────────────────────────────────────
 
 /// Options controlling how a protobuf binary payload is rendered as text.
-#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct RenderOpts {
     /// When `true`, always treat the input as raw protobuf binary.
@@ -94,11 +93,11 @@ pub fn render_as_text(
 ///
 /// The input must carry the `#@ prototext:` header (i.e. be produced by
 /// `render_as_text`).  Raw binary input is passed through unchanged.
-pub fn render_as_bytes(data: &[u8], _opts: RenderOpts) -> Result<Vec<u8>, CodecError> {
-    if serialize::render_text::is_prototext_text(data) {
-        Ok(serialize::encode_text::encode_text_to_binary(data))
-    } else {
+pub fn render_as_bytes(data: &[u8], opts: RenderOpts) -> Result<Vec<u8>, CodecError> {
+    if opts.assume_binary || !serialize::render_text::is_prototext_text(data) {
         Ok(data.to_vec())
+    } else {
+        Ok(serialize::encode_text::encode_text_to_binary(data))
     }
 }
 

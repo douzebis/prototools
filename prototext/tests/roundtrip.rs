@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use prost::Message as ProstMessage;
 use prototext_core::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
@@ -79,10 +80,6 @@ fn enum_schema() -> prototext_core::ParsedSchema {
     load_schema("fixtures/schemas/enum_collision.pb", "EnumCollision")
 }
 
-fn opts(annotations: bool) -> RenderOpts {
-    RenderOpts::new(true, annotations, 1)
-}
-
 // ── §7 Enum rendering tests ───────────────────────────────────────────────────
 
 #[test]
@@ -91,7 +88,16 @@ fn enum_known_value_renders_symbolic_name() {
     // Tag: field 2, wire type varint = 0x10. Value: 0x01.
     let wire = vec![0x10, 0x01];
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("GREEN"),
@@ -108,7 +114,16 @@ fn enum_unknown_value_renders_numeric_with_enum_unknown() {
     // EnumCollision field 2 'color' (Color enum): wire value 99 — not in enum.
     let wire = vec![0x10, 0x63]; // field 2 varint, value 99
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("99"),
@@ -126,7 +141,16 @@ fn packed_enum_renders_symbolic_names() {
     // Tag: field 5, wire type LEN = (5<<3)|2 = 0x2A. Payload: varint 1 (GREEN), varint 2 (BLUE).
     let wire = vec![0x2A, 0x02, 0x01, 0x02]; // tag, len=2, GREEN=1, BLUE=2
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("GREEN"),
@@ -147,8 +171,25 @@ fn enum_annotation_roundtrips_wire() {
     // EnumCollision field 2 'color' = GREEN (1).
     let wire = vec![0x10, 0x01];
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(wire2, wire, "enum annotation must round-trip byte-for-byte");
 }
 
@@ -157,7 +198,16 @@ fn no_annotations_omits_unknown_fields() {
     // Unknown field (no schema): wire type varint, field 99.
     let wire = vec![0xb8, 0x06, 0x01]; // field 99, varint, value 1
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         !text_str.contains("99"),
@@ -171,8 +221,25 @@ fn enum_named_float_roundtrip_is_varint() {
     // Wire: tag field 1 varint = 0x08, value 0x01. Total 2 bytes.
     let wire = vec![0x08, 0x01];
     let schema = enum_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wire2, wire,
         "enum named 'float' must round-trip as varint (2 bytes), not fixed32 (5 bytes)"
@@ -242,7 +309,16 @@ const F64_PAYLOAD_NAN: u64 = 0x7FF800000BADC0DE; // quiet NaN with custom payloa
 fn float_canonical_nan_renders_bare_nan() {
     let wire = float_wire(F32_CANONICAL_NAN);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("nan"),
@@ -259,7 +335,16 @@ fn float_noncanonical_nan_renders_with_modifier() {
     for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
         let wire = float_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         let text_str = String::from_utf8(text).unwrap();
         let expected = format!("nan(0x{:08x})", bits);
         assert!(
@@ -276,8 +361,25 @@ fn float_noncanonical_nan_roundtrips() {
     for &bits in &[F32_SIGNALING_NAN, F32_SIGNED_NAN, F32_PAYLOAD_NAN] {
         let wire = float_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let wire2 = render_as_bytes(
+            &text,
+            RenderOpts {
+                assume_binary: false,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(
             wire2, wire,
             "float NaN 0x{:08x} must round-trip bit-exact",
@@ -290,7 +392,16 @@ fn float_noncanonical_nan_roundtrips() {
 fn double_canonical_nan_renders_bare_nan() {
     let wire = double_wire(F64_CANONICAL_NAN);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("nan"),
@@ -307,7 +418,16 @@ fn double_noncanonical_nan_renders_with_modifier() {
     for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
         let wire = double_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         let text_str = String::from_utf8(text).unwrap();
         let expected = format!("nan(0x{:016x})", bits);
         assert!(
@@ -324,8 +444,25 @@ fn double_noncanonical_nan_roundtrips() {
     for &bits in &[F64_SIGNALING_NAN, F64_SIGNED_NAN, F64_PAYLOAD_NAN] {
         let wire = double_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let wire2 = render_as_bytes(
+            &text,
+            RenderOpts {
+                assume_binary: false,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(
             wire2, wire,
             "double NaN 0x{:016x} must round-trip bit-exact",
@@ -339,7 +476,16 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
     // packed floatPk: canonical NaN, signaling NaN, payload NaN
     let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     // canonical: bare nan; non-canonical: nan(0x...)
     assert!(
@@ -360,8 +506,25 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
 fn float_packed_noncanonical_nan_roundtrips() {
     let wire = float_packed_wire(&[F32_CANONICAL_NAN, F32_SIGNALING_NAN, F32_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wire2, wire,
         "packed float NaN array must round-trip bit-exact"
@@ -372,7 +535,16 @@ fn float_packed_noncanonical_nan_roundtrips() {
 fn double_packed_noncanonical_nan_renders_with_modifier() {
     let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(false)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
         text_str.contains("nan,") || text_str.contains("nan]"),
@@ -392,8 +564,25 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
 fn double_packed_noncanonical_nan_roundtrips() {
     let wire = double_packed_wire(&[F64_CANONICAL_NAN, F64_SIGNALING_NAN, F64_PAYLOAD_NAN]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wire2, wire,
         "packed double NaN array must round-trip bit-exact"
@@ -410,8 +599,25 @@ fn float_packed_all_nan_variants_roundtrip() {
         F32_PAYLOAD_NAN,
     ]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wire2, wire,
         "packed float all-NaN-variants must round-trip bit-exact"
@@ -428,8 +634,25 @@ fn double_packed_all_nan_variants_roundtrip() {
         F64_PAYLOAD_NAN,
     ]);
     let schema = knife_schema();
-    let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-    let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
     assert_eq!(
         wire2, wire,
         "packed double all-NaN-variants must round-trip bit-exact"
@@ -449,8 +672,25 @@ fn float_subnormals_roundtrip() {
     for &bits in cases {
         let wire = float_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let wire2 = render_as_bytes(
+            &text,
+            RenderOpts {
+                assume_binary: false,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(
             wire2, wire,
             "float subnormal 0x{:08x} must round-trip bit-exact",
@@ -470,8 +710,25 @@ fn double_subnormals_roundtrip() {
     for &bits in cases {
         let wire = double_wire(bits);
         let schema = knife_schema();
-        let text = render_as_text(&wire, Some(&schema), opts(true)).unwrap();
-        let wire2 = render_as_bytes(&text, opts(true)).unwrap();
+        let text = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .unwrap();
+        let wire2 = render_as_bytes(
+            &text,
+            RenderOpts {
+                assume_binary: false,
+                include_annotations: false,
+                indent: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(
             wire2, wire,
             "double subnormal 0x{:016x} must round-trip bit-exact",
@@ -483,8 +740,15 @@ fn double_subnormals_roundtrip() {
 // ── Fixture roundtrip tests ───────────────────────────────────────────────────
 
 fn to_wire(text: &[u8]) -> Vec<u8> {
-    let opts = RenderOpts::new(true, true, 1);
-    render_as_bytes(text, opts).expect("render_as_bytes failed")
+    render_as_bytes(
+        text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .expect("render_as_bytes failed")
 }
 
 #[test]
@@ -502,8 +766,16 @@ fn fixture_roundtrip_annotated() {
 
         let wire = to_wire(&text);
         let schema = load_schema(&fx.schema, &fx.message);
-        let opts = RenderOpts::new(true, true, 1);
-        let text2 = render_as_text(&wire, Some(&schema), opts).expect("render_as_text failed");
+        let text2 = render_as_text(
+            &wire,
+            Some(&schema),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+            },
+        )
+        .expect("render_as_text failed");
 
         assert_eq!(
             text2,
@@ -520,5 +792,124 @@ fn fixture_roundtrip_annotated() {
     assert!(
         ran > 0,
         "no fixtures ran — index.toml empty or all case files missing"
+    );
+}
+
+// ── §9 Extension field round-trip (spec 0012) ────────────────────────────────
+//
+// Schema:  package acme;
+//          message Gadget { extensions 1000 to 1999; }
+//          extend Gadget { optional int32 blade_count = 1000; }
+//
+// Wire bytes for `blade_count = 42`:
+//   tag  = (1000 << 3) | 0  = 8000 → varint  [0xC0, 0x3E]
+//   value = 42              → varint  [0x2A]
+
+fn gadget_schema() -> prototext_core::ParsedSchema {
+    use prost_types::{
+        descriptor_proto::ExtensionRange, DescriptorProto, FieldDescriptorProto,
+        FileDescriptorProto, FileDescriptorSet,
+    };
+    let ext_field = FieldDescriptorProto {
+        name: Some("blade_count".into()),
+        number: Some(1000),
+        r#type: Some(5), // TYPE_INT32
+        label: Some(1),  // LABEL_OPTIONAL
+        extendee: Some(".acme.Gadget".into()),
+        ..Default::default()
+    };
+    let gadget = DescriptorProto {
+        name: Some("Gadget".into()),
+        extension_range: vec![ExtensionRange {
+            start: Some(1000),
+            end: Some(2000),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("gadget.proto".into()),
+        syntax: Some("proto2".into()),
+        package: Some("acme".into()),
+        message_type: vec![gadget],
+        extension: vec![ext_field],
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+    let mut desc_bytes = Vec::new();
+    fds.encode(&mut desc_bytes).unwrap();
+    parse_schema(&desc_bytes, "acme.Gadget").unwrap()
+}
+
+// Spec 0012 §render: extension fields render as `[fully.qualified.name]: value`.
+#[test]
+fn extension_field_renders_with_bracketed_fqn() {
+    let schema = gadget_schema();
+    // Wire bytes: field 1000 (varint), value 42
+    //   tag = (1000 << 3) | 0 = 8000 → [0xC0, 0x3E]; val = 42 → [0x2A]
+    let wire = vec![0xC0u8, 0x3E, 0x2A];
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+
+    assert!(
+        text_str.contains("[acme.blade_count]"),
+        "expected bracketed FQN [acme.blade_count] in: {text_str}"
+    );
+    assert!(text_str.contains("42"), "expected value 42 in: {text_str}");
+    assert!(
+        text_str.contains("int32"),
+        "expected type int32 in annotation: {text_str}"
+    );
+    assert!(
+        text_str.contains("= 1000"),
+        "expected field number = 1000 in annotation: {text_str}"
+    );
+}
+
+// Spec 0012 §encode: text with `[fully.qualified.name]` field re-encodes to the
+// original wire bytes (lossless round-trip for extension fields).
+#[test]
+fn extension_field_roundtrip() {
+    let schema = gadget_schema();
+    // Wire bytes: field 1000 (varint), value 42
+    let wire_orig = vec![0xC0u8, 0x3E, 0x2A];
+
+    // Render to annotated text.
+    let text = render_as_text(
+        &wire_orig,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+        },
+    )
+    .unwrap();
+
+    // Re-encode back to binary.
+    let wire_roundtrip = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        wire_roundtrip,
+        wire_orig,
+        "extension field round-trip failed\n  text:\n{}",
+        String::from_utf8_lossy(&text),
     );
 }

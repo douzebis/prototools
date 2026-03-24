@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 # 0009 — Protocraft port and end-to-end test suite
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-03-24
 **App:** prototext
 
 ---
@@ -77,6 +78,11 @@ comprehensive end-to-end test suite within the `prototext` crate.
 - `protoc --decode` compatibility tests — out of scope.
 - Exposing protocraft as a published library crate — it is test
   infrastructure only.
+- Lossless round-trip without annotations for canonical fixtures (§3.3) —
+  covered implicitly by §3.1; a dedicated test adds no value.
+- `gen_fixtures` regeneration tool (§4) — the committed `.pb` files are
+  validated by `craft_a_matches_committed_fixtures`; a separate generation
+  tool is not needed.
 
 ---
 

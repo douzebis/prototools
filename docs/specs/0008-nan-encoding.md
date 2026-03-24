@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 # 0008 — NaN encoding for float and double fields
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-03-24
 **App:** prototext
 
 ---
