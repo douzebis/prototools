@@ -1,0 +1,20 @@
+<!--
+SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> <fred@s3ns.io> (GitHub: @douzebis)
+SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
+
+SPDX-License-Identifier: MIT
+-->
+
+{% import "macros.html" as macros %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ config.title }}</title>
+    {{ macros::styles() }}
+</head>
+<body>
+    {{ section.content | safe }}
+</body>
+</html>

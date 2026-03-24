@@ -90,6 +90,7 @@ impl FieldOrExt {
     /// or `None` for extension fields.
     ///
     /// Used to pass to functions that still take `Option<&FieldDescriptor>`.
+    #[allow(dead_code)]
     pub(super) fn as_field(&self) -> Option<&FieldDescriptor> {
         match self {
             FieldOrExt::Field(f) => Some(f),

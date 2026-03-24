@@ -14,10 +14,7 @@ mod placeholder;
 #[cfg(test)]
 use encode_annotation::parse_field_decl_into;
 use encode_annotation::{parse_annotation, Ann};
-use fields::{
-    encode_num, encode_packed_array_line, encode_packed_elem, encode_scalar_line, parse_num,
-    unescape_bytes, write_tag_ohb_local, Num,
-};
+use fields::{encode_packed_elem, encode_scalar_line, write_tag_ohb_local};
 use frame::Frame;
 use placeholder::{compact, fill_placeholder, write_placeholder};
 

@@ -77,10 +77,25 @@ let
     cargoArtifacts = depsCache;
     cargoExtraArgs = "-p prototext";
 
+    nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.installShellFiles ];
+
     checkPhase = ''
       echo "fmt:    ${rustFmt}"
       echo "clippy: ${rustClippy}"
       echo "tests:  ${rustTests}"
+    '';
+
+    postInstall = ''
+      # Install shell completions.
+      installShellCompletion --cmd prototext \
+        --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
+          -e '/^\s*) )$/a\    compopt -o filenames 2>/dev/null' \
+          -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
+        --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
+        --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
+
+      # Generate and install man page.
+      $out/bin/prototext-gen-man $out/share/man/man1
     '';
 
     meta = with pkgs.lib; {
@@ -116,6 +131,7 @@ let
       reuse
       gh
       protobuf
+      mandoc
     ];
 
     shellHook = ''
@@ -131,6 +147,14 @@ let
 
       # Build prototext if not already built.
       cargo build --release -p prototext
+
+      # Generate man page into man/man1/ and expose it via MANPATH.
+      if command -v prototext-gen-man &>/dev/null; then
+        mkdir -p man/man1
+        prototext-gen-man man/man1
+        export MANPATH="$PWD/man:''${MANPATH:-}"
+        makewhatis "$PWD/man" 2>/dev/null || true
+      fi
 
       # bash completion for prototext (workaround for clap_complete path-completion bugs)
       if command -v prototext &>/dev/null; then

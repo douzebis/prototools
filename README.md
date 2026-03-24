@@ -83,10 +83,45 @@ Key flags:
 
 #### Install
 
-From [crates.io](https://crates.io/crates/prototext):
+**Nix (recommended)** — installs the binary, man page, and shell completions
+for bash, zsh, and fish:
+
+```
+nix-build https://github.com/douzebis/prototools/archive/main.tar.gz
+```
+
+**Nix dev shell** — builds from source, generates the man page, and activates
+bash completion in the current shell:
+
+```
+nix-shell https://github.com/douzebis/prototools/archive/main.tar.gz
+```
+
+**cargo install** — installs the binary and a helper for generating the man
+page; shell completions must be activated manually:
 
 ```
 cargo install prototext
+```
+
+After `cargo install`, activate completions in your shell:
+
+```bash
+# bash
+source <(PROTOTEXT_COMPLETE=bash prototext)
+
+# zsh
+source <(PROTOTEXT_COMPLETE=zsh prototext)
+
+# fish
+PROTOTEXT_COMPLETE=fish prototext | source
+```
+
+Generate and install the man page:
+
+```bash
+cargo install prototext          # also installs prototext-gen-man
+prototext-gen-man ~/.local/share/man/man1
 ```
 
 From the GitHub repository:
@@ -94,8 +129,6 @@ From the GitHub repository:
 ```
 cargo install --git https://github.com/douzebis/prototools prototext
 ```
-
-Both install `prototext` to `~/.cargo/bin/`.
 
 #### Quick start
 

@@ -1,0 +1,26 @@
+<!--
+SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> <fred@s3ns.io> (GitHub: @douzebis)
+SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
+
+SPDX-License-Identifier: MIT
+-->
+
+{% import "macros.html" as macros %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ section.title }} — {{ config.title }}</title>
+    {{ macros::styles() }}
+</head>
+<body>
+    <nav><a href="{{ config.base_url }}">← prototext docs</a></nav>
+    {{ section.content | safe }}
+    <ul>
+    {% for page in section.pages %}
+        <li><a href="{{ page.permalink }}">{{ page.title }}</a></li>
+    {% endfor %}
+    </ul>
+</body>
+</html>

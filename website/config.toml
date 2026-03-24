@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> <fred@s3ns.io> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+base_url = "https://douzebis.github.io/prototools"
+title = "prototext"
+description = "Lossless protobuf ↔ enhanced-textproto converter — documentation"
+
+compile_sass = false
+build_search_index = false
+
+[markdown]
+highlight_code = true

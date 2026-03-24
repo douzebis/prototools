@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> <fred@s3ns.io> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
+#
+# SPDX-License-Identifier: MIT
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zola
+        uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.19.2
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y mandoc
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate man page
+        run: |
+          mkdir -p man/man1
+          cargo run --release -p prototext --bin prototext-gen-man -- man/man1
+
+      - name: Copy docs into website/content
+        run: |
+          set -e
+
+          inject() {
+            local src="$1" dst="$2"
+            local title
+            title=$(grep -m1 '^# ' "$src" | sed 's/^# //' || basename "$src" .md)
+            printf '+++\ntitle = "%s"\n+++\n\n' "$title" > "$dst"
+            cat "$src" >> "$dst"
+          }
+
+          # README → readme.md
+          inject README.md website/content/readme.md
+
+          # docs/*.md (top-level only, not specs/)
+          for f in docs/*.md; do
+            name=$(basename "$f" .md | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+            inject "$f" "website/content/${name}.md"
+          done
+
+          # docs/specs/[0-9]*.md
+          mkdir -p website/content/specs
+          for f in docs/specs/[0-9]*.md; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .md)
+            inject "$f" "website/content/specs/${name}.md"
+          done
+
+          # man page → website/content/man-page.md
+          {
+            printf '+++\ntitle = "Man Page"\n+++\n\n'
+            printf '<div class="manpage">\n'
+            mandoc -T html -O fragment man/man1/prototext.1 2>/dev/null \
+              || cat man/man1/prototext.1
+            printf '</div>\n'
+          } > website/content/man-page.md
+
+      - name: Build
+        run: cd website && zola build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./website/public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
