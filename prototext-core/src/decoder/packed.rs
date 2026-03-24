@@ -23,7 +23,7 @@ fn decode_fixed_vec<T>(
     elem_size: usize,
     f: impl Fn(&[u8]) -> T,
 ) -> Result<Vec<T>, ()> {
-    if data.len() % elem_size != 0 {
+    if !data.len().is_multiple_of(elem_size) {
         return Err(());
     }
     Ok(data.chunks_exact(elem_size).map(f).collect())

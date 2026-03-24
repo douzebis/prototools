@@ -61,7 +61,7 @@ fn decode_packed_fixed_elems(
     kind: &Kind,
 ) -> Result<Vec<PackedElem>, ()> {
     let n = data.len();
-    if n % elem_size != 0 {
+    if !n.is_multiple_of(elem_size) {
         return Err(());
     }
     let count = n / elem_size;

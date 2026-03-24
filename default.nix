@@ -3,7 +3,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-{ pkgs ? (import <nixpkgs> {}) }:
+{ pkgs ? (import (fetchTarball {
+    url    = "https://nixos.org/channels/nixos-25.11/nixexprs.tar.xz";
+    sha256 = "0qc4yszky11gjspiqh3q3jam1w4gysfrv4384lq9zf5q0afk83wv";
+  }) {}) }:
 
 let
   crane = pkgs.callPackage (pkgs.fetchgit {
