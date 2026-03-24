@@ -28,7 +28,7 @@ let
   commonArgs = {
     inherit src;
     pname   = "prototools";
-    version = "0.1.3";
+    version = "0.1.4";
     strictDeps = true;
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc ];
   };
