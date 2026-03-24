@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::{FieldDescriptor, Kind};
+use prost_reflect::Kind;
 
 use super::FieldOrExt;
 
@@ -20,6 +20,22 @@ use crate::serialize::common::{
 
 use super::helpers::{push_indent, wfl_prefix_n, AnnWriter};
 use super::{ANNOTATIONS, CBL_START};
+
+/// Write `bits` as zero-padded lowercase hex into `out` without heap allocation.
+/// Uses 16 digits for doubles (bits > u32::MAX), 8 digits for floats.
+#[inline]
+fn write_nan_hex(bits: u64, out: &mut Vec<u8>) {
+    use std::io::Write as IoWrite;
+    if bits > 0xFFFF_FFFF {
+        let mut buf = [0u8; 16];
+        write!(&mut buf[..], "{:016x}", bits).expect("write to stack buffer");
+        out.extend_from_slice(&buf);
+    } else {
+        let mut buf = [0u8; 8];
+        write!(&mut buf[..], "{:08x}", bits).expect("write to stack buffer");
+        out.extend_from_slice(&buf);
+    }
+}
 
 // ── Per-element data ──────────────────────────────────────────────────────────
 
@@ -105,7 +121,7 @@ fn decode_packed_fixed_elems(
 
 // ── Varint-packed decoder ─────────────────────────────────────────────────────
 
-fn decode_packed_varint_elems(data: &[u8], fs: &FieldDescriptor) -> Result<Vec<PackedElem>, ()> {
+fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<PackedElem>, ()> {
     let is_enum = matches!(fs.kind(), Kind::Enum(_));
     let mut elems = Vec::new();
     let mut i = 0;
@@ -187,21 +203,21 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldDescriptor) -> Result<Vec<P
 
 // ── Decode packed payload to per-element list ─────────────────────────────────
 
-fn decode_packed_elems(data: &[u8], fs: &FieldDescriptor) -> Result<Vec<PackedElem>, ()> {
-    match fs.kind() {
+fn decode_packed_elems(data: &[u8], foe: &FieldOrExt) -> Result<Vec<PackedElem>, ()> {
+    match foe.kind() {
         Kind::Double
         | Kind::Float
         | Kind::Fixed64
         | Kind::Sfixed64
         | Kind::Fixed32
         | Kind::Sfixed32 => {
-            let elem_size = match fs.kind() {
+            let elem_size = match foe.kind() {
                 Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => 8,
                 _ => 4,
             };
-            decode_packed_fixed_elems(data, elem_size, &fs.kind())
+            decode_packed_fixed_elems(data, elem_size, &foe.kind())
         }
-        _ => decode_packed_varint_elems(data, fs),
+        _ => decode_packed_varint_elems(data, foe),
     }
 }
 
@@ -250,11 +266,7 @@ fn write_packed_elem_ann(
     if let Some(bits) = elem.nan_bits {
         aw.sep(out);
         out.extend_from_slice(b"nan_bits: 0x");
-        if bits > 0xFFFF_FFFF {
-            out.extend_from_slice(format!("{:016x}", bits).as_bytes());
-        } else {
-            out.extend_from_slice(format!("{:08x}", bits).as_bytes());
-        }
+        write_nan_hex(bits, out);
     }
     // ENUM_UNKNOWN: when the enum value has no symbolic name.
     if let (Some(n), Kind::Enum(ref enum_desc)) = (elem.enum_num, foe.kind()) {
@@ -267,7 +279,7 @@ fn write_packed_elem_ann(
 /// Render a packed repeated field.
 pub(super) fn render_packed(
     field_number: u64,
-    fs: &FieldDescriptor,
+    foe: &FieldOrExt,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -278,11 +290,8 @@ pub(super) fn render_packed(
 
     let annotations = ANNOTATIONS.with(|c| c.get());
 
-    // Wrap fs for functions that take Option<&FieldOrExt>.
-    let foe = FieldOrExt::Field(fs.clone());
-
     // Decode the packed payload into per-element data.
-    let elems = match decode_packed_elems(data, fs) {
+    let elems = match decode_packed_elems(data, foe) {
         Ok(e) => e,
         Err(()) => {
             render_invalid(

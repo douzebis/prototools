@@ -29,7 +29,7 @@ use crate::serialize::common::{
 
 use helpers::{
     render_group_field, render_invalid, render_invalid_tag_type, render_len_field, render_scalar,
-    render_truncated_bytes,
+    render_truncated_bytes, ScalarCtx,
 };
 use varint::{decode_varint_typed, render_varint_field, VarintKind};
 
@@ -340,15 +340,17 @@ pub(super) fn render_message(
                 };
 
                 render_scalar(
-                    field_number,
-                    field_schema.as_ref(),
-                    tag_ohb,
-                    tag_oor,
-                    None,
-                    "fixed64",
+                    &ScalarCtx {
+                        field_number,
+                        field_schema: field_schema.as_ref(),
+                        tag_ohb,
+                        tag_oor,
+                        len_ohb: None,
+                        wire_type_name: "fixed64",
+                        nan_bits,
+                    },
                     &value_str,
                     is_mismatch,
-                    nan_bits,
                     out,
                 );
             }
@@ -487,15 +489,17 @@ pub(super) fn render_message(
                 };
 
                 render_scalar(
-                    field_number,
-                    field_schema.as_ref(),
-                    tag_ohb,
-                    tag_oor,
-                    None,
-                    "fixed32",
+                    &ScalarCtx {
+                        field_number,
+                        field_schema: field_schema.as_ref(),
+                        tag_ohb,
+                        tag_oor,
+                        len_ohb: None,
+                        wire_type_name: "fixed32",
+                        nan_bits,
+                    },
                     &value_str,
                     is_mismatch,
-                    nan_bits,
                     out,
                 );
             }
