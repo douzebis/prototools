@@ -98,14 +98,7 @@ fn kind_to_annotation_strs(fs: &FieldDescriptor) -> (&'static str, String) {
         Kind::Sfixed64 => ("sfixed64", "sfixed64".to_string()),
         Kind::Sint32 => ("sint32", "sint32".to_string()),
         Kind::Sint64 => ("sint64", "sint64".to_string()),
-        Kind::Message(msg_desc) => {
-            let display = if fs.is_group() {
-                msg_desc.name().to_string()
-            } else {
-                msg_desc.name().to_string()
-            };
-            ("message", display)
-        }
+        Kind::Message(msg_desc) => ("message", msg_desc.name().to_string()),
         Kind::Enum(enum_desc) => ("enum", enum_desc.name().to_string()),
     }
 }

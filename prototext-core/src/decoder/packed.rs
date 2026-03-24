@@ -44,12 +44,12 @@ pub(super) fn decode_packed(data: &[u8], fs: &FieldDescriptor, field: &mut Proto
         };
     }
     match fs.kind() {
-        Kind::Double => fixed!(8, |b| decode_double(b), Doubles),
-        Kind::Float => fixed!(4, |b| decode_float(b), Floats),
-        Kind::Fixed64 => fixed!(8, |b| decode_fixed64(b), Fixed64s),
-        Kind::Sfixed64 => fixed!(8, |b| decode_sfixed64(b), Sfixed64s),
-        Kind::Fixed32 => fixed!(4, |b| decode_fixed32(b), Fixed32s),
-        Kind::Sfixed32 => fixed!(4, |b| decode_sfixed32(b), Sfixed32s),
+        Kind::Double => fixed!(8, decode_double, Doubles),
+        Kind::Float => fixed!(4, decode_float, Floats),
+        Kind::Fixed64 => fixed!(8, decode_fixed64, Fixed64s),
+        Kind::Sfixed64 => fixed!(8, decode_sfixed64, Sfixed64s),
+        Kind::Fixed32 => fixed!(4, decode_fixed32, Fixed32s),
+        Kind::Sfixed32 => fixed!(4, decode_sfixed32, Sfixed32s),
         // Varint-packed types
         _ => decode_packed_varints(data, fs, field),
     }

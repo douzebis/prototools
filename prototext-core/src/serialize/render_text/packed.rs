@@ -223,19 +223,22 @@ fn decode_packed_elems(data: &[u8], foe: &FieldOrExt) -> Result<Vec<PackedElem>,
 
 // ── Packed field renderer ─────────────────────────────────────────────────────
 
-/// Write the annotation for a packed element line.
-///
-/// `is_first`: if true, emits `pack_size: N` and any record-level anomaly modifiers.
-/// `pack_size`: total elements in this wire record (only used when `is_first`).
-/// `tag_ohb`, `tag_oor`, `len_ohb`: record-level anomaly modifiers (only on first element).
-fn write_packed_elem_ann(
-    field_number: u64,
-    foe: &FieldOrExt,
+/// Record-level annotation data for a packed wire record.
+struct PackedRecordAnn {
+    /// True for the first element in the record; triggers record-level modifiers.
     is_first: bool,
+    /// Total number of elements in this wire record.
     pack_size: usize,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
+}
+
+/// Write the annotation for a packed element line.
+fn write_packed_elem_ann(
+    field_number: u64,
+    foe: &FieldOrExt,
+    rec: &PackedRecordAnn,
     elem: &PackedElem,
     out: &mut Vec<u8>,
 ) {
@@ -244,15 +247,15 @@ fn write_packed_elem_ann(
     let enum_raw = elem.enum_num;
     aw.push_field_decl(out, field_number, Some(foe), enum_raw, None);
     // Record-level anomaly modifiers on first element only.
-    if is_first {
-        aw.push_u64_mod(out, b"pack_size: ", pack_size as u64);
-        if let Some(v) = tag_ohb {
+    if rec.is_first {
+        aw.push_u64_mod(out, b"pack_size: ", rec.pack_size as u64);
+        if let Some(v) = rec.tag_ohb {
             aw.push_u64_mod(out, b"tag_ohb: ", v);
         }
-        if tag_oor {
+        if rec.tag_oor {
             aw.push(out, b"TAG_OOR");
         }
-        if let Some(v) = len_ohb {
+        if let Some(v) = rec.len_ohb {
             aw.push_u64_mod(out, b"len_ohb: ", v);
         }
     }
@@ -296,7 +299,7 @@ pub(super) fn render_packed(
         Err(()) => {
             render_invalid(
                 field_number,
-                Some(&foe),
+                Some(foe),
                 tag_ohb,
                 tag_oor,
                 "INVALID_PACKED_RECORDS",
@@ -315,7 +318,7 @@ pub(super) fn render_packed(
         if annotations {
             push_indent(out);
             let mut aw = AnnWriter::new_no_leading_spaces();
-            aw.push_field_decl(out, field_number, Some(&foe), None, None);
+            aw.push_field_decl(out, field_number, Some(foe), None, None);
             aw.push_u64_mod(out, b"pack_size: ", 0);
             if let Some(v) = tag_ohb {
                 aw.push_u64_mod(out, b"tag_ohb: ", v);
@@ -335,17 +338,19 @@ pub(super) fn render_packed(
     // ── Per-element lines ──────────────────────────────────────────────────────
     for (i, elem) in elems.iter().enumerate() {
         let is_first = i == 0;
-        wfl_prefix_n(field_number, Some(&foe), false, out);
+        wfl_prefix_n(field_number, Some(foe), false, out);
         out.extend_from_slice(elem.value_str.as_bytes());
         if annotations {
             write_packed_elem_ann(
                 field_number,
-                &foe,
-                is_first,
-                pack_size,
-                tag_ohb,
-                tag_oor,
-                len_ohb,
+                foe,
+                &PackedRecordAnn {
+                    is_first,
+                    pack_size,
+                    tag_ohb,
+                    tag_oor,
+                    len_ohb,
+                },
                 elem,
                 out,
             );

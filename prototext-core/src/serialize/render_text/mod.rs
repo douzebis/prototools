@@ -165,7 +165,7 @@ pub fn decode_and_render(
     // Build a flat name→MessageDescriptor map for nested-type lookups.
     // Keyed by bare FQN (no leading dot), matching prost-reflect's convention.
     let all_descriptors: Option<HashMap<String, Arc<MessageDescriptor>>> =
-        schema.map(|s| build_descriptor_map(s));
+        schema.map(build_descriptor_map);
     let all_schemas = all_descriptors.as_ref();
 
     let root_desc: Option<MessageDescriptor> = schema.and_then(|s| s.root_descriptor());
