@@ -60,7 +60,10 @@ pub(in super::super) fn proto_type_str(kind: &Kind) -> &'static str {
 /// Build the `"[repeated |required ]type[ [packed=true]] = N"` field declaration string.
 /// v2 format: `optional` omitted as default; no trailing `;`.
 /// Used only by `render_group_field` for post-hoc splice insertion.
-pub(in super::super) fn field_decl(field_number: u64, field_schema: Option<&FieldOrExt>) -> Option<String> {
+pub(in super::super) fn field_decl(
+    field_number: u64,
+    field_schema: Option<&FieldOrExt>,
+) -> Option<String> {
     let fi = field_schema?;
     // v2: `optional` is the default — omit it; emit `repeated` / `required` explicitly.
     let label_prefix = match fi.cardinality() {

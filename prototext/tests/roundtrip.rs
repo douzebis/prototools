@@ -1543,3 +1543,78 @@ fn extension_field_roundtrip() {
         String::from_utf8_lossy(&text),
     );
 }
+
+// ── Selftest: randomised round-trip stress test ───────────────────────────────
+
+/// Xorshift64 — fast, deterministic, period 2^64 - 1.
+fn xorshift64(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// Generate a random byte string of length 0–63.
+fn random_bytes(rng: &mut u64) -> Vec<u8> {
+    let len = (xorshift64(rng) % 64) as usize;
+    (0..len).map(|_| (xorshift64(rng) & 0xff) as u8).collect()
+}
+
+/// Randomised round-trip stress test: `binary → text → binary` must be
+/// byte-for-byte identical for N random inputs.
+///
+/// Override defaults via env vars:
+///   PROTOTEXT_SELFTEST_N    — number of iterations (default 10 000)
+///   PROTOTEXT_SELFTEST_SEED — PRNG seed as decimal u64 (default 0xDEAD_BEEF_CAFE_1234)
+#[test]
+fn selftest_roundtrip() {
+    let n: usize = std::env::var("PROTOTEXT_SELFTEST_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000_000);
+    let seed: u64 = std::env::var("PROTOTEXT_SELFTEST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0xDEAD_BEEF_CAFE_1234);
+
+    let schema = knife_schema();
+    let opts_enc = RenderOpts {
+        assume_binary: true,
+        include_annotations: true,
+        indent: 1,
+    };
+    let opts_dec = RenderOpts {
+        assume_binary: false,
+        include_annotations: false,
+        indent: 1,
+    };
+
+    let mut rng = seed;
+    let mut failures = 0;
+
+    for i in 0..n {
+        let wire = random_bytes(&mut rng);
+        let text = render_as_text(&wire, Some(&schema), opts_enc.clone())
+            .expect("render_as_text panicked");
+        let wire2 = render_as_bytes(&text, opts_dec.clone()).expect("render_as_bytes panicked");
+
+        if wire2 != wire {
+            eprintln!(
+                "FAIL iteration {i}: wire={} reenc={}",
+                wire.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                wire2.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            );
+            eprintln!("  text:\n{}", String::from_utf8_lossy(&text));
+            failures += 1;
+            if failures >= 5 {
+                panic!("selftest: too many failures, stopping early (seed={seed:#x})");
+            }
+        }
+    }
+
+    assert_eq!(
+        failures, 0,
+        "selftest: {failures} failures in {n} iterations (seed={seed:#x})"
+    );
+    eprintln!("selftest: {n} iterations passed (seed={seed:#x})");
+}

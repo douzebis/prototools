@@ -16,18 +16,25 @@ A collection of protobuf utilities written in Rust.
 
 ### `prototext`
 
-Lossless, bidirectional converter between binary protobuf wire format and an
-annotated text representation.
+Lossless, bidirectional converter between binary protobuf wire format and a
+human-readable text representation.
 
-**The core guarantee:** `binary → text → binary` is byte-for-byte identical for
-any input — well-formed, malformed, non-canonical, or schema-unknown.
+Three promises:
+
+1. **Schema-aware** — supply a compiled `.pb` descriptor and a root message
+   type to get field names, proto types, and enum values.  A schema is never
+   required; without one every field is decoded by wire type and field number.
+2. **Lossless round-trip** — `binary → text → binary` is byte-for-byte
+   identical for any input: well-formed, non-canonical, or malformed.
+3. **protoc-compatible** — for canonical protobuf messages the text output is
+   identical to `protoc --decode`.
 
 #### Text format
 
 The text side is a superset of the
 [protobuf text format](https://protobuf.dev/reference/protobuf/textformat-spec/)
 as produced by `protoc`.  Every field line carries an inline annotation comment
-that encodes enough information to reconstruct the exact binary bytes on
+that encodes enough metadata to reconstruct the exact binary bytes on
 re-encoding:
 
 ```
@@ -48,20 +55,10 @@ type: 99  #@ Type(99) = 5; ENUM_UNKNOWN
 ```
 
 The annotation format is documented in
-[`docs/annotation-format.md`](docs/annotation-format.md) (grammar reference
-with annotated examples and a proposed v2 format).
+[`docs/annotation-format.md`](docs/annotation-format.md).
 
-Annotations can be suppressed with `--no-annotations`; the output is then
-mostly\* compatible with `protoc --decode` but cannot be re-encoded losslessly.
-
-#### Schema
-
-A compiled `.pb` descriptor and a root message type can be provided to resolve
-field names and proto types.  Without a schema every field is treated as unknown
-and rendered by field number.
-
-`google.protobuf.*` types are available without supplying a descriptor (embedded
-at compile time).
+`google.protobuf.*` types are available without supplying a descriptor
+(embedded at compile time).
 
 #### Usage
 
@@ -78,7 +75,6 @@ Key flags:
 | `-e` / `--encode` | Text → binary (exclusive with `-d`) |
 | `-D` / `--descriptor PATH` | Compiled `.pb` descriptor file |
 | `-t` / `--type NAME` | Root message type (e.g. `pkg.MyMessage`) |
-| `--no-annotations` | Suppress inline annotations (not round-trippable) |
 | `-o PATH` | Write output to file (single input) |
 | `-O DIR` | Output root directory (batch mode) |
 | `-I DIR` | Input root directory |
@@ -87,7 +83,7 @@ Key flags:
 
 #### Install
 
-From [crates.io](https://crates.io/crates/prototext) (once published):
+From [crates.io](https://crates.io/crates/prototext):
 
 ```
 cargo install prototext
@@ -104,7 +100,7 @@ Both install `prototext` to `~/.cargo/bin/`.
 #### Quick start
 
 The examples below use two tiny fixture files from `fixtures/cases/` in the
-cloned repository.  No schema file is needed — `prototext` decodes them
+cloned repository.  No schema is needed — `prototext` decodes them
 schemalessly, rendering each field by wire type and field number.
 
 **Canonical encoding** — `fixtures/cases/qs_canonical.pb` holds the text
@@ -148,9 +144,6 @@ $ prototext -e fixtures/cases/qs_noncanonical.pb | prototext -d
 1: 42  #@ varint; val_ohb: 1
 ```
 
-The core guarantee holds for both: `text → binary → text` is byte-for-byte
-identical, even for non-canonical encodings.
-
 #### Shell completion
 
 ```bash
@@ -163,9 +156,3 @@ source <(PROTOTEXT_COMPLETE=bash prototext | sed \
 ## License
 
 MIT — see [`LICENSES/MIT.txt`](LICENSES/MIT.txt).
-
----
-
-\* Output differs from `protoc --decode` in that packed
-repeated fields use bracket notation (`floatRp: [1.5, 2.5, 3.5]`) rather than
-one entry per line.
