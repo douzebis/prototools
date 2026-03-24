@@ -6,6 +6,5 @@
 /target/
 /result
 /result-*
-Cargo.lock
 /man/
 /website/public/
