@@ -23,7 +23,7 @@ enum Color {
 }
 
 message EnumCollision {
-  optional float  kind          = 1;  // enum named after primitive keyword
+  optional .float kind          = 1;  // enum named after primitive keyword
   optional Color  color         = 2;  // normal enum, known value
   optional Color  unknown_color = 3;  // will be populated with value 99
   repeated Color  colors        = 4;

@@ -6,180 +6,257 @@
 //! Protocraft: a test-only library for constructing protobuf wire bytes
 //! programmatically, including non-canonical and malformed encodings.
 
+// ── Constructor macros ─────────────────────────────────────────────────────────
+//
+// These macros mirror Python's constructor syntax:
+//   Tag!(field: 44, ohb: 2)      — like Python's Tag('uint64Rp', ohb=2)
+//   Integer!(value: 42, ohb: 4)  — like Python's Integer(42, ohb=4)
+//   RawData!(b"\x80")            — like Python's RawData(b'\x80')
+//   Message!(desc: d)            — like Python's Message(schema=d)
+//   Message!()                   — like Python's Message()
+//
+// All fields not mentioned take their value from the DEFAULT const.
+
+#[cfg(test)]
+macro_rules! Tag {
+    ($($key:ident : $val:expr),* $(,)?) => {
+        #[allow(clippy::needless_update)]
+        { $crate::protocraft::Tag { $($key: $val,)* ..$crate::protocraft::Tag::DEFAULT } }
+    };
+}
+
+#[cfg(test)]
+macro_rules! Integer {
+    ($($field:ident : $val:expr),* $(,)?) => {
+        #[allow(clippy::needless_update)]
+        { $crate::protocraft::Integer { $($field: $val,)* ..$crate::protocraft::Integer::DEFAULT } }
+    }
+}
+
+#[cfg(test)]
+macro_rules! RawData {
+    ($val:expr) => {
+        $crate::protocraft::RawData($val)
+    };
+}
+
+#[cfg(test)]
+#[allow(unused_macros)]
+macro_rules! Message {
+    (desc: $desc:expr) => {
+        $crate::protocraft::Message::with_schema($desc)
+    };
+    () => {
+        $crate::protocraft::Message::new()
+    };
+}
+
 // ── fixture! / msg_fields! macros ─────────────────────────────────────────────
 //
-// These macros are test-only (they reference FieldSpec and MessageDescriptor).
-// They mirror Python's `with Message(schema=...) as name:` syntax.
-// Defined before `pub mod craft_a` so they are in scope within that module.
-//
-// fixture!(name, descriptor_expr; fields...) expands to:
+// fixture!(name, descriptor_expr; entries...) expands to:
 //   pub fn name() -> Vec<u8> { ... }
 //
-// msg_fields! field forms:
-//   group(field; nested...)   — group body inherits parent descriptor
-//   message(field; nested...) — nested message gets field's message_type
-//   uint64/int64/uint32/int32/bool_/enum_/sint32/sint64(field, val)
-//   fixed64/sfixed64/double_(field, val)
-//   bytes_/string(field, val)
-//   fixed32/sfixed32/float_(field, val)
-//   raw(bytes)
+// msg_fields! is an internal tt-muncher that processes field entries.
+// Each entry is a macro call: uint64!(...), string!(...), message!(...), etc.
+//
+// msg_fields! entry forms:
+//   uint64!(field, val)            — varint, wire type 0
+//   int64!(field, val)
+//   uint32!(field, val)
+//   int32!(field, val)
+//   bool_!(field, val)
+//   enum_!(field, val)
+//   sint32!(field, val)            — zigzag-encodes val (i32)
+//   sint64!(field, val)            — zigzag-encodes val (i64)
+//   fixed64!(field, val)           — wire type 1, val: u64
+//   sfixed64!(field, val)          — wire type 1, val: i64
+//   double_!(field, val)           — wire type 1, val: f64
+//   fixed32!(field, val)           — wire type 5, val: u32
+//   sfixed32!(field, val)          — wire type 5, val: i32
+//   float_!(field, val)            — wire type 5, val: f32
+//   string!(field, val)            — wire type 2, val: &str or RawData
+//   bytes_!(field, val)            — wire type 2, val: &[u8] or RawData
+//   message!(field; entries...)    — nested message, wire type 2
+//   group!(field; entries...)      — group, wire types 3/4
+//   group!(start => end; entries...)  — mismatched group tags
+//   packed_varints!(field, [...])  — packed varint field
+//   packed_sint32!(field, [...])
+//   packed_sint64!(field, [...])
+//   packed_float!(field, [...])    — packed f32
+//   packed_double!(field, [...])   — packed f64
+//   packed_fixed32!(field, [...])  — packed u32
+//   packed_sfixed32!(field, [...]) — packed i32
+//   packed_fixed64!(field, [...])  — packed u64
+//   packed_sfixed64!(field, [...]) — packed i64
+//   raw!(bytes)                    — verbatim bytes
 
 #[cfg(test)]
 macro_rules! msg_fields {
     ($m:ident,) => {};
 
-    // group(field; nested...) — body uses the group field's own message_type
-    ($m:ident, group($field:expr; $($nested:tt)*), $($rest:tt)*) => {{
+    // ── Scalar varint entries ─────────────────────────────────────────────────
+
+    ($m:ident, uint64!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.uint64($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, int64!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.int64($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, uint32!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.uint32($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, int32!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.int32($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, bool_!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.bool_($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, enum_!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.enum_($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, sint32!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.sint32($field, $val as i32);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, sint64!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.sint64($field, $val as i64);
+        msg_fields!($m, $($rest)*);
+    }};
+
+    // ── Fixed-width entries ───────────────────────────────────────────────────
+
+    ($m:ident, fixed64!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.fixed64($field, $val as u64);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, sfixed64!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.sfixed64($field, $val as i64);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, double_!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.double_($field, $val as f64);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, fixed32!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.fixed32($field, $val as u32);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, sfixed32!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.sfixed32($field, $val as i32);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, float_!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.float_($field, $val as f32);
+        msg_fields!($m, $($rest)*);
+    }};
+
+    // ── Length-delimited scalar entries ───────────────────────────────────────
+
+    ($m:ident, string!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.string($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, bytes_!($field:expr, $val:expr), $($rest:tt)*) => {{
+        $m.bytes_($field, $val);
+        msg_fields!($m, $($rest)*);
+    }};
+
+    // ── Nested message ────────────────────────────────────────────────────────
+
+    ($m:ident, message!($field:expr; $($nested:tt)*), $($rest:tt)*) => {{
+        let (_fnum, _mdesc) = super::FieldSpec::resolve($field, $m.desc.as_ref());
+        let mut _nm = if let Some(d) = _mdesc {
+            $crate::protocraft::Message::with_schema(d)
+        } else {
+            $crate::protocraft::Message::new()
+        };
+        msg_fields!(_nm, $($nested)*);
+        // Pass $field directly so that Tag { length, length_ohb } are preserved.
+        $m.message($field, _nm);
+        msg_fields!($m, $($rest)*);
+    }};
+
+    // ── Group — single field specifier (start wire_type=3, end wire_type=4) ──
+
+    ($m:ident, group!($field:expr; $($nested:tt)*), $($rest:tt)*) => {{
         let (_fnum, _gdesc) = super::FieldSpec::resolve($field, $m.desc.as_ref());
         let mut _nm = if let Some(d) = _gdesc {
-            Message::with_schema(d)
+            $crate::protocraft::Message::with_schema(d)
         } else {
-            Message::new()
+            $crate::protocraft::Message::new()
         };
         msg_fields!(_nm, $($nested)*);
         $m.group(
-            Tag { field: _fnum, wire_type: 3, ohb: 0 },
-            Tag { field: _fnum, wire_type: 4, ohb: 0 },
+            $crate::protocraft::Tag { field_num: _fnum, wire_type: 3, ..$crate::protocraft::Tag::DEFAULT },
+            $crate::protocraft::Tag { field_num: _fnum, wire_type: 4, ..$crate::protocraft::Tag::DEFAULT },
             _nm,
         );
         msg_fields!($m, $($rest)*);
     }};
 
-    // group(start_tag => end_tag; nested...) — explicit start/end tags (mismatched numbers or ohb)
-    ($m:ident, group($start:expr => $end:expr; $($nested:tt)*), $($rest:tt)*) => {{
-        let mut _nm = Message::new();
+    // ── Group — explicit start => end tags (mismatched field numbers / ohb) ──
+
+    ($m:ident, group!($start:expr => $end:expr; $($nested:tt)*), $($rest:tt)*) => {{
+        let mut _nm = $crate::protocraft::Message::new();
         msg_fields!(_nm, $($nested)*);
         $m.group($start, $end, _nm);
         msg_fields!($m, $($rest)*);
     }};
 
-    // message(field; nested...) — nested gets field's message_type
-    ($m:ident, message($field:expr; $($nested:tt)*), $($rest:tt)*) => {{
-        let (_fnum, _mdesc) = super::FieldSpec::resolve($field, $m.desc.as_ref());
-        let mut _nm = if let Some(d) = _mdesc {
-            Message::with_schema(d)
-        } else {
-            Message::new()
-        };
-        msg_fields!(_nm, $($nested)*);
-        $m.message(_fnum, _nm);
-        msg_fields!($m, $($rest)*);
-    }};
+    // ── Raw bytes ─────────────────────────────────────────────────────────────
 
-    // Scalar field arms.
-    // $field is passed directly to the builder (impl IntoFieldTag), so &str,
-    // integer literals, and Tag { field, wire_type, ohb } all work transparently.
-    ($m:ident, uint64($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.uint64($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, int64($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.int64($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, uint32($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.uint32($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, int32($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.int32($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, bool_($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.bool_($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, enum_($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.enum_($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, sint32($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.sint32($field, $val as i32); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, sint64($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.sint64($field, $val as i64); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, fixed64($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.fixed64($field, $val as u64); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, sfixed64($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.sfixed64($field, $val as i64); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, double_($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.double_($field, $val as f64); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, bytes_($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.bytes_($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, string($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.string($field, $val); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, fixed32($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.fixed32($field, $val as u32); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, sfixed32($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.sfixed32($field, $val as i32); msg_fields!($m, $($rest)*);
-    }};
-    ($m:ident, float_($field:expr, $val:expr), $($rest:tt)*) => {{
-        $m.float_($field, $val as f32); msg_fields!($m, $($rest)*);
-    }};
-
-    // raw bytes (verbatim)
-    ($m:ident, raw($val:expr), $($rest:tt)*) => {{
+    ($m:ident, raw!($val:expr), $($rest:tt)*) => {{
         $m.raw($val);
         msg_fields!($m, $($rest)*);
     }};
 
-    // message_with_len(field, len, len_ohb; nested...) — custom/wrong length
-    ($m:ident, message_with_len($field:expr, $len:expr, $len_ohb:expr; $($nested:tt)*), $($rest:tt)*) => {{
-        let (_fnum, _mdesc) = super::FieldSpec::resolve($field, $m.desc.as_ref());
-        let mut _nm = if let Some(d) = _mdesc {
-            Message::with_schema(d)
-        } else {
-            Message::new()
-        };
-        msg_fields!(_nm, $($nested)*);
-        $m.message_with_len(_fnum, $len, $len_ohb, _nm);
-        msg_fields!($m, $($rest)*);
-    }};
+    // ── Packed repeated field entries ─────────────────────────────────────────
 
-    // string_with_len(field, len; val) — truncated length value
-    ($m:ident, string_with_len($field:expr, $len:expr; $val:expr), $($rest:tt)*) => {{
-        $m.string_with_len($field, $len, $val);
-        msg_fields!($m, $($rest)*);
-    }};
-
-    // string_with_len_ohb(field, ohb; val) — overhanging length bytes
-    ($m:ident, string_with_len_ohb($field:expr, $ohb:expr; $val:expr), $($rest:tt)*) => {{
-        $m.string_with_len_ohb($field, $ohb, $val);
-        msg_fields!($m, $($rest)*);
-    }};
-
-    // packed_varints(field, [Integer, ...]) — packed varint repeated field
-    ($m:ident, packed_varints($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+    ($m:ident, packed_varints!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
         $m.packed_varints($field, &[$($val),*]);
         msg_fields!($m, $($rest)*);
     }};
-
-    // packed_sint32(field, [i32, ...]) — packed zigzag sint32
-    ($m:ident, packed_sint32($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+    ($m:ident, packed_sint32!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
         $m.packed_sint32($field, &[$($val),*]);
         msg_fields!($m, $($rest)*);
     }};
-
-    // packed_sint64(field, [i64, ...]) — packed zigzag sint64
-    ($m:ident, packed_sint64($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+    ($m:ident, packed_sint64!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
         $m.packed_sint64($field, &[$($val),*]);
         msg_fields!($m, $($rest)*);
     }};
-
-    // packed_fixed32(field, [expr, ...]) — packed fixed32/float
-    ($m:ident, packed_fixed32($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+    ($m:ident, packed_float!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+        $m.packed_float($field, vec![$($val),*]);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, packed_double!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+        $m.packed_double($field, vec![$($val),*]);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, packed_fixed32!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
         $m.packed_fixed32($field, vec![$($val),*]);
         msg_fields!($m, $($rest)*);
     }};
-
-    // packed_fixed32_with_len(field, len, [expr, ...]) — packed fixed32 with truncated length
-    ($m:ident, packed_fixed32_with_len($field:expr, $len:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
-        $m.packed_fixed32_with_len($field, $len, vec![$($val),*]);
+    ($m:ident, packed_sfixed32!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+        $m.packed_sfixed32($field, vec![$($val),*]);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, packed_fixed64!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+        $m.packed_fixed64($field, vec![$($val),*]);
+        msg_fields!($m, $($rest)*);
+    }};
+    ($m:ident, packed_sfixed64!($field:expr, [$($val:expr),* $(,)?]), $($rest:tt)*) => {{
+        $m.packed_sfixed64($field, vec![$($val),*]);
         msg_fields!($m, $($rest)*);
     }};
 
-    // Trailing-comma-less last entry: re-invoke with a trailing comma appended.
+    // ── Trailing-comma-less last entry ────────────────────────────────────────
+
     ($m:ident, $($last:tt)+) => {
         msg_fields!($m, $($last)+,);
     };
@@ -188,8 +265,9 @@ macro_rules! msg_fields {
 #[cfg(test)]
 macro_rules! fixture {
     ($name:ident, $schema:expr; $($fields:tt)*) => {
+        #[allow(non_snake_case)]
         pub fn $name() -> Vec<u8> {
-            let mut _m = Message::with_schema($schema);
+            let mut _m = $crate::protocraft::Message::with_schema($schema);
             msg_fields!(_m, $($fields)*);
             _m.build()
         }
@@ -203,102 +281,76 @@ use prost_reflect::{DescriptorPool, Kind, MessageDescriptor};
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
-/// A wire tag with explicit field number, wire type, and optional overhanging bytes.
+/// A wire tag with field specifier, wire type, overhanging bytes, and optional
+/// length/length_ohb overrides for length-delimited fields.
+///
+/// Field resolution at `into_field_tag()` time:
+/// - `field != ""` → if all-digit, use as field number; otherwise name-lookup
+/// - `field == ""` → use `field_num` directly
 #[derive(Clone, Copy)]
 pub struct Tag {
-    pub field: u64,
+    pub field: &'static str,
+    pub field_num: u64,
     pub wire_type: u8,
     pub ohb: u8,
+    pub length: usize,
+    pub length_ohb: u8,
 }
 
 impl Tag {
-    /// Construct a `Tag` with an explicit name resolved at call time.
-    /// Useful for `Tag('fieldName', type=N, ohb=M)` overrides from Python.
-    #[cfg(test)]
-    pub fn named(name: &str, wire_type: u8, ohb: u8, desc: &MessageDescriptor) -> Self {
-        let field = desc
-            .get_field_by_name(name)
-            .unwrap_or_else(|| panic!("field '{}' not found in descriptor", name))
-            .number() as u64;
-        Tag {
-            field,
-            wire_type,
-            ohb,
-        }
-    }
+    /// `wire_type: u8::MAX` in DEFAULT means "use the caller's default wire type".
+    pub const DEFAULT: Self = Self {
+        field: "",
+        field_num: 0,
+        wire_type: u8::MAX,
+        ohb: 0,
+        length: usize::MAX,
+        length_ohb: 0,
+    };
 }
 
 /// An integer value with optional overhanging bytes (0 = canonical).
+///
+/// Exactly one of `unsigned`, `signed`, `zigzag` should be non-zero
+/// (if more than one are non-zero, `into_bytes` panics).
+/// If all are zero the result is a zero varint regardless of which was intended.
+///
+/// - `unsigned`: raw u64 bit pattern — encode as-is.
+/// - `signed`:   i64 value — sign-extend to u64 (`short: false`) or truncate
+///               to i32→u32→u64 (`short: true`).
+/// - `zigzag`:   i64 value — zigzag-encode then store as u64.
+/// - `short`:    only meaningful with `signed`; truncates to 32-bit encoding.
+/// - `ohb`:      overhanging bytes appended after the varint.
 #[derive(Clone, Copy)]
 pub struct Integer {
-    pub value: u64,
+    pub unsigned: u64,
+    pub signed: i64,
+    pub zigzag: i64,
+    pub short: bool,
     pub ohb: u8,
 }
 
-// ── IntoTag / IntoInteger traits ─────────────────────────────────────────────
-
-/// Low-level tag trait used by `encode_tag` and the tag construction API.
-pub trait IntoTag {
-    fn into_tag(self, default_wire_type: u8) -> Tag;
+impl Integer {
+    pub const DEFAULT: Self = Self {
+        unsigned: 0,
+        signed: 0,
+        zigzag: 0,
+        short: false,
+        ohb: 0,
+    };
 }
 
-impl IntoTag for u64 {
-    fn into_tag(self, default_wire_type: u8) -> Tag {
-        Tag {
-            field: self,
-            wire_type: default_wire_type,
-            ohb: 0,
-        }
-    }
-}
-
-impl IntoTag for u32 {
-    fn into_tag(self, default_wire_type: u8) -> Tag {
-        Tag {
-            field: self as u64,
-            wire_type: default_wire_type,
-            ohb: 0,
-        }
-    }
-}
-
-impl IntoTag for i32 {
-    fn into_tag(self, default_wire_type: u8) -> Tag {
-        Tag {
-            field: self as u64,
-            wire_type: default_wire_type,
-            ohb: 0,
-        }
-    }
-}
-
-impl IntoTag for usize {
-    fn into_tag(self, default_wire_type: u8) -> Tag {
-        Tag {
-            field: self as u64,
-            wire_type: default_wire_type,
-            ohb: 0,
-        }
-    }
-}
-
-impl IntoTag for Tag {
-    fn into_tag(self, _default_wire_type: u8) -> Tag {
-        self
-    }
-}
+/// Raw bytes used as a field value, bypassing all encoding.
+/// The tag (and length prefix for LEN fields) is still emitted normally.
+#[derive(Clone, Copy)]
+pub struct RawData<'a>(pub &'a [u8]);
 
 // ── IntoFieldTag: unified field + descriptor resolution for builder methods ───
 //
-// Builder methods accept `impl IntoFieldTag` so that both numeric/Tag arguments
-// and (in test builds) `&str` name-resolved arguments are accepted uniformly.
+// Builder methods accept `impl IntoFieldTag` so that Tag, integers, and
+// (in test builds) &str name-resolved arguments are accepted uniformly.
 
 /// Resolves a field specifier to a `Tag`, using the message descriptor if needed.
-///
-/// Implemented for:
-/// - `Tag`      — passes through wire_type and ohb unchanged.
-/// - Integer types — uses the provided `default_wire_type`.
-/// - `&str` (test only) — resolves field name against `desc`, uses `default_wire_type`.
 pub trait IntoFieldTag {
     fn into_field_tag(
         self,
@@ -319,9 +371,10 @@ macro_rules! impl_into_field_tag_int {
                     #[cfg(not(test))] _desc: Option<&()>,
                 ) -> Tag {
                     Tag {
-                        field: self as u64,
+                        field: "",
+                        field_num: self as u64,
                         wire_type: default_wire_type,
-                        ohb: 0,
+                        ..Tag::DEFAULT
                     }
                 }
             }
@@ -331,38 +384,69 @@ macro_rules! impl_into_field_tag_int {
 
 impl_into_field_tag_int!(u64, u32, u16, u8, i64, i32, i16, usize);
 
+/// Resolve a field name or numeric string to a field number.
+/// - all-digit string → parse as u64
+/// - otherwise → look up by name in `desc`
+#[cfg(test)]
+fn resolve_field_name(name: &str, desc: Option<&MessageDescriptor>) -> u64 {
+    if let Ok(n) = name.parse::<u64>() {
+        return n;
+    }
+    let d = desc.unwrap_or_else(|| {
+        panic!(
+            "no descriptor bound on message, cannot resolve field '{}'",
+            name
+        )
+    });
+    d.get_field_by_name(name)
+        .unwrap_or_else(|| panic!("field '{}' not found in descriptor '{}'", name, d.name()))
+        .number() as u64
+}
+
+/// Resolve a `Tag`'s field specifier to a concrete field number.
+/// - `field != ""`: resolve via `resolve_field_name`
+/// - `field == ""`: use `field_num` directly.
+#[cfg(test)]
+fn resolve_tag_field(tag: &Tag, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag {
+    let field_num = if tag.field.is_empty() {
+        tag.field_num
+    } else {
+        resolve_field_name(tag.field, desc)
+    };
+    Tag {
+        field: "",
+        field_num,
+        wire_type: if tag.wire_type == u8::MAX {
+            default_wire_type
+        } else {
+            tag.wire_type
+        },
+        ..*tag
+    }
+}
+
 impl IntoFieldTag for Tag {
     fn into_field_tag(
         self,
-        _default_wire_type: u8,
-        #[cfg(test)] _desc: Option<&MessageDescriptor>,
+        default_wire_type: u8,
+        #[cfg(test)] desc: Option<&MessageDescriptor>,
         #[cfg(not(test))] _desc: Option<&()>,
     ) -> Tag {
-        self
+        #[cfg(test)]
+        return resolve_tag_field(&self, default_wire_type, desc);
+        #[cfg(not(test))]
+        return self;
     }
 }
 
 #[cfg(test)]
 impl IntoFieldTag for &str {
-    fn into_field_tag(
-        self,
-        default_wire_type: u8,
-        desc: Option<&MessageDescriptor>,
-        // No non-test variant; this impl only exists under #[cfg(test)]
-    ) -> Tag {
-        let d = desc.unwrap_or_else(|| {
-            panic!(
-                "no descriptor bound on message, cannot resolve field '{}'",
-                self
-            )
-        });
-        let fd = d
-            .get_field_by_name(self)
-            .unwrap_or_else(|| panic!("field '{}' not found in descriptor '{}'", self, d.name()));
+    fn into_field_tag(self, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag {
         Tag {
-            field: fd.number() as u64,
+            field: "",
+            field_num: resolve_field_name(self, desc),
             wire_type: default_wire_type,
-            ohb: 0,
+            ..Tag::DEFAULT
         }
     }
 }
@@ -370,11 +454,7 @@ impl IntoFieldTag for &str {
 // ── FieldSpec trait ───────────────────────────────────────────────────────────
 
 /// Resolves a field specifier to `(field_number, nested_descriptor)`.
-///
-/// - `&str` — name lookup against the provided descriptor.
-/// - Integer types — pass-through; no lookup needed.
-///
-/// Used by schema-aware builder methods on `Message`.
+/// Used by schema-aware message/group builder arms.
 #[cfg(test)]
 pub trait FieldSpec {
     fn resolve(self, desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>);
@@ -412,63 +492,157 @@ impl_field_spec_int!(u64, u32, u16, u8, i64, i32, i16, usize);
 
 #[cfg(test)]
 impl FieldSpec for Tag {
-    fn resolve(self, _desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>) {
-        (self.field, None)
-    }
-}
-
-pub trait IntoInteger {
-    fn into_integer(self) -> Integer;
-}
-
-impl IntoInteger for u64 {
-    fn into_integer(self) -> Integer {
-        Integer {
-            value: self,
-            ohb: 0,
+    fn resolve(self, desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>) {
+        if !self.field.is_empty() {
+            // Named field: delegate to &str impl to get nested descriptor too.
+            self.field.resolve(desc)
+        } else {
+            (self.field_num, None)
         }
     }
 }
 
-impl IntoInteger for i64 {
-    fn into_integer(self) -> Integer {
-        Integer {
-            value: self as u64,
-            ohb: 0,
-        }
+// ── IntoBytes: encodes a field value to wire bytes ────────────────────────────
+
+pub trait IntoBytes {
+    fn into_bytes(self) -> Vec<u8>;
+}
+
+impl IntoBytes for u64 {
+    fn into_bytes(self) -> Vec<u8> {
+        encode_varint_ohb(self, 0)
+    }
+}
+impl IntoBytes for i64 {
+    fn into_bytes(self) -> Vec<u8> {
+        encode_varint_ohb(self as u64, 0)
+    }
+}
+impl IntoBytes for u32 {
+    fn into_bytes(self) -> Vec<u8> {
+        encode_varint_ohb(self as u64, 0)
+    }
+}
+impl IntoBytes for i32 {
+    fn into_bytes(self) -> Vec<u8> {
+        encode_varint_ohb(self as i64 as u64, 0)
+    }
+}
+impl IntoBytes for bool {
+    fn into_bytes(self) -> Vec<u8> {
+        encode_varint_ohb(self as u64, 0)
+    }
+}
+impl IntoBytes for Integer {
+    fn into_bytes(self) -> Vec<u8> {
+        let nonzero_count =
+            (self.unsigned != 0) as u8 + (self.signed != 0) as u8 + (self.zigzag != 0) as u8;
+        assert!(
+            nonzero_count <= 1,
+            "Integer: at most one of unsigned/signed/zigzag may be non-zero"
+        );
+        let value = if self.signed != 0 {
+            if self.short {
+                self.signed as i32 as u32 as u64
+            } else {
+                self.signed as u64
+            }
+        } else if self.zigzag != 0 {
+            let v = self.zigzag;
+            ((v << 1) ^ (v >> 63)) as u64
+        } else {
+            self.unsigned
+        };
+        encode_varint_ohb(value, self.ohb)
+    }
+}
+impl<'a> IntoBytes for RawData<'a> {
+    fn into_bytes(self) -> Vec<u8> {
+        self.0.to_vec()
     }
 }
 
-impl IntoInteger for u32 {
-    fn into_integer(self) -> Integer {
-        Integer {
-            value: self as u64,
-            ohb: 0,
+// ── Per-kind varint traits ────────────────────────────────────────────────────
+//
+// Each proto varint kind gets its own trait so that bare integer literals are
+// unambiguous at call sites (e.g. `uint64!("f", 3)` infers `3` as `u64`).
+// Each trait is implemented for the natural primitive, `Integer` (for ohb
+// overrides), and `RawData` (escape-hatch for malformed-varint fixtures).
+
+macro_rules! define_varint_trait {
+    ($trait:ident, $prim:ty, $conv:expr) => {
+        pub trait $trait {
+            fn into_bytes(self) -> Vec<u8>;
         }
+        impl $trait for $prim {
+            fn into_bytes(self) -> Vec<u8> {
+                ($conv)(self)
+            }
+        }
+        impl $trait for Integer {
+            fn into_bytes(self) -> Vec<u8> {
+                IntoBytes::into_bytes(self)
+            }
+        }
+        impl<'_a> $trait for RawData<'_a> {
+            fn into_bytes(self) -> Vec<u8> {
+                self.0.to_vec()
+            }
+        }
+    };
+}
+
+define_varint_trait!(IntoInt32, i32, |v: i32| encode_varint_ohb(
+    v as i64 as u64,
+    0
+));
+define_varint_trait!(IntoInt64, i64, |v: i64| encode_varint_ohb(v as u64, 0));
+define_varint_trait!(IntoUint32, u32, |v: u32| encode_varint_ohb(v as u64, 0));
+define_varint_trait!(IntoUint64, u64, |v: u64| encode_varint_ohb(v, 0));
+define_varint_trait!(IntoBool, bool, |v: bool| encode_varint_ohb(v as u64, 0));
+define_varint_trait!(IntoEnum, i32, |v: i32| encode_varint_ohb(
+    v as i64 as u64,
+    0
+));
+
+// ── IntoStringPayload / IntoBytesPayload ──────────────────────────────────────
+//
+// `into_payload` returns `(bytes, raw)` where `raw = true` means the bytes
+// replace the *entire* length-delimited encoding (length prefix + payload),
+// and only the tag is prepended.  This mirrors Python's behaviour where
+// `RawData` as a field value bypasses both length encoding and payload
+// encoding, emitting only the raw bytes after the tag.
+
+pub trait IntoStringPayload {
+    fn into_payload(self) -> (Vec<u8>, bool);
+}
+impl IntoStringPayload for &str {
+    fn into_payload(self) -> (Vec<u8>, bool) {
+        (self.as_bytes().to_vec(), false)
+    }
+}
+impl<'a> IntoStringPayload for RawData<'a> {
+    fn into_payload(self) -> (Vec<u8>, bool) {
+        (self.0.to_vec(), true)
     }
 }
 
-impl IntoInteger for i32 {
-    fn into_integer(self) -> Integer {
-        Integer {
-            value: self as i64 as u64,
-            ohb: 0,
-        }
+pub trait IntoBytesPayload {
+    fn into_payload(self) -> (Vec<u8>, bool);
+}
+impl IntoBytesPayload for &[u8] {
+    fn into_payload(self) -> (Vec<u8>, bool) {
+        (self.to_vec(), false)
     }
 }
-
-impl IntoInteger for bool {
-    fn into_integer(self) -> Integer {
-        Integer {
-            value: self as u64,
-            ohb: 0,
-        }
+impl<const N: usize> IntoBytesPayload for &[u8; N] {
+    fn into_payload(self) -> (Vec<u8>, bool) {
+        (self.to_vec(), false)
     }
 }
-
-impl IntoInteger for Integer {
-    fn into_integer(self) -> Integer {
-        self
+impl<'a> IntoBytesPayload for RawData<'a> {
+    fn into_payload(self) -> (Vec<u8>, bool) {
+        (self.0.to_vec(), true)
     }
 }
 
@@ -483,16 +657,13 @@ pub fn encode_varint_ohb(value: u64, ohb: u8) -> Vec<u8> {
         let byte = (v & 0x7F) as u8;
         v >>= 7;
         if v == 0 {
-            // Last real byte: set MSB if we still have ohb bytes to emit.
             if ohb == 0 {
                 out.push(byte);
                 break;
             } else {
                 out.push(byte | 0x80);
                 // Emit ohb - 1 continuation bytes of 0x80, then one 0x00.
-                for _ in 0..(ohb - 1) {
-                    out.push(0x80);
-                }
+                out.extend(std::iter::repeat_n(0x80u8, (ohb - 1) as usize));
                 out.push(0x00);
                 break;
             }
@@ -603,6 +774,12 @@ pub struct Message {
     pub desc: Option<MessageDescriptor>,
 }
 
+impl Default for Message {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Message {
     pub fn new() -> Self {
         Message {
@@ -646,73 +823,49 @@ impl Message {
 
     // ── Varint fields (wire type 0) ──────────────────────────────────────────
 
-    fn add_varint_field(&mut self, tag: Tag, value: Integer) {
+    fn add_varint_bytes(&mut self, tag: Tag, bytes: Vec<u8>) {
         self.buf
-            .extend(encode_tag(tag.field, tag.wire_type, tag.ohb));
-        self.buf.extend(encode_varint_ohb(value.value, value.ohb));
+            .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+        self.buf.extend(bytes);
     }
 
-    pub fn int32(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn int32(&mut self, field: impl IntoFieldTag, value: impl IntoInt32) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
-    pub fn int64(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn int64(&mut self, field: impl IntoFieldTag, value: impl IntoInt64) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
-    pub fn uint32(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn uint32(&mut self, field: impl IntoFieldTag, value: impl IntoUint32) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
-    pub fn uint64(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn uint64(&mut self, field: impl IntoFieldTag, value: impl IntoUint64) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
-    pub fn bool_(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn bool_(&mut self, field: impl IntoFieldTag, value: impl IntoBool) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
-    pub fn enum_(&mut self, field: impl IntoFieldTag, value: impl IntoInteger) {
-        self.add_varint_field(
-            field.into_field_tag(0, self.desc_ref()),
-            value.into_integer(),
-        );
+    pub fn enum_(&mut self, field: impl IntoFieldTag, value: impl IntoEnum) {
+        self.add_varint_bytes(field.into_field_tag(0, self.desc_ref()), value.into_bytes());
     }
 
     pub fn sint32(&mut self, field: impl IntoFieldTag, value: i32) {
         let encoded = encode_sint32(value);
-        self.add_varint_field(
+        self.add_varint_bytes(
             field.into_field_tag(0, self.desc_ref()),
-            Integer {
-                value: encoded,
-                ohb: 0,
-            },
+            encode_varint_ohb(encoded, 0),
         );
     }
 
     pub fn sint64(&mut self, field: impl IntoFieldTag, value: i64) {
         let encoded = encode_sint64(value);
-        self.add_varint_field(
+        self.add_varint_bytes(
             field.into_field_tag(0, self.desc_ref()),
-            Integer {
-                value: encoded,
-                ohb: 0,
-            },
+            encode_varint_ohb(encoded, 0),
         );
     }
 
@@ -720,8 +873,9 @@ impl Message {
 
     fn add_fixed64_field(&mut self, tag: Tag, bytes: [u8; 8]) {
         self.buf
-            .extend(encode_tag(tag.field, tag.wire_type, tag.ohb));
-        self.buf.extend_from_slice(&bytes);
+            .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+        let emit_len = tag.length.min(8);
+        self.buf.extend_from_slice(&bytes[..emit_len]);
     }
 
     pub fn fixed64(&mut self, field: impl IntoFieldTag, value: u64) {
@@ -747,59 +901,49 @@ impl Message {
 
     // ── Length-delimited fields (wire type 2) ────────────────────────────────
 
-    fn add_len_field(&mut self, tag: Tag, payload: &[u8], len_override: Option<(usize, u8)>) {
+    fn add_len_field(&mut self, tag: Tag, payload: &[u8]) {
         self.buf
-            .extend(encode_tag(tag.field, tag.wire_type, tag.ohb));
-        let (len, len_ohb) = len_override.unwrap_or((payload.len(), 0));
-        self.buf.extend(encode_varint_ohb(len as u64, len_ohb));
-        if len < payload.len() {
-            self.buf.extend_from_slice(&payload[..len]);
+            .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+        let len = if tag.length == usize::MAX {
+            payload.len()
         } else {
-            self.buf.extend_from_slice(payload);
+            tag.length
+        };
+        let len_ohb = tag.length_ohb;
+        self.buf.extend(encode_varint_ohb(len as u64, len_ohb));
+        let emit_len = len.min(payload.len());
+        self.buf.extend_from_slice(&payload[..emit_len]);
+    }
+
+    pub fn bytes_(&mut self, field: impl IntoFieldTag, value: impl IntoBytesPayload) {
+        let tag = field.into_field_tag(2, self.desc_ref());
+        let (payload, raw) = value.into_payload();
+        if raw {
+            self.buf
+                .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+            self.buf.extend_from_slice(&payload);
+        } else {
+            self.add_len_field(tag, &payload);
         }
     }
 
-    pub fn bytes_(&mut self, field: impl IntoFieldTag, value: &[u8]) {
+    pub fn string(&mut self, field: impl IntoFieldTag, value: impl IntoStringPayload) {
         let tag = field.into_field_tag(2, self.desc_ref());
-        self.add_len_field(tag, value, None);
-    }
-
-    pub fn string(&mut self, field: impl IntoFieldTag, value: &str) {
-        self.bytes_(field, value.as_bytes());
-    }
-
-    /// Append a string field with a custom length value (possibly truncated or wrong).
-    pub fn string_with_len(&mut self, field: impl IntoFieldTag, len: usize, value: &str) {
-        let tag = field.into_field_tag(2, self.desc_ref());
-        self.add_len_field(tag, value.as_bytes(), Some((len, 0)));
-    }
-
-    /// Append a string field whose length varint has extra overhanging bytes.
-    /// The length value is the actual string length; `len_ohb` is the number
-    /// of overhanging varint bytes appended to the length encoding.
-    pub fn string_with_len_ohb(&mut self, field: impl IntoFieldTag, len_ohb: u8, value: &str) {
-        let tag = field.into_field_tag(2, self.desc_ref());
-        self.add_len_field(tag, value.as_bytes(), Some((value.len(), len_ohb)));
+        let (payload, raw) = value.into_payload();
+        if raw {
+            self.buf
+                .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+            self.buf.extend_from_slice(&payload);
+        } else {
+            self.add_len_field(tag, &payload);
+        }
     }
 
     /// Append a nested message (length-delimited).
     pub fn message(&mut self, field: impl IntoFieldTag, nested: Message) {
         let payload = nested.build();
         let tag = field.into_field_tag(2, self.desc_ref());
-        self.add_len_field(tag, &payload, None);
-    }
-
-    /// Append a nested message with a custom length value (possibly wrong).
-    pub fn message_with_len(
-        &mut self,
-        field: impl IntoFieldTag,
-        len: usize,
-        len_ohb: u8,
-        nested: Message,
-    ) {
-        let payload = nested.build();
-        let tag = field.into_field_tag(2, self.desc_ref());
-        self.add_len_field(tag, &payload, Some((len, len_ohb)));
+        self.add_len_field(tag, &payload);
     }
 
     // ── Group fields (wire type 3 + 4) ───────────────────────────────────────
@@ -809,21 +953,25 @@ impl Message {
         let start_tag = start.into_field_tag(3, self.desc_ref());
         let end_tag = end.into_field_tag(4, self.desc_ref());
         self.buf.extend(encode_tag(
-            start_tag.field,
+            start_tag.field_num,
             start_tag.wire_type,
             start_tag.ohb,
         ));
         self.buf.extend(nested.build());
-        self.buf
-            .extend(encode_tag(end_tag.field, end_tag.wire_type, end_tag.ohb));
+        self.buf.extend(encode_tag(
+            end_tag.field_num,
+            end_tag.wire_type,
+            end_tag.ohb,
+        ));
     }
 
     // ── Fixed32 fields (wire type 5) ─────────────────────────────────────────
 
     fn add_fixed32_field(&mut self, tag: Tag, bytes: [u8; 4]) {
         self.buf
-            .extend(encode_tag(tag.field, tag.wire_type, tag.ohb));
-        self.buf.extend_from_slice(&bytes);
+            .extend(encode_tag(tag.field_num, tag.wire_type, tag.ohb));
+        let emit_len = tag.length.min(4);
+        self.buf.extend_from_slice(&bytes[..emit_len]);
     }
 
     pub fn fixed32(&mut self, field: impl IntoFieldTag, value: u32) {
@@ -854,9 +1002,9 @@ impl Message {
         let tag = field.into_field_tag(2, self.desc_ref());
         let mut payload = Vec::new();
         for v in values {
-            payload.extend(encode_varint_ohb(v.value, v.ohb));
+            payload.extend(IntoBytes::into_bytes(*v));
         }
-        self.add_len_field(tag, &payload, None);
+        self.add_len_field(tag, &payload);
     }
 
     /// Packed sint32 (zigzag encoded).
@@ -864,8 +1012,8 @@ impl Message {
         let integers: Vec<Integer> = values
             .iter()
             .map(|&v| Integer {
-                value: encode_sint32(v),
-                ohb: 0,
+                unsigned: encode_sint32(v),
+                ..Integer::DEFAULT
             })
             .collect();
         self.packed_varints(field, &integers);
@@ -876,58 +1024,52 @@ impl Message {
         let integers: Vec<Integer> = values
             .iter()
             .map(|&v| Integer {
-                value: encode_sint64(v),
-                ohb: 0,
+                unsigned: encode_sint64(v),
+                ..Integer::DEFAULT
             })
             .collect();
         self.packed_varints(field, &integers);
     }
 
-    /// Packed fixed64 / sfixed64 / double.
-    pub fn packed_fixed64(&mut self, field: impl IntoFieldTag, bytes_list: Vec<[u8; 8]>) {
+    /// Packed float (wire type 2, fixed32 payload).
+    pub fn packed_float(&mut self, field: impl IntoFieldTag, values: Vec<f32>) {
         let tag = field.into_field_tag(2, self.desc_ref());
-        let mut payload = Vec::new();
-        for b in bytes_list {
-            payload.extend_from_slice(&b);
-        }
-        self.add_len_field(tag, &payload, None);
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
     }
 
-    pub fn packed_fixed64_with_len(
-        &mut self,
-        field: impl IntoFieldTag,
-        len: usize,
-        bytes_list: Vec<[u8; 8]>,
-    ) {
+    /// Packed double (wire type 2, fixed64 payload).
+    pub fn packed_double(&mut self, field: impl IntoFieldTag, values: Vec<f64>) {
         let tag = field.into_field_tag(2, self.desc_ref());
-        let mut payload = Vec::new();
-        for b in bytes_list {
-            payload.extend_from_slice(&b);
-        }
-        self.add_len_field(tag, &payload, Some((len, 0)));
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
     }
 
-    /// Packed fixed32 / sfixed32 / float.
-    pub fn packed_fixed32(&mut self, field: impl IntoFieldTag, bytes_list: Vec<[u8; 4]>) {
+    /// Packed fixed32 (wire type 2, u32 payload).
+    pub fn packed_fixed32(&mut self, field: impl IntoFieldTag, values: Vec<u32>) {
         let tag = field.into_field_tag(2, self.desc_ref());
-        let mut payload = Vec::new();
-        for b in bytes_list {
-            payload.extend_from_slice(&b);
-        }
-        self.add_len_field(tag, &payload, None);
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
     }
 
-    pub fn packed_fixed32_with_len(
-        &mut self,
-        field: impl IntoFieldTag,
-        len: usize,
-        bytes_list: Vec<[u8; 4]>,
-    ) {
+    /// Packed sfixed32 (wire type 2, i32 payload).
+    pub fn packed_sfixed32(&mut self, field: impl IntoFieldTag, values: Vec<i32>) {
         let tag = field.into_field_tag(2, self.desc_ref());
-        let mut payload = Vec::new();
-        for b in bytes_list {
-            payload.extend_from_slice(&b);
-        }
-        self.add_len_field(tag, &payload, Some((len, 0)));
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
+    }
+
+    /// Packed fixed64 (wire type 2, u64 payload).
+    pub fn packed_fixed64(&mut self, field: impl IntoFieldTag, values: Vec<u64>) {
+        let tag = field.into_field_tag(2, self.desc_ref());
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
+    }
+
+    /// Packed sfixed64 (wire type 2, i64 payload).
+    pub fn packed_sfixed64(&mut self, field: impl IntoFieldTag, values: Vec<i64>) {
+        let tag = field.into_field_tag(2, self.desc_ref());
+        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.add_len_field(tag, &payload);
     }
 }

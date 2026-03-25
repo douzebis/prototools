@@ -9,7 +9,7 @@ use clap_complete::CompleteEnv;
 use prototext::Cli;
 
 #[cfg(test)]
-mod protocraft;
+pub mod protocraft;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 

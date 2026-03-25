@@ -57,7 +57,7 @@ let
   rustClippy = crane.cargoClippy (commonArgs // {
     pname              = "prototools-clippy";
     cargoArtifacts     = depsCache;
-    cargoClippyExtraArgs = "-- --deny warnings";
+    cargoClippyExtraArgs = "--all-targets -- --deny warnings";
   });
 
   # ---------------------------------------------------------------------------

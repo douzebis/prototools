@@ -703,3 +703,38 @@ message = "SwissArmyKnife"
 name    = "string_escapes_bytes"
 schema  = "fixtures/schemas/knife.pb"
 message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_fixed64_tag"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_string_wrong_len"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_packed_fixed64"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_packed_double"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_packed_fixed32"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_packed_sfixed32"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
+
+[[fixture]]
+name    = "test_packed_sfixed64"
+schema  = "fixtures/schemas/knife.pb"
+message = "SwissArmyKnife"
