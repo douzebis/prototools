@@ -39,6 +39,11 @@ walkdir         = "2"
 protox = "0.9"
 prost  = "0.14"
 
+[[test]]
+name    = "protocraft"
+path    = "tests/protocraft.rs"
+harness = false
+
 [dev-dependencies]
 prost-reflect = "0.16"
 toml        = "0.8"
