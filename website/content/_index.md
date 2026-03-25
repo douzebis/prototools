@@ -15,6 +15,8 @@ human-readable text.
 
 ## Design documentation
 
+- [Design](design) — Architecture, data flow, and key design decisions
+- [Performance](performance) — Benchmark results and optimisation history
 - [protoc --decode compatibility](protoc-decode-compatibility) — Compatibility
   analysis with `protoc --decode` output
 - [protoc --decode anomalous input](protoc-decode-anomalous-input) — How
