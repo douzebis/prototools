@@ -317,7 +317,7 @@ impl Tag {
 ///
 /// - `unsigned`: raw u64 bit pattern — encode as-is.
 /// - `signed`:   i64 value — sign-extend to u64 (`short: false`) or truncate
-///               to i32→u32→u64 (`short: true`).
+///   to i32→u32→u64 (`short: true`).
 /// - `zigzag`:   i64 value — zigzag-encode then store as u64.
 /// - `short`:    only meaningful with `signed`; truncates to 32-bit encoding.
 /// - `ohb`:      overhanging bytes appended after the varint.

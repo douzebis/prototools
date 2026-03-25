@@ -19,6 +19,8 @@ use protocraft::craft_a;
 
 use std::io::Write;
 
+type FixtureRegistry = &'static [(&'static str, fn() -> Vec<u8>)];
+
 fn usage(prog: &str) -> ! {
     eprintln!("Usage: {prog} [-f <registry>] <fixture-name>");
     eprintln!("  -f <registry>   craft_a (default)");
@@ -67,7 +69,7 @@ fn main() {
         usage_ok(prog);
     });
 
-    let fixtures: &[(&str, fn() -> Vec<u8>)] = match registry {
+    let fixtures: FixtureRegistry = match registry {
         "craft_a" => craft_a::ALL_FIXTURES,
         other => {
             eprintln!("{prog}: unknown registry '{other}' (known: craft_a)");
