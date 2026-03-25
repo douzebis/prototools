@@ -157,3 +157,6 @@ For full usage see `man prototext` or the
 ## License
 
 MIT — see [`LICENSES/MIT.txt`](LICENSES/MIT.txt).
+
+Dependencies are governed by their own licenses; see [`Cargo.lock`](Cargo.lock)
+for the full dependency tree.
