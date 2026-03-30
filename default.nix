@@ -1,11 +1,12 @@
-# SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> <fred@s3ns.io> (GitHub: @douzebis)
-# SPDX-FileCopyrightText: 2025 - 2026 Thales Cloud Sécurisé
+# SPDX-FileCopyrightText: 2025 - 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: 2025 - 2026 THALES CLOUD SECURISE SAS
 #
 # SPDX-License-Identifier: MIT
 
 { pkgs ? (import (fetchTarball {
-    url    = "https://nixos.org/channels/nixos-25.11/nixexprs.tar.xz";
-    sha256 = "0qc4yszky11gjspiqh3q3jam1w4gysfrv4384lq9zf5q0afk83wv";
+    # nixos-25.11 @ 2026-03-30 (git rev 1073dad219cb244572b74da2b20c7fe39cb3fa9e)
+    url    = "https://github.com/NixOS/nixpkgs/archive/1073dad219cb244572b74da2b20c7fe39cb3fa9e.tar.gz";
+    sha256 = "0xgsq0cfjnl2axbzzw579jrjq9g8mhbgjgfippl3qx03im636p5l";
   }) {}) }:
 
 let
