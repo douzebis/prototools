@@ -250,6 +250,12 @@ let
     '';
   };
 
+  # Single target that forces the entire CI closure in dependency order.
+  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototools → prototext-codec.
+  ci = pkgs.linkFarmFromDrvs "ci" [
+    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec
+  ];
+
 in
 {
   default              = prototools;
@@ -259,5 +265,6 @@ in
   rust-clippy-pyo3     = rustClippyPyo3;
   rust-tests           = rustTests;
   prototext-codec      = prototextCodec;
+  ci                   = ci;
   dev-shell            = dev-shell;
 }

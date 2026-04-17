@@ -12,35 +12,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Fast gates: formatting, lints, unit tests.
-  # Runs on Linux only — Nix derivations are hermetic and platform-independent
-  # for the lint/test phase.
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-25.11
-
-      - name: Check formatting (rustfmt)
-        run: nix-build -A rust-fmt
-
-      - name: Check lints (clippy)
-        run: nix-build -A rust-clippy
-
-      - name: Check lints (clippy — pyo3 extension)
-        run: nix-build -A rust-clippy-pyo3
-
-      - name: Run tests
-        run: nix-build -A rust-tests
-
-  # Build the release binary and the Python extension on both Linux and macOS.
-  build:
+  ci:
+    name: CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: check
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -52,8 +26,5 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-25.11
 
-      - name: Build prototext
-        run: nix-build -A prototools
-
-      - name: Build prototext-codec (Python extension)
-        run: nix-build -A prototext-codec
+      - name: Build and test
+        run: nix-build -A ci
