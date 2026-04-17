@@ -92,7 +92,7 @@ let
   prototools = crane.buildPackage (commonArgs // {
     pname          = "prototools";
     version        = "0.1.0";
-    cargoArtifacts = depsCache;
+    cargoArtifacts = rustTests;
     cargoExtraArgs = "-p prototext";
 
     nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [ pkgs.installShellFiles ];
@@ -160,7 +160,7 @@ let
   # Compile the cdylib and run post_build to generate the .pyi stub.
   prototextExtension = crane.buildPackage (pyo3CommonArgs // {
     pname          = "prototext-codec-ext";
-    cargoArtifacts = pyo3DepsCache;
+    cargoArtifacts = rustClippyPyo3;
     cargoExtraArgs = "-p prototext_codec --lib";
     doCheck        = false;
     # Clear stale Cargo fingerprints so the pyo3 build script re-runs here.
