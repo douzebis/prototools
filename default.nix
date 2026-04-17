@@ -7,7 +7,9 @@
     # nixos-25.11 @ 2026-03-30 (git rev 1073dad219cb244572b74da2b20c7fe39cb3fa9e)
     url    = "https://github.com/NixOS/nixpkgs/archive/1073dad219cb244572b74da2b20c7fe39cb3fa9e.tar.gz";
     sha256 = "0xgsq0cfjnl2axbzzw579jrjq9g8mhbgjgfippl3qx03im636p5l";
-  }) {}) }:
+  }) {})
+, pythonPkgs ? pkgs.python312Packages
+}:
 
 let
   crane = pkgs.callPackage (pkgs.fetchgit {
@@ -119,6 +121,68 @@ let
   });
 
   # ---------------------------------------------------------------------------
+  # PyO3 extension — prototext_codec Python package
+  # ---------------------------------------------------------------------------
+  pythonBin        = pythonPkgs.python.withPackages (_: []);
+  pythonExecutable = "${pythonBin}/bin/python";
+
+  # commonArgs extended with the three values required for a PyO3 Crane build.
+  pyo3CommonArgs = commonArgs // {
+    env.PYO3_PYTHON    = pythonExecutable;
+    RUSTFLAGS          = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
+    nativeBuildInputs  = commonArgs.nativeBuildInputs ++ [ pythonBin ];
+  };
+
+  # Dependency cache for the pyo3 crate — built once, reused by the extension.
+  # RUSTFLAGS must match exactly between here and prototextExtension so that
+  # Cargo fingerprints align and .rlib artifacts are reused (not recompiled).
+  pyo3DepsCache = crane.buildDepsOnly (pyo3CommonArgs // {
+    pname          = "prototext-codec-deps";
+    cargoExtraArgs = "-p prototext_codec";
+    doCheck        = false;
+    # Skip the default `cargo check` pass: the build pass below produces .rlib
+    # files that are a strict superset of what check produces.
+    buildPhaseCargoCommand = "cargoWithProfile build -p prototext_codec";
+  });
+
+  # Compile the cdylib and run post_build to generate the .pyi stub.
+  prototextExtension = crane.buildPackage (pyo3CommonArgs // {
+    pname          = "prototext-codec-ext";
+    cargoArtifacts = pyo3DepsCache;
+    cargoExtraArgs = "-p prototext_codec --lib";
+    doCheck        = false;
+    # Clear stale Cargo fingerprints so the pyo3 build script re-runs here.
+    preBuild = ''
+      rm -rf target/release/build/prototext_codec-*
+      rm -rf target/release/.fingerprint/prototext_codec-*
+    '';
+    postBuild = ''
+      echo "Generating prototext_codec_lib stubs..."
+      cargo run --release -p prototext_codec --bin prototext_post_build
+    '';
+    installPhase = ''
+      mkdir -p $out/artifacts/
+      cp target/release/libprototext_codec_lib.so $out/artifacts/prototext_codec_lib.so
+      cp prototext-pyo3/prototext_codec_lib.pyi    $out/artifacts/prototext_codec_lib.pyi
+    '';
+  });
+
+  # Python package wrapping the .so and .pyi into a wheel.
+  prototextCodec = pythonPkgs.buildPythonPackage {
+    pname   = "prototext_codec";
+    version = "0.1.0";
+    format  = "pyproject";
+    src     = ./prototext-pyo3;
+    buildInputs = [ pythonPkgs.hatchling prototextExtension ];
+    patchPhase = ''
+      cp ${prototextExtension}/artifacts/prototext_codec_lib.pyi \
+         prototext_codec_lib/prototext_codec_lib.pyi
+      cp ${prototextExtension}/artifacts/prototext_codec_lib.so  \
+         prototext_codec_lib/prototext_codec_lib.so
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
   # Development shell
   # ---------------------------------------------------------------------------
   dev-shell = pkgs.mkShell {
@@ -174,10 +238,11 @@ let
 
 in
 {
-  default      = prototools;
-  prototools   = prototools;
-  rust-fmt     = rustFmt;
-  rust-clippy  = rustClippy;
-  rust-tests   = rustTests;
-  dev-shell    = dev-shell;
+  default         = prototools;
+  prototools      = prototools;
+  rust-fmt        = rustFmt;
+  rust-clippy     = rustClippy;
+  rust-tests      = rustTests;
+  prototext-codec = prototextCodec;
+  dev-shell       = dev-shell;
 }
