@@ -34,7 +34,7 @@ from .text import COMMENT, BlockLine
 
 @dataclass(frozen=True)
 class Anomaly:
-    tag: str       # "proto3" | "downconvert" | "editions" | "error"
+    tag: str       # "proto3" | "downconvert" | "editions" | "render"
     severity: str  # "OMITTED" | "WARNING"
     stderr: str    # format-string printed to stderr via cli_warning()
     comment: str   # format-string for the body of the // OMITTED/WARNING line
@@ -73,7 +73,7 @@ ANOMALIES: dict[str, Anomaly] = {
     ),
 
     "A3": Anomaly(
-        tag="error",
+        tag="render",
         severity="OMITTED",
         stderr="'{file}': failed to render file options: {exc_type}: {exc_msg}",
         comment="file options could not be rendered ({exc_type}: {exc_msg})",
@@ -119,7 +119,7 @@ ANOMALIES: dict[str, Anomaly] = {
     # -- C. Field level -------------------------------------------------------
 
     "C1": Anomaly(
-        tag="error",
+        tag="render",
         severity="WARNING",
         stderr="field '{field}': non-canonical map entry '{entry}' (found fields: {found}); rendered as repeated message — wire semantics differ",
         comment="non-canonical map entry '{entry}'; rendered as repeated message — wire semantics differ from original",
@@ -147,7 +147,7 @@ ANOMALIES: dict[str, Anomaly] = {
     ),
 
     "C5": Anomaly(
-        tag="error",
+        tag="render",
         severity="WARNING",
         stderr="field '{name}': failed to render options: {exc_type}: {exc_msg}",
         comment="field options could not be rendered ({exc_type}: {exc_msg})",
@@ -156,14 +156,14 @@ ANOMALIES: dict[str, Anomaly] = {
     # -- D. Option rendering --------------------------------------------------
 
     "D1": Anomaly(
-        tag="error",
+        tag="render",
         severity="WARNING",
         stderr="option '{name}': unexpected value type {type}; rendered as 0",
         comment="option '{name}': unexpected value type {type} — rendered as 0, value may be wrong",
     ),
 
     "D2": Anomaly(
-        tag="error",
+        tag="render",
         severity="OMITTED",
         stderr="option '{name}': unrecognised descriptor type; omitting",
         comment="option '{name}' has unrecognised descriptor type",
