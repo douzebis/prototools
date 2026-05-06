@@ -244,6 +244,10 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             extension_proto = cast(FieldDescriptorProto, e)
             extension = ReFieldDescriptorProto(ctx, extension_proto, parent=self)
             self.targets.add(extension)
+            self.contains.add(extension)
+
+            extendee = ReDescriptorProto.from_ref(ctx, Ref(extension.extendee))
+            extension.targets.add(extendee)
 
         # Message enums
         for e in self.enum_type:
