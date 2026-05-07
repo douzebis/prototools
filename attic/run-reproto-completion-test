@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Simulate bash tab-completion for reproto and capture the result.
+#
+# Usage:
+#   run-reproto-completion-test $'reproto docs/\t\t'
+#   run-reproto-completion-test $'reproto -I ../some/path/ bor\t'
+#
+# Use $'...\t...' (ANSI-C quoting) to embed real tab characters in the
+# command string — bash does NOT interpret \t inside ordinary double quotes.
+# Each character, including tabs, is sent to the terminal one at a time so
+# that readline sees them exactly as if a human typed them.
+#
+# Requirements:
+#   - tmux must be in PATH (add via nix-shell -p tmux or equivalent)
+#   - /etc/bashrc must source bash-completion (provides _get_comp_words_by_ref)
+#     so that the simulated shell matches the developer's real interactive shell
+#
+# Why tmux?
+#   expect was tried first but struggled to send literal tab characters
+#   reliably through the pseudo-terminal.  tmux send-keys delivers each
+#   keystroke directly to the pane's pty; tmux capture-pane then reads back
+#   the rendered screen content (plain text, no escape sequences).
+#
+# Why character-by-character sending?
+#   tmux send-keys interprets its argument as a sequence of key *names* unless
+#   -l (literal) is used.  A tab character embedded in a string is passed as-is
+#   to the pty only when sent as a single-character argument — splitting by
+#   character sidesteps quoting and key-name ambiguity entirely.
+#
+# Known limitation:
+#   The 2-second sleep after sourcing /etc/bashrc is conservative; on slow
+#   machines the shell may not be ready in time.  Increase if completions
+#   appear empty when they should not be.
+
+CMDLINE="$1"
+COMPLETIONS_SH="/home/experiment/code/oss-prototools/reproto/src/reproto/completions.sh"
+SESSION="run_reproto_test_$$"
+
+tmux new-session -d -s "$SESSION" -x 220 -y 50 "bash --norc --noprofile -i"
+sleep 0.5
+
+# Source /etc/bashrc to get bash-completion (defines _get_comp_words_by_ref
+# and friends), then source reproto's own completion script.
+tmux send-keys -t "$SESSION" "source /etc/bashrc && source $COMPLETIONS_SH" Enter
+sleep 2
+
+# Send each character of CMDLINE individually.  Tab characters in CMDLINE
+# (inserted via $'...\t...') are sent as single-char strings; tmux forwards
+# them as ASCII 0x09 to the pty, which readline interprets as TAB.
+i=0
+while [[ $i -lt ${#CMDLINE} ]]; do
+    tmux send-keys -t "$SESSION" "${CMDLINE:$i:1}"
+    (( i++ ))
+done
+
+sleep 1
+tmux capture-pane -t "$SESSION" -p
+tmux kill-session -t "$SESSION" 2>/dev/null

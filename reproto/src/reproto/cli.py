@@ -63,7 +63,7 @@ def _complete_paths(
     base_dirs: list[str],
     *,
     dirs_only: bool = False,
-    suffix: str | None = None,
+    suffixes: tuple[str, ...] | None = None,
 ) -> list[CompletionItem]:
     '''Shared path completion logic.'''
     completions = []
@@ -89,9 +89,9 @@ def _complete_paths(
 
             rel_path = prefix / name
             if child.is_dir():
-                completions.append(str(rel_path))
+                completions.append(str(rel_path) + '/')
             elif not dirs_only:
-                if suffix is None or name.endswith(suffix):
+                if suffixes is None or any(name.endswith(s) for s in suffixes):
                     completions.append(str(rel_path))
 
     completions.sort()
@@ -101,7 +101,10 @@ def _complete_paths(
 def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Custom completer for PB_FILES argument (relative to -I).'''
     include_dirs = list(ctx.params.get('pb_path') or ['.'])
-    return _complete_paths(incomplete, include_dirs, suffix='.pb')
+    items = _complete_paths(incomplete, include_dirs, suffixes=('.pb', '.textpb'))
+    # Re-tag as 'arg_I' so the shell script knows these paths are relative to
+    # a -I directory (possibly outside CWD) and must not use -o filenames.
+    return [CompletionItem(value=c.value, type='arg_I') for c in items]
 
 
 def complete_any_path(ctx: click.Context, param: click.Parameter, incomplete: str):
@@ -116,12 +119,12 @@ def complete_dir_path(ctx: click.Context, param: click.Parameter, incomplete: st
 
 def complete_yaml_path(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Complete .yaml files and directories relative to cwd.'''
-    return _complete_paths(incomplete, ['.'], suffix='.yaml')
+    return _complete_paths(incomplete, ['.'], suffixes=('.yaml',))
 
 
 def complete_py_path(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Complete .py files and directories relative to cwd.'''
-    return _complete_paths(incomplete, ['.'], suffix='.py')
+    return _complete_paths(incomplete, ['.'], suffixes=('.py',))
 
 
 _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',
