@@ -159,8 +159,8 @@ let
   # checkPhase asserts that fmt, clippy, and tests all passed by referencing
   # their store paths (Nix fails the build if any derivation is missing).
   # ---------------------------------------------------------------------------
-  prototools = crane.buildPackage (protocArgs // {
-    pname          = "prototools";
+  prototext = crane.buildPackage (protocArgs // {
+    pname          = "prototext";
     cargoArtifacts = rustTests;
     cargoExtraArgs = "--no-default-features -p prototext";
     nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
@@ -183,7 +183,7 @@ let
     '';
 
     meta = with pkgs.lib; {
-      description  = "Command-line utilities for Protocol Buffer messages (prototext binary)";
+      description  = "Command-line tool for Protocol Buffer messages (prototext binary)";
       longDescription = ''
         prototools is a collection of CLI utilities for working with Protocol
         Buffer messages.  The first tool, prototext, converts between binary
@@ -370,7 +370,7 @@ let
     buildInputs = [
       pkgs.protobuf
       pkgs.buf
-      prototools
+      prototext
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
@@ -444,12 +444,12 @@ EOF
   user-shell = pkgs.mkShell {
     name = "prototools-user";
 
-    buildInputs = [ prototools reproto ];
+    buildInputs = [ prototext reproto ];
 
     shellHook = ''
       export NIXSHELL_REPO="${toString ./.}"
-      export MANPATH="${prototools}/share/man:${reproto}/share/man:''${MANPATH:-}"
-      source ${prototools}/share/bash-completion/completions/prototext.bash
+      export MANPATH="${prototext}/share/man:${reproto}/share/man:''${MANPATH:-}"
+      source ${prototext}/share/bash-completion/completions/prototext.bash
       source ${reproto}/share/bash-completion/completions/reproto.bash
     '';
   };
@@ -582,16 +582,23 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
     '';
   };
 
+  # Bundle: prototext + reproto together (the full prototools suite).
+  prototools = pkgs.symlinkJoin {
+    name   = "prototools";
+    paths  = [ prototext reproto ];
+  };
+
   # Single target that forces the entire CI closure in dependency order.
-  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototools → prototext-codec → reproto.
+  # nix-build -A ci builds fmt → clippy → clippy-pyo3 → tests → prototext → prototext-codec → reproto.
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rustFmt rustClippy rustClippyPyo3 rustTests prototools prototextCodec reproto reprotoTests pythonLint pythonRuff
+    rustFmt rustClippy rustClippyPyo3 rustTests prototext prototextCodec reproto reprotoTests pythonLint pythonRuff
   ];
 
 in
 {
   default              = ci;
   prototools           = prototools;
+  prototext            = prototext;
   rust-fmt             = rustFmt;
   rust-clippy          = rustClippy;
   rust-clippy-pyo3     = rustClippyPyo3;
