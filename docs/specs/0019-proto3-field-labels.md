@@ -85,8 +85,9 @@ respectively, and require no new empirical research.
    descriptor; emit a `cli_warning` per field.  Add a `should_render_default()`
    helper to `syntax.py`.
 6. In both proto2 and proto3 modes, emit `[json_name = "..."]` only when the
-   stored value differs from the auto-derived camelCase of the field name.
-   Add a `camel_case()` utility and a `should_render_json_name()` helper to
+   stored value is non-empty and differs from the auto-derived camelCase of the
+   field name (using protoc's exact algorithm — see spec 0039).
+   Add a `_camel_case()` utility and a `should_render_json_name()` helper to
    `syntax.py`.
 7. When `ctx.target_syntax == "proto3"`,render weak
    imports as plain `import` and emit a `cli_warning` per occurrence.  Add
@@ -194,27 +195,38 @@ protoc never sets `default_value` in proto3 descriptors.
 
 ### `json_name` (spec 0015 §16)
 
+> **Note:** The camelCase algorithm described in the original version of this
+> section was incorrect.  See spec 0039 for the full findings and the correct
+> specification.  The summary below reflects the corrected understanding.
+
 `FieldDescriptorProto.json_name` is always set by protoc in both proto2 and
-proto3.  `HasField("json_name")` is always `True` — it cannot be used to
-detect a user-supplied override.
+proto3.  It cannot be used to detect a user-supplied override — protoc writes
+the same value (user-supplied or auto-derived) either way, and `source_code_info`
+(the only other signal) is absent from most `.pb` files in practice.
 
-The auto-derived camelCase of a field name is computed by:
+The auto-derived camelCase of a field name follows protoc's character-by-character
+algorithm (from `descriptor.cc`): consume an underscore and capitalize the next
+character only when that next character is an ASCII letter.  When the character
+after `_` is a digit or the string ends, the underscore is kept as-is.  This
+differs from a naive split-on-underscore approach in several edge cases:
 
-1. Split the name on `_`.
-2. Keep the first component as-is (lowercased).
-3. Capitalize the first letter of each subsequent component.
-4. Join without separator.
+| Input | Correct (protoc) | Wrong (split-based) |
+|---|---|---|
+| `foo_` | `'foo_'` | `'foo'` |
+| `foo_1bar` | `'foo_1bar'` | `'foo1bar'` |
+| `foo__bar` | `'foo_Bar'` | `'fooBar'` |
+| `FOO_BAR` | `'FOOBAR'` | `'FOOBar'` |
 
-Examples: `field_name` → `fieldName`, `already_camel` → `alreadyCamel`,
-`x` → `x`, `under_score_heavy` → `underScoreHeavy`.
+Additionally, when `json_name` is absent from the `.pb`, the Python protobuf
+library returns `""` (the default for an unset `string` field).  Emitting
+`[json_name = ""]` is syntactically invalid; an empty value must be treated as
+absent.
 
-Emit `[json_name = "..."]` only when the stored `json_name` value differs
-from the auto-derived camelCase of `field.name`.  When they are equal —
-which is the common case — omit the option entirely, matching the source
-proto and protoc's own behaviour.
+Emit `[json_name = "..."]` only when:
+1. `field.json_name` is non-empty, **and**
+2. the stored value differs from the auto-derived camelCase of `field.name`.
 
-This fix applies in both proto2 and proto3 modes (it is not gated on
-`--force-proto2-output`).
+This fix applies in both proto2 and proto3 modes.
 
 **Empirically confirmed** (mockup `f09_json_name.proto`): protoc stores the
 user-supplied value when it differs from the auto-derived name, and the
@@ -435,31 +447,42 @@ def _camel_case(name: str) -> str:
     """
     Derive the default JSON name (camelCase) for a proto field name.
 
-    Rules: split on '_', keep first component as-is, capitalize the
-    first letter of each subsequent non-empty component, join.
+    Implements protoc's exact character-by-character algorithm: consume an
+    underscore and capitalize the next character only when that next character
+    is an ASCII letter.  When the character after '_' is a digit or the string
+    ends, the underscore is kept as-is.
 
-    Examples:
-        'field_name'        → 'fieldName'
-        'already_camel'     → 'alreadyCamel'
-        'x'                 → 'x'
-        'under_score_heavy' → 'underScoreHeavy'
-        '__foo'             → 'Foo'   (leading underscores produce empty
-                                       first component, next is capitalized)
+    Examples (matching protoc):
+        'field_name'   → 'fieldName'
+        'x'            → 'x'
+        'foo_'         → 'foo_'      (trailing underscore kept)
+        'foo_1bar'     → 'foo_1bar'  (underscore before digit kept)
+        'foo__bar'     → 'foo_Bar'   (first _ kept, second consumed)
+        'FOO_BAR'      → 'FOOBAR'    (no lowercasing of existing caps)
+
+    See spec 0039 for the full edge-case analysis.
     """
-    parts = name.split('_')
-    if not parts:
-        return name
-    return parts[0] + ''.join(p.capitalize() for p in parts[1:] if p)
+    result = []
+    i = 0
+    while i < len(name):
+        if name[i] == '_' and i + 1 < len(name) and name[i + 1].isalpha():
+            result.append(name[i + 1].upper())
+            i += 2
+        else:
+            result.append(name[i])
+            i += 1
+    return ''.join(result)
 
 
 def should_render_json_name(field) -> bool:
     """
     Return True iff [json_name = "..."] should be emitted for this field.
 
-    Emit only when the stored json_name differs from the auto-derived
-    camelCase of field.name.  This is syntax-independent.
+    Emit only when the stored json_name is non-empty (empty means absent from
+    the .pb) and differs from the auto-derived camelCase of field.name.
+    This is syntax-independent.
     """
-    return field.json_name != _camel_case(field.name)
+    return bool(field.json_name) and field.json_name != _camel_case(field.name)
 ```
 
 `should_render_default()` returns `False` for proto3; the caller in

@@ -183,17 +183,32 @@ def should_render_default(ctx: Context, field: FieldDescriptorProto, features: R
 def _camel_case(name: str) -> str:
     """Derive the default JSON name (camelCase) for a proto field name.
 
-    Matches protoc's algorithm: split on '_', keep first component as-is,
-    capitalize the first letter of each subsequent non-empty component, join.
+    Mirrors protoc's ToJsonName() from descriptor.cc: each '_' sets a
+    capitalize-next flag and is dropped; the next non-'_' character is
+    uppercased if the flag is set (str.upper() is a no-op on digits).
+    No first-character lowercasing — ToJsonName differs from ToCamelCase.
 
-    Examples:
-        'field_name'        -> 'fieldName'
-        'already_camel'     -> 'alreadyCamel'
-        'x'                 -> 'x'
-        'under_score_heavy' -> 'underScoreHeavy'
+    Examples (matching protoc):
+        'field_name'   -> 'fieldName'
+        'x'            -> 'x'
+        'foo_'         -> 'foo'       (trailing underscore dropped)
+        'foo_1bar'     -> 'foo1bar'   (underscore before digit dropped)
+        'foo__bar'     -> 'fooBar'    (both underscores consumed)
+        'FOO_BAR'      -> 'FOOBAR'    (no lowercasing of existing caps)
+
+    See spec 0039 for the full edge-case analysis.
     """
-    parts = name.split('_')
-    return parts[0] + ''.join(p.capitalize() for p in parts[1:] if p)
+    result = []
+    capitalize_next = False
+    for c in name:
+        if c == '_':
+            capitalize_next = True
+        elif capitalize_next:
+            result.append(c.upper())
+            capitalize_next = False
+        else:
+            result.append(c)
+    return ''.join(result)
 
 
 def should_render_json_name(field: FieldDescriptorProto) -> bool:
@@ -201,8 +216,11 @@ def should_render_json_name(field: FieldDescriptorProto) -> bool:
 
     Emit only when the stored json_name differs from the auto-derived camelCase
     of field.name.  Syntax-independent — applies in both proto2 and proto3.
+
+    An empty json_name means the .pb did not populate the field (protobuf
+    default); treat it as absent rather than rendering json_name = "".
     """
-    return field.json_name != _camel_case(field.name)
+    return bool(field.json_name) and field.json_name != _camel_case(field.name)
 
 
 def _edition_name(edition: 'Edition.ValueType') -> str:
