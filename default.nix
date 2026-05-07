@@ -438,6 +438,23 @@ EOF
   '';
 
   # ---------------------------------------------------------------------------
+  # User shell — plain shell with prototext and reproto installed.
+  # Activated by plain `nix-shell` (via shell.nix).
+  # ---------------------------------------------------------------------------
+  user-shell = pkgs.mkShell {
+    name = "prototools-user";
+
+    buildInputs = [ prototools reproto ];
+
+    shellHook = ''
+      export NIXSHELL_REPO="${toString ./.}"
+      export MANPATH="${prototools}/share/man:${reproto}/share/man:''${MANPATH:-}"
+      source ${prototools}/share/bash-completion/completions/prototext.bash
+      source ${reproto}/share/bash-completion/completions/reproto.bash
+    '';
+  };
+
+  # ---------------------------------------------------------------------------
   # Development shell
   # ---------------------------------------------------------------------------
   dev-shell = pkgs.mkShell {
@@ -586,5 +603,6 @@ in
   python-lint          = pythonLint;
   python-ruff          = pythonRuff;
   ci                   = ci;
+  user-shell           = user-shell;
   dev-shell            = dev-shell;
 }
