@@ -87,6 +87,9 @@ class Options:
     # introduce symbols already registered in the pool are pruned and a warning
     # is emitted.  Set to True to revert to legacy behaviour.
     keep_duplicates: bool = False
+    # Warning mode (spec 0041): when True, each warning occurrence is printed
+    # immediately; when False (default), W1/W4/W5 are buffered and squashed.
+    detailed_warnings: bool = False
 
 class Context(Options):
     def __init__(
@@ -102,6 +105,7 @@ class Context(Options):
         # Per-file syntax state (updated by re_file.py at the start of each render)
         self.syntax: str = "proto2"         # input file syntax
         self.target_syntax: str = "proto2"  # output syntax
+        self.current_file: str = ""         # name of the .proto file being rendered
 
         # Edition feature defaults extracted from the variant's descriptor.pb
         # at startup (spec 0025). Maps feature field name -> sorted list of

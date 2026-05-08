@@ -401,7 +401,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             out.extend(formatted)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
             from .anomalies import report
-            out.append(report("C5", depth, name=self.name,
+            out.append(report("C5", depth, name=self.name, file=ctx.current_file,
                                exc_type=type(e).__name__, exc_msg=str(e)))
             out.append(BlockLine(string, depth))
 

@@ -267,6 +267,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         from .syntax import fdp_syntax
         ctx.syntax = fdp_syntax(self.this)
+        ctx.current_file = self.name
         if not ctx.force_proto2_output and ctx.syntax in ("proto2", "proto3", "editions"):
             ctx.target_syntax = ctx.syntax
         else:

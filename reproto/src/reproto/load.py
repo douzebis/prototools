@@ -184,10 +184,8 @@ def _load_files(
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_bytes()))
                         return loaded_files
-    logger.warning(
-        "File '%s' is missing, skipping", rel_path,
-        extra={"cli_warn": True}
-    )
+    from lib.warnings import get_collector
+    get_collector().w1(str(rel_path))
     return []
 
 

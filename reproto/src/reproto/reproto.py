@@ -207,26 +207,41 @@ def reproto(
         options: Options | None = None,
 ) -> Context | None:
     """Reconstruct .proto files from descriptor sets."""
+    import warnings as _warnings
+    from lib.warnings import get_collector
+
     ctx = _make_context(options, prunings)
     topo = Topology()
 
-    seed_files = _phase1_load_files(ctx, in_repo, seed_paths, topo)
-    if not topo.files:
-        return None
+    # Suppress RuntimeWarnings from descriptor_database about symbol conflicts.
+    # _prune_if_duplicate() handles these proactively; the warnings are redundant.
+    _warnings.filterwarnings(
+        'ignore',
+        message=r'.*already defined in file.*|.*Please remove the leading.*',
+        category=RuntimeWarning,
+        module=r'google\.protobuf\.descriptor_database',
+    )
 
-    _phase2_build_pool(ctx, topo, seed_files)
-    _phase3_build_graph(ctx, topo)
+    try:
+        seed_files = _phase1_load_files(ctx, in_repo, seed_paths, topo)
+        if not topo.files:
+            return None
 
-    if ctx.dump_resolved_features:
-        _dump_resolved_features_yaml(ctx, ctx.dump_resolved_features)
-        return ctx
+        _phase2_build_pool(ctx, topo, seed_files)
+        _phase3_build_graph(ctx, topo)
 
-    _phase4_pruning(ctx, prunings)
-    _phase5_reachability(ctx, seeds, topo)
-    _phase6_summoning(ctx)
-    _phase7_output(ctx, out_repo)
+        if ctx.dump_resolved_features:
+            _dump_resolved_features_yaml(ctx, ctx.dump_resolved_features)
+            return ctx
 
-    if ctx.graph is not None:
-        show_graph(ctx, output_path=ctx.graph)
+        _phase4_pruning(ctx, prunings)
+        _phase5_reachability(ctx, seeds, topo)
+        _phase6_summoning(ctx)
+        _phase7_output(ctx, out_repo)
+
+        if ctx.graph is not None:
+            show_graph(ctx, output_path=ctx.graph)
+    finally:
+        get_collector().flush()
 
     return ctx

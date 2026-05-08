@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from lib.warnings import cli_warning
+from lib.warnings import cli_warning, get_collector
 
 from .text import COMMENT, BlockLine
 
@@ -75,8 +75,8 @@ ANOMALIES: dict[str, Anomaly] = {
     "A3": Anomaly(
         tag="render",
         severity="OMITTED",
-        stderr="'{file}': failed to render file options: {exc_type}: {exc_msg}",
-        comment="file options could not be rendered ({exc_type}: {exc_msg})",
+        stderr="'{file}': failed to render file options: {exc_msg}",
+        comment="file options could not be rendered ({exc_msg})",
     ),
 
     "A4": Anomaly(
@@ -149,8 +149,8 @@ ANOMALIES: dict[str, Anomaly] = {
     "C5": Anomaly(
         tag="render",
         severity="WARNING",
-        stderr="field '{name}': failed to render options: {exc_type}: {exc_msg}",
-        comment="field options could not be rendered ({exc_type}: {exc_msg})",
+        stderr="'{file}' field '{name}': failed to render options: {exc_msg}",
+        comment="field options could not be rendered ({exc_msg})",
     ),
 
     # -- D. Option rendering --------------------------------------------------
@@ -175,8 +175,37 @@ ANOMALIES: dict[str, Anomaly] = {
 # Public helper
 # ---------------------------------------------------------------------------
 
+# Prefix injected by the C extension on pool lookup failures — not user-actionable.
+_POOL_PREFIX = "Couldn't build proto file into descriptor pool: "
+_RESOLVE_PREFIX = "couldn't resolve name '"
+_DEPENDS_PREFIX = "Depends on file '"
+
+
+def _classify_exc(exc_msg: str) -> tuple[str, str | None, str | None]:
+    """Parse a pool TypeError message into (clean_msg, w4_type, w5_file).
+
+    Returns:
+        clean_msg: exc_msg with the pool boilerplate prefix stripped.
+        w4_type:   the unresolvable type name, or None.
+        w5_file:   the missing dependency file path, or None.
+    """
+    msg = exc_msg
+    if msg.startswith(_POOL_PREFIX):
+        msg = msg[len(_POOL_PREFIX):]
+    w4: str | None = None
+    w5: str | None = None
+    if msg.startswith(_RESOLVE_PREFIX):
+        # "couldn't resolve name '.pkg.Type'"
+        w4 = msg[len(_RESOLVE_PREFIX):].rstrip("'")
+    elif msg.startswith(_DEPENDS_PREFIX):
+        # "Depends on file 'path/to/file.proto', but it has not been loaded"
+        inner = msg[len(_DEPENDS_PREFIX):]
+        w5 = inner.split("'")[0]
+    return msg, w4, w5
+
+
 def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
-    """Emit a cli_warning and return a BlockLine for the .proto comment.
+    """Emit a warning and return a BlockLine for the .proto comment.
 
     Args:
         code:   Anomaly identifier, e.g. "C3".  Must be a key in ANOMALIES.
@@ -191,8 +220,27 @@ def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
         For WARNING anomalies, insert it immediately before the degraded line.
     """
     anomaly = ANOMALIES[code]
-    ctx = _Ignore(kwargs)
-    cli_warning(anomaly.stderr.format_map(ctx))
+
+    # For A3/C5: classify W4/W5 and route through WarningCollector.
+    exc_msg: str = kwargs.get('exc_msg', '')
+    if code in ('A3', 'C5') and exc_msg:
+        clean_msg, w4, w5 = _classify_exc(exc_msg)
+        collector = get_collector()
+        if w4 is not None:
+            collector.w4(w4)
+        elif w5 is not None:
+            collector.w5(w5)
+        else:
+            # Other render error — print immediately via cli_warning.
+            file_ctx = f"'{kwargs.get('file', '')}' " if kwargs.get('file') else ''
+            field_ctx = f"field '{kwargs.get('name', '')}': " if kwargs.get('name') else ''
+            cli_warning(f"{file_ctx}{field_ctx}failed to render options: {clean_msg}")
+        kwargs = dict(kwargs, exc_msg=clean_msg)
+    else:
+        ctx_map = _Ignore(kwargs)
+        if anomaly.stderr:
+            cli_warning(anomaly.stderr.format_map(ctx_map))
+
     prefix = f'{anomaly.severity}[{anomaly.tag}]:'
-    body = anomaly.comment.format_map(ctx)
+    body = anomaly.comment.format_map(_Ignore(kwargs))
     return BlockLine(f'{prefix} {body}', depth, COMMENT)

@@ -152,6 +152,7 @@ _SECTIONS: dict[str, str] = {
     '--go-root':             'Rendering',
     '--phase2-plugin':       'Advanced',
     '--keep-duplicates':     'Advanced',
+    '--detailed-warnings':   'Diagnostics',
     '--quiet':               'Diagnostics',
     '--graph':               'Diagnostics',
     '--debug':               'Diagnostics',
@@ -357,6 +358,15 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--detailed-warnings',
+    is_flag=True,
+    help=(
+        'Print every warning occurrence immediately as it is emitted '
+        '(default: squash repeated warnings and show a count summary at the end).'
+    ),
+)
+
+@click.option(
     '--quiet',
     is_flag=True,
     help='Suppress progress messages',
@@ -405,6 +415,7 @@ def main(
         redact_orphans: bool,
         go_root: str,
         keep_duplicates: bool,
+        detailed_warnings: bool,
         quiet: bool,
         graph: Path | None,
         phase2_plugin: str | None,
@@ -418,6 +429,8 @@ def main(
     from reproto import Fqdn
     from .reproto import DescriptorProtoMissingError, Options, reproto
     from . import variant as variant_mod
+    from lib.warnings import configure_collector
+    configure_collector(detailed=detailed_warnings)
 
     # --output-root is required unless --dump-resolved-features is set.
     if proto_out is None and not dump_resolved_features:
@@ -483,6 +496,7 @@ def main(
         go_root=go_root,
         graph=graph,
         keep_duplicates=keep_duplicates,
+        detailed_warnings=detailed_warnings,
         quiet=quiet,
         redact_comments=redact_comments,
         redact_orphans=redact_orphans,

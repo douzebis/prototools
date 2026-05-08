@@ -317,7 +317,7 @@ def _phase1_load_files(
                         known_files[name] = file
                         qfiles: list[QualFile] = load_from_path(ctx, in_repo, Path(name))
                         if len(qfiles) != 1:
-                            cli_warning(f"Skipping unreadable file: {name}")
+                            pass  # W1 warning already emitted by load_from_path
                         else:
                             ReFile(topo, qfiles[0])
                             if ctx.debug:
@@ -445,11 +445,12 @@ def _prune_if_duplicate(
     by_file: dict[str, int] = {}
     for fname in conflicts.values():
         by_file[fname] = by_file.get(fname, 0) + 1
-    parts = [f"W3: file:{n.name} pruned — duplicate symbols with:"]
+    parts = [f"Warning: file:{n.name} pruned — duplicate symbols with:"]
     for fname, count in sorted(by_file.items()):
         noun = "symbol" if count == 1 else "symbols"
         parts.append(f"    file:{fname} ({count} {noun})")
-    cli_warning('\n'.join(parts))
+    from lib.warnings import get_collector
+    get_collector().w3('\n'.join(parts))
     n.is_pruned = True
     return True
 
@@ -924,9 +925,16 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
             try:
                 content = re_fdp.render(ctx)[0].flush(ctx)
             except (KeyError, ValueError, TypeError, AttributeError) as e:
-                cli_warning(f"Failed to render {re_fdp.name}: {type(e).__name__}: {e}")
+                from lib.warnings import get_collector
+                from .anomalies import _classify_exc
+                clean_msg, w4, w5 = _classify_exc(str(e))
+                if w4 is not None:
+                    get_collector().w4(w4)
+                elif w5 is not None:
+                    get_collector().w5(w5)
+                else:
+                    cli_warning(f"Failed to render {re_fdp.name}: {clean_msg}")
                 if ctx.debug:
-                    pass
                     cli_warning(str(re_fdp.this))
                 continue
 
