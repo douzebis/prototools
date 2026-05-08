@@ -31,11 +31,17 @@ nix-build            # result/bin/prototext
 
 Man page and shell completions are installed automatically.
 
-Or enter a development shell with `prototext` on `PATH`, completions and man
+Or enter the user shell with `prototext` on `PATH`, completions and man
 page activated for the current session:
 
 ```shell
-nix-shell
+nix-shell          # enters shell.nix → user-shell
+```
+
+For working on prototools itself (adds pyright, pytest, source-tree wiring):
+
+```shell
+nix-shell dev-shell.nix
 ```
 
 ### cargo install

@@ -27,6 +27,10 @@ Reconstructs `.proto` source files from compiled protobuf descriptor sets.
 
 → See [`reproto/README.md`](reproto/README.md)
 
+### `protoscan`
+
+Scans binary files for embedded protobuf `FileDescriptorProto` blobs.
+
 ## License
 
 MIT — see [`LICENSES/MIT.txt`](LICENSES/MIT.txt).

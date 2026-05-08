@@ -38,13 +38,21 @@ Key features:
 ### NixOS / nix-shell
 
 reproto depends on `prototext_codec`, a compiled Rust extension that is
-built as part of the prototools Nix derivation. The recommended way to
-install is via nix-shell:
+built as part of the prototools Nix derivation.
+
+**User shell** — `reproto` on `PATH`, man page and completions activated:
 
 ```shell
 git clone https://github.com/douzebis/prototools
 cd prototools
-nix-shell
+nix-shell          # enters shell.nix → user-shell
+```
+
+**Development shell** — adds pyright, pytest, and source-tree wiring for
+working on reproto itself:
+
+```shell
+nix-shell dev-shell.nix
 ```
 
 ## Quick start
@@ -108,8 +116,9 @@ python -m reproto.cli [OPTIONS] PB_FILES...
 
 ## Running the tests
 
-From the repository root inside a nix-shell:
+From the repository root inside the development shell:
 
 ```shell
+nix-shell dev-shell.nix
 python -m pytest reproto/src/reproto/tests/ -x -q
 ```
