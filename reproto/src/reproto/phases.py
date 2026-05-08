@@ -71,7 +71,6 @@ def import_annotations(modules: list[str], resource_root: str | None = None) -> 
     for full_module_name in modules:
         try:
             importlib.import_module(full_module_name)
-            cli_info(f"Module '{full_module_name}' imported successfully.")
         except ModuleNotFoundError:
             cli_warning(f"Module '{full_module_name}' not found.")
 
@@ -397,6 +396,64 @@ def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
         )
 
 
+def _extract_fdp_symbols(fdp: FileDescriptorProto) -> list[str]:
+    """Return all fully-qualified symbol names defined in fdp.
+
+    Mirrors the logic of descriptor_database._ExtractSymbols, which is not
+    part of the public API.  We need this to probe the pool_db for conflicts
+    before calling pool_db.Add().
+    """
+    pkg = fdp.package
+    prefix = pkg if pkg else ''
+
+    def _collect(
+        messages: list[DescriptorProto],
+        enums: list[EnumDescriptorProto],
+        parent: str,
+    ) -> list[str]:
+        syms: list[str] = []
+        for m in messages:
+            fqn = f'{parent}.{m.name}' if parent else m.name
+            syms.append(fqn)
+            syms.extend(_collect(list(m.nested_type), list(m.enum_type), fqn))
+        for e in enums:
+            syms.append(f'{parent}.{e.name}' if parent else e.name)
+        return syms
+
+    return _collect(list(fdp.message_type), list(fdp.enum_type), prefix)
+
+
+def _prune_if_duplicate(
+    ctx: Context,
+    n: ReFile,
+    fdp: FileDescriptorProto,
+) -> bool:
+    """Check fdp for symbols already registered in pool_db.
+
+    If any conflicts are found, emit a W3 warning, mark n as pruned, and
+    return True (caller should skip pool_db.Add).  Returns False otherwise.
+    """
+    conflicts: dict[str, str] = {}
+    for sym in _extract_fdp_symbols(fdp):
+        try:
+            existing = ctx.pool_db.FindFileContainingSymbol(sym)
+            conflicts[sym] = existing.name
+        except KeyError:
+            pass
+    if not conflicts:
+        return False
+    by_file: dict[str, int] = {}
+    for fname in conflicts.values():
+        by_file[fname] = by_file.get(fname, 0) + 1
+    parts = [f"W3: file:{n.name} pruned — duplicate symbols with:"]
+    for fname, count in sorted(by_file.items()):
+        noun = "symbol" if count == 1 else "symbols"
+        parts.append(f"    file:{fname} ({count} {noun})")
+    cli_warning('\n'.join(parts))
+    n.is_pruned = True
+    return True
+
+
 def _phase2_build_pool(
     ctx: Context,
     topo: Topology,
@@ -522,6 +579,8 @@ def _phase2_build_pool(
                                 phase2_plugin(ctx, fdp)
                                 patch_go_package(ctx, fdp)
                                 _strip_self_dependency(fdp)
+                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                    continue
                                 ctx.pool_db.Add(fdp)
                             case FileDescriptorProto():
                                 # - Update the pool of descriptors
@@ -536,6 +595,8 @@ def _phase2_build_pool(
                                 phase2_plugin(ctx, fdp)
                                 patch_go_package(ctx, fdp)
                                 _strip_self_dependency(fdp)
+                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                    continue
                                 ctx.pool_db.Add(fdp)
 
                     case bytes():
@@ -550,6 +611,8 @@ def _phase2_build_pool(
                                     phase2_plugin(ctx, fdp)
                                     patch_go_package(ctx, fdp)
                                     _strip_self_dependency(fdp)
+                                    if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                        continue
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor
@@ -563,6 +626,8 @@ def _phase2_build_pool(
                                     phase2_plugin(ctx, fdp)
                                     patch_go_package(ctx, fdp)
                                     _strip_self_dependency(fdp)
+                                    if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                        continue
                                     ctx.pool_db.Add(fdp)
                                 except TypeError as e:
                                     # NOTE: TypeError can occur when attempting to add a descriptor

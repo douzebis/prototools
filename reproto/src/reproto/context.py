@@ -83,6 +83,10 @@ class Options:
     # Hidden diagnostic flag (spec 0025): when set to a proto file name, skip
     # rendering and dump resolved FeatureSet YAML for that file to stdout.
     dump_resolved_features: str = ""
+    # Duplicate-symbol pruning (spec 0041): when False (default), files that
+    # introduce symbols already registered in the pool are pruned and a warning
+    # is emitted.  Set to True to revert to legacy behaviour.
+    keep_duplicates: bool = False
 
 class Context(Options):
     def __init__(

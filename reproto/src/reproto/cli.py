@@ -151,6 +151,7 @@ _SECTIONS: dict[str, str] = {
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
     '--phase2-plugin':       'Advanced',
+    '--keep-duplicates':     'Advanced',
     '--quiet':               'Diagnostics',
     '--graph':               'Diagnostics',
     '--debug':               'Diagnostics',
@@ -346,6 +347,16 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--keep-duplicates',
+    is_flag=True,
+    help=(
+        'Do not prune files whose symbols conflict with already-loaded files '
+        '(legacy behaviour; by default conflicting files are silently pruned '
+        'and a warning is emitted).'
+    ),
+)
+
+@click.option(
     '--quiet',
     is_flag=True,
     help='Suppress progress messages',
@@ -393,6 +404,7 @@ def main(
         redact_comments: bool,
         redact_orphans: bool,
         go_root: str,
+        keep_duplicates: bool,
         quiet: bool,
         graph: Path | None,
         phase2_plugin: str | None,
@@ -470,6 +482,7 @@ def main(
         dry_run=dry_run,
         go_root=go_root,
         graph=graph,
+        keep_duplicates=keep_duplicates,
         quiet=quiet,
         redact_comments=redact_comments,
         redact_orphans=redact_orphans,
