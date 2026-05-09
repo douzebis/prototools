@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 # 0041 — reproto: warning clarity and squashed mode
 
 **Status:** implemented
-**Implemented in:** 2026-05-08 (initial); 2026-05-09 (§6, §7, §8)
+**Implemented in:** 2026-05-08 (initial); 2026-05-09 (§6, §7, §8 + TC-P*/TC-A*/TC-B*/TC-C*/TC-D* tests)
 **App:** reproto
 
 ---
@@ -586,20 +586,437 @@ phases and the user sees them in chronological order anyway.
 
 ## Test coverage
 
-- Unit test: feed a set of pre-built warning events into `WarningCollector`
-  in squashed mode and assert the flushed output matches expected lines
-  including occurrence counts.
-- Unit test: same events in detailed mode — assert each fires immediately in
-  order.
-- Integration test: run reproto against the existing fixture set in squashed
-  mode; assert stderr line count is below a threshold and no root-cause appears
-  twice.
-- Integration test: with `--keep-duplicates`, confirm that conflicting files
-  produce exactly one warning per pair and that no W4-like `duplicate symbol`
-  rendering failures follow.
-- Regression test (§6.2): confirm that a pruned file's importers produce zero
-  W5 warnings.  The existing `test_pruned_dependency.py::test_duplicate_prune_no_crash`
-  can be extended to assert that no "missing dependency" line appears in stderr
-  for the pruned file.
-- Existing tests must continue to pass (squashed mode is default; message
-  format changes are covered by updating fixture expectations where needed).
+Tests live in `reproto/src/reproto/tests/`.  New unit tests for
+`WarningCollector` and `_classify_exc` go in `test_warnings.py`; new
+integration/regression tests extend `test_pruned_dependency.py`.
+
+### Unit tests — `WarningCollector` (`test_warnings.py`)
+
+**TC-W1  Squashed flush format and order.**
+Feed one `w5()`, two `w4()` for the same type, and one `w6()` into a
+collector in squashed mode.  Call `flush()` and capture stderr.  Assert:
+- W5 line appears before W4 line (flush order per §7).
+- W4 line appears before W6 line.
+- W5 line carries `(1 occurrence)`.
+- W4 line carries `(2 occurrences)`.
+- W6 line carries `(1 occurrence)`.
+
+**TC-W2  "Run with --detailed-warnings" hint.**
+Feed two events for the same W4 key (count > 1).  Assert that `flush()`
+output ends with the hint line `"Run with --detailed-warnings to see all
+warning occurrences."`.  Then repeat with a single unique event (count = 1)
+and assert the hint is absent.
+
+**TC-W3  Detailed mode: events fire immediately, flush is a no-op.**
+Create a collector with `detailed=True`.  Emit `w4()`, `w5()`, `w6()` and
+capture stderr for each call.  Assert each produces a line immediately.
+Call `flush()` and assert it produces no additional output.
+
+**TC-W4  W1 feeds the W5 counter.**
+Call `w1("missing.proto")` once and then `w5("missing.proto")` twice on a
+squashed collector.  Call `flush()`.  Assert exactly one W5 line appears
+(no separate W1 line) and the occurrence count is 3.
+
+**TC-W5  W5 suppression for pruned files.**
+Call `register_pruned_file("pruned.proto")`, then `w5("pruned.proto")` and
+`w1("pruned.proto")`.  Call `flush()`.  Assert no line for `pruned.proto`
+appears in the output.  Repeat the same check in detailed mode.
+
+**TC-W6  W3 is always immediate in both modes.**
+In squashed mode call `w3("some message")` and assert the line appears on
+stderr immediately (before `flush()`).  Confirm `flush()` does not repeat it.
+
+**TC-W7  Flush with no events produces no output.**
+Create a fresh squashed collector and call `flush()`.  Assert stderr is
+empty and the hint line is absent.
+
+**TC-W8  Multiple W5 keys sorted alphabetically.**
+Feed `w5("z/z.proto")` and `w5("a/a.proto")` in that order.  Assert the
+flushed W5 block is sorted: `a/a.proto` line precedes `z/z.proto` line.
+
+### Unit tests — `_classify_exc` (`test_warnings.py`)
+
+**TC-C1  `_POOL_PREFIX` stripped.**
+Pass a message starting with `"Couldn't build proto file into descriptor
+pool: "` followed by an unrelated body.  Assert `clean_msg` equals the body
+with the prefix removed, and `w4` and `w5` are `None`.
+
+**TC-C2  `_RESOLVE_PREFIX` → W4.**
+Pass `"couldn't resolve name '.pkg.Type'"`.  Assert `w4 == ".pkg.Type"` and
+`w5 is None`.
+
+**TC-C3  `_DEPENDS_PREFIX` → W5.**
+Pass `"Depends on file 'path/to/dep.proto', but it has not been loaded"`.
+Assert `w5 == "path/to/dep.proto"` and `w4 is None`.
+
+**TC-C4  Other error → W6 (neither W4 nor W5).**
+Pass `"Couldn't find Extension 42"`.  Assert both `w4` and `w5` are `None`
+and `clean_msg == "Couldn't find Extension 42"`.
+
+**TC-C5  Combined prefix + resolve.**
+Pass the full pool prefix concatenated with `"couldn't resolve name
+'.foo.Bar'"`.  Assert `w4 == ".foo.Bar"`.
+
+### Regression tests — `test_pruned_dependency.py`
+
+**TC-R1  Zero W5 for importers of a `--prune`-pruned file.**
+Extend `test_explicit_prune_no_crash`: after asserting no crash, also assert
+that no `"missing dependency file:prune_base.proto"` line appears in stderr.
+This verifies §6.2 suppression for the explicit-prune path.
+
+**TC-R2  Zero W5 for importers of a duplicate-symbol-pruned file.**
+Extend `test_duplicate_prune_no_crash`: after asserting no crash, also
+assert that no `"missing dependency"` line for either `prune_duplicate_1` or
+`prune_duplicate_2` appears in stderr (whichever was pruned produces no W5).
+This verifies §6.2 suppression for the duplicate-prune path.
+
+**TC-R3  W1 loading miss appears as a W5 squashed line.**
+Compile only `prune_importer.proto` (not `prune_base.proto`) and run reproto
+without providing `prune_base.pb` on the command line but with a fresh
+`-I` that does not contain `prune_base.proto`.  Assert that stderr contains
+exactly one `"missing dependency file:prune_base.proto"` line (the W1 loading
+miss merged into the W5 counter) and no separate `"missing file"` line.
+
+### Existing tests
+
+All existing tests must continue to pass unchanged.  Squashed mode is now the
+default; message-format changes from §1 are reflected in updated fixture
+expectations where reproto's stderr is asserted.
+
+---
+
+## Functional call-site coverage
+
+The section above covers the warning infrastructure itself.  This section
+identifies every call site in reproto that emits a warning or error, the
+condition that triggers it, and the test gap (if any).
+
+### Source inventory
+
+Every `cli_warning`, `cli_error`, `cli_attention`, `get_collector().wN()`, or
+`report()` call in the reproto source, grouped by file.
+
+#### `load.py:188` — `w1()`: import not found on `-I`
+
+Fires when a `.proto` name listed in a descriptor's `dependency` field cannot
+be found on any `-I` root.  In squashed mode the event merges into the W5
+counter; in detailed mode it prints immediately.
+
+**Already covered by:** TC-R3 (W1→W5 merge end-to-end).
+
+#### `phases.py:394` — `cli_warning`: self-dependency stripped
+
+Fires when a `FileDescriptorProto` lists its own name in its `dependency`
+field.  This is a malformed descriptor artifact; reproto strips the entry to
+prevent the C extension from segfaulting.
+
+**Test gap:** No test exercises this path.
+
+**TC-P1 (implemented — revised):** Patch a compiled `.pb` to add the
+file's own name to `fdp.dependency`.  A self-referential FDP is never a
+topo-sort leaf (it perpetually depends on itself), so it reaches the
+circular-dependency detector rather than `_strip_self_dependency`.  The
+observable behaviour is `"Circular dependency detected"` on stderr; the test
+asserts exactly that.  The `_strip_self_dependency` helper is effectively a
+dead-code guard for seed files — it is reachable only for dependency files
+loaded during phase 2.
+
+#### `phases.py:453` — `w3()`: duplicate symbols (W3)
+
+Fires when two files define the same fully-qualified symbol and the default
+duplicate-pruning path activates.
+
+**Already covered by:** `test_duplicate_prune_no_crash` (TC-R2 extension).
+
+**Proposed TC-P2 (single-symbol case):** Create two fixtures that define
+exactly one common symbol (simplest possible conflict).  Assert the W3 line
+says `"(1 symbol)"` (singular), not `"(1 symbols)"`.
+
+#### `phases.py:622/637` — `cli_warning`: pool Add failure (`--keep-duplicates`)
+
+Fires when `--keep-duplicates` is active and `pool_db.Add()` raises
+`TypeError` for a conflicting descriptor.  This is the legacy path; the
+default path (duplicate pruning) bypasses it entirely.
+
+**Test gap:** No test passes `--keep-duplicates` with conflicting fixtures.
+
+**Proposed TC-P3:** Run reproto on the two `prune_duplicate_*` fixtures with
+`--keep-duplicates`.  Assert reproto still exits 0 (does not crash), and that
+no `"pruned"` W3 line appears (the pruning path is disabled).
+
+#### `phases.py:647` — `cli_warning`: unparseable file (DecodeError)
+
+Fires when a binary file with a `.pb`/`.binpb`/etc. extension cannot be
+decoded as either a `FileDescriptorSet` or a `FileDescriptorProto`.
+
+**Test gap:** No test passes corrupt binary input.
+
+**Proposed TC-P4:** Write a file with a `.pb` extension whose contents are
+random bytes (not valid protobuf).  Pass it as an input to reproto.  Assert
+reproto exits 0 and stderr contains `"Skipping unparseable file:"`.
+
+#### `phases.py:658` — `cli_warning`: circular dependency
+
+Fires when the topological sort cannot drain all files because at least two
+remaining files depend on each other.
+
+**Test gap:** No test exercises this path.
+
+**Proposed TC-P5:** Construct two `FileDescriptorProto` objects that each list
+the other as a dependency (A imports B, B imports A), serialise them to `.pb`,
+and run reproto.  Assert stderr contains `"Circular dependency detected:"` and
+reproto exits 0.
+
+#### `phases.py:724/728` — pruning target not found
+
+`cli_warning("Pruning target not found: ...")` fires when a `--prune` pattern
+matches no FQDN in the loaded graph.  `cli_attention("Did you mean: ...")` is
+a follow-up fuzzy suggestion for non-glob patterns.
+
+**Test gap:** No test passes an invalid `--prune` value.
+
+**Proposed TC-P6:** Compile `prune_base.proto` and run reproto with
+`--prune file:nonexistent.proto`.  Assert stderr contains `"Pruning target not
+found: file:nonexistent.proto"` and reproto exits 0.
+
+**Proposed TC-P7 (fuzzy suggestion):** Use a `--prune` value that is a
+near-miss of a real FQDN (e.g. `file:prune_bse.proto` vs `file:prune_base.proto`).
+Assert stderr contains a `"Did you mean:"` line.
+
+#### `phases.py:783/787` — seed not found
+
+Same structure as pruning-not-found, but for `--seed`.
+
+**Test gap:** No test passes an invalid `--seed` value.
+
+**Proposed TC-P8:** Run reproto with `--seed file:nonexistent.proto` on a
+loaded fixture.  Assert stderr contains `"Seed not found: file:nonexistent.proto"`.
+
+**Proposed TC-P9 (fuzzy suggestion):** Use a near-miss `--seed` value and
+assert a `"Did you mean:"` suggestion appears.
+
+#### `phases.py:795` — pruned seed skipped
+
+`cli_info("Skipping pruned seed: ...")` fires when a `--seed` FQDN resolves
+to a node that is already pruned.
+
+**Test gap:** No test combines `--seed` and `--prune` targeting the same node.
+
+**Proposed TC-P10:** Compile `prune_base.proto`, then run reproto with both
+`--prune file:prune_base.proto` and `--seed file:prune_base.proto`.  Assert
+stderr contains `"Skipping pruned seed:"` and that `prune_base.proto` does not
+appear in the output.
+
+#### Anomalies in `re_file.py`
+
+**A1 — editions file rendered as proto2 (`--force-proto2-output`)**
+
+Fires when `--force-proto2-output` is used on an editions source file.
+
+**Already covered by:** `test_roundtrip_polyglot` for editions fixture.
+No stderr assertion — gap: A1 warning line not asserted.
+
+**Proposed TC-A1:** Run reproto on `editions_rendering.proto` with
+`--force-proto2-output`.  Assert stderr contains `"WARNING[editions]:"`.
+
+**A2 — syntax downconverted from proto3 to proto2**
+
+Fires when `--force-proto2-output` is used on a proto3 source file.
+
+**Test gap:** No explicit assertion that A2 fires.
+
+**Proposed TC-A2:** Run reproto on any proto3 fixture with
+`--force-proto2-output`.  Assert stderr contains `"WARNING[downconvert]:"`.
+
+**A3 — file options could not be rendered**
+
+Fires when `ctx.pool.FindFileByName()` raises an exception for the file being
+rendered (e.g. duplicate symbol, or dependency not loaded).
+
+**Test gap:** Triggered in corpus runs but no fixture test exercises A3.
+
+**Proposed TC-A3:** Construct a `.pb` where the file options reference an
+extension type that is not provided in any of the `-I` files.  Assert the
+rendered `.proto` contains `"OMITTED[render]:"` or `"WARNING[render]:"` and
+that the W4 or W5 squashed line appears on stderr.
+
+**A4 — `import weak` not valid in proto3**
+
+Fires when a proto3 file uses `import weak` (which is proto2-only).  Reproto
+renders it as a plain `import`.
+
+**Already covered by:** `test_roundtrip[weak_import_proto2.proto]`.
+No stderr assertion — gap: A4 warning not asserted.
+
+**Proposed TC-A4:** Add a fixture `weak_import_proto3.proto` (proto3 syntax,
+uses a weak dependency), compile and run reproto, assert stderr contains
+`"WARNING[proto3]: 'import weak'"` and the output uses plain `import`.
+
+**A5 — file-level extend block not valid in proto3**
+
+Fires when a proto3 file contains a top-level `extend` block.  Reproto omits
+it.
+
+**Test gap:** Not covered (proto3 extend is a proto2 combination edge case
+needing a specially crafted descriptor, since `protoc` itself rejects it in
+proto3 source).
+
+**Proposed TC-A5:** Programmatically build a `FileDescriptorProto` with
+`syntax = "proto3"` and a non-empty `extension` field (proto3 + extension),
+serialise to `.pb`, run reproto, assert `"OMITTED[proto3]:"` appears and the
+output contains no `extend` block.
+
+#### Anomalies in `re_descriptor.py`
+
+**B1 — nested extend block not valid in proto3**
+
+Same as A5 but for a message-nested extend block.
+
+**Test gap:** No fixture test covers B1.
+
+**Proposed TC-B1:** Same approach as TC-A5 but with the extension field inside
+a message's `extension` repeated field rather than at file level.  Assert
+`"OMITTED[proto3]:"` in the rendered comment block.
+
+**B2 — extension range not valid in proto3**
+
+Fires when a proto3 message has an `extension_range` (proto2-only).
+
+**Test gap:** No fixture test covers B2 (same programmatic-descriptor approach
+needed).
+
+**Proposed TC-B2:** Build a `FileDescriptorProto` with `syntax = "proto3"`,
+a message with a non-empty `extension_range`, serialise, run reproto, assert
+`"OMITTED[proto3]:"`.
+
+**B3 — `message_set_wire_format` not valid in proto3**
+
+Fires when a proto3 message has `options.message_set_wire_format = true`.
+
+**Test gap:** No fixture test covers B3.
+
+**Proposed TC-B3:** Build a `FileDescriptorProto` with `syntax = "proto3"`
+and a message with `MessageOptions.message_set_wire_format = true`, serialise,
+run reproto, assert `"WARNING[proto3]:"` and no `message_set_wire_format`
+line in the output.
+
+#### Anomalies in `re_field.py`
+
+**C1 — non-canonical map entry**
+
+Fires when a `map_entry = true` message is missing field 1 (key) or field 2
+(value).  Reproto falls back to `repeated MessageType field`.
+
+**Test gap:** Requires a programmatically crafted descriptor; no fixture covers
+this.
+
+**Proposed TC-C1:** Build a `FileDescriptorProto` whose map-entry message has
+only field 1 (missing field 2), serialise, run reproto, assert
+`"WARNING[render]:"` and `"repeated"` in the output for that field.
+
+**C2 — group field not valid in proto3**
+
+Fires when a proto3 file has a `TYPE_GROUP` field.  Reproto renders it as a
+plain message field.
+
+**Test gap:** Similar to B1/B2 — requires a crafted descriptor.
+
+**Proposed TC-C2:** Build a proto3 `FileDescriptorProto` with a `TYPE_GROUP`
+field, serialise, run reproto, assert `"WARNING[proto3]:"`.
+
+**C3 — `required` label not valid in proto3**
+
+Fires when a proto3 field has `LABEL_REQUIRED`.
+
+**Test gap:** Same programmatic approach.
+
+**Proposed TC-C3:** Build a proto3 descriptor with a required field, run
+reproto, assert `"WARNING[proto3]:"` and that the output renders the field
+without the `required` keyword.
+
+**C4 — explicit default value not valid in proto3**
+
+Fires when a proto3 field has `default_value` set.
+
+**Test gap:** No fixture covers this path (protoc itself rejects it).
+
+**Proposed TC-C4:** Build a proto3 descriptor with `default_value = "hello"`,
+run reproto, assert `"WARNING[proto3]:"`.
+
+**C5 — field options could not be rendered**
+
+Fires when `ctx.pool.FindExtensionByNumber()` or `FindFieldByName()` raises
+for a field (option type missing from pool).
+
+**Test gap:** Triggered in corpus runs but no fixture test exercises C5
+directly, asserting the W4/W5/W6 routing.
+
+**Proposed TC-C5:** Build a descriptor where a field carries a custom option
+whose extension is not in the pool.  Run reproto, assert that the rendered
+`.proto` contains `"WARNING[render]:"` on the field's line and that a W6
+squashed line appears on stderr.
+
+#### Anomalies in `field_descriptor.py`
+
+**D1 — unexpected value type for option scalar**
+
+Fires when the Python value for an option field does not match the field's
+proto type (e.g. a float received where an int is expected).
+
+**Test gap:** D1 can only be triggered by a crafted in-process scenario (the
+pool enforces type correctness at decode time, so a real `.pb` cannot easily
+trigger it).
+
+**TC-D1 (implemented — revised):** The D1 `TypeError` path in
+`dump_option()` is unreachable in practice: `get_scalar()` raises `RuntimeError`
+(not `TypeError`) for scalar Python-type-vs-proto-field-type mismatches, and the
+`TypeError` in its `case _` branch can only fire when a value is not any of
+`bool/int/float/str/bytes` — but `dump_option()` already routes those to D2 via
+its own `case _` arm.  The test documents the observable behaviour: passing an
+`int` to a `str` proto field raises `RuntimeError("Unexpected FieldDescriptor type")`.
+
+**D2 — unrecognised descriptor type**
+
+Fires when the match arm in `render_value()` hits the `case _:` branch.
+
+**Test gap:** Same unit-test approach.
+
+**Proposed TC-D2 (unit test):** Call `render_value()` with a value of a type
+not matched by any arm (e.g. a `list`) and assert a `"WARNING[render]:"` `D2`
+comment is returned.
+
+### Summary table
+
+| ID | Trigger | File | Test status |
+|----|---------|------|-------------|
+| TC-P1 | Self-dependency in descriptor | `phases.py:394` | Implemented (see revised note) |
+| TC-P2 | W3 singular "1 symbol" | `phases.py:453` | Implemented |
+| TC-P3 | `--keep-duplicates` pool failure | `phases.py:622` | Implemented |
+| TC-P4 | Unparseable `.pb` file | `phases.py:647` | Implemented |
+| TC-P5 | Circular dependency | `phases.py:658` | Implemented |
+| TC-P6 | Pruning target not found | `phases.py:724` | Implemented |
+| TC-P7 | Pruning fuzzy suggestion | `phases.py:728` | Implemented |
+| TC-P8 | Seed not found | `phases.py:783` | Implemented |
+| TC-P9 | Seed fuzzy suggestion | `phases.py:787` | Implemented |
+| TC-P10 | Pruned seed skipped | `phases.py:795` | Implemented |
+| TC-A1 | A1 editions→proto2 warning | `re_file.py` | Implemented |
+| TC-A2 | A2 proto3→proto2 warning | `re_file.py` | Implemented |
+| TC-A3 | A3 file options fail | `re_file.py` | Skipped (needs real protoc extension; not exercisable via crafted descriptor) |
+| TC-A4 | A4 weak import in proto3 | `re_file.py` | Implemented |
+| TC-A5 | A5 file-level extend in proto3 | `re_file.py` | Implemented |
+| TC-B1 | B1 nested extend in proto3 | `re_descriptor.py` | Implemented |
+| TC-B2 | B2 extension range in proto3 | `re_descriptor.py` | Implemented |
+| TC-B3 | B3 message_set_wire_format in proto3 | `re_descriptor.py` | Implemented |
+| TC-C1 | C1 non-canonical map entry | `re_field.py` | Implemented |
+| TC-C2 | C2 group in proto3 | `re_field.py` | Implemented |
+| TC-C3 | C3 required in proto3 | `re_field.py` | Implemented |
+| TC-C4 | C4 default value in proto3 | `re_field.py` | Implemented |
+| TC-C5 | C5 field options fail | `re_field.py` | Skipped (same trigger as A3; requires real compiled extension) |
+| TC-D1 | D1 scalar type mismatch (unit) | `field_descriptor.py` | Implemented (see revised note; D1 path is unreachable) |
+| TC-D2 | D2 unknown descriptor type (unit) | `field_descriptor.py` | Implemented |
+
+Anomalies A5, B1, B2, B3, C1, C2, C3, C4 all require programmatically crafted
+`FileDescriptorProto` objects because `protoc` itself rejects the corresponding
+source-level constructs.  These tests should live in a dedicated
+`test_anomalies.py` that builds descriptors in-process and calls `reproto()`
+directly rather than going through the CLI subprocess.

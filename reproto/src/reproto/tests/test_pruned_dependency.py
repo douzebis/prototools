@@ -30,6 +30,7 @@ def _run_reproto(
     pb_files: list[Path],
     out_dir: Path,
     extra_args: list[str] | None = None,
+    include_dirs: list[Path] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     src_path = str(Path(__file__).parent.parent.parent)
     pythonpath_parts = [src_path]
@@ -38,10 +39,13 @@ def _run_reproto(
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
     env.pop("REPROTO_VARIANT", None)
 
+    dirs = include_dirs if include_dirs is not None else [FIXTURES_DIR]
+    include_flags = [f"-I{d}" for d in dirs]
+
     cmd = [
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
-        f"-I{FIXTURES_DIR}",
+        *include_flags,
         f"--output-root={out_dir}",
     ]
     if extra_args:
@@ -109,3 +113,73 @@ def test_duplicate_prune_no_crash(tmp_path: Path) -> None:
     )
     # W3 warning must appear for whichever was pruned
     assert "pruned" in result.stderr and "duplicate symbols" in result.stderr
+    # TC-R2: no W5 line for either duplicate (whichever was pruned should be suppressed)
+    assert "missing dependency file:prune_duplicate_1.proto" not in result.stderr, (
+        "W5 for a pruned duplicate must be suppressed"
+    )
+    assert "missing dependency file:prune_duplicate_2.proto" not in result.stderr, (
+        "W5 for a pruned duplicate must be suppressed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TC-R1  Zero W5 for importers of an explicitly pruned file
+# ---------------------------------------------------------------------------
+
+def test_explicit_prune_no_w5(tmp_path: Path) -> None:
+    """No 'missing dependency' warning must appear for an explicitly pruned file."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    base_pb, importer_pb = compile_proto(pb_dir, "prune_base.proto", "prune_importer.proto")
+
+    result = _run_reproto(
+        [base_pb, importer_pb], out_dir,
+        extra_args=["--prune", "file:prune_base.proto"],
+    )
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    assert "missing dependency file:prune_base.proto" not in result.stderr, (
+        "W5 for an explicitly pruned file must be suppressed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TC-R3  W1 loading miss merged into W5 squashed line
+# ---------------------------------------------------------------------------
+
+def test_w1_loading_miss_appears_as_w5(tmp_path: Path) -> None:
+    """A missing dependency from the loading phase appears as a single W5 squashed line."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    # Compile only prune_importer (which imports prune_base), but do NOT provide
+    # prune_base.pb and do NOT put prune_base.proto on any -I path.
+    (importer_pb,) = compile_proto(pb_dir, "prune_importer.proto")
+
+    # Use an empty include dir so prune_base.proto cannot be found during loading.
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    result = _run_reproto(
+        [importer_pb], out_dir,
+        include_dirs=[empty_dir],
+    )
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    # Exactly one "missing dependency" line for prune_base.proto
+    w5_lines = [
+        ln for ln in result.stderr.splitlines()
+        if "missing dependency file:prune_base.proto" in ln
+    ]
+    assert len(w5_lines) == 1, (
+        f"Expected exactly one W5 squashed line for prune_base.proto.\nstderr:\n{result.stderr}"
+    )
+    # No separate "missing file" line
+    assert "missing file 'prune_base.proto'" not in result.stderr, (
+        "W1 must not produce a separate line — it must merge into the W5 counter"
+    )

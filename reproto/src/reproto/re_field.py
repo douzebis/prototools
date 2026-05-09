@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.descriptor_pb2 import DescriptorProto, FieldDescriptorProto, FileDescriptorProto
 from google.protobuf.message import Message
 
@@ -18,7 +17,7 @@ from .context import Context, Fqdn
 if TYPE_CHECKING:
     from .re_descriptor import ReDescriptorProto
     from .re_file import ReFileDescriptorProto
-from .fake_types import Ref, parse_fqdn
+from .fake_types import Ref
 from .feature_resolution import ResolvedFeatures, resolve_features
 from .globals import FIELD, type_names
 from .text import Block, BlockLine
@@ -311,27 +310,15 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
 
         # --- Field options ----------------------------------------------------
         try:
-            # Look up the target field descriptor
-            # Extension fields and regular fields use different lookup methods
-            if self.this.HasField('extendee'):
-                # Extension field: look up by extendee and number
-                extendee_desc = ctx.pool.FindMessageTypeByName(self.extendee[1:])  # Strip leading '.'
-                field_desc: FieldDescriptor = ctx.pool.FindExtensionByNumber(extendee_desc, self.number)
-            else:
-                # Regular field: look up by full name
-                # fqdn format: "fdsc:.package.MessageName.fieldName"
-                # FindFieldByName expects: "package.MessageName.fieldName" (no leading dot)
-                prefix, ref = parse_fqdn(self.fqdn)
-                if prefix != FIELD:
-                    raise ValueError(f"Expected field FQDN, got: {self.fqdn}")
-                # parse_fqdn returns ref with leading dot (e.g., '.package.MessageName.fieldName')
-                # Strip the dot for pool lookup
-                full_type_name = ref.lstrip('.')
-                field_desc: FieldDescriptor = ctx.pool.FindFieldByName(full_type_name)
-
-            # Create a dynamic FieldOptions instance and parse serialized data
+            # Build a dynamic FieldOptions instance from the FDP's own options bytes.
+            # We do not use a pool lookup (FindExtensionByNumber / FindFieldByName)
+            # because for extension fields the pool lookup fails when the defining
+            # file was not successfully added to the pool (e.g. missing transitive
+            # deps).  The FDP options bytes are the canonical source of truth and
+            # always match what GetOptions() would return, so going via the pool
+            # is both unnecessary and fragile.
             fo_msg: Message = ctx.fdo_cls()
-            fo_msg.ParseFromString(field_desc.GetOptions().SerializeToString())
+            fo_msg.ParseFromString(self.this.options.SerializeToString())
 
 
             # Build options block: default value + json_name + field options

@@ -1,0 +1,20 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Fixture: ext_with_options_extender.proto
+// A file that extends Config with a field carrying a real field option
+// (deprecated = true).  Used to verify that options ARE rendered correctly
+// when present, while the no-options case produces no warning.
+
+syntax = "proto2";
+package ext_test;
+
+import "ext_no_options_config.proto";
+
+message Provider2 {
+  optional int32 value = 1;
+}
+
+extend Config {
+  optional Provider2 provider2 = 101 [deprecated = true];
+}

@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Fixture: ext_no_options_config.proto
+// A proto2 message with an extension range — used as the extendee in
+// ext_no_options_extender.proto and ext_with_options_extender.proto.
+
+syntax = "proto2";
+package ext_test;
+
+message Config {
+  optional int32 base_value = 1;
+  extensions 100 to 200;
+}

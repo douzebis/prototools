@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+// SPDX-License-Identifier: MIT
+//
+// Fixture: ext_no_options_extender.proto
+// A file that extends Config with a field carrying NO field options.
+// Regression fixture for the spurious W6 "Couldn't find Extension N" warning
+// that fired when reproto tried to render options on an extension field that
+// had no options at all.
+
+syntax = "proto2";
+package ext_test;
+
+import "ext_no_options_config.proto";
+
+message Provider {
+  optional int32 value = 1;
+}
+
+extend Config {
+  optional Provider provider = 100;
+}
