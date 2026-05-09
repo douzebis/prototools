@@ -1,0 +1,11 @@
+// SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto3";
+
+package prune_test;
+
+message Base {
+  int32 value = 1;
+}

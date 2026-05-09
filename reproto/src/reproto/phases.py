@@ -693,6 +693,20 @@ def _phase3_build_graph(
 
     ctx.merge_nodes()
 
+    # Propagate topology-level is_pruned to context nodes.  Pruned files are
+    # skipped above, but stubs for them are created lazily by _initialize_from_message
+    # when non-pruned files list them as dependencies.  Without this pass those
+    # stubs have is_pruned=False, which causes phase 5 to mark them reachable and
+    # phase 6 to mark them summoned, leading to a crash in phase 7 when render
+    # calls .name on an uninitialised node.
+    for name, file in topo.files.items():
+        if not file.is_pruned:
+            continue
+        fqdn = ReFileDescriptorProto.fqdn_from_ref(name)
+        node = ctx.find_file(fqdn)
+        if node is not None:
+            node.is_pruned = True
+
 
 def _phase4_pruning(ctx: Context, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""

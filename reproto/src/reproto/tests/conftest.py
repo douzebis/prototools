@@ -6,8 +6,12 @@
 
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
+
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -36,3 +40,33 @@ def check_dependencies():
 
     if not shutil.which("buf"):
         pytest.skip("buf not found", allow_module_level=True)
+
+
+def compile_proto(
+    out_dir: Path,
+    *proto_names: str,
+    include_dirs: list[Path] | None = None,
+) -> list[Path]:
+    """Compile fixture .proto files to individual .pb descriptor sets.
+
+    Each name in proto_names is compiled separately (one .pb per file),
+    with FIXTURES_DIR always on the include path.  Additional directories
+    may be added via include_dirs.
+
+    Returns the list of resulting .pb paths in the same order as proto_names.
+    """
+    dirs = [FIXTURES_DIR] + (include_dirs or [])
+    include_flags = [f"-I{d}" for d in dirs]
+    pb_paths: list[Path] = []
+    for name in proto_names:
+        proto_path = FIXTURES_DIR / name
+        pb_path = out_dir / (Path(name).stem + ".pb")
+        result = subprocess.run(
+            ["protoc", *include_flags, f"--descriptor_set_out={pb_path}", str(proto_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"protoc failed compiling {name}:\n{result.stderr}"
+        )
+        pb_paths.append(pb_path)
+    return pb_paths

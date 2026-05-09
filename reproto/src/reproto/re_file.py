@@ -340,10 +340,12 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             else:
                 import_cmd = 'import'
 
-            # Format dependency name based on summoned status
+            # Format dependency name based on summoned status.
+            # A pruned file's stub may be summoned but have no _this — fall
+            # back to fqdn in that case (the line will be rendered as ORPHAN).
             dep_name = (
                 json.dumps(canonize_dependency(ctx, dependency.name))
-                if dependency.is_summoned
+                if dependency.is_summoned and dependency.is_present()
                 else dependency.fqdn
             )
             text = f'{import_cmd} {dep_name};'
