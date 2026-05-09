@@ -8,7 +8,7 @@ import sys
 
 from google.protobuf.message_factory import GetMessageClass
 
-from lib.warnings import cli_error
+from .lib.warnings import cli_error
 from .context import Context
 
 

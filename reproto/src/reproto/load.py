@@ -184,7 +184,7 @@ def _load_files(
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_bytes()))
                         return loaded_files
-    from lib.warnings import get_collector
+    from .lib.warnings import get_collector
     get_collector().w1(str(rel_path))
     return []
 

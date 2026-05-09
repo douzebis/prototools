@@ -429,7 +429,7 @@ def main(
     from reproto import Fqdn
     from .reproto import DescriptorProtoMissingError, Options, reproto
     from . import variant as variant_mod
-    from lib.warnings import configure_collector
+    from .lib.warnings import configure_collector
     configure_collector(detailed=detailed_warnings)
 
     # --output-root is required unless --dump-resolved-features is set.

@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from lib.warnings import cli_warning, get_collector
+from .lib.warnings import cli_warning, get_collector
 
 from .text import COMMENT, BlockLine
 

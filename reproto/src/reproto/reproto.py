@@ -208,7 +208,7 @@ def reproto(
 ) -> Context | None:
     """Reconstruct .proto files from descriptor sets."""
     import warnings as _warnings
-    from lib.warnings import get_collector
+    from .lib.warnings import get_collector
 
     ctx = _make_context(options, prunings)
     topo = Topology()

@@ -30,7 +30,7 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.message import DecodeError
 from rapidfuzz import fuzz
 
-from lib.warnings import cli_attention, cli_error, cli_info, cli_warning
+from .lib.warnings import cli_attention, cli_error, cli_info, cli_warning
 from reproto import Context, Fqdn, Node, Options
 
 from .fake_types import parse_fqdn
@@ -449,7 +449,7 @@ def _prune_if_duplicate(
     for fname, count in sorted(by_file.items()):
         noun = "symbol" if count == 1 else "symbols"
         parts.append(f"    file:{fname} ({count} {noun})")
-    from lib.warnings import get_collector
+    from .lib.warnings import get_collector
     get_collector().w3('\n'.join(parts))
     n.is_pruned = True
     return True
@@ -755,7 +755,7 @@ def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
     # Register all pruned file names (both topology-pruned from phase 2/3 and
     # user-pruned here) with the warning collector, so that W5 warnings for
     # their importers are suppressed — their absence from pool_db is intentional.
-    from lib.warnings import get_collector
+    from .lib.warnings import get_collector
     _collector = get_collector()
     for name, file in topo.files.items():
         if file.is_pruned:
@@ -948,7 +948,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
             try:
                 content = re_fdp.render(ctx)[0].flush(ctx)
             except (KeyError, ValueError, TypeError, AttributeError) as e:
-                from lib.warnings import get_collector
+                from .lib.warnings import get_collector
                 from .anomalies import _classify_exc
                 clean_msg, w4, w5 = _classify_exc(str(e))
                 if w4 is not None:

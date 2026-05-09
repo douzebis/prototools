@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from io import StringIO
 
-from lib.warnings import WarningCollector
+from reproto.lib.warnings import WarningCollector
 from reproto.anomalies import _classify_exc
 
 
