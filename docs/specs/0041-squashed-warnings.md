@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0041 — reproto: warning clarity and squashed mode
 
-**Status:** partially implemented
-**Implemented in:** 2026-05-08 (initial); 2026-05-09 (§6 additions pending)
+**Status:** implemented
+**Implemented in:** 2026-05-08 (initial); 2026-05-09 (§6, §7, §8)
 **App:** reproto
 
 ---
@@ -295,11 +295,7 @@ the squashed warning should use that form for consistency with `--seed` / `--pru
 kept; the `phases.py` `"Skipping unreadable file: ..."` line is removed
 (it is redundant — `load.py` already fired for the same file).
 
-Revised format:
-
-```
-Warning: missing file 'third_party/envoy/.../address.proto' (not found on -I path; skipped)
-```
+W1 and W5 are merged into a single counter (see §8).
 
 **W2:** Keep as-is.  These are useful status lines, not warnings.
 
@@ -346,42 +342,47 @@ cause.  Each distinct root cause appears exactly once, with an occurrence
 count.  If an error or unhandled exception occurs, the buffer is flushed
 before exiting so warnings are not lost.
 
-**W1 squashed** — one line per missing file, with occurrence count:
+#### Flush order
 
-```
-Warning: missing file 'third_party/envoy/.../address.proto' (24 occurrences)
-Warning: missing file 'third_party/protoc_gen_validate/validate/validate.proto' (10 occurrences)
-```
+Categories are printed in decreasing order of actionability — the most
+directly fixable problems appear first:
 
-**W2 squashed** — displayed as emitted (not buffered; no repetition anyway).
+1. **W5** — missing file dependencies (merged with W1, see §8): the user
+   can immediately add the named file to `-I`.
+2. **W4** — unresolvable types: requires grepping the codebase to identify
+   which file to add; one step less direct than W5.
+3. **W6** — option rendering failures ("Couldn't find Extension/message"):
+   a rendering-level degradation, typically a consequence of a missing file
+   already reported by W5; least actionable on its own.
 
-**W3** — printed immediately as emitted, in both squashed and detailed modes
-(one occurrence per pruned file; no buffering needed):
+**W2** is displayed as emitted (not buffered; no repetition).
 
-```
-Warning: file:src/proto/grpc/channelz/channelz.proto pruned —
-    duplicate symbols with file:third_party/grpc_proto/grpc/channelz/v1/channelz.proto
-    (42 symbols)
-```
+**W3** is printed immediately as emitted, in both squashed and detailed modes
+(one occurrence per pruned file; no buffering needed).
 
-**W4 squashed** — one line per distinct unresolvable type reference, with
-occurrence count:
+#### Format
 
-```
-Warning: unresolvable type .net_model_unm.proto.DrainType (2147 occurrences)
-Warning: unresolvable type .net_model_unm.proto.Size (613 occurrences)
-```
+Each squashed line always includes an occurrence count, even for N=1, so
+that the flush block is visually distinct from immediate emissions:
 
-**W5 squashed** — one line per distinct missing file dependency, with
-occurrence count, using the reproto FQDN `file:` prefix for consistency with
-`--seed` / `--prune`:
-
+**W5 squashed:**
 ```
 Warning: missing dependency file:third_party/protoc_gen_validate/validate/validate.proto (341 occurrences)
 Warning: missing dependency file:third_party/envoy/.../base.proto (164 occurrences)
 ```
 
-After the squashed block, if any warnings were suppressed, append:
+**W4 squashed:**
+```
+Warning: unresolvable type .net_model_unm.proto.DrainType (2147 occurrences)
+Warning: unresolvable type .net_model_unm.proto.Size (613 occurrences)
+```
+
+**W6 squashed:**
+```
+Warning: 'security/loas/.../thinmint_cert_extensions.proto' field 'message_set_extension': "Couldn't find Extension 43796541" (1 occurrence)
+```
+
+After the squashed block, if any warnings had more than one occurrence, append:
 
 ```
 Run with --detailed-warnings to see all warning occurrences.
@@ -538,6 +539,48 @@ an immediate emission.
 
 **Update:** Always append `(N occurrence[s])` in the squashed block,
 even for N=1.  This applies to W1, W4, W5, and the new W6.
+
+### 7. Squashed flush order
+
+Corpus analysis showed that the original flush order (W1 → W6 → W4 → W5)
+interleaved "easy to fix" and "hard to fix" warnings arbitrarily.
+
+**Fix:** Reorder the flush block by decreasing actionability: W5 → W4 → W6
+(W1 is merged into W5 per §8; see §2 for rationale).  The
+`--detailed-warnings` stream is unaffected.
+
+### 8. W1/W5 merge
+
+A second corpus run revealed that the same file path often appeared in
+both the W1 block and the W5 block:
+
+```
+Warning: missing dependency file:third_party/envoy/.../accesslog.proto (12 occurrences)
+Warning: missing file 'third_party/envoy/.../accesslog.proto' (1 occurrence)
+```
+
+These are not the same occurrences — W1 counts the single loading-phase
+miss; W5 counts rendering-phase pool failures — but they name the same
+root cause and require the same fix (add the file to `-I`).  Showing both
+is redundant and forces the user to correlate two entries mentally.
+
+**Fix:** `w1()` feeds the same counter as `w5()`.  A missing file
+accumulates one count when first looked up during loading (the W1 event)
+and additional counts for each rendering reference that fails (W5 events).
+The single flushed line is:
+
+```
+Warning: missing dependency file:third_party/envoy/.../accesslog.proto (13 occurrences)
+```
+
+Where 13 = 1 (loading) + 12 (rendering).  For files that are missing but
+never referenced during rendering, the count is 1 — identical to what W1
+alone would have shown.
+
+In `--detailed-warnings` mode, W1 prints immediately (as before) using the
+loading-phase message format, and W5 prints immediately at render time —
+the two are kept distinct in detailed mode since they occur at different
+phases and the user sees them in chronological order anyway.
 
 ---
 

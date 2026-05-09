@@ -32,7 +32,11 @@ def _occ(count: int) -> str:
 
 
 class WarningCollector:
-    """Buffer W1/W4/W5/W6 warnings; print W3 immediately.
+    """Buffer W4/W5/W6 warnings; print W3 immediately.
+
+    W1 (missing source file during loading) and W5 (missing file dependency
+    during rendering) share the same counter in squashed mode — both name
+    the same root cause and require the same fix (add the file to -I).
 
     In squashed mode (default): counts occurrences per distinct message and
     flushes a sorted summary at the end.  In detailed mode: every warning is
@@ -41,9 +45,9 @@ class WarningCollector:
     Usage::
 
         collector = WarningCollector(detailed=False)
-        collector.w1("third_party/foo.proto")
+        collector.w1("third_party/foo.proto")   # loading miss — feeds W5 counter
         collector.w4(".some.pkg.Type")
-        collector.w5("third_party/bar.proto")
+        collector.w5("third_party/bar.proto")   # render miss — feeds W5 counter
         collector.w6("my/file.proto", "field 'x'", "Couldn't find Extension 42")
         collector.w3("file:a.proto pruned — ...")  # always immediate
         collector.flush()
@@ -52,7 +56,6 @@ class WarningCollector:
     def __init__(self, detailed: bool = False) -> None:
         self._detailed = detailed
         # Counters for squashed mode (unused in detailed mode)
-        self._w1: Counter[str] = Counter()
         self._w4: Counter[str] = Counter()
         self._w5: Counter[str] = Counter()
         self._w6: Counter[str] = Counter()
@@ -64,12 +67,18 @@ class WarningCollector:
         self._pruned_files.add(name)
 
     def w1(self, missing_file: str) -> None:
-        """Missing source file (W1)."""
-        msg = f"Warning: missing file '{missing_file}' (not found on -I path; skipped)"
+        """Missing source file (W1 — loading phase).
+
+        In detailed mode: printed immediately with the loading-phase message.
+        In squashed mode: feeds the W5 counter so loading and rendering misses
+        for the same file are combined into a single summary line.
+        """
+        if missing_file in self._pruned_files:
+            return
         if self._detailed:
-            cli_warning(msg)
+            cli_warning(f"Warning: missing file '{missing_file}' (not found on -I path; skipped)")
         else:
-            self._w1[missing_file] += 1
+            self._w5[missing_file] += 1
 
     def w4(self, type_name: str) -> None:
         """Unresolvable type reference (W4)."""
@@ -79,7 +88,7 @@ class WarningCollector:
             self._w4[type_name] += 1
 
     def w5(self, dep_file: str) -> None:
-        """Missing file dependency (W5).
+        """Missing file dependency (W5 — rendering phase).
 
         Suppressed silently if dep_file was pruned by reproto itself.
         """
@@ -111,21 +120,20 @@ class WarningCollector:
         """Flush buffered squashed warnings to stderr."""
         if self._detailed:
             return
+        # Flush in decreasing order of actionability (spec 0041 §2, §7, §8):
+        # W5 (add file to -I; W1 loading misses merged here) →
+        # W4 (grep for type) → W6 (rendering degradation, least actionable).
         suppressed = False
-        for missing_file, count in sorted(self._w1.items()):
-            cli_warning(f"Warning: missing file '{missing_file}' {_occ(count)}")
-            if count > 1:
-                suppressed = True
-        for key, count in sorted(self._w6.items()):
-            cli_warning(f"Warning: {key} {_occ(count)}")
+        for dep_file, count in sorted(self._w5.items()):
+            cli_warning(f"Warning: missing dependency file:{dep_file} {_occ(count)}")
             if count > 1:
                 suppressed = True
         for type_name, count in sorted(self._w4.items()):
             cli_warning(f"Warning: unresolvable type {type_name} {_occ(count)}")
             if count > 1:
                 suppressed = True
-        for dep_file, count in sorted(self._w5.items()):
-            cli_warning(f"Warning: missing dependency file:{dep_file} {_occ(count)}")
+        for key, count in sorted(self._w6.items()):
+            cli_warning(f"Warning: {key} {_occ(count)}")
             if count > 1:
                 suppressed = True
         if suppressed:
