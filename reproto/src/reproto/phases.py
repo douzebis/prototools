@@ -708,7 +708,7 @@ def _phase3_build_graph(
             node.is_pruned = True
 
 
-def _phase4_pruning(ctx: Context, prunings: list[Fqdn]) -> None:
+def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""
     if not ctx.quiet and prunings:
         cli_info('Processing exclusions')
@@ -751,6 +751,15 @@ def _phase4_pruning(ctx: Context, prunings: list[Fqdn]) -> None:
                     child.is_pruned = True
                     new_prunings.add(child)
         current_prunings = new_prunings
+
+    # Register all pruned file names (both topology-pruned from phase 2/3 and
+    # user-pruned here) with the warning collector, so that W5 warnings for
+    # their importers are suppressed — their absence from pool_db is intentional.
+    from lib.warnings import get_collector
+    _collector = get_collector()
+    for name, file in topo.files.items():
+        if file.is_pruned:
+            _collector.register_pruned_file(name)
 
 
 def _phase5_reachability(
@@ -905,7 +914,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
 
         if (re_fdp.name == ctx.variant_descriptor_proto
             and not ctx.write_variant_descriptor):
-            cli_info(f"  Skipping {re_fdp.name} "
+            cli_info(f"Skipping {re_fdp.name} "
                      f"(use --emit-descriptor to include)")
             continue
         path = Path(re_fdp.name)
@@ -947,7 +956,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 elif w5 is not None:
                     get_collector().w5(w5)
                 else:
-                    cli_warning(f"Failed to render {re_fdp.name}: {clean_msg}")
+                    get_collector().w6(re_fdp.name, '', clean_msg)
                 if ctx.debug:
                     cli_warning(str(re_fdp.this))
                 continue

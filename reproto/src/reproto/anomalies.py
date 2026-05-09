@@ -231,10 +231,12 @@ def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
         elif w5 is not None:
             collector.w5(w5)
         else:
-            # Other render error — print immediately via cli_warning.
-            file_ctx = f"'{kwargs.get('file', '')}' " if kwargs.get('file') else ''
-            field_ctx = f"field '{kwargs.get('name', '')}': " if kwargs.get('name') else ''
-            cli_warning(f"{file_ctx}{field_ctx}failed to render options: {clean_msg}")
+            # Other render error (e.g. "Couldn't find Extension N") — route
+            # through W6 so it is buffered and sorted with the rest.
+            proto_file = kwargs.get('file', '')
+            field_name = kwargs.get('name', '')
+            field_ctx = f"field '{field_name}'" if field_name else ''
+            collector.w6(proto_file, field_ctx, clean_msg)
         kwargs = dict(kwargs, exc_msg=clean_msg)
     else:
         ctx_map = _Ignore(kwargs)

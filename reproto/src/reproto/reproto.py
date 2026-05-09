@@ -234,7 +234,7 @@ def reproto(
             _dump_resolved_features_yaml(ctx, ctx.dump_resolved_features)
             return ctx
 
-        _phase4_pruning(ctx, prunings)
+        _phase4_pruning(ctx, topo, prunings)
         _phase5_reachability(ctx, seeds, topo)
         _phase6_summoning(ctx)
         _phase7_output(ctx, out_repo)
