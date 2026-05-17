@@ -238,6 +238,12 @@ def allow_weak_import(ctx: Context) -> bool:
 
 
 # The nine *Options FQNs that proto3 allows extending (custom options).
+# Both .google.protobuf.* (standard) and .proto2.* aliases are included.
+# The .proto2.* names appear when input was compiled against
+# net/proto2/proto/descriptor.proto without a variant that rewrites namespaces
+# (e.g. reproto --prost-workaround without --use-variant).
+# FIXME: hardcoding .proto2.* here is inelegant — we don't have a principled
+# way to express "any variant's *Options types are valid" yet.
 _DESCRIPTOR_OPTIONS_FQNS: frozenset[str] = frozenset({
     ".google.protobuf.FileOptions",
     ".google.protobuf.MessageOptions",
@@ -248,6 +254,17 @@ _DESCRIPTOR_OPTIONS_FQNS: frozenset[str] = frozenset({
     ".google.protobuf.EnumValueOptions",
     ".google.protobuf.ServiceOptions",
     ".google.protobuf.MethodOptions",
+    # .proto2.* aliases (net/proto2/proto/descriptor.proto)
+    # FIXME: see comment above.
+    ".proto2.FileOptions",
+    ".proto2.MessageOptions",
+    ".proto2.FieldOptions",
+    ".proto2.OneofOptions",
+    ".proto2.ExtensionRangeOptions",
+    ".proto2.EnumOptions",
+    ".proto2.EnumValueOptions",
+    ".proto2.ServiceOptions",
+    ".proto2.MethodOptions",
 })
 
 
@@ -257,7 +274,10 @@ def allow_extend_block(ctx: Context, extendee: str) -> bool:
     Proto2/editions: always True.
     Proto3: True only when extendee (after variant namespace rewriting) is one
             of the nine descriptor *Options FQNs (custom options are the only
-            proto3-legal extension target).
+            proto3-legal extension target).  Both .google.protobuf.* and the
+            Google-internal .proto2.* aliases are recognised directly so that
+            corpora compiled without a namespace-rewriting variant (e.g.
+            --prost-workaround without --use-variant) are handled correctly.
     """
     if ctx.target_syntax in ("proto2", "editions"):
         return True

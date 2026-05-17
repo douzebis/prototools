@@ -249,6 +249,52 @@ def test_A5_file_level_extend_proto3(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# TC-A5-regression  A5 regression: .proto2.*Options must not be omitted
+# ---------------------------------------------------------------------------
+
+def test_A5_proto2_options_extendee_not_omitted(tmp_path: Path) -> None:
+    """Extending .proto2.MethodOptions in a proto3 file must NOT trigger A5.
+
+    Regression test for the bug introduced in 94e9a10 (spec 0024): when reproto
+    is run without a namespace-rewriting variant (e.g. --prost-workaround on
+    bp-protodb without --use-variant), extendees compiled against the
+    Google-internal net/proto2/proto/descriptor.proto use the .proto2.* package
+    instead of .google.protobuf.*.  allow_extend_block() must recognise these
+    as valid custom-option targets in proto3.
+    """
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    # Simulate a proto3 file that extends .proto2.MethodOptions (as produced
+    # when compiling against net/proto2/proto/descriptor.proto without a
+    # namespace-rewriting variant).
+    main = _minimal_proto3("a5_regression.proto")
+    ext_field = main.extension.add()
+    ext_field.name = "my_method_opt"
+    ext_field.number = 50000
+    ext_field.label = FieldDescriptorProto.LABEL_OPTIONAL
+    ext_field.type = FieldDescriptorProto.TYPE_BOOL
+    ext_field.extendee = ".proto2.MethodOptions"
+
+    pb = _write_fds(pb_dir / "a5_regression.pb", main)
+
+    # Run without --use-variant so no namespace rewriting is active.
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    content = _read_output(out_dir, "a5_regression.proto")
+    assert "OMITTED[proto3]" not in content, (
+        "A5 must NOT fire for .proto2.MethodOptions extendee — "
+        f"it is a valid proto3 custom-option target.\nContent:\n{content}"
+    )
+    # The extend block must actually appear in the output
+    assert any(ln.startswith("extend ") for ln in content.splitlines()), (
+        f"extend block must be rendered.\nContent:\n{content}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # TC-B1  B1: message-nested extend block not valid in proto3
 # ---------------------------------------------------------------------------
 
