@@ -204,7 +204,7 @@ def _classify_exc(exc_msg: str) -> tuple[str, str | None, str | None]:
     return msg, w4, w5
 
 
-def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
+def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: Any) -> BlockLine:
     """Emit a warning and return a BlockLine for the .proto comment.
 
     Args:
@@ -240,7 +240,7 @@ def report(code: str, depth: int, **kwargs: Any) -> BlockLine:
         kwargs = dict(kwargs, exc_msg=clean_msg)
     else:
         ctx_map = _Ignore(kwargs)
-        if anomaly.stderr:
+        if anomaly.stderr and not suppress_stderr:
             cli_warning(anomaly.stderr.format_map(ctx_map))
 
     prefix = f'{anomaly.severity}[{anomaly.tag}]:'
