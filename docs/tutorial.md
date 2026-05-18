@@ -380,10 +380,10 @@ byte-exact
 
 The over-hanging byte on `revision` is preserved exactly.
 
-**Without `-a`** the output is clean human-readable text but carries no
-`#@ prototext:` header.  `prototext encode` requires that header; feeding it
-unannotated output is an error (exit 1).  Use `-a` whenever you intend to
-round-trip through `prototext encode`.
+**Without `-a`** the output is clean human-readable text with no header and no
+inline annotations.  `prototext encode` requires both; feeding it unannotated
+output is an error (exit 1).  Use `-a` whenever you intend to round-trip
+through `prototext encode`.
 
 ---
 

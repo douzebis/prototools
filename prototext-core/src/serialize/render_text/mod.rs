@@ -163,8 +163,10 @@ pub fn is_prototext_text(data: &[u8]) -> bool {
 
 /// Decode raw protobuf binary and render as protoc-style text in one pass.
 ///
-/// Writes the `#@ prototext: protoc\n` header followed by field lines directly
-/// into a pre-allocated `Vec<u8>`.
+/// Writes field lines into a pre-allocated `Vec<u8>`.  When `annotations` is
+/// true, a `#@ prototext: protoc\n` header is prepended; without annotations
+/// the header is omitted (encode is not possible without field annotations
+/// regardless).
 ///
 /// Parameters mirror `format_as_text` in `lib.rs`.
 pub fn decode_and_render(
@@ -176,8 +178,12 @@ pub fn decode_and_render(
     let capacity = buf.len() * 8;
     let mut out = Vec::with_capacity(capacity);
 
-    // Header
-    out.extend_from_slice(b"#@ prototext: protoc\n");
+    // Header — only emitted when annotations are on; without field-level
+    // annotations prototext encode cannot reconstruct the binary anyway, so
+    // the header would be misleading.
+    if annotations {
+        out.extend_from_slice(b"#@ prototext: protoc\n");
+    }
     // Initialise render-mode state.
     // CBL_START past the end so the first write_close_brace always takes
     // the fresh-write path.

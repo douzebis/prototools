@@ -156,10 +156,14 @@ fn fixture_roundtrip_annotated_craft_a() {
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
 /// CLI: `prototext decode` (no -a) must exit 0 for every fixture.
+///
+/// Without annotations the header is suppressed and encode is not possible,
+/// so this test only checks that decode itself succeeds cleanly.
 #[test]
 fn fixture_no_panic_no_annotations() {
     let mut ran = 0;
     let mut skipped = 0;
+    let bin = env!("CARGO_BIN_EXE_prototext");
 
     for &(name, func) in craft_a::ALL_FIXTURES {
         let Some((schema_rel, message)) = index_schema(name) else {
@@ -170,8 +174,22 @@ fn fixture_no_panic_no_annotations() {
 
         let wire = func();
         let sp = schema_path(&schema_rel);
-        // cli_roundtrip with annotations=false asserts exit 0 internally.
-        cli_roundtrip(&wire, &sp, &message, false);
+        let out = Command::new(bin)
+            .arg("--descriptor")
+            .arg(&sp)
+            .arg("decode")
+            .args(["--type", &message])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn prototext")
+            .wait_with_output_and_stdin(&wire);
+        assert!(
+            out.status.success(),
+            "{name}: prototext decode (no -a) must exit 0:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         ran += 1;
     }
 
