@@ -45,24 +45,17 @@ The rest of this tutorial walks you through all three scenarios step by step.
 Clone the repo and enter the Nix development shell.  All tools and dependencies
 are provided automatically.
 
-<button onclick="navigator.clipboard.writeText('git clone https://github.com/ThalesGroup/prototools\ncd prototools\nnix-shell')">copy</button>
-
 ```
-$ git clone https://github.com/ThalesGroup/prototools
-$ cd prototools
-$ nix-shell
+git clone https://github.com/ThalesGroup/prototools
+cd prototools
+nix-shell
 ```
 
 Confirm the tools are available:
 
-<button onclick="navigator.clipboard.writeText('prototext --version\nreproto --version')">copy</button>
-
 ```
-$ prototext --version
-prototext 0.1.4
-
-$ reproto --version
-reproto, version 0.1.0
+prototext --version
+reproto --version
 ```
 
 ---
@@ -76,10 +69,8 @@ scoring graphs for fast inference.
 
 **Build the googleapis-db** (one-time; Nix caches the result):
 
-<button onclick="navigator.clipboard.writeText('export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc')">copy</button>
-
 ```
-$ export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
 ```
 
 The store path contains:
@@ -92,12 +83,13 @@ The store path contains:
 `.pb` files.  Let's decode one — without specifying the type, letting
 `prototext` infer it automatically:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB \\\n  decode \\\n  $(dirname $GOOGLEAPIS_DB)/instances/google/type/PostalAddress.pb')">copy</button>
-
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor $GOOGLEAPIS_DB \
     decode \
     $(dirname $GOOGLEAPIS_DB)/instances/google/type/PostalAddress.pb
+```
+
+```
 #@ prototext: protoc
 # Type: google.type.PostalAddress
 # Score: 13  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 0)
@@ -133,12 +125,13 @@ Here is `google.cloud.compute.v1beta.UsableSubnetwork` — a message whose field
 structure happens to match both the `v1` and `v1beta` API versions of the same
 type:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB \\\n  list-schemas \\\n  $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb')">copy</button>
-
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor $GOOGLEAPIS_DB \
     list-schemas \
     $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
+```
+
+```
 - path: …/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
   types:
   - google.cloud.compute.v1.UsableSubnetwork
@@ -149,12 +142,13 @@ Two types tie.  In this case the tie is unsurprising: `v1` and `v1beta` differ
 only in maturity, not in wire format.  To decode, supply the correct type
 explicitly:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB \\\n  decode --type google.cloud.compute.v1beta.UsableSubnetwork \\\n  $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb')">copy</button>
-
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
+```
+
+```
 #@ prototext: protoc
 subnetwork: "s5518"
 ip_cidr_range: "s6809"
@@ -164,13 +158,14 @@ ip_cidr_range: "s6809"
 **Multi-file auto-inference** processes a batch of files and skips ambiguous
 ones with a warning:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB decode -O /tmp/decoded \\\n  $INST/google/type/PostalAddress.pb \\\n  $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb')">copy</button>
-
 ```
-$ INST=$(dirname $GOOGLEAPIS_DB)/instances
-$ prototext --descriptor $GOOGLEAPIS_DB decode -O /tmp/decoded \
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB decode -O /tmp/decoded \
     $INST/google/type/PostalAddress.pb \
     $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb
+```
+
+```
 warning: type inference issues:
 - path: …/UsableSubnetwork.pb
   types:
@@ -190,10 +185,8 @@ smaller example: the protobuf Well-Known Types (WKT) that ship with `protoc`.
 
 **Step 4a — compile some WKT `.proto` files into a standalone FileDescriptorSet.**
 
-<button onclick="navigator.clipboard.writeText('protoc \\\n  --descriptor_set_out=/tmp/wkt.pb \\\n  --include_imports \\\n  google/protobuf/descriptor.proto \\\n  google/protobuf/timestamp.proto \\\n  google/protobuf/duration.proto \\\n  google/protobuf/any.proto')">copy</button>
-
 ```
-$ protoc \
+protoc \
     --descriptor_set_out=/tmp/wkt.pb \
     --include_imports \
     google/protobuf/descriptor.proto \
@@ -204,16 +197,10 @@ $ protoc \
 
 **Step 4b — build the schema DB with reproto:**
 
-<button onclick="navigator.clipboard.writeText('reproto \\\n  --build-schema-db=/tmp/wkt.desc \\\n  /tmp/wkt.pb')">copy</button>
-
 ```
-$ reproto \
+reproto \
     --build-schema-db=/tmp/wkt.desc \
     /tmp/wkt.pb
-…
-  descriptor: /tmp/wkt.desc
-  graph:      /tmp/wkt/hopcroft.rkyv
-  index:      /tmp/wkt/index.rkyv
 ```
 
 **Step 4c — use the descriptor itself as a protobuf instance.**
@@ -223,11 +210,12 @@ The `/tmp/wkt.pb` file you just compiled *is* a binary protobuf
 built — this is a nice self-referential demo, and auto-inference works because
 the scoring graph is present:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor /tmp/wkt.desc \\\n  decode /tmp/wkt.pb | head -12')">copy</button>
+```
+prototext --descriptor /tmp/wkt.desc \
+    decode /tmp/wkt.pb | head -12
+```
 
 ```
-$ prototext --descriptor /tmp/wkt.desc \
-    decode /tmp/wkt.pb | head -12
 #@ prototext: protoc
 # Type: google.protobuf.FileDescriptorSet
 # Score: 1846  (matched: 1846, unknown: 0, mismatches: 0, non_canonical: 0)
@@ -252,13 +240,14 @@ By default, `prototext decode` outputs clean, human-readable text with no
 annotations — suitable for reading or diffing.  Pass `-a` / `--annotations`
 to enable inline wire-type comments:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a \\\n  $INST/google/type/PostalAddress.pb')">copy</button>
-
 ```
-$ INST=$(dirname $GOOGLEAPIS_DB)/instances
-$ prototext --descriptor $GOOGLEAPIS_DB \
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb
+```
+
+```
 #@ prototext: protoc
 revision: 448  #@ int32 = 1
 region_code: "s4678"  #@ string = 2
@@ -291,18 +280,11 @@ records how many such bytes were seen.
 To demonstrate this, start by decoding `PostalAddress.pb` with annotations and
 saving the result:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a \\\n  $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb')">copy</button>
-
 ```
-$ INST=$(dirname $GOOGLEAPIS_DB)/instances
-$ prototext --descriptor $GOOGLEAPIS_DB \
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb
-$ head -4 /tmp/PostalAddress.textpb
-#@ prototext: protoc
-revision: 448  #@ int32 = 1
-region_code: "s4678"  #@ string = 2
-language_code: "s4996"  #@ string = 3
 ```
 
 Now patch the textual form to add one over-hanging byte on the `revision`
@@ -318,33 +300,32 @@ region_code: "s4678"  #@ string = 2
 
 Then re-encode to produce the patched binary:
 
-<button onclick="navigator.clipboard.writeText('prototext encode < /tmp/PostalAddress.textpb > /tmp/postal_patched.pb')">copy</button>
-
 ```
-$ prototext encode < /tmp/PostalAddress.textpb > /tmp/postal_patched.pb
+prototext encode < /tmp/PostalAddress.textpb > /tmp/postal_patched.pb
 ```
 
 Compare the first bytes before and after the patch:
 
-<button onclick="navigator.clipboard.writeText('hexdump -C $INST/google/type/PostalAddress.pb | head -1\nhexdump -C /tmp/postal_patched.pb | head -1')">copy</button>
+```
+hexdump -C $INST/google/type/PostalAddress.pb | head -1
+hexdump -C /tmp/postal_patched.pb | head -1
+```
 
-```shell
-$ hexdump -C $INST/google/type/PostalAddress.pb | head -1
+```
 00000000  08 c0 03 12 05 73 34 36  37 38 1a 05 73 34 39 39  |.....s4678..s499|
-
-$ hexdump -C /tmp/postal_patched.pb | head -1
 00000000  08 c0 83 00 12 05 73 34  36 37 38 1a 05 73 34 39  |......s4678..s49|
 ```
 
 The patched file is one byte longer (`c0 83 00` instead of `c0 03`).  Now
 decode it with annotations:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a \\\n  /tmp/postal_patched.pb | head -6')">copy</button>
-
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     /tmp/postal_patched.pb | head -6
+```
+
+```
 #@ prototext: protoc
 # Type: google.type.PostalAddress
 # Score: 12  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 1)
@@ -360,11 +341,12 @@ other fields are unchanged.
 instance of `google.type.PostalAddress`, but with a slightly lower score
 (12 vs 13 for the canonical version):
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB \\\n  list-schemas /tmp/postal_patched.pb')">copy</button>
+```
+prototext --descriptor $GOOGLEAPIS_DB \
+    list-schemas /tmp/postal_patched.pb
+```
 
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
-    list-schemas /tmp/postal_patched.pb
 - path: /tmp/postal_patched.pb
   types:
   - google.type.PostalAddress
@@ -380,30 +362,32 @@ and scored, not silently discarded.
 Annotations make lossless round-tripping possible.  Pipe annotated output
 through `prototext encode` and compare with the original:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB decode -a \\\n  $INST/google/type/PostalAddress.pb \\\n  | prototext encode \\\n  | diff - $INST/google/type/PostalAddress.pb \\\n  && echo byte-exact')">copy</button>
-
 ```
-$ INST=$(dirname $GOOGLEAPIS_DB)/instances
-$ prototext --descriptor $GOOGLEAPIS_DB \
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb \
   | prototext encode \
   | diff - $INST/google/type/PostalAddress.pb \
   && echo byte-exact
+```
+
+```
 byte-exact
 ```
 
 The round-trip is byte-exact even for the patched non-canonical version:
 
-<button onclick="navigator.clipboard.writeText('prototext --descriptor $GOOGLEAPIS_DB decode -a \\\n  /tmp/postal_patched.pb \\\n  | prototext encode \\\n  | diff - /tmp/postal_patched.pb \\\n  && echo byte-exact')">copy</button>
-
 ```
-$ prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     /tmp/postal_patched.pb \
   | prototext encode \
   | diff - /tmp/postal_patched.pb \
   && echo byte-exact
+```
+
+```
 byte-exact
 ```
 
@@ -424,24 +408,19 @@ Use the googleapis descriptor itself as a demonstration.
 `descriptor.proto` as the schema baseline, rather than reconstructing it from
 the input — ensuring all well-known descriptor types resolve correctly:
 
-<button onclick="navigator.clipboard.writeText('reproto --use-variant descriptor \\\n  -O /tmp/googleapis-src \\\n  $GOOGLEAPIS_DB')">copy</button>
-
 ```
-$ reproto --use-variant descriptor \
+reproto --use-variant descriptor \
     -O /tmp/googleapis-src \
     $GOOGLEAPIS_DB
-Loading seed files
-…
-Writing reconstructed .proto files.
-Skipping google/protobuf/descriptor.proto (use --emit-descriptor to include)
 ```
 
 Inspect the reconstructed `timestamp.proto`:
 
-<button onclick="navigator.clipboard.writeText('cat /tmp/googleapis-src/google/protobuf/timestamp.proto')">copy</button>
+```
+cat /tmp/googleapis-src/google/protobuf/timestamp.proto
+```
 
 ```
-$ cat /tmp/googleapis-src/google/protobuf/timestamp.proto
 // google/protobuf/timestamp.proto
 
 syntax = "proto3";
