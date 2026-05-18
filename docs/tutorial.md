@@ -252,12 +252,12 @@ By default, `prototext decode` outputs clean, human-readable text with no
 annotations — suitable for reading or diffing.  Pass `-a` / `--annotations`
 to enable inline wire-type comments:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a --type google.type.PostalAddress \\\n  $INST/google/type/PostalAddress.pb')">copy</button>
+<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a \\\n  $INST/google/type/PostalAddress.pb')">copy</button>
 
 ```
 $ INST=$(dirname $GOOGLEAPIS_DB)/instances
 $ prototext --descriptor $GOOGLEAPIS_DB \
-    decode -a --type google.type.PostalAddress \
+    decode -a \
     $INST/google/type/PostalAddress.pb
 #@ prototext: protoc
 revision: 448  #@ int32 = 1
@@ -291,12 +291,12 @@ records how many such bytes were seen.
 To demonstrate this, start by decoding `PostalAddress.pb` with annotations and
 saving the result:
 
-<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a --type google.type.PostalAddress \\\n  $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb')">copy</button>
+<button onclick="navigator.clipboard.writeText('INST=$(dirname $GOOGLEAPIS_DB)/instances\nprototext --descriptor $GOOGLEAPIS_DB \\\n  decode -a \\\n  $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb')">copy</button>
 
 ```
 $ INST=$(dirname $GOOGLEAPIS_DB)/instances
 $ prototext --descriptor $GOOGLEAPIS_DB \
-    decode -a --type google.type.PostalAddress \
+    decode -a \
     $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb
 $ head -4 /tmp/PostalAddress.textpb
 #@ prototext: protoc

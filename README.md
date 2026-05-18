@@ -5,9 +5,6 @@ SPDX-FileCopyrightText: 2025-2026 THALES CLOUD SECURISE SAS
 SPDX-License-Identifier: MIT
 -->
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/douzebis/prototools)
-[![crates.io](https://img.shields.io/crates/v/prototext.svg)](https://crates.io/crates/prototext)
-
 # prototools
 
 A collection of protobuf utilities for working with binary descriptors and
