@@ -337,22 +337,9 @@ region_code: "s4678"  #@ string = 2
 `val_ohb: 1` records one over-hanging byte on the `revision` field.  All
 other fields are unchanged.
 
-**Impact on inference.**  The non-canonical encoding is still recognized as an
+**Impact on inference.**  The patched message still infers uniquely as an
 instance of `google.type.PostalAddress`, but with a slightly lower score
-(12 vs 13 for the canonical version):
-
-```
-prototext --descriptor $GOOGLEAPIS_DB \
-    list-schemas /tmp/postal_patched.pb
-```
-
-```
-- path: /tmp/postal_patched.pb
-  types:
-  - google.type.PostalAddress
-```
-
-The patched message still infers uniquely — non-canonical bytes are preserved
+(12 vs 13 for the canonical version) — non-canonical bytes are preserved
 and scored, not silently discarded.
 
 ---
