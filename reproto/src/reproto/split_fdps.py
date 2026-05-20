@@ -174,26 +174,120 @@ def _split_text(src: str) -> list[tuple[str, str]]:
 # Binary-path splitter
 # ---------------------------------------------------------------------------
 
+def _scan_wire_tags(data: bytes) -> tuple[set[int], int, bytes | None]:
+    """Scan top-level protobuf wire tags without decoding values.
+
+    Returns:
+        field_numbers: set of all field numbers seen at the top level.
+        field1_count:  number of times field 1 appears.
+        field1_payload: the raw payload of the *first* field-1 occurrence
+                        (LEN wire type), or None if field 1 is absent or
+                        has a non-LEN wire type.
+    """
+    field_numbers: set[int] = set()
+    field1_count = 0
+    field1_payload: bytes | None = None
+    pos = 0
+    n = len(data)
+    while pos < n:
+        # Decode varint tag
+        tag = 0
+        shift = 0
+        while pos < n:
+            b = data[pos]
+            pos += 1
+            tag |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+        field_number = tag >> 3
+        wire_type = tag & 0x7
+        field_numbers.add(field_number)
+
+        if wire_type == 0:          # varint
+            while pos < n and (data[pos] & 0x80):
+                pos += 1
+            pos += 1
+        elif wire_type == 1:        # 64-bit
+            pos += 8
+        elif wire_type == 2:        # LEN
+            # Decode length varint
+            length = 0
+            shift = 0
+            while pos < n:
+                b = data[pos]
+                pos += 1
+                length |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            payload = data[pos:pos + length]
+            if field_number == 1:
+                field1_count += 1
+                if field1_payload is None:
+                    field1_payload = payload
+            pos += length
+        elif wire_type == 5:        # 32-bit
+            pos += 4
+        else:
+            # Unknown wire type — stop scanning
+            break
+
+    return field_numbers, field1_count, field1_payload
+
+
+def _is_fdp(data: bytes) -> bool:
+    """Heuristic: decide whether binary data is a bare FDP (True) or FDS (False).
+
+    A FileDescriptorSet only ever has field 1 (repeated FileDescriptorProto file).
+    A FileDescriptorProto has field 1 (name) plus fields 2, 4-7, etc.
+
+    Rules:
+      1. Any field number other than 1 present  → FDP.
+      2. Multiple field-1 occurrences           → FDS (repeated file entries).
+      3. Exactly one field-1, no other fields:
+         - field-1 payload parses as a FDP with a non-empty name
+           → FDS (the payload is a serialised sub-entry).
+         - otherwise → FDP (field-1 is the filename string).
+    """
+    field_numbers, field1_count, field1_payload = _scan_wire_tags(data)
+
+    if field_numbers - {1}:         # any field number other than 1
+        return True
+    if field1_count > 1:            # multiple field-1 entries → FDS
+        return False
+    if field1_payload is None:      # empty message — no name → not a useful FDP
+        return False
+    # Case 3: try to interpret field-1 payload as a FDP sub-message.
+    try:
+        sub = FileDescriptorProto()
+        sub.ParseFromString(field1_payload)
+        if sub.name:
+            return False            # payload is a valid named FDP → outer is FDS
+    except (DecodeError, ValueError):
+        pass
+    return True                     # field-1 is a plain filename string → FDP
+
+
 def _split_binary(data: bytes) -> list[tuple[str, bytes]]:
     """Split binary FDS/FDP bytes into (name, fragment) pairs."""
-    # Try FileDescriptorSet first
-    fds = FileDescriptorSet()
-    try:
-        fds.ParseFromString(data)
-        if fds.file:
-            return [(fdp.name, fdp.SerializeToString()) for fdp in fds.file
-                    if fdp.name]
-    except (DecodeError, ValueError):
-        pass
-
-    # Try bare FileDescriptorProto
-    fdp = FileDescriptorProto()
-    try:
-        fdp.ParseFromString(data)
-        if fdp.name:
-            return [(fdp.name, data)]
-    except (DecodeError, ValueError):
-        pass
+    if _is_fdp(data):
+        fdp = FileDescriptorProto()
+        try:
+            fdp.ParseFromString(data)
+            if fdp.name:
+                return [(fdp.name, data)]
+        except (DecodeError, ValueError):
+            pass
+    else:
+        fds = FileDescriptorSet()
+        try:
+            fds.ParseFromString(data)
+            if fds.file:
+                return [(fdp.name, fdp.SerializeToString())
+                        for fdp in fds.file if fdp.name]
+        except (DecodeError, ValueError):
+            pass
 
     raise ValueError("binary data is neither a FileDescriptorSet nor a FileDescriptorProto")
 
