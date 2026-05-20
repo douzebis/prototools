@@ -284,7 +284,8 @@ EOF
   # Two derivations:
   #   googleapisDb    — fetches pinned googleapis corpus, compiles protos,
   #                     runs reproto --build-schema-db, and instantiates
-  #                     N_INSTANCES randomly-sampled .pb messages.
+  #                     N_INSTANCES .pb messages: hand-crafted fixtures first,
+  #                     then a seeded pseudo-random draw for the remainder.
   #                     Cached by Nix; only rebuilt when inputs change.
   #   googleapisTests — runs pytest with STRESS_DB pointing at googleapisDb.
   #                     Rebuilt whenever the test code or prototext changes.
@@ -349,17 +350,45 @@ EOF
     # Number of types to instantiate (includes potential 0-byte skips).
     N_INSTANCES=400
     TYPES_YAML=${../tests/stress/googleapis-types.yaml}
-    # Mandatory set: types listed in googleapis-types.yaml (used by tests).
+    FIXTURES_DIR=${../tests/fixtures/instances}
+
+    # Phase 1: encode hand-crafted fixtures into .pb files.
+    # These are committed to git (as annotated textproto with .pb extension)
+    # and have well-known, realistic content.
+    # They are always present regardless of the random draw in phase 2.
+    mkdir -p "$out/instances"
+    find "$FIXTURES_DIR" -name "*.pb" | while read f; do
+      rel=$(realpath --relative-to="$FIXTURES_DIR" "$f")
+      pb="$out/instances/$rel"
+      mkdir -p "$(dirname "$pb")"
+      prototext encode < "$f" > "$pb"
+    done
+
+    # Phase 2: fill remaining slots with a pseudo-random draw.
+    # Uses a seeded Python shuffle for a stable, reproducible permutation
+    # that is independent of the OS random source.
     MANDATORY=$(grep '^\s*- ' "$TYPES_YAML" | sed 's/^\s*- //')
     # Full type list from the DB (empty protobuf matches everything).
     ALL=$(printf "" | prototext --descriptor "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - ' | sed 's/^  - //')
-    # Sample additional types to reach N_INSTANCES, excluding mandatory ones.
-    EXTRA=$(comm -23 \
-              <(echo "$ALL"   | sort -u) \
-              <(echo "$MANDATORY" | sort -u) \
-            | shuf -n $(( N_INSTANCES - $(echo "$MANDATORY" | wc -l) )))
+    # Already-instantiated types (phase 1 + mandatory) — don't overwrite.
+    ALREADY=$(find "$out/instances" -name "*.pb" | sed "s|$out/instances/||;s|\.pb$||;s|/|.|g")
+    N_MANDATORY=$(echo "$MANDATORY" | wc -l)
+    N_ALREADY=$(echo "$ALREADY" | grep -c . || true)
+    N_EXTRA=$(( N_INSTANCES - N_MANDATORY - N_ALREADY ))
+    EXTRA=""
+    if [ "$N_EXTRA" -gt 0 ]; then
+      EXTRA=$(comm -23 \
+                <(echo "$ALL"      | sort -u) \
+                <(printf '%s\n%s\n%s' "$MANDATORY" "$ALREADY" "" | sort -u) \
+              | python3 -c "
+import sys, random
+lines = [l.rstrip() for l in sys.stdin if l.strip()]
+random.seed('prototools-googleapis-instances-v1')
+random.shuffle(lines)
+print('\n'.join(lines[:$N_EXTRA]))
+")
+    fi
     FQDNS=$(printf '%s\n%s' "$MANDATORY" "$EXTRA")
-    mkdir -p "$out/instances"
     reproto-instantiate-schema \
       --descriptor "$out/googleapis.desc" \
       -O "$out/instances" \

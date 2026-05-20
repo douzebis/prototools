@@ -36,7 +36,13 @@ and the lazy-loading index, this takes well under a second.
 or `FileDescriptorSet`, handling proto2, proto3, editions, options, and nested
 types.  The output recompiles to a descriptor equivalent to the input.
 
-The rest of this tutorial walks you through all three scenarios step by step.
+**"I have an editions descriptor but my toolchain does not support editions."**
+`reproto --force-proto2-output` translates an editions descriptor to
+wire-compatible proto2 `.proto` source.  Field presence (`IMPLICIT`,
+`EXPLICIT`, `LEGACY_REQUIRED`), group encoding (`DELIMITED`), and packed
+annotations are all handled automatically.
+
+The rest of this tutorial walks you through all four scenarios step by step.
 
 ---
 
@@ -90,23 +96,18 @@ prototext --descriptor $GOOGLEAPIS_DB \
 ```
 
 ```
-#@ prototext: protoc
 # Type: google.type.PostalAddress
-# Score: 13  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 0)
+# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
 
-revision: 448
-region_code: "s4678"
-language_code: "s4996"
-postal_code: "s4938"
-sorting_code: "s8505"
-administrative_area: "s7476"
-locality: "s3682"
-sublocality: "s1172"
-address_lines: "s7447"
-recipients: "s5598"
-recipients: "s807"
-recipients: "s346"
-organization: "s8803"
+revision: 1
+organization: "S3NS"
+address_lines: "Patchwork Montholon"
+address_lines: "26 Rue de Montholon"
+postal_code: "75009"
+locality: "Paris"
+administrative_area: "Île-de-France"
+region_code: "FR"
+language_code: "fr"
 ```
 
 Real googleapis field names, repeated fields — inferred automatically from
@@ -149,10 +150,9 @@ prototext --descriptor $GOOGLEAPIS_DB \
 ```
 
 ```
-#@ prototext: protoc
-subnetwork: "s5518"
-ip_cidr_range: "s6809"
-…
+subnetwork: "projects/my-project/regions/europe-west1/subnetworks/my-subnet"
+network: "projects/my-project/global/networks/my-network"
+ip_cidr_range: "10.132.0.0/20"
 ```
 
 **Multi-file auto-inference** processes a batch of files and skips ambiguous
@@ -249,19 +249,18 @@ prototext --descriptor $GOOGLEAPIS_DB \
 
 ```
 #@ prototext: protoc
-revision: 448  #@ int32 = 1
-region_code: "s4678"  #@ string = 2
-language_code: "s4996"  #@ string = 3
-postal_code: "s4938"  #@ string = 4
-sorting_code: "s8505"  #@ string = 5
-administrative_area: "s7476"  #@ string = 6
-locality: "s3682"  #@ string = 7
-sublocality: "s1172"  #@ string = 8
-address_lines: "s7447"  #@ repeated string = 9
-recipients: "s5598"  #@ repeated string = 10
-recipients: "s807"  #@ repeated string = 10
-recipients: "s346"  #@ repeated string = 10
-organization: "s8803"  #@ string = 11
+# Type: google.type.PostalAddress
+# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
+
+revision: 1  #@ int32 = 1
+organization: "S3NS"  #@ string = 11
+address_lines: "Patchwork Montholon"  #@ repeated string = 9
+address_lines: "26 Rue de Montholon"  #@ repeated string = 9
+postal_code: "75009"  #@ string = 4
+locality: "Paris"  #@ string = 7
+administrative_area: "Île-de-France"  #@ string = 6
+region_code: "FR"  #@ string = 2
+language_code: "fr"  #@ string = 3
 ```
 
 Each `#@ wire_type = field_number` annotation records the wire type and field
@@ -272,10 +271,9 @@ round-tripping possible (see Section 6).
 non-canonical encoding that are semantically equivalent but byte-for-byte
 different from what a normal encoder would produce.  Standard tools silently
 normalise these; `prototext decode -a` preserves them.  For example, varints
-can carry redundant continuation bytes (OHB — Over-Hanging Bytes): field 1
-with value 448 is canonically `\x08\xc0\x03` but can also be encoded as
-`\x08\xc0\x83\x00` (one extra byte, same value).  The `val_ohb` annotation
-records how many such bytes were seen.
+can carry redundant continuation bytes (OHB — Over-Hanging Bytes): the value 1
+is canonically `\x01` but can also be encoded as `\x81\x00` (one extra byte,
+same value).  The `val_ohb` annotation records how many such bytes were seen.
 
 To demonstrate this, start by decoding `PostalAddress.pb` with annotations and
 saving the result:
@@ -293,8 +291,8 @@ field.  Edit `/tmp/PostalAddress.textpb` and change the annotation on the
 
 ```
 #@ prototext: protoc
-revision: 448  #@ int32 = 1; val_ohb: 1
-region_code: "s4678"  #@ string = 2
+revision: 1  #@ int32 = 1; val_ohb: 1
+organization: "S3NS"  #@ string = 11
 …
 ```
 
@@ -312,11 +310,11 @@ hexdump -C /tmp/postal_patched.pb | head -1
 ```
 
 ```
-00000000  08 c0 03 12 05 73 34 36  37 38 1a 05 73 34 39 39  |.....s4678..s499|
-00000000  08 c0 83 00 12 05 73 34  36 37 38 1a 05 73 34 39  |......s4678..s49|
+00000000  08 01 5a 04 53 33 4e 53  4a 13 50 61 74 63 68 77  |..Z.S3NSJ.Patchw|
+00000000  08 81 00 5a 04 53 33 4e  53 4a 13 50 61 74 63 68  |...Z.S3NSJ.Patch|
 ```
 
-The patched file is one byte longer (`c0 83 00` instead of `c0 03`).  Now
+The patched file is one byte longer (`81 00` instead of `01`).  Now
 decode it with annotations:
 
 ```
@@ -328,10 +326,10 @@ prototext --descriptor $GOOGLEAPIS_DB \
 ```
 #@ prototext: protoc
 # Type: google.type.PostalAddress
-# Score: 12  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 1)
+# Score: -11  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 1)
 
-revision: 448  #@ int32 = 1; val_ohb: 1
-region_code: "s4678"  #@ string = 2
+revision: 1  #@ int32 = 1; val_ohb: 1
+organization: "S3NS"  #@ string = 11
 ```
 
 `val_ohb: 1` records one over-hanging byte on the `revision` field.  All
@@ -339,7 +337,7 @@ other fields are unchanged.
 
 **Impact on inference.**  The patched message still infers uniquely as an
 instance of `google.type.PostalAddress`, but with a slightly lower score
-(12 vs 13 for the canonical version) — non-canonical bytes are preserved
+(-11 vs 9 for the canonical version) — non-canonical bytes are preserved
 and scored, not silently discarded.
 
 ---
@@ -437,9 +435,149 @@ a descriptor has been extracted from a Go, Java, or Python binary by other means
 
 ---
 
+## Section 8 — Translating editions descriptors to proto2
+
+Some toolchains (e.g. prost-reflect as of 2026) do not yet support the
+editions syntax introduced in protobuf 27.  `reproto --force-proto2-output`
+translates an editions descriptor to proto2 source while preserving wire
+semantics.
+
+**Start with an editions `.proto` file.**  Use the `editions_rendering.proto`
+fixture from the reproto test suite as a concrete example — it exercises all
+the translation decisions:
+
+```
+cat reproto/src/reproto/tests/fixtures/editions_rendering.proto
+```
+
+```
+edition = "2023";
+
+package reproto.test.rendering;
+
+message Inner {
+  int32 value = 1;
+}
+
+message AllFeatures {
+  string implicit_field = 1 [features.field_presence = IMPLICIT];
+  string explicit_field = 2 [features.field_presence = EXPLICIT];
+  string required_field = 3 [features.field_presence = LEGACY_REQUIRED];
+  repeated int32 expanded_ids = 4 [features.repeated_field_encoding = EXPANDED];
+  Inner delimited_field = 5 [features.message_encoding = DELIMITED];
+  int32 with_default = 6 [features.field_presence = EXPLICIT, default = 42];
+  repeated int32 packed_ids = 7 [features.repeated_field_encoding = PACKED];
+}
+```
+
+**Compile to a descriptor set:**
+
+```
+protoc \
+    --descriptor_set_out=/tmp/editions_rendering.pb \
+    --include_imports \
+    -Ireproto/src/reproto/tests/fixtures \
+    reproto/src/reproto/tests/fixtures/editions_rendering.proto
+```
+
+**Reconstruct as editions (default — no flag):**
+
+```
+reproto --use-variant descriptor \
+    --output-root=/tmp/out_editions \
+    /tmp/editions_rendering.pb
+```
+
+```
+cat /tmp/out_editions/editions_rendering.proto
+```
+
+```
+// editions_rendering.proto
+
+edition = "2023";
+
+package reproto.test.rendering;
+
+message Inner {
+  int32 value = 1;
+}
+
+message AllFeatures {
+  string implicit_field = 1 [features.field_presence = IMPLICIT];
+  string explicit_field = 2 [features.field_presence = EXPLICIT];
+  string required_field = 3 [features.field_presence = LEGACY_REQUIRED];
+  repeated int32 expanded_ids = 4 [features.repeated_field_encoding = EXPANDED];
+  Inner delimited_field = 5 [features.message_encoding = DELIMITED];
+  int32 with_default = 6 [
+    default = 42,
+    features.field_presence = EXPLICIT
+  ];
+  repeated int32 packed_ids = 7 [features.repeated_field_encoding = PACKED];
+}
+```
+
+**Reconstruct as proto2 (`--force-proto2-output`):**
+
+```
+reproto --use-variant descriptor \
+    --force-proto2-output \
+    --output-root=/tmp/out_proto2 \
+    /tmp/editions_rendering.pb
+```
+
+```
+cat /tmp/out_proto2/editions_rendering.proto
+```
+
+```
+// editions_rendering.proto
+
+// WARNING[editions]: editions file rendered as proto2 (--force-proto2-output)
+syntax = "proto2";
+
+package reproto.test.rendering;
+
+message Inner {
+  optional int32 value = 1;
+}
+
+message AllFeatures {
+  optional string implicit_field = 1;
+  optional string explicit_field = 2;
+  required string required_field = 3;
+  repeated int32 expanded_ids = 4;
+  optional group DelimitedField = 5 {
+    optional int32 value = 1;
+  }
+
+  optional int32 with_default = 6 [default = 42];
+  repeated int32 packed_ids = 7 [packed = true];
+}
+```
+
+Each editions feature is translated to its proto2 equivalent:
+
+| editions source | proto2 output | Notes |
+|---|---|---|
+| `field_presence = IMPLICIT` | `optional` | wire-compatible; proto2 gains a `has_field()` accessor that did not exist in the original |
+| `field_presence = EXPLICIT` | `optional` | identical semantics |
+| `field_presence = LEGACY_REQUIRED` | `required` | identical semantics |
+| `message_encoding = DELIMITED` | `group DelimitedField` | group name derived from field name |
+| `repeated_field_encoding = EXPANDED` | _(no annotation)_ | unpacked is proto2 default |
+| `repeated_field_encoding = PACKED` | `[packed = true]` | proto2 default is unpacked |
+| `default = 42` | `[default = 42]` | preserved |
+
+The output recompiles with `protoc` without errors and is wire-compatible with
+the original editions descriptor.  See `docs/force-proto2-output.md` for the
+complete translation reference.
+
+---
+
 ## Further reading
 
 - `man prototext` — full option reference for `prototext`
 - `reproto --help` — all reproto modes and flags
 - `prototext decode --help`, `prototext list-schemas --help` — per-subcommand help
+- `docs/force-proto2-output.md` — complete reference for `--force-proto2-output` translation rules
 - [prototools online docs](https://douzebis.github.io/prototools)
