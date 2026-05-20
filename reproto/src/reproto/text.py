@@ -121,7 +121,7 @@ class Block:
                     out += "///" + " " * adjusted_indent + line.text + '\n'
 
             else:  # CODE
-                out += " " * indent_spaces + line.text + '\n'
+                out += (" " * indent_spaces + line.text if line.text else "") + '\n'
 
         return out
 

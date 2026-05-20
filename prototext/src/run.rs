@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
     decode_pool, is_prototext_text, render_as_bytes, render_as_text, schema_from_pool, CodecError,
     RenderOpts,
@@ -222,16 +223,14 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferOutcome, 
     }))
 }
 
-/// Insert `# Type:` and `# Score:` comment lines (plus a blank line) after the
-/// magic first line of rendered prototext output.  The magic line itself is
-/// left unmodified.
-fn inject_matched_annotation(text: &[u8], inferred: &InferredType) -> Vec<u8> {
+/// Format the `# Type:` / `# Score:` inference header (with trailing blank line).
+fn inferred_header(inferred: &InferredType) -> String {
     let score_str = if inferred.score == i64::MIN {
         "-inf".to_string()
     } else {
         inferred.score.to_string()
     };
-    let insert = format!(
+    format!(
         "# Type: {}\n# Score: {}  (matched: {}, unknown: {}, mismatches: {}, non_canonical: {})\n\n",
         inferred.fqdn,
         score_str,
@@ -239,15 +238,7 @@ fn inject_matched_annotation(text: &[u8], inferred: &InferredType) -> Vec<u8> {
         inferred.unknowns,
         inferred.mismatches,
         inferred.non_canonical,
-    );
-    if let Some(nl) = text.iter().position(|&b| b == b'\n') {
-        let mut out = text[..=nl].to_vec();
-        out.extend_from_slice(insert.as_bytes());
-        out.extend_from_slice(&text[nl + 1..]);
-        out
-    } else {
-        text.to_vec()
-    }
+    )
 }
 
 // ── Per-file processing ───────────────────────────────────────────────────────
@@ -609,10 +600,10 @@ fn run_decode(
                     }
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
-                    let raw_out =
-                        process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
-                    let out = inject_matched_annotation(&raw_out, &inferred);
-                    write_output(&out, output.as_deref())?;
+                    EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
+                    let out = process(&data, true, assume_binary, Some(&infer_schema), annotations);
+                    EXTRA_HEADER.with(|h| h.borrow_mut().clear());
+                    write_output(&out?, output.as_deref())?;
                     return Ok(());
                 }
             }
@@ -648,10 +639,10 @@ fn run_decode(
                     }
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
-                    let raw_out =
-                        process(&data, true, assume_binary, Some(&infer_schema), annotations)?;
-                    let out = inject_matched_annotation(&raw_out, &inferred);
-                    write_output(&out, output.as_deref())?;
+                    EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
+                    let out = process(&data, true, assume_binary, Some(&infer_schema), annotations);
+                    EXTRA_HEADER.with(|h| h.borrow_mut().clear());
+                    write_output(&out?, output.as_deref())?;
                     return Ok(());
                 }
             }
@@ -1018,7 +1009,10 @@ fn run_batch_infer(
                 continue;
             }
         };
-        let raw_out = match process(data, true, assume_binary, Some(&schema), annotations) {
+        EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
+        let raw_out = process(data, true, assume_binary, Some(&schema), annotations);
+        EXTRA_HEADER.with(|h| h.borrow_mut().clear());
+        let raw_out = match raw_out {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("error: '{}': {}", f.abs.display(), e);
@@ -1026,9 +1020,8 @@ fn run_batch_infer(
                 continue;
             }
         };
-        let out = inject_matched_annotation(&raw_out, inferred);
         let dest = output_path_for(f, in_place, output_root);
-        if let Err(e) = write_output(&out, Some(&dest)) {
+        if let Err(e) = write_output(&raw_out, Some(&dest)) {
             eprintln!("error: {}", e);
             had_hard_error = true;
         }

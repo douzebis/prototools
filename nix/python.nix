@@ -388,7 +388,11 @@ random.shuffle(lines)
 print('\n'.join(lines[:$N_EXTRA]))
 ")
     fi
-    FQDNS=$(printf '%s\n%s' "$MANDATORY" "$EXTRA")
+    # Exclude mandatory types already covered by phase 1 hand-crafted fixtures.
+    MANDATORY_NEW=$(comm -23 \
+                     <(echo "$MANDATORY" | sort -u) \
+                     <(echo "$ALREADY"   | sort -u))
+    FQDNS=$(printf '%s\n%s' "$MANDATORY_NEW" "$EXTRA")
     reproto-instantiate-schema \
       --descriptor "$out/googleapis.desc" \
       -O "$out/instances" \

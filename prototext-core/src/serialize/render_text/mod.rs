@@ -7,7 +7,7 @@ mod helpers;
 mod packed;
 mod varint;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -131,12 +131,14 @@ impl FieldOrExt {
 // it was intended to support has been removed.
 //
 thread_local! {
-    pub(super) static CBL_START:    Cell<usize> = const { Cell::new(0) };
+    pub(super) static CBL_START:    Cell<usize>     = const { Cell::new(0) };
     // Set once per `decode_and_render` call; read by every internal render fn.
-    pub(super) static ANNOTATIONS:  Cell<bool>  = const { Cell::new(false) };
-    pub(super) static INDENT_SIZE:  Cell<usize> = const { Cell::new(2) };
+    pub(super) static ANNOTATIONS:  Cell<bool>      = const { Cell::new(false) };
+    pub(super) static INDENT_SIZE:  Cell<usize>     = const { Cell::new(2) };
     // Tracks recursion depth; managed via `enter_level()` / `LevelGuard`.
-    pub(super) static LEVEL:        Cell<usize> = const { Cell::new(0) };
+    pub(super) static LEVEL:        Cell<usize>     = const { Cell::new(0) };
+    // Optional header lines injected after the magic line (e.g. # Type / # Score).
+    pub static EXTRA_HEADER: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// RAII guard for `LEVEL`: increments on construction, decrements on drop.
@@ -184,6 +186,12 @@ pub fn decode_and_render(
     if annotations {
         out.extend_from_slice(b"#@ prototext: protoc\n");
     }
+    EXTRA_HEADER.with(|h| {
+        let h = h.borrow();
+        if !h.is_empty() {
+            out.extend_from_slice(h.as_bytes());
+        }
+    });
     // Initialise render-mode state.
     // CBL_START past the end so the first write_close_brace always takes
     // the fresh-write path.

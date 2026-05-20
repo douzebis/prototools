@@ -216,7 +216,6 @@ prototext --descriptor /tmp/wkt.desc \
 ```
 
 ```
-#@ prototext: protoc
 # Type: google.protobuf.FileDescriptorSet
 # Score: 1846  (matched: 1846, unknown: 0, mismatches: 0, non_canonical: 0)
 
