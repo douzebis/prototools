@@ -298,7 +298,12 @@ def test_P9_seed_fuzzy_suggestion(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_P10_pruned_seed_skipped(tmp_path: Path) -> None:
-    """A --seed that resolves to a pruned node is skipped with an info message."""
+    """A --seed that matches a --prune pattern is silently absent from output.
+
+    Since load-time pruning (spec 0074) skips the file before its node is
+    created, the seed is reported as 'not found' rather than 'pruned seed'.
+    Either message is acceptable; what matters is exit 0 and no output file.
+    """
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
     out_dir = tmp_path / "out"
@@ -315,7 +320,6 @@ def test_P10_pruned_seed_skipped(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
-    assert "Skipping pruned seed" in result.stderr
     assert not (out_dir / "prune_base.proto").exists()
 
 

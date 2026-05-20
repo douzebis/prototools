@@ -330,7 +330,12 @@ class _SectionedCommand(click.Command):
     '--seed', 'seeds',
     type=str,
     multiple=True,
-    help='Fully-qualified name to treat as an output root (e.g. desc:my.pkg.MyMsg or file:foo.proto)',
+    help=(
+        'FQDN or glob pattern to treat as an output root. '
+        'Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto. '
+        'Glob: file:borg/common/*.proto (one level), '
+        'file:borg/** (recursive), desc:my.pkg.* (one level).'
+    ),
 )
 
 @click.option(
@@ -338,7 +343,12 @@ class _SectionedCommand(click.Command):
     '--prune', 'stumps',
     type=str,
     multiple=True,
-    help='Fully-qualified name to exclude from output (e.g. desc:my.pkg.MyMsg or file:foo.proto)',
+    help=(
+        'FQDN or glob pattern to exclude from output. '
+        'Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto. '
+        'Glob: file:borg/common/*.proto (one level), '
+        'file:borg/** (recursive), desc:my.pkg.* (one level).'
+    ),
 )
 
 @click.option(
@@ -577,16 +587,33 @@ def main(
         redact_orphans=redact_orphans,
         phase2_plugin=phase2_plugin_function,
     )
-    def _normalise_fqdn(s: str) -> Fqdn:
-        """Accept FQDNs without a leading dot after the prefix for non-file nodes.
+    _VALID_PREFIXES = ('file', 'desc', 'enum', 'serv', 'meth', 'fdsc')
 
-        E.g. 'desc:my.pkg.Foo' → 'desc:.my.pkg.Foo'; 'file:foo.proto' unchanged.
+    def _normalise_fqdn(s: str) -> Fqdn:
+        """Normalise an FQDN pattern for matching.
+
+        - Validates that the pattern has a known prefix.
+        - For file: patterns: name part is left as-is (already uses /).
+        - For all other prefixes: replace . with / in the name part and strip
+          any leading / so PurePosixPath.match() gives proper segment-level
+          semantics.
         """
-        if ':' in s:
-            prefix, rest = s.split(':', 1)
-            if prefix != 'file' and rest and not rest.startswith('.'):
-                return Fqdn(f'{prefix}:.{rest}')
-        return Fqdn(s)
+        if ':' not in s:
+            raise click.UsageError(
+                f'Invalid FQDN {s!r}: must start with a prefix '
+                f'({", ".join(_VALID_PREFIXES)}).'
+            )
+        prefix, rest = s.split(':', 1)
+        if prefix not in _VALID_PREFIXES:
+            raise click.UsageError(
+                f'Invalid FQDN prefix {prefix!r} in {s!r}: '
+                f'must be one of {", ".join(_VALID_PREFIXES)}.'
+            )
+        if prefix == 'file':
+            return Fqdn(s)
+        # Non-file: replace . with / and strip leading /
+        normalised = rest.replace('.', '/').lstrip('/')
+        return Fqdn(f'{prefix}:{normalised}')
 
     try:
         reproto(

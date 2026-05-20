@@ -10,7 +10,6 @@ The public entry point reproto() in reproto.py calls these in sequence.
 
 from __future__ import annotations
 
-import fnmatch
 import importlib.resources
 import itertools
 from typing import Any
@@ -118,19 +117,56 @@ def patch_go_package(ctx: Context, fdp: FileDescriptorProto) -> None:
         fdp.options.go_package = go_package
 
 
+def _normalise_fqdn_name(prefix: str, name: str) -> str:
+    """Normalise the name part of an FQDN for path-aware matching.
+
+    For non-file prefixes, replace '.' with '/' and strip any leading '/'.
+    For file: prefixes, leave the name as-is.
+    """
+    if prefix == 'file':
+        return name
+    return name.replace('.', '/').lstrip('/')
+
+
+def fqdn_match(pattern: Fqdn, subject: Fqdn) -> bool:
+    """Return True iff subject matches pattern.
+
+    Normalises both sides before matching (. → / for non-file FQDNs).
+    Matching is anchored (full path); * matches one segment, ** matches any
+    number of segments (including zero).  Uses PurePosixPath.full_match()
+    (Python 3.13+).
+    """
+    from pathlib import PurePosixPath
+    if ':' not in pattern or ':' not in subject:
+        return pattern == subject
+    p_prefix, p_name = pattern.split(':', 1)
+    s_prefix, s_name = subject.split(':', 1)
+    if p_prefix != s_prefix:
+        return False
+    p_norm = _normalise_fqdn_name(p_prefix, p_name)
+    s_norm = _normalise_fqdn_name(s_prefix, s_name)
+    return PurePosixPath(f'/{s_norm}').full_match(f'/{p_norm}')
+
+
+def fqdn_matches_any(subject: Fqdn, patterns: list[Fqdn]) -> bool:
+    return any(fqdn_match(p, subject) for p in patterns)
+
+
 def _find_matching_nodes(
     pattern: Fqdn,
     ctx: Context,
 ) -> list[tuple[Fqdn, Node]]:
-    """Return all (fqdn, node) pairs whose fqdn matches pattern (exact or glob)."""
-    if '*' in pattern or '?' in pattern:
-        return [
-            (fqdn, node)
-            for fqdn, node in ctx.nodes.items()
-            if fnmatch.fnmatch(fqdn, pattern)
-        ]
-    node = ctx.find_node(pattern)
-    return [(pattern, node)] if node is not None else []
+    """Return all (fqdn, node) pairs whose fqdn matches pattern (exact or glob).
+
+    Uses fqdn_match for all patterns so that normalisation (. → / for non-file
+    FQDNs) is applied consistently on both sides regardless of whether the
+    pattern contains glob characters.
+    """
+    return [
+        (fqdn, node)
+        for fqdn, node in ctx.nodes.items()
+        if fqdn_match(pattern, fqdn)
+    ]
 
 
 def _fuzzy_suggest(pattern: str, ctx: Context) -> str | None:
@@ -551,6 +587,7 @@ def _phase2_build_pool(
     ctx: Context,
     topo: Topology,
     seed_files: set[ReFile],
+    prunings: list[Fqdn],
 ) -> None:
     """Phase 2: Build the descriptor pool in topological order."""
     # === Load FileDescriptors in the pool_db =================================
@@ -657,6 +694,10 @@ def _phase2_build_pool(
             if ctx.debug:
                 cli_info(f"  Merging: {n.name}")
             if n.is_ref():
+                continue
+            if fqdn_matches_any(Fqdn(f'file:{n.name}'), prunings):
+                n.is_pruned = True
+                ctx.pruned_file_names.add(n.name)
                 continue
             qf = n.qfile
             contents = qf.contents

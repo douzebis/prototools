@@ -229,7 +229,7 @@ def reproto(
         if not topo.files:
             return None
 
-        _phase2_build_pool(ctx, topo, seed_files)
+        _phase2_build_pool(ctx, topo, seed_files, prunings)
         _phase3_build_graph(ctx, topo)
 
         if ctx.dump_resolved_features:

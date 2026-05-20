@@ -18,7 +18,7 @@
     url    = "https://github.com/NixOS/nixpkgs/archive/1073dad219cb244572b74da2b20c7fe39cb3fa9e.tar.gz";
     sha256 = "0xgsq0cfjnl2axbzzw579jrjq9g8mhbgjgfippl3qx03im636p5l";
   }) {})
-, pythonPkgs ? pkgs.python312Packages
+, pythonPkgs ? pkgs.python313Packages
 }:
 
 let
