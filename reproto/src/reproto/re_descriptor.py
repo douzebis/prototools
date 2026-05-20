@@ -261,10 +261,102 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             nested = ReDescriptorProto(ctx, nested_proto, parent=self)
             self.targets.add(nested)
 
+        # Editions DELIMITED → proto2 group: assign synthetic group names and
+        # register group descriptors in the pool before processing fields.
+        # This mirrors what happens for native proto2 TYPE_GROUP fields, where
+        # the group type is a distinct nested_type entry with its own FQDN.
+        # We only do this under --force-proto2-output (target_syntax == "proto2")
+        # for editions files.
+        _delimited_groups: dict[int, tuple[str, str]] = {}  # field.number → (synthetic FQDN, group name)
+        # Use the FDP's own edition field to detect editions files — ctx.syntax
+        # is set per-file at render time (re_file.py) and is not yet reliable
+        # during pool construction.
+        from .re_file import ReFileDescriptorProto as _ReFile
+        _node: NodeBase[Any] = self
+        while not isinstance(_node, _ReFile):
+            assert _node._parent is not None
+            _node = _node._parent
+        _is_editions_file = _node.this.HasField('edition')
+        if _is_editions_file and ctx.force_proto2_output:
+            from .feature_resolution import MESSAGE_ENCODING_DELIMITED
+
+            # Collect names already in scope: nested message and enum names.
+            occupied: set[str] = set()
+            for n in self.nested_type:
+                occupied.add(cast(DescriptorProto, n).name)
+            for e in self.enum_type:
+                occupied.add(cast(EnumDescriptorProto, e).name)
+
+            for f in self.field:
+                field_proto = cast(FieldDescriptorProto, f)
+                if field_proto.type != FieldDescriptorProto.TYPE_MESSAGE:
+                    continue
+                field_features = _resolve_field_features(
+                    ctx, _node.this, message, field_proto)
+                if (field_features is None
+                        or field_features.message_encoding != MESSAGE_ENCODING_DELIMITED):
+                    continue
+
+                # Derive group name: CamelCase of field name, disambiguated.
+                raw = ''.join(
+                    part.capitalize() for part in field_proto.name.split('_') if part
+                )
+                candidate = raw
+                suffix = 2
+                while candidate in occupied:
+                    candidate = f'{raw}{suffix}'
+                    suffix += 1
+                occupied.add(candidate)
+
+                # Synthetic FQDN for the group type.
+                synthetic_fqdn = Fqdn(f'{self.prefix}.{candidate}')
+                assert ctx.find_node(
+                    ReDescriptorProto.fqdn_from_ref(Ref(synthetic_fqdn))
+                ) is None, (
+                    f"Synthetic group FQDN {synthetic_fqdn!r} already in pool — "
+                    f"input descriptor is malformed"
+                )
+
+                # Resolve the shared Inner descriptor (already registered).
+                inner = ReDescriptorProto.from_ref(ctx, Ref(field_proto.type_name))
+
+                # Register a stub under the synthetic FQDN.
+                grp = ReDescriptorProto(ctx, Ref(synthetic_fqdn))
+                # Set prefix so _initialize_from_message scopes child FQDNs correctly.
+                from .fake_types import Prefix as _Prefix2
+                grp.prefix = _Prefix2(synthetic_fqdn)
+                # Set _this so that property accessors (self.extension etc.) work
+                # inside _initialize_from_message.
+                grp._this = inner.this
+                # Set _parent so child FQDNs are scoped to the group, not Inner.
+                grp._parent = inner._parent
+                # Populate the group descriptor from the same DescriptorProto as Inner.
+                # Safety: _initialize_from_message creates new Re* wrappers for each
+                # child (registered under the group's FQDN scope), so the group and
+                # Inner subtrees are independent Re* object graphs.  The only sharing
+                # is of the read-only underlying DescriptorProto/_this objects.
+                grp._initialize_from_message(ctx, inner.this)
+                grp.is_group = True
+
+                # Store (synthetic FQDN, group name) keyed by field number.
+                _delimited_groups[field_proto.number] = (synthetic_fqdn, candidate)
+
         # Message fields
         for f in self.field:
             field_proto = cast(FieldDescriptorProto, f)
             fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
+            # For editions DELIMITED fields under --force-proto2-output, attach
+            # the synthetic group descriptor and name so rendering uses the group path.
+            if field_proto.number in _delimited_groups:
+                group_fqdn, group_name = _delimited_groups[field_proto.number]
+                grp_desc = ctx.find_node(
+                    ReDescriptorProto.fqdn_from_ref(Ref(group_fqdn)))
+                assert isinstance(grp_desc, ReDescriptorProto)
+                fd._editions_group_descriptor = grp_desc
+                fd._editions_group_name = group_name
+                # The synthetic group must be in the field's targets so the
+                # reachability propagation in phases.py marks it reachable/summoned.
+                fd.targets.add(grp_desc)
             self.targets.add(fd)
             self.contains.add(fd)
     
@@ -397,7 +489,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             if (not field_proto.HasField("oneof_index")
                     or fd.oneof_index in synthetic_oneof_indices):
                 field = fd.render(ctx, depth+1)
-                if not fd.is_summoned:
+                if not force and not fd.is_summoned:
                     field.abandon()
                 out.extend(field)
                 continue

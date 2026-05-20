@@ -18,4 +18,5 @@ message AllFeatures {
     default = 42,
     features.field_presence = EXPLICIT
   ];
+  repeated int32 packed_ids = 7 [features.repeated_field_encoding = PACKED];
 }

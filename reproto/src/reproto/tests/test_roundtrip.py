@@ -130,6 +130,13 @@ POLYGLOT_FIXTURES_LOSSY = [
 # sub-messages and surfaces their name child field.
 PROTO3_ONLY_FIELDS = {"syntax", "proto3_optional", "oneof_index", "oneof_decl", "name"}
 
+# Under --force-proto2-output the proto3→proto2 translation emits explicit
+# [packed = true] annotations for implicitly-packed proto3 repeated scalar
+# fields (proto3 default is packed; proto2 default is unpacked).  This causes
+# options.packed to appear in the recompiled .pb where the original had nothing.
+# Allow this difference in all polyglot .pb comparisons.
+PROTO3_PACKED_FIELDS = {"options", "packed"}
+
 
 @pytest.fixture
 def temp_dirs(tmp_path: Path):
@@ -285,7 +292,7 @@ def test_roundtrip_polyglot(fixture_name: str, tmp_path: Path) -> None:
     """
     _, content = get_fixture_content(fixture_name)
     allowed = (PROTO3_ONLY_FIELDS if fixture_name in POLYGLOT_FIXTURES_LOSSY
-               else {"syntax"})
+               else {"syntax"}) | PROTO3_PACKED_FIELDS
 
     # Run with --force-proto2-output.
     no_polyglot_dir = tmp_path / "no_polyglot"

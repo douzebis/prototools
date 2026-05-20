@@ -1,0 +1,23 @@
+// editions_rendering.proto
+
+// WARNING[editions]: editions file rendered as proto2 (--force-proto2-output)
+syntax = "proto2";
+
+package reproto.test.rendering;
+
+message Inner {
+  optional int32 value = 1;
+}
+
+message AllFeatures {
+  optional string implicit_field = 1;
+  optional string explicit_field = 2;
+  required string required_field = 3;
+  repeated int32 expanded_ids = 4;
+  optional group DelimitedField = 5 {
+    optional int32 value = 1;
+  }
+
+  optional int32 with_default = 6 [default = 42];
+  repeated int32 packed_ids = 7 [packed = true];
+}

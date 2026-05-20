@@ -34,4 +34,7 @@ message AllFeatures {
 
   // T11/T12 — EXPLICIT field with a default value.
   int32 with_default = 6 [features.field_presence = EXPLICIT, default = 42];
+
+  // T8 — PACKED repeated field: [packed = true] must be emitted in proto2 output.
+  repeated int32 packed_ids = 7 [features.repeated_field_encoding = PACKED];
 }

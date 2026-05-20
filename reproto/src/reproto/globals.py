@@ -61,6 +61,16 @@ TYPE_SFIXED64 = FieldDescriptorProto.TYPE_SFIXED64
 TYPE_SINT32 = FieldDescriptorProto.TYPE_SINT32
 TYPE_SINT64 = FieldDescriptorProto.TYPE_SINT64
 
+# Scalar numeric field types for which [packed = true/false] is valid.
+# String, bytes, message, and group are NOT packable.
+PACKABLE_TYPES: frozenset[int] = frozenset({
+    TYPE_DOUBLE, TYPE_FLOAT,
+    TYPE_INT32, TYPE_INT64, TYPE_UINT32, TYPE_UINT64,
+    TYPE_SINT32, TYPE_SINT64,
+    TYPE_FIXED32, TYPE_SFIXED32, TYPE_FIXED64, TYPE_SFIXED64,
+    TYPE_BOOL, TYPE_ENUM,
+})
+
 type_names: dict[int, str] = {
     # NOTE: Ideally type_names should be typed dict[ValueType, str], but it is
     # impossible to import ValueType. Anyways ValueType really is just int.

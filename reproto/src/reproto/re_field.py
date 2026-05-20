@@ -44,7 +44,9 @@ def _resolve_field_features(
     field_proto: FieldDescriptorProto,
 ) -> ResolvedFeatures | None:
     """Resolve ResolvedFeatures for a field.  Returns None for proto2/proto3."""
-    if ctx.syntax != "editions":
+    # Use the FDP's own edition field to detect editions files — ctx.syntax is
+    # set per-file at render time and is not reliable during pool construction.
+    if not fdp.HasField('edition'):
         return None
     file_fs = fdp.options.features if fdp.options.HasField('features') else None
     msg_fs = (msg_proto.options.features
@@ -56,6 +58,12 @@ def _resolve_field_features(
 
 class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
     """Redescriptor for FieldDescriptorProto."""
+
+    # Set by re_descriptor._initialize_from_message under --force-proto2-output
+    # when the field uses editions DELIMITED message encoding and must be rendered
+    # as a proto2 group.
+    _editions_group_descriptor: 'ReDescriptorProto | None'
+    _editions_group_name: str | None
 
     @property
     def extendee(self) -> str:
@@ -124,6 +132,14 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 msg = ReDescriptorProto.from_ref(ctx, Ref(self.type_name))
                 self.targets.add(msg)
                 self.type_descriptor = msg
+                # Editions DELIMITED under --force-proto2-output: use the
+                # synthetic group descriptor registered by re_descriptor.py.
+                # _editions_group_descriptor is set on the field by the naming
+                # pass before _initialize_from_message is called.
+                grp = getattr(self, '_editions_group_descriptor', None)
+                if grp is not None:
+                    self.targets.add(grp)
+                    self.type_descriptor = grp
             case FieldDescriptorProto.TYPE_ENUM:
                 enum = ReEnumDescriptorProto.from_ref(ctx, Ref(self.type_name))
                 self.targets.add(enum)
@@ -295,14 +311,19 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             string += label_str
 
             # --- Field type and name ------------------------------------------
-            if self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
+            _is_group_field = (
+                self.type == FieldDescriptorProto.TYPE_GROUP
+                or getattr(self, '_editions_group_descriptor', None) is not None
+            )
+            if not _is_group_field or not allow_groups(ctx, features=field_features):
                 if self.type == FieldDescriptorProto.TYPE_GROUP:
                     from .anomalies import report
                     out.append(report("C2", depth, name=self.name))
                 ref = short_ref(ctx, self.type_descriptor, self.parent)
                 string += f'{ref} {self.name}'
             else:
-                ref = short_ref(ctx, self.type_descriptor, self)
+                editions_grp_name = getattr(self, '_editions_group_name', None)
+                ref = editions_grp_name if editions_grp_name is not None else short_ref(ctx, self.type_descriptor, self)
                 string += f'group {ref}'
 
             # --- Field number -------------------------------------------------
@@ -354,8 +375,31 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             assert type(fo_msg).__name__ == 'FieldOptions' and type(fo_msg).__module__ is None, (
                 f"Expected dynamic FieldOptions from GetMessageClass, got {type(fo_msg)}"
             )
-            effective_packed = getattr(fo_msg, 'packed')
-            packed_str = packed_option(ctx, has_packed, effective_packed, features=field_features)
+            # Compute effective_packed: reflects the actual wire-level packing,
+            # including syntax defaults (proto3 implicit default is packed).
+            is_repeated = self.this.label == FieldDescriptorProto.LABEL_REPEATED
+            if has_packed:
+                effective_packed = getattr(fo_msg, 'packed')
+            elif ctx.syntax == "proto3":
+                effective_packed = True
+            else:
+                effective_packed = False
+            # Packed is only meaningful for repeated scalar (numeric) fields.
+            # String, bytes, and message fields are not packable.
+            from .globals import PACKABLE_TYPES
+            is_packable = is_repeated and self.this.type in PACKABLE_TYPES
+            # Under --force-proto2-output for editions files, protoc does not set
+            # options.packed — it uses features.repeated_field_encoding instead.
+            # Derive effective_packed from resolved features when available.
+            if field_features is not None and not has_packed and is_packable:
+                from .feature_resolution import REPEATED_FIELD_ENCODING_PACKED
+                effective_packed = (
+                    field_features.repeated_field_encoding == REPEATED_FIELD_ENCODING_PACKED
+                )
+            # Only call packed_option for packable fields (or fields with an
+            # explicit packed option — which protoc would have rejected if invalid,
+            # so we trust it and pass through).
+            packed_str = packed_option(ctx, has_packed, effective_packed, features=field_features) if is_packable or has_packed else None
             if packed_str is not None:
                 opt_block.append(BlockLine(f'packed = {packed_str},', depth + 1))
 
@@ -393,14 +437,25 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------
-        if is_map_field or self.type != FieldDescriptorProto.TYPE_GROUP or not allow_groups(ctx, features=field_features):
+        _is_group_field = (
+            self.type == FieldDescriptorProto.TYPE_GROUP
+            or getattr(self, '_editions_group_descriptor', None) is not None
+        )
+        if is_map_field or not _is_group_field or not allow_groups(ctx, features=field_features):
             out.postpend(';')
         else:
-            # Groups definitions must be inlined
+            # Groups definitions must be inlined.
+            # For editions DELIMITED fields the group descriptor is stored
+            # directly on self.type_descriptor (set by _initialize_from_message).
             from .re_descriptor import ReDescriptorProto
 
             out.postpend(' {')
-            re_desc = ReDescriptorProto.from_ref(ctx, Ref(self.type_name))
+            editions_grp_desc = getattr(self, '_editions_group_descriptor', None)
+            re_desc: ReDescriptorProto = (
+                editions_grp_desc
+                if editions_grp_desc is not None
+                else ReDescriptorProto.from_ref(ctx, Ref(self.type_name))
+            )
             block, _ = re_desc.render(ctx, depth, force=True)
             out.extend(block)
 

@@ -55,8 +55,8 @@ def packed_option(
     Args:
         ctx:              rendering context (reads ctx.syntax, ctx.target_syntax)
         has_field:        True if packed was explicitly set in the source .proto
-        effective_packed: fo_msg.packed — the wire-level effective value
-                          (includes proto3 defaults)
+        effective_packed: True if the field is effectively packed on the wire,
+                          accounting for syntax defaults (proto3 implicit packed).
 
     Rules:
       - has_field=True  → emit the explicit value regardless of syntax
@@ -69,6 +69,10 @@ def packed_option(
         # Only emit the legacy annotation if it was explicitly present in the source.
         if has_field:
             return "true" if effective_packed else "false"
+        # Under --force-proto2-output (target=proto2, source=editions):
+        # proto2 defaults to unpacked; emit [packed=true] to preserve semantics.
+        if ctx.target_syntax == "proto2":
+            return "true" if effective_packed else None
         return None
     if has_field:
         return "true" if effective_packed else "false"
@@ -118,7 +122,10 @@ def field_label(
         if features.field_presence == FIELD_PRESENCE_LEGACY_REQUIRED:
             return 'required '
         if features.field_presence == FIELD_PRESENCE_IMPLICIT:
-            return ''
+            # Editions output: no label (presence expressed via features option).
+            # Proto2 output (--force-proto2-output): 'optional' is the closest
+            # wire-compatible equivalent.
+            return '' if ctx.target_syntax == "editions" else 'optional '
         # EXPLICIT or unknown → optional
         return 'optional '
     if ctx.target_syntax == "proto3":

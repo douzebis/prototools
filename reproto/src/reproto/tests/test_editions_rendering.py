@@ -117,10 +117,17 @@ def test_T2_field_label_editions_explicit():
 # ---------------------------------------------------------------------------
 
 def test_T3_field_label_editions_implicit():
-    """features.field_presence = IMPLICIT → ''."""
-    ctx = _ctx()
+    """features.field_presence = IMPLICIT.
+
+    Editions output (target=editions): '' — presence expressed via features option.
+    Proto2 output (--force-proto2-output, target=proto2): 'optional ' — closest
+    wire-compatible equivalent; proto2 requires an explicit label.
+    """
     f = _features(field_presence=FIELD_PRESENCE_IMPLICIT)
-    assert field_label(ctx, _field(FieldDescriptorProto.LABEL_OPTIONAL), False, features=f) == ""
+    ctx_editions = _ctx(target_syntax="editions", syntax="editions")
+    assert field_label(ctx_editions, _field(FieldDescriptorProto.LABEL_OPTIONAL), False, features=f) == ""
+    ctx_proto2 = _ctx(target_syntax="proto2", syntax="editions")
+    assert field_label(ctx_proto2, _field(FieldDescriptorProto.LABEL_OPTIONAL), False, features=f) == "optional "
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +146,17 @@ def test_T4_field_label_editions_legacy_required():
 # ---------------------------------------------------------------------------
 
 def test_T5_packed_option_editions_packed_default():
-    """features.repeated_field_encoding = PACKED, has_field=False → None."""
-    ctx = _ctx()
+    """features.repeated_field_encoding = PACKED, has_field=False.
+
+    Editions output (target=editions): None — deferred to phase 3 features{} block.
+    Proto2 output (--force-proto2-output, target=proto2): 'true' — proto2 defaults
+    to unpacked, so annotation is needed to preserve wire semantics.
+    """
     f = _features(repeated_field_encoding=REPEATED_FIELD_ENCODING_PACKED)
-    assert packed_option(ctx, has_field=False, effective_packed=True, features=f) is None
+    ctx_editions = _ctx(target_syntax="editions", syntax="editions")
+    assert packed_option(ctx_editions, has_field=False, effective_packed=True, features=f) is None
+    ctx_proto2 = _ctx(target_syntax="proto2", syntax="editions")
+    assert packed_option(ctx_proto2, has_field=False, effective_packed=True, features=f) == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +164,17 @@ def test_T5_packed_option_editions_packed_default():
 # ---------------------------------------------------------------------------
 
 def test_T6_packed_option_editions_expanded():
-    """features.repeated_field_encoding = EXPANDED, has_field=False → None (deferred to phase 3)."""
-    ctx = _ctx()
+    """features.repeated_field_encoding = EXPANDED, has_field=False.
+
+    Editions output (target=editions): None — deferred to phase 3 features{} block.
+    Proto2 output (--force-proto2-output, target=proto2): None — unpacked is
+    already proto2's default for repeated scalars, no annotation needed.
+    """
     f = _features(repeated_field_encoding=REPEATED_FIELD_ENCODING_EXPANDED)
-    assert packed_option(ctx, has_field=False, effective_packed=False, features=f) is None
+    ctx_editions = _ctx(target_syntax="editions", syntax="editions")
+    assert packed_option(ctx_editions, has_field=False, effective_packed=False, features=f) is None
+    ctx_proto2 = _ctx(target_syntax="proto2", syntax="editions")
+    assert packed_option(ctx_proto2, has_field=False, effective_packed=False, features=f) is None
 
 
 def test_T6_packed_option_editions_has_field_emits():
@@ -321,6 +342,77 @@ def test_T13_editions_rendering_golden(tmp_path: Path) -> None:
     golden = golden_src.read_text(encoding="utf-8")
 
     # Normalise: strip trailing whitespace per line.
+    def _norm(text: str) -> str:
+        return "\n".join(line.rstrip() for line in text.splitlines())
+
+    assert _norm(actual) == _norm(golden), (
+        f"Output differs from golden.\n"
+        f"--- golden ---\n{golden}\n--- actual ---\n{actual}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T14 — golden regression test for --force-proto2-output
+# ---------------------------------------------------------------------------
+
+@pytest.mark.roundtrip
+def test_T14_force_proto2_output_golden(tmp_path: Path) -> None:
+    """Compile editions_rendering.proto, run reproto --force-proto2-output,
+    compare against golden.
+
+    Verifies all three bug-fixes from spec 0072:
+      Bug 1 — IMPLICIT label emits 'optional' in proto2 output.
+      Bug 2 — DELIMITED field renders as inline group block.
+      Bug 3 — PACKED repeated field gets [packed = true] annotation.
+    """
+    proto_src = _get_fixture_path("editions_rendering.proto")
+    golden_src = _get_fixture_path("editions_rendering.force_proto2.golden.proto")
+
+    orig_dir = tmp_path / "orig"
+    orig_dir.mkdir()
+
+    proto_path = orig_dir / "editions_rendering.proto"
+    proto_path.write_text(proto_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    pb_path = orig_dir / "editions_rendering.pb"
+    result = subprocess.run(
+        ["protoc",
+         f"--descriptor_set_out={pb_path}",
+         "--include_imports",
+         f"-I{orig_dir}",
+         str(proto_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"protoc failed: {result.stderr}"
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+
+    reproto_cmd = [
+        sys.executable, "-m", "reproto.cli",
+        "--use-variant", "descriptor",
+        "--force-proto2-output",
+        f"-I{orig_dir}",
+        f"--output-root={out_dir}",
+        str(pb_path),
+    ]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+
+    result = subprocess.run(reproto_cmd, capture_output=True, text=True, env=env)
+    assert result.returncode == 0, f"reproto failed: {result.stderr}\n{result.stdout}"
+
+    generated_files = list(out_dir.rglob("editions_rendering.proto"))
+    assert generated_files, f"No editions_rendering.proto in {out_dir}"
+    actual = generated_files[0].read_text(encoding="utf-8")
+
+    golden = golden_src.read_text(encoding="utf-8")
+
     def _norm(text: str) -> str:
         return "\n".join(line.rstrip() for line in text.splitlines())
 

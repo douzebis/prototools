@@ -10,13 +10,14 @@
 //   - repeated enum fields: default, explicit true, explicit false
 //   - repeated double and float with explicit true
 //
-// Key invariant verified empirically: protoc does NOT set packed=true
-// implicitly for proto3 fields — HasField("packed") remains False for
-// default-packed proto3 fields.  Reproto emits nothing in that case,
-// which is correct for roundtrip fidelity (spec 0015 §4).
+// Key invariant: protoc does NOT set packed=true implicitly for proto3 fields —
+// HasField("packed") remains False for default-packed proto3 fields.  For
+// proto3→proto3 roundtrip reproto emits nothing (correct; spec 0015 §4).
+// For proto3→proto2 (--force-proto2-output), reproto emits [packed=true]
+// explicitly to preserve wire semantics (proto2 default is unpacked).
 //
-// Used in POLYGLOT_FIXTURES_STRICT: only the syntax field differs under
-// --force-proto2-output.
+// Used in POLYGLOT_FIXTURES_STRICT: under --force-proto2-output, syntax and
+// options.packed differ (implicit proto3 packed → explicit [packed=true]).
 
 syntax = "proto3";
 package mockup;
