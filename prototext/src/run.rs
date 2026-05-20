@@ -446,9 +446,6 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      or a wkt-db-enabled build"
                 }
             })?;
-            if let Some(lazy) = &mut desc_ctx.lazy {
-                lazy.load_all().map_err(|e| format!("loading index: {e}"))?;
-            }
             run_list_schemas(graph, top, &cli.input_root, &paths)
         }
 
