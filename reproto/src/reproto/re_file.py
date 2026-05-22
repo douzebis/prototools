@@ -315,8 +315,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             out.append(BlockLine(f'edition = "{edition_name}";', depth))
         elif ctx.syntax != ctx.target_syntax:
             # A2: normal syntax downconversion (proto3 → proto2 via --force-proto2-output)
-            # A1: editions → proto2 downconversion (--force-proto2-output or --prost-workaround)
-            # When prost-workaround triggered the change, suppress the A1 stderr — the
+            # A1: editions → proto2 downconversion (--force-proto2-output or --force-proto2-for-editions)
+            # When --force-proto2-for-editions triggered the change, suppress the A1 stderr — the
             # w_prost() call above already covers it and will be squashed into a count line.
             if ctx.syntax == "editions":
                 out.append(report("A1", depth, file=self.name,

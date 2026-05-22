@@ -263,7 +263,7 @@ def test_A5_proto2_options_extendee_not_omitted(tmp_path: Path) -> None:
     """Extending .proto2.MethodOptions in a proto3 file must NOT trigger A5.
 
     Regression test for the bug introduced in 94e9a10 (spec 0024): when reproto
-    is run without a namespace-rewriting variant (e.g. --prost-workaround on
+    is run without a namespace-rewriting variant (e.g. --force-proto2-for-editions on
     bp-protodb without --use-variant), extendees compiled against the
     Google-internal net/proto2/proto/descriptor.proto use the .proto2.* package
     instead of .google.protobuf.*.  allow_extend_block() must recognise these

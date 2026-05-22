@@ -284,7 +284,7 @@ def allow_weak_import(ctx: Context) -> bool:
 # Both .google.protobuf.* (standard) and .proto2.* aliases are included.
 # The .proto2.* names appear when input was compiled against
 # net/proto2/proto/descriptor.proto without a variant that rewrites namespaces
-# (e.g. reproto --prost-workaround without --use-variant).
+# (e.g. reproto --force-proto2-for-editions without --use-variant).
 # FIXME: hardcoding .proto2.* here is inelegant — we don't have a principled
 # way to express "any variant's *Options types are valid" yet.
 _DESCRIPTOR_OPTIONS_FQNS: frozenset[str] = frozenset({
@@ -320,7 +320,7 @@ def allow_extend_block(ctx: Context, extendee: str) -> bool:
             proto3-legal extension target).  Both .google.protobuf.* and the
             Google-internal .proto2.* aliases are recognised directly so that
             corpora compiled without a namespace-rewriting variant (e.g.
-            --prost-workaround without --use-variant) are handled correctly.
+            --force-proto2-for-editions without --use-variant) are handled correctly.
     """
     if ctx.target_syntax in ("proto2", "editions"):
         return True

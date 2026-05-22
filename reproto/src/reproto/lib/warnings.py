@@ -59,7 +59,7 @@ class WarningCollector:
         self._w4: Counter[str] = Counter()
         self._w5: Counter[str] = Counter()
         self._w6: Counter[str] = Counter()
-        self._prost: list[str] = []   # prost-workaround patched file names
+        self._prost: list[str] = []   # --force-proto2-for-editions patched file names
         # Names of files pruned by reproto itself — W5 for these is suppressed.
         self._pruned_files: set[str] = set()
         # Names of files that will be satisfied by an embedded fallback —
@@ -132,7 +132,7 @@ class WarningCollector:
         cli_warning(message)
 
     def w_prost(self, file_name: str) -> None:
-        """prost-workaround: editions file patched to proto2.
+        """--force-proto2-for-editions: editions file patched to proto2.
 
         In detailed mode: printed immediately.
         In squashed mode: buffered; flushed as a single count line.
@@ -140,7 +140,7 @@ class WarningCollector:
         if self._detailed:
             cli_warning(
                 "'%s' is an editions file; patching to proto2 for prost-reflect "
-                "compatibility (--prost-workaround).",
+                "compatibility (--force-proto2-for-editions).",
                 file_name,
             )
         else:
@@ -171,7 +171,7 @@ class WarningCollector:
             noun = "file" if n == 1 else "files"
             cli_warning(
                 "%d editions %s patched to proto2 for prost-reflect compatibility "
-                "(--prost-workaround); run with --detailed-warnings to list them.",
+                "(--force-proto2-for-editions); run with --detailed-warnings to list them.",
                 n, noun,
             )
         if suppressed:

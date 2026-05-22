@@ -284,7 +284,7 @@ def test_emit_binary_force_proto2_output(tmp_path: Path) -> None:
 def test_emit_binary_force_proto2_for_editions(tmp_path: Path) -> None:
     """--emit-binary --force-proto2-for-editions: verify binary translation against golden.
 
-    Lighter-weight editions→proto2 path (prost-workaround):
+    Lighter-weight editions→proto2 path (--force-proto2-for-editions):
     - DELIMITED field stays TYPE_MESSAGE (no group conversion)
     - LEGACY_REQUIRED field → LABEL_REQUIRED
     - No residual features anywhere
