@@ -154,7 +154,7 @@ _SECTIONS: dict[str, str] = {
     '--seed':                'Filtering',
     '--prune':               'Filtering',
     '--force-proto2-output': 'Rendering',
-    '--prost-workaround':    'Rendering',
+    '--force-proto2-for-editions': 'Rendering',
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
@@ -359,16 +359,22 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--prost-workaround',
+    '--force-proto2-for-editions',
     is_flag=True,
     default=False,
     help=(
-        'Patch editions-syntax FDPs to appear as proto2 in output and '
-        'schemas.pb, working around a prost-reflect limitation '
-        '(upstream PR #1347). Editions fields using non-default features '
-        '(LEGACY_REQUIRED, DELIMITED, EXPANDED, IMPLICIT) will be '
-        'rendered incorrectly. Remove once prost-reflect supports editions.'
+        'Translate editions-syntax files to proto2 in output and binary '
+        'descriptors. Symmetric with --force-proto2-output but limited to '
+        'editions files only. --build-schema-db forces this unconditionally '
+        '(prost-reflect does not yet support editions, upstream PR #1347).'
     ),
+)
+@click.option(
+    '--prost-workaround',
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help='Deprecated alias for --force-proto2-for-editions.',
 )
 
 @click.option(
@@ -456,6 +462,7 @@ def main(
         pb_files: list[Path],
         pb_path: list[Path],
         force_proto2_output: bool,
+        force_proto2_for_editions: bool,
         prost_workaround: bool,
         proto_out: Path | None,
         emit_binary: bool,
@@ -560,7 +567,7 @@ def main(
         build_schema_db=build_schema_db,
         emit_scoring_graphs=emit_scoring_graphs,
         force_proto2_output=force_proto2_output,
-        prost_workaround=prost_workaround,
+        force_proto2_for_editions=force_proto2_for_editions or prost_workaround,
         debug=debug,
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],

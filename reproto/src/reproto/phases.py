@@ -1271,7 +1271,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     for fdp in ctx.pool_db_fdps:
         fds.file.append(fdp)
 
-    if ctx.prost_workaround:
+    if ctx.force_proto2_for_editions:
         from .lib.warnings import get_collector as _get_prost_collector
         _prost_collector = _get_prost_collector()
         for fdp in fds.file:

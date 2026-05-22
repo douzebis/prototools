@@ -67,7 +67,7 @@ class Options:
     redact_orphans: bool = False
     phase2_plugin: CodeType | None = None
     force_proto2_output: bool = False
-    prost_workaround: bool = False
+    force_proto2_for_editions: bool = False
     # Variant fields (spec 0001) — populated at startup from the variant file.
     # Defaults below reflect the OSS google.protobuf variant.
     variant_descriptor_proto: str = 'google/protobuf/descriptor.proto'

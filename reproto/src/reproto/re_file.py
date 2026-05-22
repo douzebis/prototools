@@ -276,7 +276,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         ctx.current_file = self.name
         if ctx.force_proto2_output:
             ctx.target_syntax = "proto2"
-        elif ctx.prost_workaround and ctx.syntax == "editions":
+        elif ctx.force_proto2_for_editions and ctx.syntax == "editions":
             ctx.target_syntax = "proto2"
             from .lib.warnings import get_collector
             get_collector().w_prost(self.name)
@@ -312,7 +312,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             # w_prost() call above already covers it and will be squashed into a count line.
             if ctx.syntax == "editions":
                 out.append(report("A1", depth, file=self.name,
-                                  suppress_stderr=ctx.prost_workaround))
+                                  suppress_stderr=ctx.force_proto2_for_editions))
             else:
                 out.append(report("A2", depth, file=self.name, syntax=ctx.syntax,
                                   suppress_stderr=True))
