@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Ignore everything in this directory except this file.
+*
+!.gitignore
