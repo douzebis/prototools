@@ -1100,70 +1100,73 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
 
     create_option_message_classes(ctx)
 
-    for re_fdp in ctx.nodes.values():
-        if not isinstance(re_fdp, ReFileDescriptorProto):
-            continue
-        if not re_fdp.is_present():
-            continue
-        if not re_fdp.is_summoned:
-            continue
+    from .lib.console import rendering_progress
 
-        if (re_fdp.name == ctx.variant_descriptor_proto
-            and not ctx.write_variant_descriptor):
-            cli_info(f"Skipping {re_fdp.name} "
-                     f"(use --emit-descriptor to include)")
-            continue
-        path = Path(re_fdp.name)
-        res_path = out_repo / path
-        if ctx.debug:
-            cli_info(f"  Writing: {res_path}")
+    summoned = [
+        re_fdp for re_fdp in ctx.nodes.values()
+        if isinstance(re_fdp, ReFileDescriptorProto)
+        and re_fdp.is_present()
+        and re_fdp.is_summoned
+        and not (re_fdp.name == ctx.variant_descriptor_proto
+                 and not ctx.write_variant_descriptor)
+    ]
 
-        # Make sure all parent directories exist
-        res_path.parent.mkdir(parents=True, exist_ok=True)
+    with rendering_progress(0 if ctx.quiet else len(summoned)) as advance:
+        for re_fdp in summoned:
+            path = Path(re_fdp.name)
+            res_path = out_repo / path
+            if ctx.debug:
+                cli_info(f"  Writing: {res_path}")
 
-        # Write content to file
-        if not ctx.dry_run:
+            # Make sure all parent directories exist
+            res_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # If requested, output the FDP in binary form (.pb)
-            if ctx.binary:
-                # Get the FileDescriptor
-                file_descriptor = ctx.pool.FindFileByName(re_fdp.name)
-                # Convert to FileDescriptorProto
-                fd_proto = FileDescriptorProto()
-                file_descriptor.CopyToProto(fd_proto)
-                content = fd_proto.SerializeToString()
-                # Write to disk (I/O errors are FATAL)
+            # Write content to file
+            if not ctx.dry_run:
+
+                # If requested, output the FDP in binary form (.pb)
+                if ctx.binary:
+                    # Get the FileDescriptor
+                    file_descriptor = ctx.pool.FindFileByName(re_fdp.name)
+                    # Convert to FileDescriptorProto
+                    fd_proto = FileDescriptorProto()
+                    file_descriptor.CopyToProto(fd_proto)
+                    content = fd_proto.SerializeToString()
+                    # Write to disk (I/O errors are FATAL)
+                    try:
+                        res_path.with_suffix(".pb").write_bytes(content)
+                    except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
+                        cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
+                        cli_error("Cannot continue due to I/O error.")
+                        sys.exit(1)
+
+                # First: render (data anomalies warn, programming errors propagate)
                 try:
-                    res_path.with_suffix(".pb").write_bytes(content)
+                    content = re_fdp.render(ctx)[0].flush(ctx)
+                except (KeyError, ValueError, TypeError, AttributeError) as e:
+                    from .lib.warnings import get_collector
+                    from .anomalies import _classify_exc
+                    clean_msg, w4, w5 = _classify_exc(str(e))
+                    if w4 is not None:
+                        get_collector().w4(w4)
+                    elif w5 is not None:
+                        get_collector().w5(w5)
+                    else:
+                        get_collector().w6(re_fdp.name, '', clean_msg)
+                    if ctx.debug:
+                        cli_warning(str(re_fdp.this))
+                    advance()
+                    continue
+
+                # Second: write (I/O errors are FATAL)
+                try:
+                    res_path.write_text(content)
                 except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
                     cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
                     cli_error("Cannot continue due to I/O error.")
                     sys.exit(1)
 
-            # First: render (data anomalies warn, programming errors propagate)
-            try:
-                content = re_fdp.render(ctx)[0].flush(ctx)
-            except (KeyError, ValueError, TypeError, AttributeError) as e:
-                from .lib.warnings import get_collector
-                from .anomalies import _classify_exc
-                clean_msg, w4, w5 = _classify_exc(str(e))
-                if w4 is not None:
-                    get_collector().w4(w4)
-                elif w5 is not None:
-                    get_collector().w5(w5)
-                else:
-                    get_collector().w6(re_fdp.name, '', clean_msg)
-                if ctx.debug:
-                    cli_warning(str(re_fdp.this))
-                continue
-
-            # Second: write (I/O errors are FATAL)
-            try:
-                res_path.write_text(content)
-            except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
-                cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
-                cli_error("Cannot continue due to I/O error.")
-                sys.exit(1)
+            advance()
 
 
 def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:

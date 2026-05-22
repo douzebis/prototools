@@ -11,6 +11,8 @@ from pathlib import Path
 
 import click
 
+from .lib.console import rprint
+
 try:
     from importlib.metadata import version as _pkg_version
     _reproto_version = _pkg_version('reproto')
@@ -25,25 +27,22 @@ logger.setLevel(logging.INFO)
 class CLIErrorHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_err', False):
-            click.secho(f'{record.getMessage()}',
-                        err=True, fg='red', bold=True)
+            rprint(record.getMessage(), style='bold red')
 
 class CLIWarningHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_warn', False):
-            click.secho(f'{record.getMessage()}',
-                        err=True, fg='yellow', bold=True)
+            rprint(record.getMessage(), style='bold yellow')
 
 class CLIInfoHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_info', False):
-            click.secho(f'{record.getMessage()}', err=True)
+            rprint(record.getMessage())
 
 class CLIAttentionHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_attn', False):
-            click.secho(f'{record.getMessage()}',
-                        err=True, fg='blue', bold=True)
+            rprint(record.getMessage(), style='bold blue')
 
 # Only suppress cli_warn messages from root StreamHandlers
 class NoCliWarnFilter(logging.Filter):
