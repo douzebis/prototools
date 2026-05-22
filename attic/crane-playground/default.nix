@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
 let
   pkgs = import (fetchTarball {
     url    = "https://github.com/NixOS/nixpkgs/archive/1073dad219cb244572b74da2b20c7fe39cb3fa9e.tar.gz";
@@ -41,36 +45,53 @@ let
   '';
 
   # ---------------------------------------------------------------------------
+  # prebuiltData: standalone Nix derivation that produces data.bin at a fixed
+  # store path.  Mirrors the proposed prebuiltPbs derivation for the real
+  # project: the file content is stable across all Crane sandboxes, so
+  # include_bytes!(env!("OUT_DIR")/data.bin) always embeds the same bytes,
+  # and Cargo fingerprints are valid across depsCache, rustTests, etc.
+  #
+  # In the real project this derivation runs protoc; here it just writes a
+  # fixed string to simulate the output.
+  # ---------------------------------------------------------------------------
+  prebuiltData = pkgs.runCommand "pg-prebuilt-data" {} ''
+    mkdir -p "$out"
+    echo "patched data" > "$out/data.bin"
+  '';
+
+  # ---------------------------------------------------------------------------
   # depsCache: built from protocArgs (includes pkgs.which stand-in for protoc),
-  # no patchPhase. buildDepsOnly stubs build.rs so protoc is never invoked, but
-  # including it in nativeBuildInputs matches the environment of all consumers
-  # (protocArgs), preventing fingerprint mismatches that would force external
-  # deps to recompile in every downstream derivation.
+  # no patchPhase.  PREBUILT_DATA points at the stable store path so build.rs
+  # copies from a fixed location — OUT_DIR contents are identical across all
+  # sandboxes and Cargo fingerprints stay valid.
   # ---------------------------------------------------------------------------
   depsCache = crane.buildDepsOnly (protocArgs // {
     pname          = "pg-deps";
     cargoExtraArgs = "--workspace";
+    PREBUILT_DATA  = "${prebuiltData}/data.bin";
   });
 
   # ---------------------------------------------------------------------------
-  # appTests: independent cargoTest from depsCache, with protocArgs+patchPhase.
+  # appTests: independent cargoTest from depsCache, with protocArgs.
+  # PREBUILT_DATA passed — no patchPhase needed because build.rs uses the
+  # stable store path instead of fixtures/prebuilt/.
   # Mirrors rustTests in the real project.
   # ---------------------------------------------------------------------------
   appTests = crane.cargoTest (protocArgs // {
-    inherit patchPhase;
     pname          = "pg-app-tests";
     cargoArtifacts = depsCache;
     cargoExtraArgs = "--workspace";
+    PREBUILT_DATA  = "${prebuiltData}/data.bin";
   });
 
   # ---------------------------------------------------------------------------
   # Scenario F: representative of the real prototextBare → prototext chain.
   #
-  # appBare_F: protocArgs + patchPhase, from depsCache, doCheck=false.
+  # appBare_F: protocArgs, from depsCache, doCheck=false.
   #            doInstallCargoArtifacts=true so appFull_F can inherit artifacts.
   #            Mirrors prototextBare.
   #
-  # appFull_F: protocArgs + patchPhase, chained off appBare_F, doCheck=false.
+  # appFull_F: protocArgs, chained off appBare_F, doCheck=false.
   #            Adds --features extra (mirrors wkt-db in prototext).
   #            Mirrors prototext (full).
   #
@@ -78,22 +99,22 @@ let
   #           (reused from depsCache); app-crate compiles 1x in each.
   # ---------------------------------------------------------------------------
   appBare_F = crane.buildPackage (protocArgs // {
-    inherit patchPhase;
     pname                   = "pg-app-bare-F";
     cargoArtifacts          = depsCache;
     cargoExtraArgs          = "--no-default-features -p app-crate";
     doCheck                 = false;
     doInstallCargoArtifacts = true;
+    PREBUILT_DATA           = "${prebuiltData}/data.bin";
   });
 
   appFull_F = crane.buildPackage (protocArgs // {
-    inherit patchPhase;
     pname          = "pg-app-full-F";
     cargoArtifacts = appBare_F;
     cargoExtraArgs = "--no-default-features --features extra -p app-crate";
     doCheck        = false;
+    PREBUILT_DATA  = "${prebuiltData}/data.bin";
   });
 
 in {
-  inherit depsCache appTests appBare_F appFull_F;
+  inherit prebuiltData depsCache appTests appBare_F appFull_F;
 }

@@ -24,6 +24,7 @@ members = [
     "fdp-scan-pyo3",
     "scoring-graph",
     "scoring-graph-pyo3",
+    "workspace-hack",
 ]
 
 [workspace.dependencies]

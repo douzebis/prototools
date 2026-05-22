@@ -3,5 +3,13 @@ SPDX-PackageName = "prototools"
 SPDX-PackageSupplier = "Frederic Ruget <fred@atlant.is>"
 SPDX-PackageDownloadLocation = "https://github.com/ThalesGroup/prototools"
 
-
+# Files generated or managed by cargo-hakari (workspace-hack crate).
+[[annotations]]
+path = [
+  ".config/hakari.toml",
+  "workspace-hack/",
+  "workspace-hack/**",
+]
+SPDX-FileCopyrightText = "cargo-hakari contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
 

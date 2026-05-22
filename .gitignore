@@ -6,6 +6,7 @@
 /target/
 /scoring-graph/target/
 /scoring-graph/Cargo.lock
+/release/
 /result
 /result-*
 /man/

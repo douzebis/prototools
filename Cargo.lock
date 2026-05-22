@@ -330,6 +330,7 @@ dependencies = [
  "pyo3",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -978,6 +979,7 @@ dependencies = [
  "serde_yaml",
  "toml 0.8.23",
  "walkdir",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -990,6 +992,7 @@ dependencies = [
  "prost-types",
  "rand",
  "sha2",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1000,6 +1003,7 @@ dependencies = [
  "pyo3",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1396,6 +1400,7 @@ dependencies = [
  "smallvec",
  "tempfile",
  "walkdir",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1406,6 +1411,7 @@ dependencies = [
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
  "scoring-graph",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2223,6 +2229,23 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "either",
+ "num-integer",
+ "num-traits",
+ "once_cell",
+ "phf_shared",
+ "prost-reflect",
+ "rand",
+ "regex-syntax",
+ "serde_core",
+ "syn",
 ]
 
 [[package]]

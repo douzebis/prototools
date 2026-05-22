@@ -160,7 +160,7 @@ ones with a warning:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB decode -O /tmp/decoded \
+prototext --descriptor $GOOGLEAPIS_DB decode -O stash/decoded \
     $INST/google/type/PostalAddress.pb \
     $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb
 ```
@@ -173,7 +173,7 @@ warning: type inference issues:
   - google.cloud.compute.v1beta.UsableSubnetwork
 ```
 
-`PostalAddress.pb` was decoded successfully (written to `/tmp/decoded/`);
+`PostalAddress.pb` was decoded successfully (written to `stash/decoded/`);
 `UsableSubnetwork.pb` was skipped with a warning.  The exit code is 0.
 
 ---
@@ -186,8 +186,10 @@ smaller example: the protobuf Well-Known Types (WKT) that ship with `protoc`.
 **Step 4a — compile some WKT `.proto` files into a standalone FileDescriptorSet.**
 
 ```
+PROTOC_INCLUDE=$(dirname $(which protoc))/../include
 protoc \
-    --descriptor_set_out=/tmp/wkt.pb \
+    -I$PROTOC_INCLUDE \
+    --descriptor_set_out=stash/wkt.pb \
     --include_imports \
     google/protobuf/descriptor.proto \
     google/protobuf/timestamp.proto \
@@ -199,20 +201,20 @@ protoc \
 
 ```
 reproto \
-    --build-schema-db=/tmp/wkt.desc \
-    /tmp/wkt.pb
+    --build-schema-db=stash/wkt.desc \
+    stash/wkt.pb
 ```
 
 **Step 4c — use the descriptor itself as a protobuf instance.**
 
-The `/tmp/wkt.pb` file you just compiled *is* a binary protobuf
+The `stash/wkt.pb` file you just compiled *is* a binary protobuf
 (`google.protobuf.FileDescriptorSet`).  Decode it with the schema DB you just
 built — this is a nice self-referential demo, and auto-inference works because
 the scoring graph is present:
 
 ```
-prototext --descriptor /tmp/wkt.desc \
-    decode /tmp/wkt.pb | head -12
+prototext --descriptor stash/wkt.desc \
+    decode stash/wkt.pb | head -12
 ```
 
 ```
@@ -281,11 +283,11 @@ saving the result:
 INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
-    $INST/google/type/PostalAddress.pb > /tmp/PostalAddress.textpb
+    $INST/google/type/PostalAddress.pb > stash/PostalAddress.textpb
 ```
 
 Now patch the textual form to add one over-hanging byte on the `revision`
-field.  Edit `/tmp/PostalAddress.textpb` and change the annotation on the
+field.  Edit `stash/PostalAddress.textpb` and change the annotation on the
 `revision` line from `#@ int32 = 1` to `#@ int32 = 1; val_ohb: 1`:
 
 ```
@@ -298,14 +300,14 @@ organization: "S3NS"  #@ string = 11
 Then re-encode to produce the patched binary:
 
 ```
-prototext encode < /tmp/PostalAddress.textpb > /tmp/postal_patched.pb
+prototext encode < stash/PostalAddress.textpb > stash/postal_patched.pb
 ```
 
 Compare the first bytes before and after the patch:
 
 ```
 hexdump -C $INST/google/type/PostalAddress.pb | head -1
-hexdump -C /tmp/postal_patched.pb | head -1
+hexdump -C stash/postal_patched.pb | head -1
 ```
 
 ```
@@ -319,7 +321,7 @@ decode it with annotations:
 ```
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
-    /tmp/postal_patched.pb | head -6
+    stash/postal_patched.pb | head -6
 ```
 
 ```
@@ -365,9 +367,9 @@ The round-trip is byte-exact even for the patched non-canonical version:
 ```
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
-    /tmp/postal_patched.pb \
+    stash/postal_patched.pb \
   | prototext encode \
-  | diff - /tmp/postal_patched.pb \
+  | diff - stash/postal_patched.pb \
   && echo byte-exact
 ```
 
@@ -394,14 +396,14 @@ the input — ensuring all well-known descriptor types resolve correctly:
 
 ```
 reproto --use-variant descriptor \
-    -O /tmp/googleapis-src \
+    -O stash/googleapis-src \
     $GOOGLEAPIS_DB
 ```
 
 Inspect the reconstructed `timestamp.proto`:
 
 ```
-cat /tmp/googleapis-src/google/protobuf/timestamp.proto
+cat stash/googleapis-src/google/protobuf/timestamp.proto
 ```
 
 ```
@@ -473,7 +475,7 @@ message AllFeatures {
 
 ```
 protoc \
-    --descriptor_set_out=/tmp/editions_rendering.pb \
+    --descriptor_set_out=stash/editions_rendering.pb \
     --include_imports \
     -Ireproto/src/reproto/tests/fixtures \
     reproto/src/reproto/tests/fixtures/editions_rendering.proto
@@ -483,12 +485,12 @@ protoc \
 
 ```
 reproto --use-variant descriptor \
-    --output-root=/tmp/out_editions \
-    /tmp/editions_rendering.pb
+    --output-root=stash/out_editions \
+    stash/editions_rendering.pb
 ```
 
 ```
-cat /tmp/out_editions/editions_rendering.proto
+cat stash/out_editions/editions_rendering.proto
 ```
 
 ```
@@ -521,12 +523,12 @@ message AllFeatures {
 ```
 reproto --use-variant descriptor \
     --force-proto2-output \
-    --output-root=/tmp/out_proto2 \
-    /tmp/editions_rendering.pb
+    --output-root=stash/out_proto2 \
+    stash/editions_rendering.pb
 ```
 
 ```
-cat /tmp/out_proto2/editions_rendering.proto
+cat stash/out_proto2/editions_rendering.proto
 ```
 
 ```

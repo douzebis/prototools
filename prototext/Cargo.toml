@@ -40,6 +40,7 @@ prost           = "0.14"
 prost-reflect   = "0.16"
 prost-types     = "0.14"
 walkdir         = "2"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [features]
 default = ["protox", "wkt-db"]

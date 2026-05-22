@@ -157,17 +157,33 @@ let
   # prototextBare — prototext without the embedded WKT scoring graph.
   # Used by reproto as a build-time dependency, breaking the circular dep:
   #   prototext-full → wktRkyv → reproto → prototextBare
+  #
+  # Single cargo build --workspace invocation — identical flags to depsCache,
+  # so Cargo reuses all external-dep artifacts without recompiling anything.
+  # (A scoped -p prototext invocation would compute different profile unit_for
+  # hashes for external deps, invalidating depsCache fingerprints and forcing
+  # a full external-dep recompile — see constant-rebuilds in Crane FAQ.)
+  #
+  # We bypass installFromCargoBuildLogHook (doNotPostBuildInstallCargoBinaries)
+  # and install prototext binaries directly by name in installPhaseCommand,
+  # the same pattern used by the PyO3 extensions.
   # ---------------------------------------------------------------------------
   prototextBare = crane.buildPackage (protocArgs // {
-    src                     = workspaceSrc;
-    pname                   = "prototext-bare";
-    cargoArtifacts          = depsCache;
-    cargoExtraArgs          = "--no-default-features -p prototext";
-    nativeBuildInputs       = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-    doCheck                 = false;
-    doInstallCargoArtifacts = true;
-    postInstall             = prototextPostInstall;
-    meta                    = prototextMeta;
+    src                              = workspaceSrc;
+    pname                            = "prototext-bare";
+    cargoArtifacts                   = depsCache;
+    nativeBuildInputs                = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+    doCheck                          = false;
+    doInstallCargoArtifacts          = true;
+    postInstall                      = prototextPostInstall;
+    meta                             = prototextMeta;
+    buildPhaseCargoCommand           = "cargoWithProfile build ${workspaceArgs}";
+    doNotPostBuildInstallCargoBinaries = true;
+    installPhaseCommand              = ''
+      mkdir -p $out/bin
+      cp target/release/prototext $out/bin/
+      cp target/release/prototext-gen-man $out/bin/
+    '';
   });
 
   # ---------------------------------------------------------------------------
@@ -175,20 +191,29 @@ let
   # When wktRkyv is non-null (Nix build), WKT_RKYV and WKT_INDEX point at
   # the pre-built files so build.rs skips the reproto invocation.
   # When wktRkyv is null (bare/bootstrap), falls back to prototextBare.
+  #
+  # Same single-invocation pattern as prototextBare: cargo build --workspace
+  # with wkt-db feature enabled reuses all prototextBare artifacts.
   # ---------------------------------------------------------------------------
   prototext =
     if wktRkyv != null then
       crane.buildPackage (protocArgs // {
-        src            = workspaceSrc;
-        pname          = "prototext";
-        cargoArtifacts = prototextBare;
-        cargoExtraArgs = "--no-default-features --features wkt-db -p prototext";
-        nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-        doCheck        = false;
-        WKT_RKYV       = "${wktRkyv}/wkt.rkyv";
-        WKT_INDEX      = "${wktRkyv}/wkt_index.rkyv";
-        postInstall    = prototextPostInstall;
-        meta           = prototextMeta;
+        src                              = workspaceSrc;
+        pname                            = "prototext";
+        cargoArtifacts                   = prototextBare;
+        nativeBuildInputs                = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+        doCheck                          = false;
+        WKT_RKYV                         = "${wktRkyv}/wkt.rkyv";
+        WKT_INDEX                        = "${wktRkyv}/wkt_index.rkyv";
+        postInstall                      = prototextPostInstall;
+        meta                             = prototextMeta;
+        buildPhaseCargoCommand           = "cargoWithProfile build ${workspaceArgs} --features wkt-db";
+        doNotPostBuildInstallCargoBinaries = true;
+        installPhaseCommand              = ''
+          mkdir -p $out/bin
+          cp target/release/prototext $out/bin/
+          cp target/release/prototext-gen-man $out/bin/
+        '';
       })
     else
       prototextBare;

@@ -37,6 +37,27 @@ fn compile(files: &[&str], includes: &[&str], out_dir: &str, out_name: &str) {
 
 #[cfg(not(feature = "protox"))]
 fn copy_prebuilt(out_dir: &str, manifest_dir: &str) {
+    // Fast path: Nix build supplies stable store-path env vars so that
+    // OUT_DIR contents are byte-for-byte identical across all sandboxes and
+    // Cargo fingerprints remain valid (no spurious external-dep recompiles).
+    if let Ok(descriptor_pb) = std::env::var("DESCRIPTOR_PB") {
+        let knife_pb = std::env::var("KNIFE_PB")
+            .unwrap_or_else(|_| panic!("DESCRIPTOR_PB is set but KNIFE_PB is not"));
+        let enum_collision_pb = std::env::var("ENUM_COLLISION_PB")
+            .unwrap_or_else(|_| panic!("DESCRIPTOR_PB is set but ENUM_COLLISION_PB is not"));
+        for (name, src) in &[
+            ("descriptor.pb", descriptor_pb),
+            ("knife.pb", knife_pb),
+            ("enum_collision.pb", enum_collision_pb),
+        ] {
+            let dst = std::path::Path::new(out_dir).join(name);
+            std::fs::copy(src, &dst)
+                .unwrap_or_else(|e| panic!("failed to copy {name} from '{src}': {e}"));
+        }
+        return;
+    }
+    // Fallback (crates.io / local dev): copy from fixtures/prebuilt/ which
+    // patchPhase or a local protoc run must have populated beforehand.
     let prebuilt = std::path::Path::new(manifest_dir).join("fixtures/prebuilt");
     for name in &["descriptor.pb", "knife.pb", "enum_collision.pb"] {
         let src = prebuilt.join(name);
