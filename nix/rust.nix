@@ -232,7 +232,7 @@ let
       libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
       # crateDirName is the bare directory name used in shell commands.
       crateDirName = baseNameOf (toString crateDir);
-      ext = crane.buildPackage (commonArgs // {
+      ext = crane.buildPackage (protocArgs // {
         src            = workspaceSrc;
         pname          = "${crateName}-extension";
         cargoExtraArgs = "-p ${crateName} --lib";
