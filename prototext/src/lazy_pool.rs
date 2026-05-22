@@ -4,15 +4,17 @@
 
 //! LazyPool — on-demand FDP loading from a mmapped FDS + index.rkyv (spec 0069).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use memmap2::Mmap;
 use prost::Message;
 use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
-use prost_types::FileDescriptorProto;
+use prost_types::{FileDescriptorProto, FileDescriptorSet};
 use rkyv::api::access_unchecked;
 use score_graph_lib::fds_index::ArchivedFdsIndex;
+
+use crate::EMBEDDED_DESCRIPTOR;
 
 const MAGIC: &[u8; 8] = b"PTSGRAPH";
 const VERSION: u32 = 3;
@@ -24,6 +26,9 @@ const VERSION: u32 = 3;
 ///
 /// The pool starts empty (`DescriptorPool::new()`).  FDPs are decoded from the
 /// mmapped raw `.pb` bytes only when a specific type is first requested.
+/// When a transitive dependency is absent from the FDS (e.g. a WKT injected
+/// as an embedded fallback by reproto), it is loaded from the embedded WKT
+/// descriptor as a fallback — so the FDS version always takes priority.
 pub struct LazyPool {
     /// Mmapped raw .pb bytes (kept alive so `raw_bytes` remains valid).
     _raw_mmap: Mmap,
@@ -40,6 +45,10 @@ pub struct LazyPool {
 
     /// The prost-reflect pool.  Starts empty (`DescriptorPool::new()`).
     pub pool: DescriptorPool,
+
+    /// FDPs from the embedded WKT descriptor, keyed by filename.
+    /// Used as fallback when a dep is absent from the FDS span map.
+    wkt_fdps: HashMap<String, FileDescriptorProto>,
 
     /// Files fully added to the pool.
     loaded: HashSet<String>,
@@ -70,8 +79,8 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
 impl LazyPool {
     /// Open a lazy pool from a `.pb` FDS file and its `index.rkyv` sidecar.
     ///
-    /// The pool starts empty (`DescriptorPool::new()`).  Validates the
-    /// PTSGRAPH header (version 3) before the rkyv pointer cast.
+    /// The pool starts empty.  Validates the PTSGRAPH header (version 3)
+    /// before the rkyv pointer cast.
     pub fn open(pb_path: &Path, idx_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let raw_file =
             std::fs::File::open(pb_path).map_err(|e| format!("{}: {e}", pb_path.display()))?;
@@ -99,12 +108,26 @@ impl LazyPool {
         // struct, so extending the slice lifetime to 'static is safe.
         let raw_bytes: &'static [u8] = unsafe { &*(&raw_mmap[..] as *const [u8]) };
 
+        // Parse the embedded WKT descriptor into individual FDPs keyed by
+        // filename.  These serve as fallbacks for deps absent from the FDS
+        // (e.g. google/protobuf/*.proto injected by reproto as fallbacks).
+        // The FDS version always takes priority: ensure_loaded checks the span
+        // map first and only falls back here when no span is found.
+        let wkt_fds = FileDescriptorSet::decode(EMBEDDED_DESCRIPTOR)
+            .map_err(|e| format!("decoding embedded WKT descriptor: {e}"))?;
+        let wkt_fdps: HashMap<String, FileDescriptorProto> = wkt_fds
+            .file
+            .into_iter()
+            .map(|f| (f.name().to_owned(), f))
+            .collect();
+
         Ok(LazyPool {
             _raw_mmap: raw_mmap,
             _idx_mmap: idx_mmap,
             index,
             raw_bytes,
             pool: DescriptorPool::new(),
+            wkt_fdps,
             loaded: HashSet::new(),
             in_progress: HashSet::new(),
         })
@@ -127,26 +150,37 @@ impl LazyPool {
         self.in_progress.insert(file.to_owned());
 
         // Recurse into dependencies first (DFS).
-        let deps: Vec<String> = self
-            .index
-            .dep_graph
-            .get(file)
-            .map(|v| v.iter().map(|s| s.as_str().to_owned()).collect())
-            .unwrap_or_default();
+        // Check the index dep_graph first; fall back to the WKT FDP's own
+        // dependency list for files that are not in the index (e.g. WKTs).
+        let deps: Vec<String> = if let Some(v) = self.index.dep_graph.get(file) {
+            v.iter().map(|s| s.as_str().to_owned()).collect()
+        } else if let Some(wkt_fdp) = self.wkt_fdps.get(file) {
+            wkt_fdp
+                .dependency
+                .iter()
+                .map(|s| s.as_str().to_owned())
+                .collect()
+        } else {
+            vec![]
+        };
 
         for dep in &deps {
             self.ensure_loaded(dep)?;
         }
 
         // Decode this FDP from the mmapped raw bytes.
-        let span = self
-            .index
-            .file_to_span
-            .get(file)
-            .ok_or_else(|| format!("'{file}' has no span in index (not part of this FDS)"))?;
-        let (start, end) = (span.0.to_native() as usize, span.1.to_native() as usize);
-        let fdp = FileDescriptorProto::decode(&self.raw_bytes[start..end])
-            .map_err(|e| format!("decoding FDP for '{file}': {e}"))?;
+        // Priority: FDS span map first; embedded WKT fallback second.
+        // This mirrors protoc's -I behaviour: an explicit file in the input
+        // wins over the built-in WKT copy.  Files absent from both are errors.
+        let fdp = if let Some(span) = self.index.file_to_span.get(file) {
+            let (start, end) = (span.0.to_native() as usize, span.1.to_native() as usize);
+            FileDescriptorProto::decode(&self.raw_bytes[start..end])
+                .map_err(|e| format!("decoding FDP for '{file}': {e}"))?
+        } else if let Some(wkt_fdp) = self.wkt_fdps.get(file) {
+            wkt_fdp.clone()
+        } else {
+            return Err(format!("'{file}' not found in FDS index or embedded WKT fallback").into());
+        };
 
         self.pool
             .add_file_descriptor_proto(fdp)
