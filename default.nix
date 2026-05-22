@@ -36,18 +36,15 @@ let
   # Source filtered to only what Cargo needs, keeping the hash stable when
   # unrelated files (docs, fixtures, etc.) change.
   # ---------------------------------------------------------------------------
-  src = pkgs.lib.cleanSourceWith {
-    src    = pkgs.lib.cleanSource ./.;
-    # Keep Cargo sources plus fixtures/ (integration tests + proto schemas).
-    # Exclude Python-only subtrees that must not perturb the Rust derivation hashes.
+  src = builtins.path {
+    name   = "prototools-src";
+    path   = ./.;
+    # Additive filter: admit only what Cargo needs.
+    # Anything not matched (docs, Python, demo, shell-hook files, .git, …)
+    # is excluded automatically — no explicit exclusion list required.
     filter = path: type:
-      let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
-      in
-      !(pkgs.lib.hasPrefix "reproto/" rel) &&
-      !(pkgs.lib.hasPrefix "bin/" rel) &&
-      !(pkgs.lib.hasPrefix "protoscan/" rel) &&
-      ((crane.filterCargoSources path type) ||
-       (pkgs.lib.hasInfix "/fixtures/" path));
+      (crane.filterCargoSources path type) ||
+      (pkgs.lib.hasInfix "/fixtures/" path);
   };
 
   # patchPhase shared by all Crane derivations that compile prototext.
