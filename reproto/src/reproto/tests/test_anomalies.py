@@ -132,7 +132,8 @@ def test_A1_editions_force_proto2_warning(tmp_path: Path) -> None:
 
 @pytest.mark.roundtrip
 def test_A2_proto3_force_proto2_warning(tmp_path: Path) -> None:
-    """Running --force-proto2-output on a proto3 file must emit WARNING[downconvert]."""
+    """Running --force-proto2-output on a proto3 file must NOT emit a stderr warning
+    (the comment is in the rendered file instead), but must succeed and write output."""
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
     out_dir = tmp_path / "out"
@@ -143,9 +144,15 @@ def test_A2_proto3_force_proto2_warning(tmp_path: Path) -> None:
 
     result = _run_reproto([pb], out_dir, extra_args=["--force-proto2-output"])
     assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
-    # The A2 anomaly stderr message (from ANOMALIES["A2"].stderr format string)
-    assert "output syntax downconverted from proto3 to proto2" in result.stderr, (
-        f"A2 warning must appear for proto3→proto2. stderr:\n{result.stderr}"
+    # A2 warning must NOT appear in stderr — the rendered file carries the comment
+    assert "output syntax downconverted" not in result.stderr, (
+        f"A2 warning must be suppressed from stderr. stderr:\n{result.stderr}"
+    )
+    # But the rendered file must contain the WARNING[downconvert] comment
+    out_file = out_dir / "prune_base.proto"
+    assert out_file.exists(), "output file must be written"
+    assert "WARNING[downconvert]" in out_file.read_text(), (
+        "rendered file must contain WARNING[downconvert] comment"
     )
 
 

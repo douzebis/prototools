@@ -314,7 +314,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
                 out.append(report("A1", depth, file=self.name,
                                   suppress_stderr=ctx.prost_workaround))
             else:
-                out.append(report("A2", depth, file=self.name, syntax=ctx.syntax))
+                out.append(report("A2", depth, file=self.name, syntax=ctx.syntax,
+                                  suppress_stderr=True))
             out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
         else:
             out.append(BlockLine(f'syntax = "{ctx.target_syntax}";', depth))
