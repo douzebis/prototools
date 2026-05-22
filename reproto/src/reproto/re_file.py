@@ -263,17 +263,14 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             extension.targets.add(extendee)
             # No 'contains' relation between a file and an extendee
     
-    def render(self, ctx: Context, depth: int = 0) -> tuple[Block, Block]:
-        """Reconstruct a FileDescriptorProto as .proto."""
-        from .re_descriptor import ReDescriptorProto
-        from .re_enum import ReEnumDescriptorProto
-        from .re_service import ReServiceDescriptorProto
-        
-        assert isinstance(depth, int)
+    def _set_target_syntax(self, ctx: Context) -> None:
+        """Set ctx.syntax and ctx.target_syntax from this file's FDP.
 
+        Extracted from render() so both text and binary output paths share
+        exactly one call (spec 0076).
+        """
         from .syntax import fdp_syntax
         ctx.syntax = fdp_syntax(self.this)
-        ctx.current_file = self.name
         if ctx.force_proto2_output:
             ctx.target_syntax = "proto2"
         elif ctx.force_proto2_for_editions and ctx.syntax == "editions":
@@ -284,6 +281,17 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             ctx.target_syntax = ctx.syntax
         else:
             ctx.target_syntax = "proto2"
+
+    def render(self, ctx: Context, depth: int = 0) -> tuple[Block, Block]:
+        """Reconstruct a FileDescriptorProto as .proto."""
+        from .re_descriptor import ReDescriptorProto
+        from .re_enum import ReEnumDescriptorProto
+        from .re_service import ReServiceDescriptorProto
+
+        assert isinstance(depth, int)
+
+        ctx.current_file = self.name
+        self._set_target_syntax(ctx)
 
         out = Block()
         inputs = Block()
@@ -434,5 +442,88 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         # Remove any empty trailing lines from out
         while out and not out[-1].text:
             out.pop()
+
+        # --- Binary output side-channel (spec 0076) ---------------------------
+        if ctx.out_desc is not None:
+            from google.protobuf.descriptor_pb2 import FileDescriptorProto as _FDP
+            from .context import DescOut
+            outer_slot = ctx.out_desc
+            fdp_out = _FDP()
+            fdp_out.name = self.this.name
+            if self.this.package:
+                fdp_out.package = self.this.package
+            fdp_out.dependency.extend(self.this.dependency)
+            fdp_out.public_dependency.extend(self.this.public_dependency)
+            fdp_out.weak_dependency.extend(self.this.weak_dependency)
+            # syntax / edition
+            if ctx.target_syntax == "proto3":
+                fdp_out.syntax = "proto3"
+            elif ctx.target_syntax == "editions":
+                fdp_out.syntax = "editions"
+                fdp_out.edition = self.this.edition
+            # else proto2: leave syntax unset (protobuf convention)
+            # options
+            if self.this.HasField('options'):
+                fdp_out.options.CopyFrom(self.this.options)
+                if ctx.target_syntax != "editions":
+                    fdp_out.options.ClearField('features')
+            # children: services
+            for s in self.service:
+                service_proto = cast(ServiceDescriptorProto, s)
+                service = ReServiceDescriptorProto(ctx, service_proto, parent=self)
+                if not service.is_visible():
+                    continue
+                slot = DescOut()
+                ctx.out_desc = slot
+                service.render(ctx, depth)
+                ctx.out_desc = None  # restored below; here for each iteration
+                if slot.out is not None:
+                    assert isinstance(slot.out, ServiceDescriptorProto)
+                    fdp_out.service.append(slot.out)
+            # children: enums
+            for e in self.enum_type:
+                enum_proto = cast(EnumDescriptorProto, e)
+                enum = ReEnumDescriptorProto(ctx, enum_proto, parent=self)
+                if not enum.is_reachable:
+                    continue
+                slot = DescOut()
+                ctx.out_desc = slot
+                enum.render(ctx, depth)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, EnumDescriptorProto)
+                    fdp_out.enum_type.append(slot.out)
+            # children: messages
+            for m in self.message_type:
+                msg_proto = cast(DescriptorProto, m)
+                message = ReDescriptorProto(ctx, msg_proto, parent=self)
+                if message.is_group or not message.is_summoned:
+                    continue
+                slot = DescOut()
+                ctx.out_desc = slot
+                message.render(ctx)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, DescriptorProto)
+                    fdp_out.message_type.append(slot.out)
+            # children: extensions
+            from .re_field import ReFieldDescriptorProto
+            from google.protobuf.descriptor_pb2 import FieldDescriptorProto as _FieldDP
+            for e in self.extension:
+                ext_proto = cast(_FieldDP, e)
+                fd = ReFieldDescriptorProto(ctx, ext_proto, parent=self)
+                if not fd.is_summoned:
+                    continue
+                slot = DescOut()
+                ctx.out_desc = slot
+                fd.render(ctx, depth)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, FieldDescriptorProto)
+                    fdp_out.extension.append(slot.out)
+            # restore out_desc and publish result
+            ctx.out_desc = outer_slot
+            ctx.out_desc.out = fdp_out
+
         return out, inputs
     

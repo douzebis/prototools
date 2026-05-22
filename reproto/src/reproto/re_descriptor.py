@@ -569,4 +569,86 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         out.append(BlockLine('}', depth))
         out.append_div_maybe(depth)
 
+        # --- Binary output side-channel (spec 0076) ---------------------------
+        if ctx.out_desc is not None:
+            from google.protobuf.descriptor_pb2 import (
+                DescriptorProto as _DP,
+                FieldDescriptorProto as _FieldDP,
+                OneofDescriptorProto as _ODP,
+            )
+            from .context import DescOut
+            from .re_enum import ReEnumDescriptorProto as _ReEnum
+            from .re_field import ReFieldDescriptorProto as _ReField
+            outer_slot = ctx.out_desc
+            msg_out = _DP()
+            msg_out.name = self.this.name
+            # options
+            if self.this.HasField('options'):
+                msg_out.options.CopyFrom(self.this.options)
+                if ctx.target_syntax != "editions":
+                    msg_out.options.ClearField('features')
+            # reserved ranges and names
+            for r in self.this.reserved_range:
+                msg_out.reserved_range.append(r)
+            for n in self.this.reserved_name:
+                msg_out.reserved_name.append(n)
+            # extension ranges
+            for r in self.this.extension_range:
+                msg_out.extension_range.append(r)
+            # oneofs
+            for oneof in self.this.oneof_decl:
+                oo = _ODP()
+                oo.name = oneof.name
+                if oneof.HasField('options'):
+                    oo.options.CopyFrom(oneof.options)
+                    if ctx.target_syntax != "editions":
+                        oo.options.ClearField('features')
+                msg_out.oneof_decl.append(oo)
+            # fields
+            for f in self.field:
+                field_proto = cast(_FieldDP, f)
+                fd = _ReField(ctx, field_proto, parent=self)
+                slot = DescOut()
+                ctx.out_desc = slot
+                fd.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, _FieldDP)
+                    msg_out.field.append(slot.out)
+            # nested types (including map entries)
+            for n in self.nested_type:
+                nested_proto = cast(_DP, n)
+                nested = ReDescriptorProto(ctx, nested_proto, parent=self)
+                slot = DescOut()
+                ctx.out_desc = slot
+                nested.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, _DP)
+                    msg_out.nested_type.append(slot.out)
+            # enums
+            for e in self.enum_type:
+                enum_proto = cast(EnumDescriptorProto, e)
+                enum = _ReEnum(ctx, enum_proto, parent=self)
+                slot = DescOut()
+                ctx.out_desc = slot
+                enum.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, EnumDescriptorProto)
+                    msg_out.enum_type.append(slot.out)
+            # extensions
+            for e in self.extension:
+                ext_proto = cast(_FieldDP, e)
+                fd = _ReField(ctx, ext_proto, parent=self)
+                slot = DescOut()
+                ctx.out_desc = slot
+                fd.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, _FieldDP)
+                    msg_out.extension.append(slot.out)
+            ctx.out_desc = outer_slot
+            ctx.out_desc.out = msg_out
+
         return out, inputs

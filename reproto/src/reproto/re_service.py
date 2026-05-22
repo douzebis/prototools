@@ -103,5 +103,32 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
         if not group:
             out.insert(0, BlockLine(f'service {self.name} {{', depth))
 
+        # --- Binary output side-channel (spec 0076) ---------------------------
+        if ctx.out_desc is not None:
+            from google.protobuf.descriptor_pb2 import ServiceDescriptorProto as _SDP
+            from .context import DescOut
+            from .re_method import ReMethodDescriptorProto
+            outer_slot = ctx.out_desc
+            svc_out = _SDP()
+            svc_out.name = self.this.name
+            if self.this.HasField('options'):
+                svc_out.options.CopyFrom(self.this.options)
+                if ctx.target_syntax != "editions":
+                    svc_out.options.ClearField('features')
+            for m in self.method:
+                method_proto = cast(MethodDescriptorProto, m)
+                method = ReMethodDescriptorProto(ctx, method_proto, parent=self)
+                if not method.is_visible():
+                    continue
+                slot = DescOut()
+                ctx.out_desc = slot
+                method.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, MethodDescriptorProto)
+                    svc_out.method.append(slot.out)
+            ctx.out_desc = outer_slot
+            ctx.out_desc.out = svc_out
+
         return out, inputs
     

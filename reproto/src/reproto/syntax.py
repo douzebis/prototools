@@ -44,6 +44,42 @@ def fdp_syntax(fdp: FileDescriptorProto) -> str:
     return fdp.syntax or "proto2"
 
 
+def field_label_enum(
+    ctx: Context,
+    field: FieldDescriptorProto,
+    is_oneof: bool,
+    features: 'ResolvedFeatures | None' = None,
+) -> 'FieldDescriptorProto.Label.ValueType':
+    """Return the FieldDescriptorProto.Label integer constant for a field.
+
+    Same decision logic as field_label() but returns the SDK enum integer
+    (LABEL_OPTIONAL, LABEL_REQUIRED, LABEL_REPEATED) rather than a string.
+    Used by the binary output path in re_field.py.
+
+    Note: is_oneof fields have no label in the binary descriptor either —
+    the oneof membership is expressed via oneof_index, not the label field.
+    The caller should not set label on oneof members; this function returns
+    LABEL_OPTIONAL as a safe default for that case.
+    """
+    _LABEL = FieldDescriptorProto
+    if is_oneof:
+        return _LABEL.LABEL_OPTIONAL
+    if field.label == _LABEL.LABEL_REPEATED:
+        return _LABEL.LABEL_REPEATED
+    if ctx.target_syntax == "editions":
+        return _LABEL.LABEL_OPTIONAL
+    if features is not None:
+        if features.field_presence == FIELD_PRESENCE_LEGACY_REQUIRED:
+            return _LABEL.LABEL_REQUIRED
+        return _LABEL.LABEL_OPTIONAL
+    if ctx.target_syntax == "proto3":
+        return _LABEL.LABEL_OPTIONAL
+    # proto2
+    if field.label == _LABEL.LABEL_REQUIRED:
+        return _LABEL.LABEL_REQUIRED
+    return _LABEL.LABEL_OPTIONAL
+
+
 def packed_option(
     ctx: Context,
     has_field: bool,

@@ -207,4 +207,35 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         # --- Enum intro ------------------------------------------------------
         out.insert(0, BlockLine(f'enum {self.name} {{', depth))
 
+        # --- Binary output side-channel (spec 0076) --------------------------
+        if ctx.out_desc is not None:
+            from google.protobuf.descriptor_pb2 import (
+                EnumDescriptorProto as _EDP,
+                EnumValueDescriptorProto as _EVDP,
+            )
+            from .context import DescOut
+            outer_slot = ctx.out_desc
+            enum_out = _EDP()
+            enum_out.name = self.this.name
+            if self.this.HasField('options'):
+                enum_out.options.CopyFrom(self.this.options)
+                if ctx.target_syntax != "editions":
+                    enum_out.options.ClearField('features')
+            for r in self.this.reserved_range:
+                enum_out.reserved_range.append(r)
+            for n in self.this.reserved_name:
+                enum_out.reserved_name.append(n)
+            for v in self.value:
+                assert isinstance(v, _EVDP)
+                value = ReEnumValueDescriptorProto(v, self)
+                slot = DescOut()
+                ctx.out_desc = slot
+                value.render(ctx, depth + 1)
+                ctx.out_desc = None
+                if slot.out is not None:
+                    assert isinstance(slot.out, _EVDP)
+                    enum_out.value.append(slot.out)
+            ctx.out_desc = outer_slot
+            ctx.out_desc.out = enum_out
+
         return out

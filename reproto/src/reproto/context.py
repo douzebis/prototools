@@ -32,6 +32,17 @@ if TYPE_CHECKING:
     NodeTypes = NodeBase[Any]
 
 
+@dataclass
+class DescOut:
+    """Typed output slot for binary descriptor rendering (spec 0076).
+
+    Passed via ctx.out_desc to render() calls to receive the binary descriptor
+    counterpart alongside the text output, without changing render() signatures.
+    out is None if the node produced no binary descriptor.
+    """
+    out: Message | None = None
+
+
 def _default_variant_root() -> Traversable:
     return importlib.resources.files('reproto.variants')
 
@@ -111,6 +122,11 @@ class Context(Options):
         self.syntax: str = "proto2"         # input file syntax
         self.target_syntax: str = "proto2"  # output syntax
         self.current_file: str = ""         # name of the .proto file being rendered
+
+        # Binary output side-channel (spec 0076). When set to a DescOut instance,
+        # render() additionally populates out_desc.out with the binary descriptor
+        # counterpart. None (the default) means text-only output.
+        self.out_desc: DescOut | None = None
 
         # Edition feature defaults extracted from the variant's descriptor.pb
         # at startup (spec 0025). Maps feature field name -> sorted list of
