@@ -42,9 +42,13 @@ let
     # Additive filter: admit only what Cargo needs.
     # Anything not matched (docs, Python, demo, shell-hook files, .git, …)
     # is excluded automatically — no explicit exclusion list required.
+    # crane.filterCargoSources passes all directories, so explicitly prune
+    # target/ (build artefacts) to keep the hash stable across cargo builds.
     filter = path: type:
-      (crane.filterCargoSources path type) ||
-      (pkgs.lib.hasInfix "/fixtures/" path);
+      let base = baseNameOf (toString path);
+      in base != "target" &&
+         ((crane.filterCargoSources path type) ||
+          (pkgs.lib.hasInfix "/fixtures/" path));
   };
 
   # patchPhase shared by all Crane derivations that compile prototext.
