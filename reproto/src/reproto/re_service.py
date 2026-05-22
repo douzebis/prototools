@@ -110,11 +110,10 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
             from .re_method import ReMethodDescriptorProto
             outer_slot = ctx.out_desc
             svc_out = _SDP()
-            svc_out.name = self.this.name
-            if self.this.HasField('options'):
-                svc_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    svc_out.options.ClearField('features')
+            svc_out.CopyFrom(self.this)
+            if svc_out.HasField('options') and ctx.target_syntax != "editions":
+                svc_out.options.ClearField('features')
+            svc_out.ClearField('method')
             for m in self.method:
                 method_proto = cast(MethodDescriptorProto, m)
                 method = ReMethodDescriptorProto(ctx, method_proto, parent=self)

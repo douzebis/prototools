@@ -47,7 +47,8 @@ let
     filter = path: type:
       let
         base       = baseNameOf (toString path);
-        skipPb     = type == "regular" && pkgs.lib.hasSuffix ".pb" base;
+        skipPb     = type == "regular" && pkgs.lib.hasSuffix ".pb" base
+                     && !(pkgs.lib.hasSuffix ".golden.pb" base);
         skipCache  = base == "__pycache__";
         skipResult = pkgs.lib.hasPrefix "result" base;
       in
@@ -342,7 +343,7 @@ EOF
     mkdir -p "$out"
     reproto \
       --use-variant all \
-      --prost-workaround \
+      --force-proto2-for-editions \
       --output-root="$out/reproto-out" \
       --emit-scoring-graphs \
       --build-schema-db="$out/googleapis.desc" \
@@ -473,7 +474,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     mkdir -p "$out"
     reproto \
       --use-variant all \
-      --prost-workaround \
+      --force-proto2-for-editions \
       -I"$PB" \
       --output-root="$out/reproto-out" \
       --emit-scoring-graphs \

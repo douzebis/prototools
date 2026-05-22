@@ -216,15 +216,10 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
             from .context import DescOut
             outer_slot = ctx.out_desc
             enum_out = _EDP()
-            enum_out.name = self.this.name
-            if self.this.HasField('options'):
-                enum_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    enum_out.options.ClearField('features')
-            for r in self.this.reserved_range:
-                enum_out.reserved_range.append(r)
-            for n in self.this.reserved_name:
-                enum_out.reserved_name.append(n)
+            enum_out.CopyFrom(self.this)
+            if enum_out.HasField('options') and ctx.target_syntax != "editions":
+                enum_out.options.ClearField('features')
+            enum_out.ClearField('value')
             for v in self.value:
                 assert isinstance(v, _EVDP)
                 value = ReEnumValueDescriptorProto(v, self)

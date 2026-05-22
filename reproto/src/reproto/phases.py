@@ -43,6 +43,12 @@ from .topology import File, ReFile, Topology
 
 logger = logging.getLogger(__name__)
 
+# EDITIONS_COMPAT_REQUIRED: set to False once prost-reflect supports editions
+# syntax natively (upstream PR pending).  While True, _phase_build_schema_db
+# forces editions files to proto2 output unconditionally so that the emitted
+# descriptor.desc is consumable by prost-reflect.
+EDITIONS_COMPAT_REQUIRED = True
+
 
 class DescriptorProtoMissingError(Exception):
     """Raised when 'descriptor.proto' is missing."""
@@ -548,6 +554,69 @@ def _extract_fdp_symbols(fdp: FileDescriptorProto) -> list[str]:
         return syms
 
     return _collect(list(fdp.message_type), list(fdp.enum_type), prefix)
+
+
+def _translate_fdp_to_proto2(fdp: FileDescriptorProto) -> FileDescriptorProto:
+    """Return a deep copy of fdp with editions→proto2 translation applied.
+
+    Used by _phase_build_schema_db to produce semantically-correct proto2 FDPs
+    for consumption by prost-reflect (which does not support editions syntax).
+
+    Translation: clear syntax/edition fields (proto2 convention = unset), then
+    recursively clear all features entries from options at every level.  This
+    does NOT apply label/type/packed translations — those are only needed for
+    the --emit-binary render path.  prost-reflect reads the pool FDPs, which
+    already carry the correct label/type values from protoc compilation; only
+    the editions metadata (syntax, edition, features) needs to be stripped.
+    """
+    out = FileDescriptorProto()
+    out.CopyFrom(fdp)
+    # Strip editions metadata so prost-reflect sees a valid proto2 descriptor.
+    out.ClearField('syntax')
+    out.ClearField('edition')
+    if out.HasField('options'):
+        out.options.ClearField('features')
+    for msg in out.message_type:
+        _clear_features_recursive(msg)
+    for enum in out.enum_type:
+        if enum.HasField('options'):
+            enum.options.ClearField('features')
+        for val in enum.value:
+            if val.HasField('options'):
+                val.options.ClearField('features')
+    for svc in out.service:
+        if svc.HasField('options'):
+            svc.options.ClearField('features')
+        for method in svc.method:
+            if method.HasField('options'):
+                method.options.ClearField('features')
+    for ext in out.extension:
+        if ext.HasField('options'):
+            ext.options.ClearField('features')
+    return out
+
+
+def _clear_features_recursive(msg: 'DescriptorProto') -> None:
+    """Recursively clear features from all options in a DescriptorProto tree."""
+    if msg.HasField('options'):
+        msg.options.ClearField('features')
+    for field in msg.field:
+        if field.HasField('options'):
+            field.options.ClearField('features')
+    for oneof in msg.oneof_decl:
+        if oneof.HasField('options'):
+            oneof.options.ClearField('features')
+    for nested in msg.nested_type:
+        _clear_features_recursive(nested)
+    for enum in msg.enum_type:
+        if enum.HasField('options'):
+            enum.options.ClearField('features')
+        for val in enum.value:
+            if val.HasField('options'):
+                val.options.ClearField('features')
+    for ext in msg.extension:
+        if ext.HasField('options'):
+            ext.options.ClearField('features')
 
 
 def _prune_if_duplicate(
@@ -1119,31 +1188,29 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 cli_info(f"  Writing: {res_path}")
 
             # Make sure all parent directories exist
-            res_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Write content to file
             if not ctx.dry_run:
+                res_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # If requested, output the FDP in binary form (.pb)
-                if ctx.binary:
-                    # Get the FileDescriptor
-                    file_descriptor = ctx.pool.FindFileByName(re_fdp.name)
-                    # Convert to FileDescriptorProto
-                    fd_proto = FileDescriptorProto()
-                    file_descriptor.CopyToProto(fd_proto)
-                    content = fd_proto.SerializeToString()
-                    # Write to disk (I/O errors are FATAL)
-                    try:
-                        res_path.with_suffix(".pb").write_bytes(content)
-                    except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
-                        cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
-                        cli_error("Cannot continue due to I/O error.")
-                        sys.exit(1)
+            # Render whenever we need output: text write, --emit-binary, or
+            # --build-schema-db (which may run without -O, i.e. with dry_run).
+            need_render = not ctx.dry_run or ctx.binary or bool(ctx.build_schema_db)
+            if need_render:
+                from .context import DescOut
+                from .syntax import fdp_syntax
 
-                # First: render (data anomalies warn, programming errors propagate)
+                need_slot = ctx.binary or bool(ctx.build_schema_db)
+                # For schema-db: temporarily force proto2 for editions files.
+                saved_force = ctx.force_proto2_for_editions
+                if ctx.build_schema_db and EDITIONS_COMPAT_REQUIRED:
+                    if fdp_syntax(re_fdp.this) == "editions":
+                        ctx.force_proto2_for_editions = True
+                slot = DescOut() if need_slot else None
+                ctx.out_desc = slot
                 try:
                     content = re_fdp.render(ctx)[0].flush(ctx)
                 except (KeyError, ValueError, TypeError, AttributeError) as e:
+                    ctx.out_desc = None
+                    ctx.force_proto2_for_editions = saved_force
                     from .lib.warnings import get_collector
                     from .anomalies import _classify_exc
                     clean_msg, w4, w5 = _classify_exc(str(e))
@@ -1157,14 +1224,33 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                         cli_warning(str(re_fdp.this))
                     advance()
                     continue
+                ctx.out_desc = None
+                ctx.force_proto2_for_editions = saved_force
 
-                # Second: write (I/O errors are FATAL)
-                try:
-                    res_path.write_text(content)
-                except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
-                    cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
-                    cli_error("Cannot continue due to I/O error.")
-                    sys.exit(1)
+                # Write binary (.pb) if requested
+                if ctx.binary and slot is not None and slot.out is not None:
+                    assert isinstance(slot.out, FileDescriptorProto)
+                    try:
+                        res_path.with_suffix(".pb").write_bytes(
+                            slot.out.SerializeToString())
+                    except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
+                        cli_error(f"Failed to write {res_path.with_suffix('.pb')}: {type(e).__name__}: {e}")
+                        cli_error("Cannot continue due to I/O error.")
+                        sys.exit(1)
+
+                # Accumulate for --build-schema-db
+                if ctx.build_schema_db and slot is not None and slot.out is not None:
+                    assert isinstance(slot.out, FileDescriptorProto)
+                    ctx.schema_db_fdps.append(slot.out)
+
+                # Write .proto text (skipped in dry-run mode)
+                if not ctx.dry_run:
+                    try:
+                        res_path.write_text(content)
+                    except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:
+                        cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
+                        cli_error("Cannot continue due to I/O error.")
+                        sys.exit(1)
 
             advance()
 
@@ -1261,25 +1347,37 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
 
     baked_graph, _yaml = build_graph(scoring_graphs=scoring_graphs)
 
-    # ── 3. Assemble schemas.pb from all summoned files in the pool
+    # ── 3. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
     #
-    # ctx.pool_db_fdps was populated in phase 2 at every ctx.pool_db.Add()
-    # call, preserving topological order (dependencies before dependents).
-    # prost-reflect requires this ordering when loading a multi-FDP FDS.
+    # ctx.schema_db_fdps was populated during phase 7's render loop.  The loop
+    # iterates ctx.nodes in insertion order, which is not guaranteed topological.
+    # pool.Add() requires dependencies before dependents, so sort first.
+    fdp_by_name = {f.name: f for f in ctx.schema_db_fdps}
+    # Kahn's algorithm: process files whose deps are already placed.
+    in_set: set[str] = set()
+    sorted_fdps = []
+    remaining = list(ctx.schema_db_fdps)
+    # Limit iterations to avoid infinite loop on cycles (shouldn't happen).
+    for _ in range(len(remaining) + 1):
+        if not remaining:
+            break
+        next_remaining = []
+        for fdp in remaining:
+            deps_ok = all(
+                d not in fdp_by_name or d in in_set
+                for d in fdp.dependency
+            )
+            if deps_ok:
+                sorted_fdps.append(fdp)
+                in_set.add(fdp.name)
+            else:
+                next_remaining.append(fdp)
+        remaining = next_remaining
+    # Append any unresolved (shouldn't happen in a well-formed FDS).
+    sorted_fdps.extend(remaining)
 
     fds = FileDescriptorSet()
-    for fdp in ctx.pool_db_fdps:
-        fds.file.append(fdp)
-
-    if ctx.force_proto2_for_editions:
-        from .lib.warnings import get_collector as _get_prost_collector
-        _prost_collector = _get_prost_collector()
-        for fdp in fds.file:
-            if fdp.syntax == "editions":
-                _prost_collector.w_prost(fdp.name)
-                fdp.ClearField("syntax")
-                fdp.ClearField("edition")
-                _clear_features(fdp)
+    fds.file.extend(sorted_fdps)
 
     # ── 4. Write both outputs
     #
@@ -1304,42 +1402,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         eprintln(f'  descriptor: {db_path}\n')
         eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
         eprintln(f'  index:      {schema_db_dir / "index.rkyv"}\n')
-
-
-def _clear_features(fdp: Any) -> None:
-    """Recursively strip features from all options in a FileDescriptorProto.
-
-    Used by the --prost-workaround path to make editions files acceptable to
-    prost-reflect after their syntax/edition fields have been cleared.
-    """
-    if fdp.HasField('options') and fdp.options.HasField('features'):
-        fdp.options.ClearField('features')
-
-    def _msg(msg: Any) -> None:
-        if msg.HasField('options') and msg.options.HasField('features'):
-            msg.options.ClearField('features')
-        for field in msg.field:
-            if field.HasField('options') and field.options.HasField('features'):
-                field.options.ClearField('features')
-        for oneof in msg.oneof_decl:
-            if oneof.HasField('options') and oneof.options.HasField('features'):
-                oneof.options.ClearField('features')
-        for enum in msg.enum_type:
-            _enum(enum)
-        for nested in msg.nested_type:
-            _msg(nested)
-
-    def _enum(enum: Any) -> None:
-        if enum.HasField('options') and enum.options.HasField('features'):
-            enum.options.ClearField('features')
-        for val in enum.value:
-            if val.HasField('options') and val.options.HasField('features'):
-                val.options.ClearField('features')
-
-    for msg in fdp.message_type:
-        _msg(msg)
-    for enum in fdp.enum_type:
-        _enum(enum)
 
 
 def _collect_group_fqdns(fd: Any) -> 'set[str]':

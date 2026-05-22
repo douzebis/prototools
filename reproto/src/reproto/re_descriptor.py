@@ -574,36 +574,26 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             from google.protobuf.descriptor_pb2 import (
                 DescriptorProto as _DP,
                 FieldDescriptorProto as _FieldDP,
-                OneofDescriptorProto as _ODP,
             )
             from .context import DescOut
             from .re_enum import ReEnumDescriptorProto as _ReEnum
             from .re_field import ReFieldDescriptorProto as _ReField
             outer_slot = ctx.out_desc
             msg_out = _DP()
-            msg_out.name = self.this.name
-            # options
-            if self.this.HasField('options'):
-                msg_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    msg_out.options.ClearField('features')
-            # reserved ranges and names
-            for r in self.this.reserved_range:
-                msg_out.reserved_range.append(r)
-            for n in self.this.reserved_name:
-                msg_out.reserved_name.append(n)
-            # extension ranges
-            for r in self.this.extension_range:
-                msg_out.extension_range.append(r)
-            # oneofs
-            for oneof in self.this.oneof_decl:
-                oo = _ODP()
-                oo.name = oneof.name
-                if oneof.HasField('options'):
-                    oo.options.CopyFrom(oneof.options)
-                    if ctx.target_syntax != "editions":
-                        oo.options.ClearField('features')
-                msg_out.oneof_decl.append(oo)
+            msg_out.CopyFrom(self.this)
+            # options.features: clear if not editions target
+            if msg_out.HasField('options') and ctx.target_syntax != "editions":
+                msg_out.options.ClearField('features')
+            # oneofs: fix options.features in-place (already copied)
+            for oo in msg_out.oneof_decl:
+                if oo.HasField('options') and ctx.target_syntax != "editions":
+                    oo.options.ClearField('features')
+            # children: re-accumulate via render() to respect summoning/pruning
+            # (oneof_decl is kept from CopyFrom — features already fixed above)
+            msg_out.ClearField('field')
+            msg_out.ClearField('nested_type')
+            msg_out.ClearField('enum_type')
+            msg_out.ClearField('extension')
             # fields
             for f in self.field:
                 field_proto = cast(_FieldDP, f)

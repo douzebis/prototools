@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0076 — Semantically-correct FDP binary rendering for descriptor.desc
 
-**Status:** draft
+**Status:** implemented
 **App:** reproto
 
 ---
@@ -272,77 +272,188 @@ Each `Re*` class that has a descriptor counterpart gains a guarded block
 inside its existing `render()` method. The guarded block runs only when
 `ctx.out_desc is not None`.
 
-**Copying options:** throughout this section, "copies `options`" means
-`new_msg.options.CopyFrom(self.this.options)`, guarded by
-`if self.this.HasField('options')`. `CopyFrom()` is the standard protobuf
-deep-copy; direct assignment of composite fields is not supported in the
-Python protobuf API.
+#### 5a. Field coverage
+
+The following table lists every field of every descriptor proto type, and how
+the binary block handles it. Fields marked *children (render)* are composite
+repeated fields whose children are accumulated via recursive `render()` calls
+with fresh `DescOut` slots; fields marked *omitted (intentional)* are
+deliberately excluded from binary output.
+
+**`FileDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `package` | copied |
+| 3 | `dependency` | copied |
+| 4 | `message_type` | children (render) |
+| 5 | `enum_type` | children (render) |
+| 6 | `service` | children (render) |
+| 7 | `extension` | children (render) |
+| 8 | `options` | copied; `features` cleared if not editions target |
+| 9 | `source_code_info` | omitted (intentional) |
+| 10 | `public_dependency` | copied |
+| 11 | `weak_dependency` | copied |
+| 12 | `syntax` | set per `ctx.target_syntax` |
+| 14 | `edition` | copied if editions target |
+| 15 | `option_dependency` | copied |
+
+**`DescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `field` | children (render) |
+| 3 | `nested_type` | children (render) |
+| 4 | `enum_type` | children (render) |
+| 5 | `extension_range` | copied |
+| 6 | `extension` | children (render) |
+| 7 | `options` | copied; `features` cleared if not editions target |
+| 8 | `oneof_decl` | inline (see below) |
+| 9 | `reserved_range` | copied |
+| 10 | `reserved_name` | copied |
+| 11 | `visibility` | copied |
+
+**`FieldDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `extendee` | copied |
+| 3 | `number` | copied |
+| 4 | `label` | `field_label_enum()` — translation-aware |
+| 5 | `type` | copied; editions DELIMITED → `TYPE_GROUP` if proto2 target |
+| 6 | `type_name` | copied |
+| 7 | `default_value` | copied if `should_render_default()` |
+| 8 | `options` | copied; `packed` set from `effective_packed`; `features` cleared if not editions target |
+| 9 | `oneof_index` | copied |
+| 10 | `json_name` | copied |
+| 17 | `proto3_optional` | copied |
+
+**`EnumDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `value` | children (render) |
+| 3 | `options` | copied; `features` cleared if not editions target |
+| 4 | `reserved_range` | copied |
+| 5 | `reserved_name` | copied |
+| 6 | `visibility` | copied |
+
+**`EnumValueDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `number` | copied |
+| 3 | `options` | copied; `features` cleared if not editions target |
+
+**`ServiceDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `method` | children (render) |
+| 3 | `options` | copied; `features` cleared if not editions target |
+
+**`MethodDescriptorProto`:**
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `input_type` | copied |
+| 3 | `output_type` | copied |
+| 4 | `options` | copied; `features` cleared if not editions target |
+| 5 | `client_streaming` | copied |
+| 6 | `server_streaming` | copied |
+
+**`OneofDescriptorProto`** (inline in `DescriptorProto` block):
+
+| # | Field | Handling |
+|---|---|---|
+| 1 | `name` | copied |
+| 2 | `options` | copied; `features` cleared if not editions target |
+
+#### 5b. Copy-then-fix strategy
+
+Each binary block uses a **copy-all-then-fix** approach:
+
+1. `new_msg.CopyFrom(self.this)` — deep-copies the entire source descriptor,
+   preserving all fields including any added in future protobuf versions.
+2. Apply semantic overrides based on `ctx.target_syntax` and the translation
+   decisions already computed for the text path:
+   - **`source_code_info`**: always cleared (`ClearField("source_code_info")`).
+   - **`syntax`/`edition`**: rewritten per `ctx.target_syntax`.
+   - **`options.features`**: cleared on all messages/fields/enums/etc. if
+     `ctx.target_syntax != "editions"`.
+   - **`label`** (field only): replaced with `field_label_enum()` result.
+   - **`type`** (field only): replaced with `TYPE_GROUP` for editions
+     `DELIMITED` + proto2 target.
+   - **`options.packed`** (field only): set from `effective_packed`.
+   - **`default_value`** (field only): cleared if `not should_render_default()`.
+3. For composite repeated children (`message_type`, `field`, `method`, etc.):
+   the `CopyFrom` base is discarded for those fields; they are re-accumulated
+   from recursive `render()` calls so that summoning/pruning decisions are
+   respected. Concretely: `new_msg.ClearField("message_type")` (etc.) then
+   re-populate via `render()` slots.
+
+This strategy is robust against future additions to `descriptor.proto`:
+new scalar/optional fields are automatically preserved by `CopyFrom`; new
+repeated child fields would need explicit handling if they carry descriptor
+nodes subject to summoning/pruning.
 
 **`ReFileDescriptorProto.render(ctx)`** — the `_set_target_syntax()` call
 already sets `ctx.target_syntax` for both paths. The binary block:
 
-- Constructs a fresh `FileDescriptorProto`.
-- Copies `name`, `package`, `dependency`, `public_dependency`,
-  `weak_dependency`.
-- Sets `syntax`/`edition` fields per `ctx.target_syntax` (proto2: leave
-  unset; proto3: set `"proto3"`; editions: copy as-is).
-- Copies `options`; if `ctx.target_syntax != "editions"`, calls
-  `ClearField("features")` on the copied options.
-- For each summoned child node, calls `render()` with a fresh `DescOut` slot,
-  reads the result, and appends to the appropriate repeated field
-  (`message_type`, `enum_type`, `service`, `extension`).
-- Does **not** copy `source_code_info`.
+- `CopyFrom(self.this)`, then `ClearField("source_code_info")`.
+- Rewrites `syntax`/`edition` per `ctx.target_syntax`.
+- Clears `options.features` if not editions target.
+- Clears `message_type`, `enum_type`, `service`, `extension`; re-populates
+  via `render()` with fresh `DescOut` slots for each summoned child.
 - Sets `ctx.out_desc.out = fdp`.
 
 **`ReDescriptorProto.render(ctx)`** — binary block:
 
-- Constructs a fresh `DescriptorProto`, copies `name`, `reserved_range`,
-  `reserved_name`, `extension_range`.
-- Copies `options`; if `ctx.target_syntax != "editions"`, calls
-  `ClearField("features")` on the copied options.
-- For each field, nested type, enum, extension, oneof: calls `render()` with
-  a fresh `DescOut` slot and appends the result.
-- Map-entry synthetic `nested_type` entries are included as-is (needed for
-  correct map wire decoding).
+- `CopyFrom(self.this)`.
+- Clears `options.features` if not editions target.
+- Clears `field`, `nested_type`, `enum_type`, `extension`, `oneof_decl`;
+  re-populates via `render()` slots. Map-entry `nested_type` entries are
+  included (needed for correct map wire decoding).
 - Sets `ctx.out_desc.out = msg`.
 
-**`ReFieldDescriptorProto.render(ctx)`** — the main translation site.
-The `field_label()`, `packed_option()`, `should_render_default()` calls
-already run for the text path; the binary block reads their results:
+**`ReFieldDescriptorProto.render(ctx)`** — the main translation site:
 
-- Constructs a fresh `FieldDescriptorProto`.
-- Copies `name`, `number`, `type_name`, `extendee`, `json_name`.
-- **Label**: calls `field_label_enum()` (new helper in `syntax.py`, same
-  logic as `field_label()` but returns the SDK integer constant).
-- **Type**: copies `self.this.type`; for editions `DELIMITED` + proto2
-  target, substitutes `TYPE_GROUP`.
-- **Packed**: writes `effective_packed` (already computed) to
-  `options.packed`.
-- **Default value**: copies `default_value` if `should_render_default()`
-  (already evaluated).
-- Copies all field options; if `ctx.target_syntax != "editions"`, calls
-  `ClearField("features")` on the copied options.
+- `CopyFrom(self.this)`.
+- **Label**: replaces with `field_label_enum()` result (translation-aware).
+- **Type**: for editions `DELIMITED` + proto2 target, replaces with `TYPE_GROUP`.
+- **Packed**: sets `options.packed` from `effective_packed`.
+- **Default value**: clears if `not should_render_default()`.
+- Clears `options.features` if not editions target.
 - Sets `ctx.out_desc.out = field_proto`.
 
 **`ReEnumDescriptorProto.render(ctx)`** / **`ReEnumValueDescriptorProto.render(ctx)`**:
 
-- Copy `self.this` fields; if `ctx.target_syntax != "editions"`, call
-  `ClearField("features")` on the copied options.
-- Set `ctx.out_desc.out`.
+- `CopyFrom(self.this)`.
+- Clears `options.features` if not editions target.
+- Clears `value`; re-populates via `render()` slots (enum only).
+- Sets `ctx.out_desc.out`.
 
 **Oneof binary output (inline in `ReDescriptorProto.render(ctx)`):**
 
-There is no separate `ReOneofDescriptorProto` class — oneofs are rendered
-inline inside `ReDescriptorProto.render()`. The binary block there handles
-oneofs: for each `oneof_decl` entry, construct a fresh `OneofDescriptorProto`,
-copy `name` and `options`; if `ctx.target_syntax != "editions"`, call
-`ClearField("features")` on the copied options; append to `msg.oneof_decl`.
+There is no separate `ReOneofDescriptorProto` class — oneofs are accumulated
+inline inside `ReDescriptorProto`'s binary block after the `CopyFrom` base has
+been applied and `oneof_decl` cleared: for each `oneof_decl` entry, construct
+a fresh `OneofDescriptorProto` via `CopyFrom`, clear `options.features` if
+not editions target, append to `msg.oneof_decl`.
 
 **`ReServiceDescriptorProto.render(ctx)`** / **`ReMethodDescriptorProto.render(ctx)`**:
 
-- Copy all fields from `self.this`; if `ctx.target_syntax != "editions"`,
-  call `ClearField("features")` on the copied options.
-- Set `ctx.out_desc.out`.
+- `CopyFrom(self.this)`.
+- Clears `options.features` if not editions target.
+- Service only: clears `method`; re-populates via `render()` slots.
+- Sets `ctx.out_desc.out`.
 
 ### 6. Replace `--emit-binary` passthrough with `ctx.out_desc` (`phases.py`)
 
@@ -378,52 +489,77 @@ it — the order within a single file's processing changes from
 (binary-write, text-render, text-write) to (render-both, binary-write,
 text-write). This has no observable effect on correctness.
 
-### 7. Replace shallow patch in `_phase_build_schema_db` with `ctx.out_desc`
+### 7. Fold schema-db FDS assembly into `_phase7_output`
 
-Current shallow patch (opt-in, semantically incorrect):
+#### Background: why `_phase_build_schema_db` cannot call `render()` directly
+
+`render()` is not a pure function of the descriptor — it reads many attributes
+from `ctx` that are only initialised by `_phase7_output` before its rendering
+loop (e.g. `ctx.fio_desc`, `ctx.meo_desc`, `ctx.svo_desc`, `ctx.pool`, …).
+Calling `render()` from `_phase_build_schema_db` — which runs as a separate
+phase with a partially-initialised context — crashes immediately on the first
+such attribute access.
+
+#### Correct design: piggyback on `_phase7_output`
+
+`_phase7_output` is the single place where `render()` is called with a
+fully-initialised context.  `--build-schema-db` piggybacks on this loop:
+for each summoned file, the same `slot = DescOut()` / `ctx.out_desc = slot` /
+`render()` call that already produces `--emit-binary` output also accumulates
+`slot.out` into a `FileDescriptorSet` for the schema-db.
+
+`--build-schema-db` without `-O` acts like `--dry-run` for `.proto` text
+output (no files written to disk), but all phases — including phase 7 — still
+run fully.  This is already the case today: `--build-schema-db` makes `-O`
+optional, whereas plain `reproto -I ...` without `-O` would fail.
+
+A new runtime-state field `ctx.schema_db_fdps: list[FileDescriptorProto]`
+(initially empty, populated only when `--build-schema-db` is active) collects
+the rendered FDPs in topological order as phase 7 runs.  After phase 7
+completes, `_phase_build_schema_db` reads from `ctx.schema_db_fdps` to
+assemble the `FileDescriptorSet`, build the scoring graph, and write outputs.
+
+#### Changes to `_phase7_output`
+
+In the per-file loop, alongside the existing `--emit-binary` slot logic:
 
 ```python
-if ctx.prost_workaround:
-    for fdp in fds.file:
-        if fdp.syntax == "editions":
-            fdp.ClearField("syntax")
-            fdp.ClearField("edition")
-            _clear_features(fdp)
-```
-
-Replace with `render()` + `ctx.out_desc`, unconditional for all files.
-When `EDITIONS_COMPAT_REQUIRED` is true, editions files are forced to proto2
-via a temporary context override:
-
-```python
-# EDITIONS_COMPAT_REQUIRED: remove forced override once prost-reflect supports editions.
-fds = FileDescriptorSet()
-for raw_fdp in ctx.pool_db_fdps:   # topological order preserved
-    re_fdp = ctx.find_file(raw_fdp.name)
-    if re_fdp is None or not re_fdp.is_summoned:
-        continue
-    syntax = fdp_syntax(re_fdp.this)
-    saved_force = ctx.force_proto2_for_editions
-    if EDITIONS_COMPAT_REQUIRED and syntax == "editions":
+slot = DescOut() if (ctx.binary or ctx.build_schema_db) else None
+# For schema-db: temporarily force proto2 for editions if required.
+saved_force = ctx.force_proto2_for_editions
+if ctx.build_schema_db and EDITIONS_COMPAT_REQUIRED:
+    from .syntax import fdp_syntax
+    if fdp_syntax(re_fdp.this) == "editions":
         ctx.force_proto2_for_editions = True
-    slot = DescOut()
-    ctx.out_desc = slot
-    re_fdp.render(ctx)   # text output discarded; binary output in slot
-    ctx.out_desc = None
-    ctx.force_proto2_for_editions = saved_force
-    if slot.out is not None:
-        fds.file.append(slot.out)
+ctx.out_desc = slot
+content = re_fdp.render(ctx)[0].flush(ctx)
+ctx.out_desc = None
+ctx.force_proto2_for_editions = saved_force
+
+if ctx.binary and slot is not None and slot.out is not None:
+    res_path.with_suffix(".pb").write_bytes(slot.out.SerializeToString())
+
+if ctx.build_schema_db and slot is not None and slot.out is not None:
+    assert isinstance(slot.out, FileDescriptorProto)
+    ctx.schema_db_fdps.append(slot.out)
 ```
 
-The iteration basis is `ctx.pool_db_fdps` (raw FDPs in topological insertion
-order), not `ctx.nodes.values()` — the current code already uses
-`ctx.pool_db_fdps` for building the `FileDescriptorSet`, so this preserves
-the existing topological ordering that prost-reflect requires.
+Topological order is preserved because `_phase7_output` already iterates
+summoned files in dependency order.
+
+#### Changes to `_phase_build_schema_db`
+
+Remove the `render()`-based FDS assembly loop entirely.  Read from
+`ctx.schema_db_fdps` instead:
+
+```python
+fds = FileDescriptorSet()
+fds.file.extend(ctx.schema_db_fdps)
+```
+
+Then continue with scoring graph construction and file writes as before.
 
 `_clear_features()` becomes dead code and is removed.
-
-The `render()` call returns `(Block, Block)` which is discarded — pyright
-will accept this silently since the return value is not assigned.
 
 ### 8. Context changes (`context.py`)
 
@@ -603,11 +739,14 @@ Files: `phases.py`.  Replace raw pool passthrough with the single `render()`
 call that populates both text and binary outputs.  Add `EDITIONS_COMPAT_REQUIRED`
 constant.  Run full test suite including `--emit-binary` paths.
 
-**Step 10 — Replace shallow patch in `_phase_build_schema_db`; remove `_clear_features()`**
+**Step 10 — Fold schema-db FDS assembly into `_phase7_output`; remove `_clear_features()`**
 
-Files: `phases.py`.  Replace the `ctx.prost_workaround` block with the
-`ctx.pool_db_fdps`-based loop using `ctx.out_desc`.  Remove `_clear_features()`.
-Run full test suite.
+Files: `phases.py`, `context.py`.  Add `ctx.schema_db_fdps` field.  In
+`_phase7_output`, extend the per-file slot logic to also accumulate into
+`ctx.schema_db_fdps` when `--build-schema-db` is active, applying the
+`EDITIONS_COMPAT_REQUIRED` proto2 override.  In `_phase_build_schema_db`,
+replace the render-based FDS assembly with `fds.file.extend(ctx.schema_db_fdps)`.
+Remove `_clear_features()`.  Run full test suite.
 
 **Step 11 — Write new tests**
 
@@ -634,4 +773,4 @@ Add unit tests for binary output correctness (editions translations) and
 
 ## Implemented in
 
-<!-- filled in after implementation -->
+2026-05-22

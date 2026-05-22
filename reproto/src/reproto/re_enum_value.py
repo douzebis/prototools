@@ -114,12 +114,9 @@ class ReEnumValueDescriptorProto:
         if ctx.out_desc is not None:
             from google.protobuf.descriptor_pb2 import EnumValueDescriptorProto as _EVDP
             val_out = _EVDP()
-            val_out.name = self.this.name
-            val_out.number = self.this.number
-            if self.this.HasField('options'):
-                val_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    val_out.options.ClearField('features')
+            val_out.CopyFrom(self.this)
+            if val_out.HasField('options') and ctx.target_syntax != "editions":
+                val_out.options.ClearField('features')
             ctx.out_desc.out = val_out
 
         return result

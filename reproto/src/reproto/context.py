@@ -128,6 +128,11 @@ class Context(Options):
         # counterpart. None (the default) means text-only output.
         self.out_desc: DescOut | None = None
 
+        # FDPs collected by _phase7_output for --build-schema-db (spec 0076 §7).
+        # Populated in topological order during the phase 7 render loop when
+        # ctx.build_schema_db is set; read by _phase_build_schema_db.
+        self.schema_db_fdps: list[FileDescriptorProto] = []
+
         # Edition feature defaults extracted from the variant's descriptor.pb
         # at startup (spec 0025). Maps feature field name -> sorted list of
         # (edition_number, value_name) pairs.

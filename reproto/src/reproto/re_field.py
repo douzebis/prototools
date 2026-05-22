@@ -473,18 +473,11 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             from .syntax import field_label_enum, should_render_default
             outer_slot = ctx.out_desc
             field_out = _FDP()
-            field_out.name = self.this.name
-            field_out.number = self.this.number
-            if self.this.type_name:
-                field_out.type_name = self.this.type_name
-            if self.this.extendee:
-                field_out.extendee = self.this.extendee
-            if self.this.json_name:
-                field_out.json_name = self.this.json_name
-            if self.this.HasField('oneof_index'):
-                field_out.oneof_index = self.this.oneof_index
-            # label
-            if not is_map_field:
+            field_out.CopyFrom(self.this)
+            # label: translation-aware (also handles map field → LABEL_REPEATED)
+            if is_map_field:
+                field_out.label = _FDP.LABEL_REPEATED
+            else:
                 field_out.label = field_label_enum(
                     ctx, self.this, is_oneof, features=field_features)
             # type: for editions DELIMITED -> proto2 group substitution
@@ -492,20 +485,16 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             if editions_grp_desc is not None and ctx.target_syntax != "editions":
                 field_out.type = _FDP.TYPE_GROUP
                 field_out.type_name = f'.{editions_grp_desc.prefix}'.rstrip('.')
-            else:
-                field_out.type = self.this.type
             # packed
             if is_packable and (has_packed or effective_packed != (ctx.syntax == "proto3")):
                 field_out.options.packed = effective_packed
-            # default value
-            if not is_map_field and should_render_default(
+            # default value: clear if not renderable
+            if is_map_field or not should_render_default(
                     ctx, self.this, features=field_features):
-                field_out.default_value = self.this.default_value
-            # options (copy then strip features if not editions target)
-            if self.this.HasField('options'):
-                field_out.options.MergeFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    field_out.options.ClearField('features')
+                field_out.ClearField('default_value')
+            # options.features: clear if not editions target
+            if field_out.HasField('options') and ctx.target_syntax != "editions":
+                field_out.options.ClearField('features')
             ctx.out_desc = outer_slot
             ctx.out_desc.out = field_out
 

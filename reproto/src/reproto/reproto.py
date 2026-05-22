@@ -240,9 +240,14 @@ def reproto(
         _phase5_reachability(ctx, seeds, topo)
         _phase6_summoning(ctx)
 
-        if out_repo is not None:
-            _phase7_output(ctx, out_repo)
-            if ctx.emit_scoring_graphs:
+        # Phase 7 runs whenever there is file output OR when --build-schema-db
+        # is active (even without -O, it needs the fully-initialised render
+        # context to accumulate ctx.schema_db_fdps).  A dummy Path is used when
+        # out_repo is None; _phase7_output skips all file writes in that case
+        # because ctx.dry_run is True.
+        if out_repo is not None or ctx.build_schema_db is not None:
+            _phase7_output(ctx, out_repo or Path('.'))
+            if ctx.emit_scoring_graphs and out_repo is not None:
                 _phase_emit_scoring_graphs(ctx, out_repo)
 
         if ctx.build_schema_db is not None:

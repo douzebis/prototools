@@ -118,17 +118,9 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
         if ctx.out_desc is not None:
             from google.protobuf.descriptor_pb2 import MethodDescriptorProto as _MDP
             method_out = _MDP()
-            method_out.name = self.this.name
-            method_out.input_type = self.this.input_type
-            method_out.output_type = self.this.output_type
-            if self.this.client_streaming:
-                method_out.client_streaming = True
-            if self.this.server_streaming:
-                method_out.server_streaming = True
-            if self.this.HasField('options'):
-                method_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    method_out.options.ClearField('features')
+            method_out.CopyFrom(self.this)
+            if method_out.HasField('options') and ctx.target_syntax != "editions":
+                method_out.options.ClearField('features')
             ctx.out_desc.out = method_out
 
         return out, inputs

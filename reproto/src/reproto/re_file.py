@@ -449,24 +449,26 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             from .context import DescOut
             outer_slot = ctx.out_desc
             fdp_out = _FDP()
-            fdp_out.name = self.this.name
-            if self.this.package:
-                fdp_out.package = self.this.package
-            fdp_out.dependency.extend(self.this.dependency)
-            fdp_out.public_dependency.extend(self.this.public_dependency)
-            fdp_out.weak_dependency.extend(self.this.weak_dependency)
-            # syntax / edition
+            fdp_out.CopyFrom(self.this)
+            # source_code_info: always omitted
+            fdp_out.ClearField('source_code_info')
+            # syntax / edition: rewrite per ctx.target_syntax
+            fdp_out.ClearField('syntax')
+            fdp_out.ClearField('edition')
             if ctx.target_syntax == "proto3":
                 fdp_out.syntax = "proto3"
             elif ctx.target_syntax == "editions":
                 fdp_out.syntax = "editions"
                 fdp_out.edition = self.this.edition
             # else proto2: leave syntax unset (protobuf convention)
-            # options
-            if self.this.HasField('options'):
-                fdp_out.options.CopyFrom(self.this.options)
-                if ctx.target_syntax != "editions":
-                    fdp_out.options.ClearField('features')
+            # options.features: clear if not editions target
+            if fdp_out.HasField('options') and ctx.target_syntax != "editions":
+                fdp_out.options.ClearField('features')
+            # children: re-accumulate via render() to respect summoning/pruning
+            fdp_out.ClearField('service')
+            fdp_out.ClearField('enum_type')
+            fdp_out.ClearField('message_type')
+            fdp_out.ClearField('extension')
             # children: services
             for s in self.service:
                 service_proto = cast(ServiceDescriptorProto, s)
