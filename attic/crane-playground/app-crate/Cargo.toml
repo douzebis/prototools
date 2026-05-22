@@ -1,0 +1,13 @@
+[package]
+name = "app-crate"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+extra = []
+
+[dependencies]
+lib-crate = { path = "../lib-crate" }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]

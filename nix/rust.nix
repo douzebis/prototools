@@ -9,19 +9,19 @@
 #
 #   src (Rust sources, fixtures/)
 #     │
-#     ├──[buildDepsOnly]──▶  depsCache  ──────────────────┐
-#     │                                                    │
-#     ├──[cargoFmt]──▶  rustFmt                            │
-#     │                                                    │
-#     ├──[cargoClippy, cargoArtifacts=depsCache]──▶  rustClippy
-#     │                                                    │
-#     ├──[cargoTest, cargoArtifacts=depsCache]──▶  rustTests
-#     │                                                    │
-#     ├──[buildPackage, cargoArtifacts=rustTests]──▶  prototext
-#     │                                                    │
-#     ├──[makePyo3Extension, cargoArtifacts=depsCache]──▶  prototextCodec
-#     ├──[makePyo3Extension, cargoArtifacts=depsCache]──▶  fdpScanLib
-#     └──[makePyo3Extension, cargoArtifacts=depsCache]──▶  scoringGraphLib
+#     ├──[buildDepsOnly]──▶  depsCache  ──────────────────────────────────┐
+#     │                                                                    │
+#     ├──[cargoFmt]──▶  rustFmt                                            │
+#     │                                                                    │
+#     ├──[cargoClippy, cargoArtifacts=depsCache]──▶  rustClippy            │
+#     │                                                                    │
+#     ├──[cargoTest, cargoArtifacts=depsCache]──▶  rustTests               │
+#     │                                                                    │
+#     ├──[buildPackage, cargoArtifacts=depsCache]──▶  prototextBare ──▶  prototext
+#     │                                                                    │
+#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextCodec  │
+#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  fdpScanLib       │
+#     └──[makePyo3Extension, cargoArtifacts=rustTests]──▶  scoringGraphLib
 
 { pkgs
 , crane
@@ -29,7 +29,8 @@
 , pythonBin
 , pythonExecutable
 , pyo3Rustflags
-, src
+, depsSrc
+, workspaceSrc
 , protoPatchPhase
 , wktRkyv ? null   # store path to wkt.rkyv; null for bare/bootstrap builds
 }:
@@ -52,13 +53,16 @@ let
   #   Carries PYO3_PYTHON and RUSTFLAGS globally so that a single depsCache
   #   covers the whole workspace including prototext_codec.
   #
-  # protocArgs: extends commonArgs for derivations that invoke protoc.
+  # protocArgs: extends commonArgs with pkgs.protobuf + protoPatchPhase.
+  #   Used by ALL derivations including depsCache, so the sandbox environment
+  #   is identical everywhere and Cargo fingerprints are stable across the chain.
+  #   (buildDepsOnly stubs build.rs so protoc is never actually invoked there.)
   #
   # Crane builds in release mode by default via configureCargoCommonVarsHook.
   # All cargo build invocations in the shellHook must pass --release explicitly.
   # ---------------------------------------------------------------------------
+  # commonArgs omits src — each derivation sets its own focused src.
   commonArgs = {
-    inherit src;
     pname             = "prototools";
     version           = "0.1.4";
     strictDeps        = true;
@@ -74,13 +78,19 @@ let
 
   # ---------------------------------------------------------------------------
   # Shared dependency cache — built once, reused by all Crane derivations.
-  # Covers the whole workspace including prototext_codec: PYO3_PYTHON and
-  # RUSTFLAGS are present in commonArgs so the pyo3 build script succeeds.
-  # buildDepsOnly stubs build.rs with a dummy source, so no patchPhase needed.
+  # Uses protocArgs (includes pkgs.protobuf) so the sandbox environment matches
+  # all consumers. buildDepsOnly stubs build.rs so protoc is never invoked, but
+  # having protobuf present prevents fingerprint mismatches that would force
+  # external deps to recompile in every downstream derivation.
+  # No patchPhase needed: dummy build.rs never calls protoc.
   # ---------------------------------------------------------------------------
-  depsCache = crane.buildDepsOnly (commonArgs // {
+  depsCache = crane.buildDepsOnly (protocArgs // {
+    src            = workspaceSrc;
     pname          = "prototools-deps";
     cargoExtraArgs = workspaceArgs;
+    # patchPhase must not run: buildDepsOnly uses dummy sources so proto
+    # fixtures are absent and protoc would fail. Override it away.
+    patchPhase     = "runHook prePatch; runHook postPatch";
   });
 
   # ---------------------------------------------------------------------------
@@ -92,10 +102,12 @@ let
   # (rustClippy, rustClippyPyo3, rustClippyScoringGraph).
   # ---------------------------------------------------------------------------
   rustFmt = crane.cargoFmt (commonArgs // {
+    src   = workspaceSrc;
     pname = "prototools-fmt";
   });
 
   rustClippy = crane.cargoClippy (protocArgs // {
+    src                  = workspaceSrc;
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
     cargoExtraArgs       = workspaceArgs;
@@ -106,6 +118,7 @@ let
   # Tests — workspace-wide, reusing depsCache.
   # ---------------------------------------------------------------------------
   rustTests = crane.cargoTest (protocArgs // {
+    src            = workspaceSrc;
     pname          = "prototools-tests";
     cargoArtifacts = depsCache;
     cargoExtraArgs = workspaceArgs;
@@ -146,13 +159,15 @@ let
   #   prototext-full → wktRkyv → reproto → prototextBare
   # ---------------------------------------------------------------------------
   prototextBare = crane.buildPackage (protocArgs // {
-    pname          = "prototext-bare";
-    cargoArtifacts = rustTests;
-    cargoExtraArgs = "--no-default-features -p prototext";
-    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-    doCheck        = false;
-    postInstall    = prototextPostInstall;
-    meta           = prototextMeta;
+    src                     = workspaceSrc;
+    pname                   = "prototext-bare";
+    cargoArtifacts          = depsCache;
+    cargoExtraArgs          = "--no-default-features -p prototext";
+    nativeBuildInputs       = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+    doCheck                 = false;
+    doInstallCargoArtifacts = true;
+    postInstall             = prototextPostInstall;
+    meta                    = prototextMeta;
   });
 
   # ---------------------------------------------------------------------------
@@ -164,8 +179,9 @@ let
   prototext =
     if wktRkyv != null then
       crane.buildPackage (protocArgs // {
+        src            = workspaceSrc;
         pname          = "prototext";
-        cargoArtifacts = rustTests;
+        cargoArtifacts = prototextBare;
         cargoExtraArgs = "--no-default-features --features wkt-db -p prototext";
         nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
         doCheck        = false;
@@ -194,8 +210,8 @@ let
   #
   # Parameters:
   #   crateName    — Cargo package name, e.g. "prototext_codec"
-  #   crateDir     — source-tree directory name, e.g. "prototext-pyo3"
-  #                  (used as CARGO_MANIFEST_DIR)
+  #   crateDir     — Nix path to the crate directory, e.g. ./prototext-pyo3
+  #                  (base name used as CARGO_MANIFEST_DIR)
   #   pyDir        — Nix path to Python package source, e.g. ./prototext-pyo3
   #   libName      — cdylib base name (from Cargo [[lib]] name), e.g.
   #                  "prototext_codec_lib" (produces lib<libName>.{so,dylib})
@@ -214,11 +230,14 @@ let
       # libExt is resolved at Nix eval time to a literal string "so" or
       # "dylib" — it looks like a bash assignment but is a Nix interpolation.
       libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
+      # crateDirName is the bare directory name used in shell commands.
+      crateDirName = baseNameOf (toString crateDir);
       ext = crane.buildPackage (commonArgs // {
+        src            = workspaceSrc;
         pname          = "${crateName}-extension";
         cargoExtraArgs = "-p ${crateName} --lib";
         doCheck        = false;
-        cargoArtifacts = depsCache;
+        cargoArtifacts = rustTests;
         # Build both the cdylib and the stub-generator binary in one invocation
         # to avoid a redundant recompile of the crate (S9).
         # The custom buildPhaseCargoCommand replaces Crane's default; we must
@@ -235,14 +254,14 @@ let
           # (pyiName), not after the Rust cdylib name (libName).
           # (The NotPresent panic in spec 0038 was caused by CARGO_MANIFEST_DIR
           # being absent, not by a dynamic linking issue.)
-          CARGO_MANIFEST_DIR="$PWD/${crateDir}" ./target/release/${postBuildBin}
+          CARGO_MANIFEST_DIR="$PWD/${crateDirName}" ./target/release/${postBuildBin}
 
           mkdir -p $out/artifacts
           # Rename lib<libName>.{so,dylib} → <libName>.so (drops the lib prefix)
           # so the Python import `from .<libName> import ...` resolves correctly.
           cp target/release/lib${libName}.${libExt} $out/artifacts/${libName}.so
           # Rename <pyiName>.pyi → <libName>.pyi to match Python import name.
-          cp ${crateDir}/${pyiName}.pyi $out/artifacts/${libName}.pyi
+          cp ${crateDirName}/${pyiName}.pyi $out/artifacts/${libName}.pyi
         '';
       });
       pkg = pythonPkgs.buildPythonPackage {
@@ -265,7 +284,7 @@ let
 
   _prototextCodecExt = makePyo3Extension {
     crateName    = "prototext_codec";
-    crateDir     = "prototext-pyo3";
+    crateDir     = ../prototext-pyo3;
     pyDir        = ../prototext-pyo3;
     libName      = "prototext_codec_lib";
     pyiName      = "prototext_codec";
@@ -274,16 +293,17 @@ let
 
   _fdpScanLibExt = makePyo3Extension {
     crateName    = "fdp_scan_extension";
-    crateDir     = "fdp-scan-pyo3";
+    crateDir     = ../fdp-scan-pyo3;
     pyDir        = ../fdp-scan-pyo3;
     libName      = "fdp_scan_lib";
     pyiName      = "fdp_scan";
     postBuildBin = "fdp_scan_post_build";
+    # no internal workspace deps
   };
 
   _scoringGraphLibExt = makePyo3Extension {
     crateName    = "scoring_graph_extension";
-    crateDir     = "scoring-graph-pyo3";
+    crateDir     = ../scoring-graph-pyo3;
     pyDir        = ../scoring-graph-pyo3;
     libName      = "scoring_graph_lib";
     pyiName      = "scoring_graph";

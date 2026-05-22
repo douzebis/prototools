@@ -8,7 +8,7 @@
 # All build logic lives in nix/rust.nix, nix/python.nix, nix/shells.nix.
 # This file:
 #   1. Pins nixpkgs and crane.
-#   2. Defines shared inputs (src, pythonBin, pyo3Rustflags, protoPatchPhase).
+#   2. Defines shared inputs (depsSrc, workspaceSrc, pythonBin, pyo3Rustflags, protoPatchPhase).
 #   3. Imports the three sub-files and wires their outputs together.
 #   4. Assembles the ci and full-tests targets.
 #   5. Exposes all public attributes.
@@ -33,23 +33,54 @@ let
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
-  # Source filtered to only what Cargo needs, keeping the hash stable when
-  # unrelated files (docs, fixtures, etc.) change.
+  # Source sets — one per granularity level, all using lib.fileset so that
+  # target/ build artefacts are naturally excluded (fileset operates on files,
+  # not directory nodes, so target/ is never in scope for mkCrateSrc).
+  #
+  # workspaceSrc still needs explicit target/ subtraction because
+  # crane.fileset.commonCargoSources ./.  admits .rs/.toml files found inside
+  # target/ (verified: 59 such files on a local build).
   # ---------------------------------------------------------------------------
-  src = builtins.path {
-    name   = "prototools-src";
-    path   = ./.;
-    # Additive filter: admit only what Cargo needs.
-    # Anything not matched (docs, Python, demo, shell-hook files, .git, …)
-    # is excluded automatically — no explicit exclusion list required.
-    # crane.filterCargoSources passes all directories, so explicitly prune
-    # target/ (build artefacts) to keep the hash stable across cargo builds.
-    filter = path: type:
-      let base = baseNameOf (toString path);
-      in base != "target" &&
-         ((crane.filterCargoSources path type) ||
-          (pkgs.lib.hasInfix "/fixtures/" path));
+
+  # depsSrc — manifest files only.
+  # NOTE: not currently used for depsCache — Crane's cargoArtifacts fingerprint
+  # matching requires depsCache to use the same src as consuming derivations
+  # (workspaceSrc).  Kept for reference / future experimentation.
+  depsSrc = pkgs.lib.fileset.toSource {
+    root   = ./.;
+    fileset = crane.fileset.cargoTomlAndLock ./.;
   };
+
+  # fixtureFilter — admits only files the Rust tests actually need from fixture
+  # directories: .pb, .proto, .yaml, .license, Cargo.lock.  Excludes .md, .py,
+  # .pyc, .gitignore, __pycache__ and other non-Rust artefacts that would
+  # otherwise pollute the hash.
+  fixtureFilter = dir: pkgs.lib.fileset.fileFilter
+    (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "yaml" || f.hasExt "license")
+    dir;
+
+  # workspaceSrc — all workspace crate sources + filtered fixture dirs, minus
+  # target/ artefact trees.  Used by rustFmt, rustClippy, rustTests.
+  workspaceSrc = pkgs.lib.fileset.toSource {
+    root   = ./.;
+    fileset = pkgs.lib.fileset.difference
+      (pkgs.lib.fileset.unions [
+        (crane.fileset.commonCargoSources ./.)
+        (fixtureFilter ./prototext/fixtures)
+        (fixtureFilter ./reproto/src/reproto/tests/fixtures)
+        (fixtureFilter ./scoring-graph/tests/fixtures)
+        (fixtureFilter ./tests/fixtures)
+      ])
+      (pkgs.lib.fileset.unions [
+        ./target
+        ./scoring-graph/target
+      ]);
+  };
+
+  # NOTE: per-crate src isolation is not feasible with a single Cargo workspace
+  # because Cargo validates all member source entry points (src/lib.rs etc.)
+  # even for unused members.  Per-crate isolation would require splitting the
+  # Cargo workspace.  See spec 0078 for details.
 
   # patchPhase shared by all Crane derivations that compile prototext.
   # Compiles the three .proto schemas into fixtures/prebuilt/ using protoc so
@@ -152,7 +183,7 @@ let
 
   rust = import ./nix/rust.nix {
     inherit pkgs crane pythonPkgs pythonBin pythonExecutable pyo3Rustflags
-            src protoPatchPhase wktRkyv;
+            depsSrc workspaceSrc protoPatchPhase wktRkyv;
   };
 
   python = import ./nix/python.nix {
