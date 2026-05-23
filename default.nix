@@ -72,8 +72,8 @@ let
         (fixtureFilter ./tests/fixtures)
       ])
       (pkgs.lib.fileset.unions [
-        ./target
-        ./scoring-graph/target
+        (pkgs.lib.fileset.maybeMissing ./target)
+        (pkgs.lib.fileset.maybeMissing ./scoring-graph/target)
       ]);
   };
 
