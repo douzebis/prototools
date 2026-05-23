@@ -1,0 +1,220 @@
+<!--
+SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+
+SPDX-License-Identifier: MIT
+-->
+
+# 0079 — Demo narrative and structure
+
+**Status:** draft
+**App:** demo
+
+---
+
+## Background
+
+The current `demo/01-tutorial.sh` is a thin replay of `docs/tutorial.md` — a
+sequence of commands with no narrative arc.  For a live presentation audience
+the script needs to tell a story: why protobufs matter, what is hidden inside a
+binary blob, and how prototools lets you see things that standard decoders
+hide.
+
+This spec also clarifies the division of responsibility between the tutorial
+and the demo.
+
+---
+
+## Division of responsibility
+
+### `docs/tutorial.md` — reference walkthrough
+
+Prose-heavy.  Every command is explained.  Covers all features systematically.
+Meant to be read at a desk, not projected.  The canonical source of truth for
+how each feature works.
+
+### `demo/01-tutorial.sh` (and any companion deck) — live presentation
+
+Audience-facing.  Punchy.  Selects a subset of tutorial material and adds
+showmanship.  Follows a narrative arc (hook → mystery → reveal → forensics).
+The demo script is the executable form of the deck: each block corresponds to
+a slide or a beat in the live presentation.
+
+The two are kept in sync: when a tutorial section changes its commands the
+demo script is updated to match.  But the demo script is allowed to omit
+sections and to reorder material for narrative effect.
+
+#### Grouping and pacing
+
+The presenter advances by hitting ENTER.  Each ENTER should correspond to one
+meaningful beat — a thought, a reveal, or a command whose output is worth
+pausing on.  Rules of thumb:
+
+- **Narrative blocks** (`# \` … `#`): one block per slide beat.  Long
+  narratives are split into two blocks so the presenter can pause mid-story.
+- **Setup commands** that produce no interesting output (e.g. `export`,
+  variable assignments, intermediate build steps) are grouped on one ENTER.
+- **Reveal commands** whose output is the point of the beat stand alone.
+- **Paired comparisons** (e.g. two `hexdump` lines) are grouped together so
+  both lines appear before the audience sees any output.
+
+#### Multi-line comment syntax
+
+Narrative text uses the `# \` continuation idiom so the runner displays the
+whole block as a single prompt entry:
+
+```
+# \
+#                                                                                \
+# --- Section title ---                                                          \
+#                                                                                \
+# Body text...                                                                   \
+#                                                                                \
+#
+```
+
+Rules:
+- First line is always bare `# \`.
+- Every continuation line starts with `#` and ends with ` \` padded to column 82
+  (80 chars of content + space + backslash).
+- Last line is bare `#` (no backslash) to close the block.
+- Empty lines within the block use bare `#` padded to column 82.
+
+---
+
+## Goals
+
+1. Add introductory material to the demo that explains why protobufs matter.
+2. Build a short "binary mystery" sequence: start from raw bytes, make them
+   meaningful step by step.
+3. Introduce descriptors through the running example, including the
+   self-referential twist (descriptors are themselves protobufs).
+4. Reorder the non-canonical / forensics section: hidden fields first (simpler),
+   OHB varint second (requires understanding varint encoding).
+5. Keep a single running example throughout — `google.type.PostalAddress` — so
+   the audience builds familiarity with one message rather than switching
+   between examples.
+
+---
+
+## Non-goals
+
+- Changing the tutorial prose or section order (the demo may reorder; the
+  tutorial stays systematic).
+- Adding new prototools features.
+- Producing a polished slide deck (that is a separate deliverable; the spec
+  covers narrative structure only).
+
+---
+
+## Quotes
+
+Three quotes to use in the intro, in recommended presentation order:
+
+**Quote 1 — the hook** (HN, 2018, anonymous ex-Googler, item 18189458):
+> "I spent 2.5 years at Google, and most of what I did was pushing one protobuf
+> from one place to another."
+
+**Quote 2 — supporting colour** (HN, 2019, anonymous, item 20132880):
+> "The harsh truth of working at Google is that in the end you are moving
+> protobufs from one place to another."
+
+**Quote 3 — the authoritative pivot** (protobuf.dev/overview, Google):
+> "Protocol buffers are the most commonly-used data format at Google.  They are
+> used extensively in inter-server communications as well as for archival
+> storage of data on disk."
+
+Recommended flow: open with Quote 1 (the cynical hook — gets a laugh), follow
+with Quote 3 (the "why it matters" pivot — reframes the story).  Quote 2 is
+available as a reinforcement if needed.  The point: protobufs aren't just
+busywork, they are the connective tissue of the infrastructure — which is
+exactly why understanding them matters.
+
+---
+
+## Specification
+
+### S1 — Introductory beat
+
+Intro text covering:
+
+- Protobufs are Google's internal data interchange format, now open-source and
+  ubiquitous: gRPC, Kubernetes, Android, Cloud APIs, and most large-scale
+  distributed systems use them.
+- They are compact (binary), self-describing (with a schema), and
+  language-neutral — which is why they became the lingua franca of
+  microservice communication.
+- Open with Quote 1 (the cynical hook), optionally followed by Quote 2 (the reinforcement).  The point: protobufs are
+  everywhere, understanding them is a basic skill for anyone debugging,
+  auditing, or operating distributed systems.
+
+### S2 — Binary mystery sequence
+
+Use `google.type.PostalAddress` as the running example throughout the demo.
+
+Steps:
+
+1. Show the raw binary of a `PostalAddress.pb` with `hexdump -C`.
+2. Decode it *without* a schema (`prototext decode` with no `--descriptor`):
+   show field numbers and wire types — meaningful structure emerges, but no
+   names.
+3. Decode it *with* the googleapis schema DB and no `--type` flag: auto-infer
+   fires, field names appear, the message becomes readable.
+4. Show the score line — explain briefly what it means.
+
+### S3 — Descriptor explainer
+
+Still using `PostalAddress`:
+
+1. Show what a descriptor *is*: a compiled `.proto` schema, serialised as a
+   binary protobuf (`FileDescriptorSet` / `FileDescriptorProto`).
+2. Reveal the self-referential twist: the descriptor format is itself defined
+   in `descriptor.proto`, so a descriptor file is a protobuf whose schema is
+   `google.protobuf.FileDescriptorSet`.
+3. Demonstrate: compile `google/type/postal_address.proto` alone (with
+   `--include_imports`) into a small `postal_address.desc`, then decode it
+   with `prototext decode` — it decodes as a `FileDescriptorSet` and shows
+   the schema for `PostalAddress` in human-readable form.  Using a small
+   self-contained descriptor keeps the output focused; the full
+   `googleapis.desc` would be distracting.
+
+### S4 — Ambiguous inference
+
+The `UsableSubnetwork` example from the existing tutorial: two types tie, the
+user must supply `--type` to resolve.  Keeps the running example theme —
+"sometimes the binary alone is not enough."
+
+### S5 — Non-canonical encodings: hidden field (forensics beat)
+
+The `PostalAddress` hidden-field example (Section 6 of tutorial):
+
+1. Show the crafted `postal_hidden.pb`.
+2. Show `protoc --decode` → only `"S3NS"` visible.
+3. Show `prototext decode` → both `organization` values in wire order, secret
+   exposed.
+4. Explanation: proto3 last-write-wins silently discards earlier occurrences.
+   This is a real steganographic / exfiltration vector.
+
+### S6 — Non-canonical encodings: OHB varint
+
+The over-hanging byte example (Section 5 of tutorial), *after* S5.  By this
+point the audience understands wire format well enough to appreciate the
+varint trick.
+
+1. Show `postal_patched.pb` — one extra byte on `revision`.
+2. `protoc --decode` / standard SDKs: silently normalise, no trace.
+3. `prototext decode -a`: `val_ohb: 1` annotation; score drops to -11.
+4. Lossless round-trip via `prototext encode` still works.
+
+### S7 — Closing beat (optional)
+
+Brief pointer to `reproto` (decompile a `FileDescriptorSet` back to `.proto`
+source) and to the editions→proto2 translation, as "there is more" material
+for the curious.
+
+---
+
+## Open questions
+
+- [[Diagrams: the old `prototext.drawio.xml` has pages for "protobuf vanilla",
+  "overhang", "interleaved", and "hidden fields" that could be adapted.
+  Decide whether to port them to the OSS repo or produce new ones.]]

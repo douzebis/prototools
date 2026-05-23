@@ -1,131 +1,152 @@
-# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# \
+#                                                                                \
+# prototools demo — narrative arc per spec 0079                                  \
+#                                                                                \
+# Usage:  ./prompt 01-tutorial.sh                                                \
+# Run from the repo root.                                                        \
+# All generated files go under ./stash/ (gitignored).                            \
+#                                                                                \
 #
-# SPDX-License-Identifier: MIT
 
-# ============================================================
-# prototools demo — follows docs/tutorial.md
-# Usage:  ./prompt 01-tutorial.sh
-# Run from the repo root.
-# All generated files go under ./stash/ (gitignored).
-# ============================================================
+# \
+#                                                                                \
+# --- S1: Protobufs are everywhere ---                                           \
+#                                                                                \
+# "I spent 2.5 years at Google, and most of what I did was pushing one protobuf  \
+#  from one place to another."                                                   \
+#   — HN, 2018, anonymous ex-Googler (item 18189458)                             \
+#                                                                                \
+# "Protocol buffers are the most commonly-used data format at Google.  They are  \
+#  used extensively in inter-server communications as well as for archival       \
+#  storage of data on disk."                                                     \
+#   — protobuf.dev/overview, Google                                              \
+#                                                                                \
+#
 
-# --- Section 1: Setup ---
+# \
+#                                                                                \
+# Protobufs are compact (binary), self-describing (with a schema), and           \
+# language-neutral — the lingua franca of microservice communication.            \
+#                                                                                \
+#
 
-# Confirm the tools are available
 prototext --version
 reproto --version
 
-# --- Section 2: Build the googleapis schema DB (one-time) ---
+# \
+#                                                                                \
+# --- S2: What's inside a protobuf? ---                                          \
+#                                                                                \
+#
 
 export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+INST=$(dirname $GOOGLEAPIS_DB)/instances
 
-# --- Section 2 (cont): Decode a sample message (auto-inference, no --type needed) ---
+hexdump -C $INST/google/type/PostalAddress.pb
+
+cat $INST/google/type/PostalAddress.pb | protoc --decode_raw
 
 prototext --descriptor $GOOGLEAPIS_DB \
     decode \
-    $(dirname $GOOGLEAPIS_DB)/instances/google/type/PostalAddress.pb
+    $INST/google/type/PostalAddress.pb
 
-# --- Section 3: Schema inference — the ambiguous case ---
+# \
+#                                                                                \
+# --- S3: Schemas are protobufs too ---                                          \
+#                                                                                \
+# A descriptor is a compiled .proto schema, serialised as a binary protobuf      \
+# (FileDescriptorSet / FileDescriptorProto).  The descriptor format is itself    \
+# defined in descriptor.proto — so a descriptor file is a protobuf whose schema  \
+# is google.protobuf.FileDescriptorSet.  Self-referential!                       \
+#                                                                                \
+#
+
+# \
+#                                                                                \
+# Demonstrate with a small self-contained descriptor for PostalAddress only.     \
+#                                                                                \
+#
+
+reproto --use-variant descriptor \
+    -O stash/googleapis-src \
+    $GOOGLEAPIS_DB
+
+protoc \
+    -Istash/googleapis-src \
+    --descriptor_set_out=stash/postal_address.pb \
+    --include_imports \
+    google/type/postal_address.proto
+
+reproto \
+    --build-schema-db=stash/postal_address.desc \
+    stash/postal_address.pb
+
+prototext --descriptor stash/postal_address.desc \
+    decode stash/postal_address.pb | head -40
+
+# \
+#                                                                                \
+# --- S4: When the binary alone isn't enough ---                                 \
+#                                                                                \
+# Sometimes the binary alone is not enough: two types tie on the score.          \
+#                                                                                \
+#
 
 prototext --descriptor $GOOGLEAPIS_DB \
     list-schemas \
-    $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
-
-# Decode with explicit type to resolve the tie
-prototext --descriptor $GOOGLEAPIS_DB \
-    decode --type google.cloud.compute.v1beta.UsableSubnetwork \
-    $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
-
-# Multi-file auto-inference: unambiguous files decoded, ambiguous ones warned
-INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB decode -O stash/decoded \
-    $INST/google/type/PostalAddress.pb \
     $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb
 
-# --- Section 4: Build a schema DB from scratch (WKT example) ---
-
-# 4a — compile WKT .proto files into a FileDescriptorSet
-PROTOC_INCLUDE=$(dirname $(which protoc))/../include
-protoc \
-    -I$PROTOC_INCLUDE \
-    --descriptor_set_out=stash/wkt.pb \
-    --include_imports \
-    google/protobuf/descriptor.proto \
-    google/protobuf/timestamp.proto \
-    google/protobuf/duration.proto \
-    google/protobuf/any.proto
-
-# 4b — build the schema DB with reproto
-reproto \
-    --build-schema-db=stash/wkt.desc \
-    stash/wkt.pb
-
-# 4c — decode the descriptor itself (self-referential: wkt.pb IS a FileDescriptorSet)
-prototext --descriptor stash/wkt.desc \
-    decode stash/wkt.pb | head -12
-
-# --- Section 5: Annotations and non-canonical encoding ---
-
-INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor $GOOGLEAPIS_DB \
-    decode -a \
-    $INST/google/type/PostalAddress.pb
+    decode --type google.cloud.compute.v1beta.UsableSubnetwork \
+    $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb
 
-# Save annotated output, then inject a non-canonical over-hanging byte
-prototext --descriptor $GOOGLEAPIS_DB \
-    decode -a \
-    $INST/google/type/PostalAddress.pb > stash/PostalAddress.textpb
+# \
+#                                                                                \
+# --- S5: The hidden field ---                                                   \
+#                                                                                \
+# proto3 last-write-wins: an earlier occurrence of an optional field is silently \
+# discarded by standard decoders.  This is a real steganographic / exfiltration  \
+# vector.  prototext decode preserves wire order and exposes all occurrences.    \
+#                                                                                \
+#
 
-# Patch: change  #@ int32 = 1  to  #@ int32 = 1; val_ohb: 1
-sed -i 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' stash/PostalAddress.textpb
-
-# Re-encode with the patched annotation
-prototext encode < stash/PostalAddress.textpb > stash/postal_patched.pb
-
-# Compare first bytes: canonical vs patched (81 00 instead of 01)
-hexdump -C $INST/google/type/PostalAddress.pb | head -1
-hexdump -C stash/postal_patched.pb | head -1
-
-# Decode the patched file — val_ohb is preserved, score reflects non-canonical byte
-prototext --descriptor $GOOGLEAPIS_DB \
-    decode -a \
-    stash/postal_patched.pb | head -6
-
-# --- Section 6: Hidden fields ---
-
-# Craft a binary with a secret value hidden in a duplicate optional field.
-# The secret is inserted BEFORE the legitimate value, so last-write-wins
-# decoders silently overwrite it and see only "S3NS".
-INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   > stash/postal_hidden.textpb
-
 prototext encode < stash/postal_hidden.textpb > stash/postal_hidden.pb
 
-# protoc sees only the last (innocent) value
 protoc --proto_path stash/googleapis-src \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
   < stash/postal_hidden.pb
 
-# prototext decode exposes both occurrences in wire order
 prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
 
-# --- Section 7: Lossless round-trip ---
+# \
+#                                                                                \
+# --- S6: The invisible byte ---                                                 \
+#                                                                                \
+# One extra byte on a varint field: standard decoders silently normalise it,     \
+# leaving no trace.  prototext decode -a annotates it; score drops to -11.       \
+# Lossless round-trip via prototext encode still works.                          \
+#                                                                                \
+#
 
-# Canonical binary round-trips byte-exact through decode -a | encode
-INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
-    $INST/google/type/PostalAddress.pb \
-  | prototext encode \
-  | diff - $INST/google/type/PostalAddress.pb \
-  && echo byte-exact
+    $INST/google/type/PostalAddress.pb > stash/PostalAddress.textpb
+sed -i 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' stash/PostalAddress.textpb
+prototext encode < stash/PostalAddress.textpb > stash/postal_patched.pb
 
-# Non-canonical binary also round-trips byte-exact
+hexdump -C $INST/google/type/PostalAddress.pb | head -1
+hexdump -C stash/postal_patched.pb | head -1
+
+prototext --descriptor $GOOGLEAPIS_DB \
+    decode -a \
+    stash/postal_patched.pb | head -6
+
 prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
@@ -133,33 +154,14 @@ prototext --descriptor $GOOGLEAPIS_DB \
   | diff - stash/postal_patched.pb \
   && echo byte-exact
 
-# --- Section 8: Decompile binary descriptors with reproto ---
+# \
+#                                                                                \
+# --- S7: There is more ---                                                      \
+#                                                                                \
+# reproto decompiles any FileDescriptorSet back to .proto source.                \
+# (The S3a step above already showed this for googleapis.desc.)                  \
+# It can also translate editions-syntax descriptors to proto2 output.            \
+#                                                                                \
+#
 
-reproto --use-variant descriptor \
-    -O stash/googleapis-src \
-    $GOOGLEAPIS_DB
-
-# Inspect a reconstructed file
 cat stash/googleapis-src/google/protobuf/timestamp.proto
-
-# --- Section 9: Translate editions descriptor to proto2 ---
-
-# Compile the editions fixture to a descriptor set
-protoc \
-    --descriptor_set_out=stash/editions_rendering.pb \
-    --include_imports \
-    -Ireproto/src/reproto/tests/fixtures \
-    reproto/src/reproto/tests/fixtures/editions_rendering.proto
-
-# Reconstruct as editions (default — no flag)
-reproto --use-variant descriptor \
-    --output-root=stash/out_editions \
-    stash/editions_rendering.pb
-cat stash/out_editions/editions_rendering.proto
-
-# Reconstruct as proto2 (--force-proto2-output)
-reproto --use-variant descriptor \
-    --force-proto2-output \
-    --output-root=stash/out_proto2 \
-    stash/editions_rendering.pb
-cat stash/out_proto2/editions_rendering.proto
