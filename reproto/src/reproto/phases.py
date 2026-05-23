@@ -1162,6 +1162,40 @@ def _phase6_summoning(ctx: Context) -> None:
                         changed = True
 
 
+    # --- Sub-pass 3: DB dependency closure (only when --build-schema-db) ------
+    # Identify fallback/WKT files that are transitive dependencies of summoned
+    # files but not themselves summoned.  Collect them into
+    # ctx.schema_db_extra_nodes for later binary rendering inside
+    # _phase_build_schema_db.  Do NOT modify is_summoned or is_reachable here —
+    # phase 7 must run unmodified.
+    if ctx.build_schema_db:
+        from .re_file import ReFileDescriptorProto as _ReFileFDP
+        from .fake_types import Ref as _Ref
+
+        seen: set[str] = {
+            node.name for node in ctx.nodes.values()
+            if isinstance(node, _ReFileFDP) and node.is_summoned
+        }
+        work: list[_ReFileFDP] = [
+            node for node in ctx.nodes.values()
+            if isinstance(node, _ReFileFDP) and node.is_summoned
+        ]
+        while work:
+            file_node = work.pop()
+            for dep_name in file_node.dependency:
+                if dep_name in seen:
+                    continue
+                seen.add(dep_name)
+                fqdn = _ReFileFDP.fqdn_from_ref(_Ref(dep_name))
+                dep_node = ctx.find_node(fqdn)
+                if dep_node is None or not isinstance(dep_node, _ReFileFDP):
+                    continue
+                if not dep_node.is_present() or dep_node.is_pruned:
+                    continue
+                ctx.schema_db_extra_nodes.append(dep_node)
+                work.append(dep_node)
+
+
 def _phase7_output(ctx: Context, out_repo: Path) -> None:
     """Phase 7: Generate and write reconstructed .proto files."""
     if not ctx.quiet:
@@ -1357,6 +1391,45 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     # ctx.schema_db_fdps was populated during phase 7's render loop.  The loop
     # iterates ctx.nodes in insertion order, which is not guaranteed topological.
     # pool.Add() requires dependencies before dependents, so sort first.
+
+    # ── 3b. Render binary FDPs for WKT/fallback dependencies (spec 0080) ──────
+    #
+    # ctx.schema_db_extra_nodes was populated by phase 6 sub-pass 3.  These
+    # nodes are transitive dependencies of summoned files but were not rendered
+    # by phase 7 (they were not summoned).  Promote them now, render their
+    # binary FDPs, and append to ctx.schema_db_fdps so the DB is self-contained.
+    # Phase 7 is complete at this point so promoting is_summoned here is safe.
+    from .context import DescOut as _DescOut
+    from .syntax import fdp_syntax as _fdp_syntax
+
+    def _promote_subtree(node: Node) -> None:
+        """Promote node and all contains-descendants to summoned+reachable."""
+        stack: list[Node] = [node]
+        while stack:
+            n = stack.pop()
+            n.is_summoned = True
+            n.is_reachable = True
+            for child in n.contains:
+                stack.append(child)
+
+    for extra_node in ctx.schema_db_extra_nodes:
+        _promote_subtree(extra_node)
+        saved_force = ctx.force_proto2_for_editions
+        if EDITIONS_COMPAT_REQUIRED and _fdp_syntax(extra_node.this) == "editions":
+            ctx.force_proto2_for_editions = True
+        slot = _DescOut()
+        ctx.out_desc = slot
+        try:
+            extra_node.render(ctx)
+        except (KeyError, ValueError, TypeError, AttributeError):
+            pass
+        finally:
+            ctx.out_desc = None
+            ctx.force_proto2_for_editions = saved_force
+        if slot.out is not None:
+            assert isinstance(slot.out, FileDescriptorProto)
+            ctx.schema_db_fdps.append(slot.out)
+
     fdp_by_name = {f.name: f for f in ctx.schema_db_fdps}
     # Kahn's algorithm: process files whose deps are already placed.
     in_set: set[str] = set()

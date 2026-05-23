@@ -774,3 +774,12 @@ Add unit tests for binary output correctness (editions translations) and
 ## Implemented in
 
 2026-05-22
+
+---
+
+## Follow-up
+
+The workarounds introduced alongside this spec (`write_variant_descriptor=True`
+and `keep_variant_descriptor=True` forced by `--build-schema-db`, commits
+`260f81d` and `4c9f111`) were reverted and superseded by spec 0080, which adds
+a proper WKT dependency-closure step inside `_phase_build_schema_db`.

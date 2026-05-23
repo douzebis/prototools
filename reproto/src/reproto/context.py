@@ -133,6 +133,12 @@ class Context(Options):
         # ctx.build_schema_db is set; read by _phase_build_schema_db.
         self.schema_db_fdps: list[FileDescriptorProto] = []
 
+        # WKT/fallback nodes identified by phase 6 sub-pass 3 (spec 0080).
+        # These are transitive dependencies of summoned files that were not
+        # summoned themselves.  _phase_build_schema_db promotes and renders
+        # them after phase 7 to complete the schema DB.
+        self.schema_db_extra_nodes: list[Any] = []
+
         # Edition feature defaults extracted from the variant's descriptor.pb
         # at startup (spec 0025). Maps feature field name -> sorted list of
         # (edition_number, value_name) pairs.
