@@ -19,7 +19,7 @@ reproto --version
 
 export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
 
-# --- Section 2: Decode a sample message (auto-inference, no --type needed) ---
+# --- Section 2 (cont): Decode a sample message (auto-inference, no --type needed) ---
 
 prototext --descriptor $GOOGLEAPIS_DB \
     decode \
@@ -91,7 +91,30 @@ prototext --descriptor $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb | head -6
 
-# --- Section 6: Lossless round-trip ---
+# --- Section 6: Hidden fields ---
+
+# Craft a binary with a secret value hidden in a duplicate optional field.
+# The secret is inserted BEFORE the legitimate value, so last-write-wins
+# decoders silently overwrite it and see only "S3NS".
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB \
+    decode -a \
+    $INST/google/type/PostalAddress.pb \
+  | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
+  > stash/postal_hidden.textpb
+
+prototext encode < stash/postal_hidden.textpb > stash/postal_hidden.pb
+
+# protoc sees only the last (innocent) value
+protoc --proto_path stash/googleapis-src \
+    --decode google.type.PostalAddress \
+    google/type/postal_address.proto \
+  < stash/postal_hidden.pb
+
+# prototext decode exposes both occurrences in wire order
+prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
+
+# --- Section 7: Lossless round-trip ---
 
 # Canonical binary round-trips byte-exact through decode -a | encode
 INST=$(dirname $GOOGLEAPIS_DB)/instances
@@ -110,7 +133,7 @@ prototext --descriptor $GOOGLEAPIS_DB \
   | diff - stash/postal_patched.pb \
   && echo byte-exact
 
-# --- Section 7: Decompile binary descriptors with reproto ---
+# --- Section 8: Decompile binary descriptors with reproto ---
 
 reproto --use-variant descriptor \
     -O stash/googleapis-src \
@@ -119,7 +142,7 @@ reproto --use-variant descriptor \
 # Inspect a reconstructed file
 cat stash/googleapis-src/google/protobuf/timestamp.proto
 
-# --- Section 8: Translate editions descriptor to proto2 ---
+# --- Section 9: Translate editions descriptor to proto2 ---
 
 # Compile the editions fixture to a descriptor set
 protoc \

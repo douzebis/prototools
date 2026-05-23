@@ -135,8 +135,10 @@ prototext --descriptor $GOOGLEAPIS_DB \
 ```
 - path: …/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
   types:
-  - google.cloud.compute.v1.UsableSubnetwork
-  - google.cloud.compute.v1beta.UsableSubnetwork
+  - type: google.cloud.compute.v1.UsableSubnetwork
+    score: 7
+  - type: google.cloud.compute.v1beta.UsableSubnetwork
+    score: 7
 ```
 
 Two types tie.  In this case the tie is unsurprising: `v1` and `v1beta` differ
@@ -169,8 +171,10 @@ prototext --descriptor $GOOGLEAPIS_DB decode -O stash/decoded \
 warning: type inference issues:
 - path: …/UsableSubnetwork.pb
   types:
-  - google.cloud.compute.v1.UsableSubnetwork
-  - google.cloud.compute.v1beta.UsableSubnetwork
+  - type: google.cloud.compute.v1.UsableSubnetwork
+    score: 7
+  - type: google.cloud.compute.v1beta.UsableSubnetwork
+    score: 7
 ```
 
 `PostalAddress.pb` was decoded successfully (written to `stash/decoded/`);
@@ -266,7 +270,7 @@ language_code: "fr"  #@ string = 3
 
 Each `#@ wire_type = field_number` annotation records the wire type and field
 number seen on the wire.  This extra information is what makes lossless
-round-tripping possible (see Section 6).
+round-tripping possible (see Section 7).
 
 **Non-canonical encoding.**  The protobuf wire format allows several kinds of
 non-canonical encoding that are semantically equivalent but byte-for-byte
@@ -343,7 +347,72 @@ and scored, not silently discarded.
 
 ---
 
-## Section 6 — Lossless round-trip and `prototext encode`
+## Section 6 — Hidden fields
+
+The protobuf wire format allows a field to appear more than once in a message,
+even when the schema declares it `optional`.  Standard decoders follow the
+proto3 rule: last value wins, earlier occurrences are silently discarded.  This
+is exploitable: an attacker can prepend a secret value to an optional field;
+every ordinary decoder sees only the innocuous final value, and the secret is
+invisible.
+
+**Craft a binary with a hidden `organization` field.**  Start from the annotated
+`PostalAddress.pb` and insert a second occurrence of field 11 (`organization`)
+*before* the legitimate value, then re-encode:
+
+```
+INST=$(dirname $GOOGLEAPIS_DB)/instances
+prototext --descriptor $GOOGLEAPIS_DB \
+    decode -a \
+    $INST/google/type/PostalAddress.pb \
+  | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
+  > stash/postal_hidden.textpb
+
+prototext encode < stash/postal_hidden.textpb > stash/postal_hidden.pb
+```
+
+**What `protoc --decode` sees** (uses `stash/googleapis-src` produced in
+Section 8; if you are following the tutorial in order, skip this step and return
+to it after completing Section 8):
+
+```
+protoc --proto_path stash/googleapis-src \
+    --decode google.type.PostalAddress \
+    google/type/postal_address.proto \
+  < stash/postal_hidden.pb
+```
+
+```
+revision: 1
+organization: "S3NS"
+address_lines: "Patchwork Montholon"
+…
+```
+
+The secret value is gone.  `protoc` — and any ordinary protobuf SDK — applies
+last-write-wins and returns only `"S3NS"`.
+
+**What `prototext decode` sees:**
+
+```
+prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
+```
+
+```
+# Type: google.type.PostalAddress
+# Score: 9  (matched: 9, unknown: 0, mismatches: 0, non_canonical: 0)
+
+organization: "Entrance secret PIN code: 666*"
+organization: "S3NS"
+address_lines: "Patchwork Montholon"
+…
+```
+
+Both occurrences are preserved in wire order.  The hidden value is exposed.
+
+---
+
+## Section 7 — Lossless round-trip and `prototext encode`
 
 Annotations make lossless round-tripping possible.  Pipe annotated output
 through `prototext encode` and compare with the original:
@@ -386,7 +455,7 @@ through `prototext encode`.
 
 ---
 
-## Section 7 — Decompile binary descriptors with `reproto`
+## Section 8 — Decompile binary descriptors with `reproto`
 
 `reproto` can reverse a `.pb` FileDescriptorSet back into `.proto` source.
 Use the googleapis descriptor itself as a demonstration.
@@ -436,7 +505,7 @@ a descriptor has been extracted from a Go, Java, or Python binary by other means
 
 ---
 
-## Section 8 — Translating editions descriptors to proto2
+## Section 9 — Translating editions descriptors to proto2
 
 Some toolchains (e.g. prost-reflect as of 2026) do not yet support the
 editions syntax introduced in protobuf 27.  `reproto --force-proto2-output`

@@ -55,3 +55,16 @@ def rendering_progress(total: int) -> Generator[Callable[[], None], None, None]:
     ) as progress:
         task = progress.add_task("Rendering", total=total)
         yield lambda: progress.advance(task)  # type: ignore[misc]
+
+
+@contextmanager
+def spinning(label: str) -> Generator[None, None, None]:
+    """Context manager that shows a spinner for an indeterminate blocking step.
+
+    Suppressed when stderr is not a TTY (piped/redirected output).
+    """
+    if not console.is_terminal:
+        yield
+        return
+    with console.status(label, spinner="dots"):
+        yield

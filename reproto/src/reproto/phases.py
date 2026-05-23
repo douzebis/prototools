@@ -1266,6 +1266,9 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     YAML content is generated in-memory from the same logic as
     _phase_emit_scoring_graphs; no intermediate files are written to disk.
     """
+    if not ctx.quiet:
+        cli_info('Building schema DB')
+
     import yaml
     from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
@@ -1345,7 +1348,9 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             f'--build-schema-db requires the scoring_graph_lib extension: {e}'
         ) from e
 
-    baked_graph, _yaml = build_graph(scoring_graphs=scoring_graphs)
+    from .lib.console import spinning
+    with spinning('Compiling scoring graph'):
+        baked_graph, _yaml = build_graph(scoring_graphs=scoring_graphs)
 
     # ── 3. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
     #
