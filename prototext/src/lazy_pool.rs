@@ -191,31 +191,47 @@ impl LazyPool {
         Ok(())
     }
 
-    /// Ensure the FDP defining `fqdn` and all its transitive deps are in the
-    /// pool, then return the `MessageDescriptor`.
+    /// Resolve `fqdn` to the filename that defines it: index first, WKT fallback second.
+    fn resolve_file(&self, fqdn: &str) -> Option<String> {
+        if let Some(f) = self.index.type_to_file.get(fqdn) {
+            return Some(f.as_str().to_owned());
+        }
+        self.wkt_fdps
+            .iter()
+            .find(|(_, fdp)| {
+                let pkg = fdp.package();
+                let prefixed = |name: &str| {
+                    if pkg.is_empty() {
+                        name.to_owned()
+                    } else {
+                        format!("{pkg}.{name}")
+                    }
+                };
+                fdp.message_type.iter().any(|m| prefixed(m.name()) == fqdn)
+                    || fdp.enum_type.iter().any(|e| prefixed(e.name()) == fqdn)
+            })
+            .map(|(fname, _)| fname.clone())
+    }
+
     pub fn get_message(
         &mut self,
         fqdn: &str,
     ) -> Result<Option<MessageDescriptor>, Box<dyn std::error::Error>> {
         let fqdn = fqdn.trim_start_matches('.');
-        let file = match self.index.type_to_file.get(fqdn) {
-            Some(f) => f.as_str().to_owned(),
-            None => return Ok(None),
+        let Some(file) = self.resolve_file(fqdn) else {
+            return Ok(None);
         };
         self.ensure_loaded(&file)?;
         Ok(self.pool.get_message_by_name(fqdn))
     }
 
-    /// Ensure the FDP defining `fqdn` and all its transitive deps are in the
-    /// pool, then return the `EnumDescriptor`.
     pub fn get_enum(
         &mut self,
         fqdn: &str,
     ) -> Result<Option<EnumDescriptor>, Box<dyn std::error::Error>> {
         let fqdn = fqdn.trim_start_matches('.');
-        let file = match self.index.type_to_file.get(fqdn) {
-            Some(f) => f.as_str().to_owned(),
-            None => return Ok(None),
+        let Some(file) = self.resolve_file(fqdn) else {
+            return Ok(None);
         };
         self.ensure_loaded(&file)?;
         Ok(self.pool.get_enum_by_name(fqdn))
