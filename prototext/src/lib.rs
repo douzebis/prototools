@@ -151,6 +151,12 @@ pub enum Command {
         #[arg(short = 'a', long)]
         annotations: bool,
 
+        /// Add individual score dimensions (matched, unknown, mismatches,
+        /// non_canonical) to the ambiguous-type warning YAML.
+        /// Only effective when type inference is ambiguous.
+        #[arg(long = "detailed-score")]
+        detailed_score: bool,
+
         /// Root directory for output files in batch mode (exclusive with
         /// --output and --in-place).
         #[arg(
@@ -207,6 +213,11 @@ pub enum Command {
         /// When absent or 0, only entries tying at the highest score are printed.
         #[arg(long = "top", value_name = "N")]
         top: Option<usize>,
+
+        /// Add individual score dimensions (matched, unknown, mismatches,
+        /// non_canonical) alongside the consolidated score for each type.
+        #[arg(long = "detailed-score")]
+        detailed_score: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

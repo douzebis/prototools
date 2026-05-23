@@ -372,7 +372,8 @@ EOF
     # that is independent of the OS random source.
     MANDATORY=$(grep '^\s*- ' "$TYPES_YAML" | sed 's/^\s*- //')
     # Full type list from the DB (empty protobuf matches everything).
-    ALL=$(printf "" | prototext --descriptor "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - ' | sed 's/^  - //')
+    # list-schemas now emits YAML with "  - type: <fqdn>" lines.
+    ALL=$(printf "" | prototext --descriptor "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - type: ' | sed 's/^  - type: //')
     # Already-instantiated types (phase 1 + mandatory) — don't overwrite.
     ALREADY=$(find "$out/instances" -name "*.pb" | sed "s|$out/instances/||;s|\.pb$||;s|/|.|g")
     N_MANDATORY=$(echo "$MANDATORY" | wc -l)

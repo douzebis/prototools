@@ -143,10 +143,11 @@ def list_schemas_results(
     )
 
     # Parse YAML: list of {path, types} dicts.
+    # Each types entry is {type: <fqdn>, score: N, ...}.
     raw = yaml.safe_load(ls.stdout) or []
     results: dict[str, list[str]] = {}
     for entry, item in zip(_TYPE_ENTRIES, raw):
-        results[entry.fqdn] = item.get("types") or []
+        results[entry.fqdn] = [t["type"] for t in (item.get("types") or [])]
     return results
 
 

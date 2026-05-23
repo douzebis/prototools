@@ -163,9 +163,9 @@ pub struct InferredType {
 pub enum InferOutcome {
     /// A unique winner was found.
     Unique(InferredType),
-    /// Multiple types tied at the top score; contains the tied FQDNs
+    /// Multiple types tied at the top score; contains the tied entries
     /// (lexicographically sorted, capped at MAX_AMBIGUOUS_TYPES).
-    Ambiguous(Vec<String>),
+    Ambiguous(Vec<InferredType>),
 }
 
 /// Score `pb_bytes` against `graph` and return the inference outcome,
@@ -206,10 +206,20 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferOutcome, 
         .collect();
 
     if tied.len() > 1 {
-        let mut names: Vec<String> = tied.iter().map(|r| r.fqdn.clone()).collect();
-        names.sort();
-        names.truncate(MAX_AMBIGUOUS_TYPES);
-        return Ok(InferOutcome::Ambiguous(names));
+        let mut ambiguous: Vec<InferredType> = tied
+            .iter()
+            .map(|r| InferredType {
+                fqdn: r.fqdn.clone(),
+                score: r.score(),
+                matches: r.matches,
+                unknowns: r.unknowns,
+                mismatches: r.mismatches,
+                non_canonical: r.non_canonical,
+            })
+            .collect();
+        ambiguous.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
+        ambiguous.truncate(MAX_AMBIGUOUS_TYPES);
+        return Ok(InferOutcome::Ambiguous(ambiguous));
     }
 
     let winner = &non_vetoed[0];
@@ -239,6 +249,20 @@ fn inferred_header(inferred: &InferredType) -> String {
         inferred.mismatches,
         inferred.non_canonical,
     )
+}
+
+/// Write a YAML type-entry block (used by both `InferFailureReporter` and
+/// `list_schemas_one`).  When `detailed_score` is true the four sub-dimensions
+/// are included; otherwise only `type` and `score` are emitted.
+fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_score: bool) {
+    let _ = writeln!(w, "{indent}- type: {}", t.fqdn);
+    let _ = writeln!(w, "{indent}  score: {}", t.score);
+    if detailed_score {
+        let _ = writeln!(w, "{indent}  matched: {}", t.matches);
+        let _ = writeln!(w, "{indent}  unknown: {}", t.unknowns);
+        let _ = writeln!(w, "{indent}  mismatches: {}", t.mismatches);
+        let _ = writeln!(w, "{indent}  non_canonical: {}", t.non_canonical);
+    }
 }
 
 // ── Per-file processing ───────────────────────────────────────────────────────
@@ -301,6 +325,7 @@ pub fn list_schemas_one(
     graph: &LoadedGraph,
     path_label: &str,
     top: Option<usize>,
+    detailed_score: bool,
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let binary_buf;
@@ -343,18 +368,24 @@ pub fn list_schemas_one(
         }
     };
 
-    #[derive(Serialize)]
-    struct Entry<'a> {
-        path: &'a str,
-        types: Vec<&'a str>,
+    let entries: Vec<InferredType> = to_print
+        .iter()
+        .map(|r| InferredType {
+            fqdn: r.fqdn.clone(),
+            score: r.score(),
+            matches: r.matches,
+            unknowns: r.unknowns,
+            mismatches: r.mismatches,
+            non_canonical: r.non_canonical,
+        })
+        .collect();
+
+    writeln!(out, "- path: {path_label}").map_err(|e| format!("writing list: {}", e))?;
+    writeln!(out, "  types:").map_err(|e| format!("writing list: {}", e))?;
+    for t in &entries {
+        write_type_entry(out, "  ", t, detailed_score);
     }
-    let entry = Entry {
-        path: path_label,
-        types: to_print.iter().map(|r| r.fqdn.as_str()).collect(),
-    };
-    let yaml = serde_yaml::to_string(&[entry]).map_err(|e| format!("serializing YAML: {}", e))?;
-    out.write_all(yaml.as_bytes())
-        .map_err(|e| format!("writing list: {}", e))
+    Ok(())
 }
 
 // ── Top-level run ─────────────────────────────────────────────────────────────
@@ -370,6 +401,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             in_place,
             assume_binary,
             annotations,
+            detailed_score,
             output_root: cmd_output_root,
             paths,
         } => {
@@ -398,6 +430,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 in_place,
                 assume_binary,
                 effective_annotations,
+                detailed_score,
                 cli.strict,
                 &cli.output,
                 output_root.as_ref(),
@@ -427,7 +460,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
         }
 
         // ── list-schemas ──────────────────────────────────────────────────────
-        Command::ListSchemas { top, paths } => {
+        Command::ListSchemas {
+            top,
+            detailed_score,
+            paths,
+        } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
                 if cli.descriptor.is_some() {
                     "list-schemas requires a DB-backed descriptor \
@@ -437,7 +474,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      or a wkt-db-enabled build"
                 }
             })?;
-            run_list_schemas(graph, top, &cli.input_root, &paths)
+            run_list_schemas(graph, top, detailed_score, &cli.input_root, &paths)
         }
 
         // ── instantiate-schema ────────────────────────────────────────────────
@@ -544,6 +581,7 @@ fn run_decode(
     in_place: bool,
     assume_binary: bool,
     annotations: bool,
+    detailed_score: bool,
     strict: bool,
     output: &Option<PathBuf>,
     output_root: Option<&PathBuf>,
@@ -589,7 +627,7 @@ fn run_decode(
             match infer_type(&data, graph)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
-                    rep.report_ambiguous("<stdin>", &tied);
+                    rep.report_ambiguous("<stdin>", &tied, detailed_score);
                     std::process::exit(if strict { 1 } else { 0 });
                 }
                 InferOutcome::Unique(inferred) => {
@@ -628,7 +666,7 @@ fn run_decode(
             match infer_type(&data, graph)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
-                    rep.report_ambiguous(&f.abs.display().to_string(), &tied);
+                    rep.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score);
                     std::process::exit(if strict { 1 } else { 0 });
                 }
                 InferOutcome::Unique(inferred) => {
@@ -663,6 +701,7 @@ fn run_decode(
             all_files,
             assume_binary,
             annotations,
+            detailed_score,
             strict,
             in_place,
             output_root,
@@ -733,6 +772,7 @@ fn run_encode(
 fn run_list_schemas(
     graph: &LoadedGraph,
     top: Option<usize>,
+    detailed_score: bool,
     input_root: &Option<PathBuf>,
     paths: &[String],
 ) -> Result<(), String> {
@@ -747,7 +787,7 @@ fn run_list_schemas(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        return list_schemas_one(&data, graph, "<stdin>", top, &mut out);
+        return list_schemas_one(&data, graph, "<stdin>", top, detailed_score, &mut out);
     }
 
     let all_files = expand_all_paths(paths, &base)?;
@@ -755,7 +795,7 @@ fn run_list_schemas(
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
         let label = f.abs.display().to_string();
-        list_schemas_one(&data, graph, &label, top, &mut out)?;
+        list_schemas_one(&data, graph, &label, top, detailed_score, &mut out)?;
     }
     Ok(())
 }
@@ -900,13 +940,14 @@ impl InferFailureReporter {
         }
     }
 
-    fn report_ambiguous(&mut self, path: &str, tied: &[String]) {
+    fn report_ambiguous(&mut self, path: &str, tied: &[InferredType], detailed_score: bool) {
         self.ensure_heading();
         self.had_warning = true;
-        eprintln!("- path: {path}");
-        eprintln!("  types:");
-        for fqdn in tied {
-            eprintln!("  - {fqdn}");
+        let mut stderr = io::stderr();
+        let _ = writeln!(stderr, "- path: {path}");
+        let _ = writeln!(stderr, "  types:");
+        for t in tied {
+            write_type_entry(&mut stderr, "  ", t, detailed_score);
         }
     }
 
@@ -943,6 +984,7 @@ fn run_batch_infer(
     all_files: Vec<InputFile>,
     assume_binary: bool,
     annotations: bool,
+    detailed_score: bool,
     strict: bool,
     in_place: bool,
     output_root: Option<&PathBuf>,
@@ -984,7 +1026,7 @@ fn run_batch_infer(
         match infer_type(&data, graph) {
             Err(e) => reporter.report_error(&f.abs.display().to_string(), &e),
             Ok(InferOutcome::Ambiguous(tied)) => {
-                reporter.report_ambiguous(&f.abs.display().to_string(), &tied)
+                reporter.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score)
             }
             Ok(InferOutcome::Unique(inferred)) => successes.push((f, data, inferred)),
         }
