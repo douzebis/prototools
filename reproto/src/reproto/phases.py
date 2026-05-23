@@ -1261,8 +1261,8 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 ctx.out_desc = None
                 ctx.force_proto2_for_editions = saved_force
 
-                # Write binary (.pb) if requested
-                if ctx.binary and slot is not None and slot.out is not None:
+                # Write binary (.pb) if requested (skipped in dry-run mode)
+                if ctx.binary and not ctx.dry_run and slot is not None and slot.out is not None:
                     assert isinstance(slot.out, FileDescriptorProto)
                     try:
                         res_path.with_suffix(".pb").write_bytes(

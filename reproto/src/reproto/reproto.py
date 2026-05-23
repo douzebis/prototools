@@ -242,11 +242,15 @@ def reproto(
 
         # Phase 7 runs whenever there is file output OR when --build-schema-db
         # is active (even without -O, it needs the fully-initialised render
-        # context to accumulate ctx.schema_db_fdps).  A dummy Path is used when
-        # out_repo is None; _phase7_output skips all file writes in that case
-        # because ctx.dry_run is True.
+        # context to accumulate ctx.schema_db_fdps).  When out_repo is None
+        # (schema-DB-only mode, no -O given), force dry_run so phase 7 renders
+        # FDPs into ctx.schema_db_fdps without writing any .proto files to disk.
         if out_repo is not None or ctx.build_schema_db is not None:
+            saved_dry_run = ctx.dry_run
+            if out_repo is None:
+                ctx.dry_run = True
             _phase7_output(ctx, out_repo or Path('.'))
+            ctx.dry_run = saved_dry_run
             if ctx.emit_scoring_graphs and out_repo is not None:
                 _phase_emit_scoring_graphs(ctx, out_repo)
 
