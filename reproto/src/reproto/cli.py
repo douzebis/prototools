@@ -582,7 +582,7 @@ def main(
         variant_root=variant['variant_root'],
         variant_stem=variant['variant_stem'],
         variant_annotation_modules=variant['variant_annotation_modules'],
-        write_variant_descriptor=emit_descriptor,
+        write_variant_descriptor=emit_descriptor or build_schema_db is not None,
         dry_run=dry_run,
         go_root=go_root,
         graph=graph,
