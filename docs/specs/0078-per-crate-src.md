@@ -4,10 +4,10 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# 0078 — Nix/Crane build system: dep-cache reuse and precise source sets
+# 0078 — Nix/Crane build system: dep-cache reuse
 
-**Status:** partially implemented
-**Implemented in:** 2026-05-22 (dep-cache reuse fix); per-crate src pending
+**Status:** implemented
+**Implemented in:** 2026-05-22
 **App:** nix
 
 ---
@@ -28,8 +28,8 @@ supposed to cache them.  The same `depsCache` was reused correctly by
 `rustTests` and the PyO3 extensions, so the failure was specific to the prototext
 binary derivations.
 
-This spec documents the correct root-cause analysis of that failure, the fix
-applied, and the remaining open work (precise per-crate source sets).
+This spec documents the correct root-cause analysis of that failure and the fix
+applied.
 
 ---
 
@@ -161,16 +161,19 @@ long as the Cargo fingerprints match.  The dep recompilation was happening
 because fingerprints did **not** match, for the feature/profile reasons above,
 entirely independently of `src` precision.
 
-The per-crate `src` goal remains valid as a D2 (iteration speed) improvement,
-but it is a separate problem from D1 (compile each dep once).
+The per-crate `src` idea is dropped: `prototextBare` and `prototext` run
+`cargo build --workspace`, which requires all workspace member sources to be
+present.  A per-crate `src` (containing only `./prototext` + manifests) would
+break the `--workspace` invocation.  The two goals — per-crate `src` and
+profile-consistent `--workspace` build — are mutually exclusive.  Since D1
+(compile each dep once) outweighs the marginal D2 gain from a narrower `src`,
+per-crate `src` for the binary derivations is a non-goal.
 
 ---
 
 ## Goals
 
-### Already implemented (2026-05-22)
-
-1. **D1 restored**: `prototextBare` and `prototext` now reuse `depsCache`
+1. **D1 restored**: `prototextBare` and `prototext` reuse `depsCache`
    without recompiling any external dep.  Only the 7 workspace crates are
    compiled in each derivation (~43 s, down from ~10 min).  The
    `target.tar.zst` artifact shrank from 67.9 MiB to 8.91 MiB.
@@ -183,29 +186,12 @@ but it is a separate problem from D1 (compile each dep once).
    `cargo build --workspace` invocation, matching the profile contexts
    baked into `depsCache` by `buildDepsOnly`.
 
-### Still to do
-
-4. **Per-crate `src`** (D2): replace the single `workspaceSrc` used by
-   `prototextBare`, `prototext`, and the PyO3 extensions with per-crate source
-   sets, so that a `.rs` change in `scoring-graph` does not trigger a rebuild
-   of `prototext`.  The `workspaceSrc` subtractive `target/` exclusion list
-   is also eliminated in this step.
-
-5. **`depsCache` on `depsSrc`** (D2, D1): switch `depsCache` to use
-   `depsSrc` (manifest-only) as its `src`, so that `.rs` changes never
-   invalidate the dep cache.  Currently `depsCache` uses `workspaceSrc` for
-   Crane fingerprint-matching reasons; verify this is still necessary after
-   the per-crate `src` change.
-
-6. **`docs/nix-build-guide.md`** (spec 0066 S8): write the build system guide
-   covering the correct Crane dep-cache strategy, the hakari maintenance
-   workflow, the PyO3 extension pattern, the reproto codegen pipeline, and the
-   `ci`/`full-tests` split.
-
 ---
 
 ## Non-goals
 
+- Per-crate `src` for binary derivations: incompatible with `--workspace`
+  (see Goals section above).
 - Changing the Cargo workspace structure.
 - Migrating to flakes.
 - Changing any installed binary or Python package behaviour.
@@ -258,42 +244,7 @@ commit the result whenever the dependency graph changes (new crate, new
 feature dependency).  `cargo hakari verify` can be added to CI to detect
 stale `workspace-hack`.
 
-### S3 — Per-crate `src` (pending)
-
-Replace the single `workspaceSrc` used by per-derivation builds with focused
-per-derivation sources using `pkgs.lib.fileset.toSource`:
-
-```nix
-mkCrateSrc = { crateDir, extraFixtures ? [] }:
-  pkgs.lib.fileset.toSource {
-    root    = ./.;
-    fileset = pkgs.lib.fileset.unions ([
-      (crane.fileset.cargoTomlAndLock ./.)
-      (crane.fileset.commonCargoSources crateDir)
-    ] ++ extraFixtures);
-  };
-```
-
-`lib.fileset` operates on files (not directories), so `target/` is naturally
-excluded.  The subtractive `target/` exclusion list in `workspaceSrc` is
-eliminated.
-
-Per-derivation `src` assignments:
-
-| Derivation | `src` |
-|---|---|
-| `depsCache` | `workspaceSrc` (unchanged; `depsSrc` may be usable — verify) |
-| `rustFmt`, `rustClippy`, `rustTests` | `workspaceSrc` |
-| `prototextBare`, `prototext` | `mkCrateSrc { crateDir = ./prototext; extraFixtures = [ (fixtureFilter ./prototext/fixtures) ]; }` |
-| `prototextCodec` | `mkCrateSrc { crateDir = ./prototext-pyo3; }` |
-| `fdpScanLib` | `mkCrateSrc { crateDir = ./fdp-scan-pyo3; }` |
-| `scoringGraphLib` | `mkCrateSrc { crateDir = ./scoring-graph-pyo3; }` |
-
-Note: per-crate `src` reduces the Nix-level rebuild scope (D2), but does not
-affect D1 (dep-cache reuse) since Crane transfers the dep cache via
-`cargoArtifacts`, not via `src`.
-
-### S4 — `docs/nix-build-guide.md` (pending)
+### S3 — `docs/nix-build-guide.md` (pending)
 
 Write `docs/nix-build-guide.md` covering:
 
@@ -331,18 +282,6 @@ The `profile` hash is particularly subtle: it encodes not just the
 causes Cargo to request all four contexts; a subsequent `-p <crate>` requests
 only the context relevant to that crate — a strict subset, with different hashes.
 
-### Why `depsSrc` may not be safe for `depsCache`
-
-Crane's `buildDepsOnly` stub-replaces all workspace crate sources with dummy
-`lib.rs` / `main.rs` files.  The resulting Cargo build graph is identical to a
-full build in terms of external dep fingerprints.  If `depsCache` were built
-from `depsSrc` (manifest-only) and a consuming derivation were built from
-`workspaceSrc`, the `src` hashes would differ — but Crane uses `cargoArtifacts`
-to transfer the cache, not `src`.  Whether `depsSrc` is safe for `depsCache`
-therefore depends only on whether the Cargo fingerprints are stable, which they
-are as long as `Cargo.toml`/`Cargo.lock` content is identical.  This should be
-verified empirically after the per-crate `src` change.
-
 ---
 
 ## Verification
@@ -366,11 +305,6 @@ cargo build --release --no-default-features --workspace
 7 workspace crates only.  Zero external deps recompiled.
 `target.tar.zst`: 8.91 MiB (was 67.9 MiB).
 
-### D2 — per-crate `src` (pending)
-
-After implementing S3, verify with `nix-diff` that changing a single `.rs`
-file in `scoring-graph` does not invalidate the `prototext` derivation.
-
 ---
 
 ## Test plan
@@ -378,4 +312,3 @@ file in `scoring-graph` does not invalidate the `prototext` derivation.
 - `nix-build -A ci` passes on all four CI platforms.
 - `nix-build -A full-tests` passes.
 - `reuse lint` passes.
-- After S3: `nix-diff` confirms per-crate source isolation.
