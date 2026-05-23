@@ -103,7 +103,13 @@ fn scoring_graph_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Gather stub info for pyo3-stub-gen (called by the post_build binary).
+///
+/// Uses std::env::var (runtime) rather than env!() (compile-time) so that the
+/// binary works correctly when Cargo reuses it from a prior build's artifact
+/// cache (different sandbox paths under Crane/Nix).
 pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
-    let pyproject = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("pyproject.toml");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR must be set when running scoring_graph_post_build");
+    let pyproject = std::path::Path::new(&manifest_dir).join("pyproject.toml");
     pyo3_stub_gen::StubInfo::from_pyproject_toml(pyproject)
 }

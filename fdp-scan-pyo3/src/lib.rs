@@ -39,12 +39,18 @@ fn fdp_scan_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 /// Gather stub info for pyo3-stub-gen (called by the post_build binary).
 ///
-/// Uses `from_project_root` so the module name comes from the lib target name
-/// ("fdp_scan_lib") rather than pyproject.toml's [project].name ("fdp_scan").
 /// The `use fdp_scan_lib::stub_info` in post_build.rs forces this lib to be
 /// linked into the binary, ensuring all inventory items are present.
+///
+/// Uses std::env::var (runtime) rather than env!() (compile-time) so that the
+/// binary works correctly when Cargo reuses it from a prior build's artifact
+/// cache (e.g. when running under Crane/Nix where different derivations use
+/// different sandbox paths).  The installPhase sets CARGO_MANIFEST_DIR before
+/// invoking the binary.
 pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
-    let pyproject = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("pyproject.toml");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR must be set when running fdp_scan_post_build");
+    let pyproject = std::path::Path::new(&manifest_dir).join("pyproject.toml");
     pyo3_stub_gen::StubInfo::from_pyproject_toml(pyproject)
 }
 
