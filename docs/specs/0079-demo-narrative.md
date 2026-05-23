@@ -76,8 +76,43 @@ Rules:
 - First line is always bare `# \`.
 - Every continuation line starts with `#` and ends with ` \` padded to column 82
   (80 chars of content + space + backslash).
-- Last line is bare `#` (no backslash) to close the block.
-- Empty lines within the block use bare `#` padded to column 82.
+- The second-to-last line (last content line) also ends with ` \` at column 82.
+- Last line is bare `#` (no backslash) to close the block.  It is part of the
+  block (displayed as a blank trailing line), not a separator.
+- Empty lines within the block use `#` padded with spaces to column 82 then ` \`.
+- A blank line in the script file after the closing `#` acts as a visual
+  separator between blocks in the source; it produces no extra prompt entry.
+
+#### Maintenance tooling
+
+When adding or editing content lines in a block, use the following Python
+snippet to pad a line to column 82 and append ` \`:
+
+```python
+content = "# Some text here"
+padded = content.ljust(81) + "\\"   # 81 chars + backslash = 82 cols total
+```
+
+To restore the ` \` suffix on every last-content line (the line immediately
+before a bare `#` terminator) after bulk editing, run:
+
+```python
+with open('demo/01-tutorial.sh', 'r') as f:
+    lines = f.readlines()
+
+fixed = []
+for i, line in enumerate(lines):
+    if i + 1 < len(lines) and lines[i + 1] == '#\n':
+        stripped = line.rstrip('\n')
+        if stripped.startswith('#') and not stripped.endswith('\\'):
+            padded = stripped.rstrip().ljust(81) + '\\'
+            fixed.append(padded + '\n')
+            continue
+    fixed.append(line)
+
+with open('demo/01-tutorial.sh', 'w') as f:
+    f.writelines(fixed)
+```
 
 ---
 
@@ -110,7 +145,7 @@ Rules:
 
 Three quotes to use in the intro, in recommended presentation order:
 
-**Quote 1 — the hook** (HN, 2018, anonymous ex-Googler, item 18189458):
+**Quote 1 — the hook** (Hacker News, 2018, anonymous ex-Googler, item 18189458):
 > "I spent 2.5 years at Google, and most of what I did was pushing one protobuf
 > from one place to another."
 

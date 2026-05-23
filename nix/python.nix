@@ -346,6 +346,7 @@ EOF
       --force-proto2-for-editions \
       --output-root="$out/reproto-out" \
       --emit-scoring-graphs \
+      --emit-binary \
       --build-schema-db="$out/googleapis.desc" \
       "${googleapisPbs}/googleapis.pb"
 
