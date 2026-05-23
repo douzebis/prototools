@@ -60,11 +60,11 @@ ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # No schema yet: we see field numbers and wire types, but no names.
-prototext --descriptor $GOOGLEAPIS_DB decode -a --type google.protobuf.Empty \
+prototext --descriptor-set $GOOGLEAPIS_DB decode -a --type google.protobuf.Empty \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # With the right schema: the message becomes readable.
-prototext --descriptor $GOOGLEAPIS_DB decode --type google.type.PostalAddress \
+prototext --descriptor-set $GOOGLEAPIS_DB decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Here is the schema that unlocked it — the .proto source.
@@ -83,7 +83,7 @@ cat $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 #
 
 # Let's decode the PostalAddress schema as a FileDescriptorProto.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb | head -20 && echo ...
 
@@ -97,7 +97,7 @@ prototext --descriptor $GOOGLEAPIS_DB \
 #
 
 # Watch prototext infer the schema with no hint from us.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # \
@@ -112,12 +112,12 @@ prototext --descriptor $GOOGLEAPIS_DB \
 #
 
 # Here prototext finds a tie and asks us to be explicit.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
 
 # With --type the ambiguity is resolved.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
 
@@ -141,7 +141,7 @@ prototext --descriptor $GOOGLEAPIS_DB \
 #
 
 # Craft postal_hidden.pb: slip a secret organization field before the real one.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
@@ -155,7 +155,7 @@ protoc --proto_path $GOOGLEAPIS_DESCS --decode google.type.PostalAddress \
   < stash/postal_hidden.pb
 
 # prototext decode: preserves wire order — both occurrences visible.
-prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
+prototext --descriptor-set $GOOGLEAPIS_DB decode stash/postal_hidden.pb
 
 # \
 #                                                                                \
@@ -167,7 +167,7 @@ prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
 #
 
 # Craft postal_patched.pb: inject an over-long varint on the revision field.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
@@ -179,7 +179,7 @@ hexdump -C stash/postal_patched.pb | head -1
 
 # prototext -a flags it: look for val_ohb on the revision field.
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb | head -6 && echo ...
 
@@ -189,7 +189,7 @@ prototext --descriptor $GOOGLEAPIS_DB \
 #
 
 # prototext round-trip: the over-hung byte is preserved exactly.
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
   | prototext encode \

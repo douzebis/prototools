@@ -8,8 +8,8 @@ The googleapis DB covers ~8000 message types from the public googleapis proto co
 
 Pipeline per test:
   1. Session fixture: read STRESS_DB env var → googleapis .desc path.
-  2. Per type: prototext --descriptor <db> instantiate-schema <FQDN> → instance.pb.
-  3. prototext --descriptor <db> list-schemas instance.pb → top-tied FQDNs.
+  2. Per type: prototext --descriptor-set <db> instantiate-schema <FQDN> → instance.pb.
+  3. prototext --descriptor-set <db> list-schemas instance.pb → top-tied FQDNs.
   4. Assert expected FQDN is in the top-tied list.
   5. Assert len(top-tied) <= max_ties (from googleapis-types.yaml, default 5).
 

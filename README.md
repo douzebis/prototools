@@ -38,7 +38,7 @@ FileDescriptorSet.  Used to populate schema-DB test corpora and as a
 quick sanity-check that a descriptor is well-formed.
 
 ```
-reproto-instantiate-schema --descriptor my.desc --seed 42 -O out/ \
+reproto-instantiate-schema --descriptor-set my.desc --seed 42 -O out/ \
     google.type.PostalAddress google.protobuf.Timestamp
 ```
 

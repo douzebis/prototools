@@ -68,7 +68,8 @@ pub struct Cli {
     /// Resolution order: (1) this flag, (2) PROTOTEXT_DEFAULT_DESCRIPTOR env
     /// var, (3) built-in google.protobuf.* fallback.
     #[arg(
-        long = "descriptor",
+        long = "descriptor-set",
+        alias = "descriptor",
         value_name = "DESCRIPTOR_FILE",
         env = "PROTOTEXT_DEFAULT_DESCRIPTOR",
         add = ArgValueCompleter::new(complete_descriptor_path),

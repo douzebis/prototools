@@ -159,12 +159,12 @@ When a descriptor DB is available, `prototext` can infer the message type
 automatically:
 
 ```
-$ prototext --descriptor my.desc list-schemas unknown.pb
+$ prototext --descriptor-set my.desc list-schemas unknown.pb
 - path: unknown.pb
   types:
   - google.type.PostalAddress
 
-$ prototext --descriptor my.desc decode unknown.pb
+$ prototext --descriptor-set my.desc decode unknown.pb
 #@ prototext: protoc
 # Type: google.type.PostalAddress
 # Score: 13  (matched: 13, unknown: 0, mismatches: 0, non_canonical: 0)
@@ -179,7 +179,7 @@ pre-built `googleapis-db` Nix derivation (~8 000 types):
 
 ```shell
 export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
-prototext --descriptor $GOOGLEAPIS_DB list-schemas unknown.pb
+prototext --descriptor-set $GOOGLEAPIS_DB list-schemas unknown.pb
 ```
 
 For full usage see `man prototext` or the

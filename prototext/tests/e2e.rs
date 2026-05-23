@@ -51,7 +51,7 @@ fn schema_path(schema_rel: &str) -> PathBuf {
     repo_root().join(schema_rel)
 }
 
-/// Run `prototext --descriptor <schema> decode --type <message>` on binary
+/// Run `prototext --descriptor-set <schema> decode --type <message>` on binary
 /// input, then `prototext encode` on the text output.
 /// Returns (text, re-encoded binary).
 fn cli_roundtrip(

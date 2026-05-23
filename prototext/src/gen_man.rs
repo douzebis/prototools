@@ -60,12 +60,12 @@ prototext decode message.binpb
 .SS Decode with a schema
 .PP
 .nf
-prototext --descriptor descriptor.pb decode --type pkg.MyMessage message.binpb
+prototext --descriptor-set descriptor.pb decode --type pkg.MyMessage message.binpb
 .fi
 .SS Decode with inline annotations (required for lossless round-trip)
 .PP
 .nf
-prototext --descriptor descriptor.pb decode -a --type pkg.MyMessage message.binpb
+prototext --descriptor-set descriptor.pb decode -a --type pkg.MyMessage message.binpb
 .fi
 .SS Encode text back to binary
 .PP
@@ -75,7 +75,7 @@ prototext encode message.pb > message.binpb
 .SS Pipe from protoc
 .PP
 .nf
-protoc --encode=pkg.MyMessage descriptor.proto < input.txt | prototext --descriptor descriptor.pb decode --type pkg.MyMessage
+protoc --encode=pkg.MyMessage descriptor.proto < input.txt | prototext --descriptor-set descriptor.pb decode --type pkg.MyMessage
 .fi
 .SS Enable bash completion
 .PP

@@ -9,8 +9,8 @@ the reproto test fixtures, plus the opentelemetry-proto corpus.
 
 Pipeline per test:
   1. Session fixture: read CUSTOM_DB env var → .desc path.
-  2. Per type: prototext --descriptor <db> instantiate-schema <FQDN> → instance.pb.
-  3. prototext --descriptor <db> list-schemas instance.pb → top-tied FQDNs.
+  2. Per type: prototext --descriptor-set <db> instantiate-schema <FQDN> → instance.pb.
+  3. prototext --descriptor-set <db> list-schemas instance.pb → top-tied FQDNs.
   4. Assert expected FQDN is in the top-tied list.
   5. Assert len(top-tied) <= max_ties (from custom-types.yaml, default 5).
 

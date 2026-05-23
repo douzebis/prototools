@@ -171,11 +171,13 @@ pub fn complete_dir_path(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidat
 /// Complete message type names.
 ///
 /// Priority:
-/// 1. `--descriptor` / `PROTOTEXT_DEFAULT_DESCRIPTOR` on the partial command line → read that file.
+/// 1. `--descriptor-set` / `--descriptor` / `PROTOTEXT_DEFAULT_DESCRIPTOR` on the partial command line → read that file.
 /// 2. Embedded descriptor (all `google.protobuf.*` types).
 pub fn complete_type_names(incomplete: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
-    let bytes: std::borrow::Cow<[u8]> = if let Some(path) = flag_value_from_args("", "--descriptor")
-        .or_else(|| std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR"))
+    let bytes: std::borrow::Cow<[u8]> = if let Some(path) =
+        flag_value_from_args("", "--descriptor-set")
+            .or_else(|| flag_value_from_args("", "--descriptor"))
+            .or_else(|| std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR"))
     {
         match std::fs::read(&path) {
             Ok(b) => std::borrow::Cow::Owned(b),

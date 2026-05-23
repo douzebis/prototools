@@ -17,7 +17,7 @@ from .instantiate import generate_instance, load_pool
 @click.command()
 @click.version_option()
 @click.option(
-    '--descriptor',
+    '--descriptor-set', '--descriptor',
     'descriptor_path',
     required=False,
     default=None,
@@ -77,7 +77,7 @@ def main(
         env_val = os.environ.get('PROTOTEXT_DEFAULT_DESCRIPTOR')
         if env_val is None:
             raise click.UsageError(
-                'No descriptor specified. Use --descriptor or set PROTOTEXT_DEFAULT_DESCRIPTOR.'
+                'No descriptor specified. Use --descriptor-set or set PROTOTEXT_DEFAULT_DESCRIPTOR.'
             )
         descriptor_path = Path(env_val)
     pool = load_pool(descriptor_path)

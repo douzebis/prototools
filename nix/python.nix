@@ -374,7 +374,7 @@ EOF
     MANDATORY=$(grep '^\s*- ' "$TYPES_YAML" | sed 's/^\s*- //')
     # Full type list from the DB (empty protobuf matches everything).
     # list-schemas now emits YAML with "  - type: <fqdn>" lines.
-    ALL=$(printf "" | prototext --descriptor "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - type: ' | sed 's/^  - type: //')
+    ALL=$(printf "" | prototext --descriptor-set "$out/googleapis.desc" list-schemas --top 999999 | grep '^  - type: ' | sed 's/^  - type: //')
     # Already-instantiated types (phase 1 + mandatory) — don't overwrite.
     ALREADY=$(find "$out/instances" -name "*.pb" | sed "s|$out/instances/||;s|\.pb$||;s|/|.|g")
     N_MANDATORY=$(echo "$MANDATORY" | wc -l)
@@ -399,7 +399,7 @@ print('\n'.join(lines[:$N_EXTRA]))
                      <(echo "$ALREADY"   | sort -u))
     FQDNS=$(printf '%s\n%s' "$MANDATORY_NEW" "$EXTRA")
     reproto-instantiate-schema \
-      --descriptor "$out/googleapis.desc" \
+      --descriptor-set "$out/googleapis.desc" \
       -O "$out/instances" \
       $FQDNS
   '';

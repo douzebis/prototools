@@ -29,7 +29,7 @@ use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 
 // ── DescriptorContext ─────────────────────────────────────────────────────────
 
-/// Result of resolving `--descriptor`: a pool for type lookup plus an optional
+/// Result of resolving `--descriptor-set`: a pool for type lookup plus an optional
 /// Hopcroft scoring graph.
 ///
 /// When a `<stem>/index.rkyv` sidecar is present, `lazy` holds a `LazyPool`
@@ -418,7 +418,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      (no hopcroft.rkyv found alongside the descriptor file)"
                         .into()
                 } else {
-                    "decode auto-inference requires --descriptor with a sibling \
+                    "decode auto-inference requires --descriptor-set with a sibling \
                      hopcroft.rkyv, or a wkt-db-enabled build"
                         .into()
                 });
@@ -470,7 +470,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                     "list-schemas requires a DB-backed descriptor \
                      (no hopcroft.rkyv found alongside the descriptor file)"
                 } else {
-                    "list-schemas requires --descriptor with a sibling hopcroft.rkyv, \
+                    "list-schemas requires --descriptor-set with a sibling hopcroft.rkyv, \
                      or a wkt-db-enabled build"
                 }
             })?;
@@ -525,7 +525,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                     "score requires a DB-backed descriptor \
                      (no hopcroft.rkyv found alongside the descriptor file)"
                 } else {
-                    "score requires --descriptor with a sibling hopcroft.rkyv, \
+                    "score requires --descriptor-set with a sibling hopcroft.rkyv, \
                      or a wkt-db-enabled build"
                 }
             })?;
@@ -980,6 +980,7 @@ impl InferFailureReporter {
 
 // ── batch auto-infer ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn run_batch_infer(
     all_files: Vec<InputFile>,
     assume_binary: bool,

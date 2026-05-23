@@ -81,7 +81,7 @@ reproto --use-variant descriptor -O out/ --seed desc:.tutorial.Person my.pb
 
 ```shell
 reproto --build-schema-db=my.desc my.pb
-prototext --descriptor my.desc list-schemas unknown.pb
+prototext --descriptor-set my.desc list-schemas unknown.pb
 ```
 
 `--build-schema-db` writes `my.desc` (the merged FileDescriptorSet),
@@ -95,7 +95,7 @@ FileDescriptorSet.  Useful for populating test corpora and sanity-checking
 that a schema is well-formed.
 
 ```
-reproto-instantiate-schema --descriptor my.desc --seed 42 -O out/ \
+reproto-instantiate-schema --descriptor-set my.desc --seed 42 -O out/ \
     google.type.PostalAddress google.protobuf.Timestamp
 ```
 
@@ -103,7 +103,7 @@ Options:
 
 | Option | Description |
 |---|---|
-| `--descriptor FILE` | `.desc` FileDescriptorSet to load |
+| `--descriptor-set FILE` | `.desc` FileDescriptorSet to load |
 | `-O DIR` | Root directory for output `.pb` files |
 | `--seed INT` | PRNG seed (default: 0) |
 | `--max-depth INT` | Maximum recursion depth for nested messages (default: 4) |

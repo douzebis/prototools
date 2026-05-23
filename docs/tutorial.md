@@ -21,7 +21,7 @@ stop short:
 `protoc --decode_raw` gives field numbers and wire types but no names, and it
 silently discards non-canonical encodings.  `prototext decode` gives you
 everything `protoc --decode_raw` gives, keeps every byte intact, and
-round-trips losslessly.  Supply a `--descriptor` and `--type` and the field
+round-trips losslessly.  Supply a `--descriptor-set` and `--type` and the field
 numbers become readable names — and unlike `protoc --decode`, no original
 `.proto` source files are required.
 
@@ -90,7 +90,7 @@ The store path contains:
 `prototext` infer it automatically:
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $(dirname $GOOGLEAPIS_DB)/instances/google/type/PostalAddress.pb
 ```
@@ -127,7 +127,7 @@ structure happens to match both the `v1` and `v1beta` API versions of the same
 type:
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     list-schemas \
     $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
 ```
@@ -146,7 +146,7 @@ only in maturity, not in wire format.  To decode, supply the correct type
 explicitly:
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $(dirname $GOOGLEAPIS_DB)/instances/google/cloud/compute/v1beta/UsableSubnetwork.pb
 ```
@@ -162,7 +162,7 @@ ones with a warning:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB decode -O stash/decoded \
+prototext --descriptor-set $GOOGLEAPIS_DB decode -O stash/decoded \
     $INST/google/type/PostalAddress.pb \
     $INST/google/cloud/compute/v1beta/UsableSubnetwork.pb
 ```
@@ -217,7 +217,7 @@ built — this is a nice self-referential demo, and auto-inference works because
 the scoring graph is present:
 
 ```
-prototext --descriptor stash/wkt.desc \
+prototext --descriptor-set stash/wkt.desc \
     decode stash/wkt.pb | head -12
 ```
 
@@ -247,7 +247,7 @@ to enable inline wire-type comments:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb
 ```
@@ -285,7 +285,7 @@ saving the result:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb > stash/PostalAddress.textpb
 ```
@@ -323,7 +323,7 @@ The patched file is one byte longer (`81 00` instead of `01`).  Now
 decode it with annotations:
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb | head -6
 ```
@@ -362,7 +362,7 @@ invisible.
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
@@ -395,7 +395,7 @@ last-write-wins and returns only `"S3NS"`.
 **What `prototext decode` sees:**
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB decode stash/postal_hidden.pb
+prototext --descriptor-set $GOOGLEAPIS_DB decode stash/postal_hidden.pb
 ```
 
 ```
@@ -419,7 +419,7 @@ through `prototext encode` and compare with the original:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $INST/google/type/PostalAddress.pb \
   | prototext encode \
@@ -434,7 +434,7 @@ byte-exact
 The round-trip is byte-exact even for the patched non-canonical version:
 
 ```
-prototext --descriptor $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
   | prototext encode \

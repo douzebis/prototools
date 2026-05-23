@@ -296,7 +296,7 @@ of `google.protobuf.*` types without an external schema file.
 
 ```
 prototext (-d | -e)
-          [--descriptor FILE] [--type MSG]
+          [--descriptor-set FILE] [--type MSG]
           [--no-annotations]
           [--output FILE | --output-root DIR | --in-place]
           [--input-root DIR]
@@ -364,7 +364,7 @@ The `protocraft` test binary (harness=false) emits a named fixture's bytes to
 stdout, enabling manual inspection:
 
 ```bash
-cargo test --test protocraft -- hidden | prototext -d --descriptor <schema> --type SchemaHidden
+cargo test --test protocraft -- hidden | prototext -d --descriptor-set <schema> --type SchemaHidden
 cargo test --test protocraft -- hidden | protoc --decode=SchemaHidden fixtures/schemas/knife.proto
 ```
 
