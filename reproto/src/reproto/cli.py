@@ -573,7 +573,7 @@ def main(
         descriptor_proto=variant['variant_descriptor_proto'],
         dump_resolved_features=dump_resolved_features,
         fallback_protos=fallback_protos,
-        keep_variant_descriptor=keep_descriptor_path,
+        keep_variant_descriptor=keep_descriptor_path or build_schema_db is not None,
         variant_descriptor_proto=variant['variant_descriptor_proto'],
         variant_well_known=variant['variant_well_known'],
         variant_import_rules=variant['variant_import_rules'],
