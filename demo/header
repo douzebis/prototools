@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# header — render a tutorial section title as:
+#   left-chevron  <title>  right-chevron
+#
+# Default: composites an SVG on the fly and renders with chafa (height 5).
+# --figlet: fall back to the figlet-based block-character renderer.
+#
+# Usage: header [OPTIONS] <title>
+#
+# Options:
+#   --figlet            use figlet renderer instead of SVG+chafa
+#   --height <rows>     chafa target height (default: 5; SVG mode only)
+#   --all-caps          uppercase the title text
+#   --color <#rrggbb|name>  text color (default: #4d8fff)
+#   --left  <file>      override left chevron file (figlet mode)
+#   --right <file>      override right chevron file (figlet mode)
+
+set -euo pipefail
+
+shopt -s extglob
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Built-in SVG data
+# ---------------------------------------------------------------------------
+svg_chevron_left='<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="12 22 28 35">
+  <path fill="#4580e8" d="M39.226 56.943 18.722 30.326c-1.54 1.985-4.89 6.395-6.09 7.92-1.201 1.524-.42 3.017.12 3.572l11.825 15.125z"/>
+  <path fill="#d23935" d="m24.939 41.402 14.106-18.46H24.278l-7.984 10.6z"/>
+</svg>'
+
+svg_chevron_right='<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="40 22 28 35">
+  <path fill="#1b9157" d="m41.775 22.943 20.502 26.616c1.54-1.985 4.89-6.395 6.09-7.92 1.201-1.524.42-3.016-.12-3.572L56.422 22.943z"/>
+  <path fill="#fbb53e" d="M56.062 38.484 41.955 56.943h14.767l7.984-10.6z"/>
+</svg>'
+
+svg_protobuf='<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 80 80">
+  <path fill="#d23935" d="m24.939 41.402 14.106-18.46H24.278l-7.984 10.6z"/>
+  <path fill="#fbb53e" d="M56.062 38.484 41.955 56.943h14.767l7.984-10.6z"/>
+  <path fill="url(#a)" d="m27.968 37.472-9.245-7.146 7.204 9.766z"/>
+  <path fill="url(#b)" d="m53.032 42.414 9.245 7.145-7.204-9.765z"/>
+  <path fill="#4580e8" d="M39.226 56.943 18.722 30.326c-1.54 1.985-4.89 6.395-6.09 7.92-1.201 1.524-.42 3.017.12 3.572l11.825 15.125z"/>
+  <path fill="#1b9157" d="m41.775 22.943 20.502 26.616c1.54-1.985 4.89-6.395 6.09-7.92 1.201-1.524.42-3.016-.12-3.572L56.422 22.943z"/>
+  <defs>
+    <linearGradient id="a" x1="53.084" x2="40.592" y1="35.174" y2="46.553" gradientUnits="userSpaceOnUse">
+      <stop stop-opacity="0"/><stop offset="1" stop-opacity=".15"/>
+    </linearGradient>
+    <linearGradient id="b" x1="53.084" x2="40.592" y1="35.174" y2="46.553" gradientUnits="userSpaceOnUse">
+      <stop stop-opacity="0"/><stop offset="1" stop-opacity=".15"/>
+    </linearGradient>
+  </defs>
+</svg>'
+
+RESET=$'\e[0m'
+DEFAULT_COLOR='#4d8fff'     # bold bright blue (\e[1;94m) expressed as hex
+
+# Map ANSI symbolic color names to #rrggbb hex values.
+# Standard 16-color palette (typical xterm/VGA values).
+ansi_name_to_hex() {
+    case "${1,,}" in
+        black)          echo '#000000' ;;
+        red)            echo '#aa0000' ;;
+        green)          echo '#00aa00' ;;
+        yellow)         echo '#aa5500' ;;
+        blue)           echo '#0000aa' ;;
+        magenta)        echo '#aa00aa' ;;
+        cyan)           echo '#00aaaa' ;;
+        white)          echo '#aaaaaa' ;;
+        bright_black|dark_gray|darkgray)
+                        echo '#555555' ;;
+        bright_red)     echo '#ff5555' ;;
+        bright_green)   echo '#55ff55' ;;
+        bright_yellow)  echo '#ffff55' ;;
+        bright_blue)    echo '#5555ff' ;;
+        bright_magenta) echo '#ff55ff' ;;
+        bright_cyan)    echo '#55ffff' ;;
+        bright_white)   echo '#ffffff' ;;
+        *)              echo '' ;;
+    esac
+}
+
+USE_FIGLET=0
+ALL_CAPS=0
+HEIGHT=5
+COLOR="$DEFAULT_COLOR"
+LEFT_FILE="$SCRIPT_DIR/chevron-left.txt"
+RIGHT_FILE="$SCRIPT_DIR/chevron-right.txt"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --figlet)    USE_FIGLET=1; shift ;;
+        --all-caps)  ALL_CAPS=1; shift ;;
+        --height)    HEIGHT="$2"; shift 2 ;;
+        --color)     COLOR="$2"; shift 2 ;;
+        --left)      LEFT_FILE="$2"; shift 2 ;;
+        --right)     RIGHT_FILE="$2"; shift 2 ;;
+        --)          shift; break ;;
+        -*)          echo "Unknown option: $1" >&2; exit 1 ;;
+        *)           break ;;
+    esac
+done
+
+TITLE="${1:-}"
+[[ -n "$TITLE" ]] || { echo "Usage: header [OPTIONS] <title>" >&2; exit 1; }
+
+# Resolve symbolic color names → #rrggbb
+if [[ "$COLOR" != \#* ]]; then
+    _resolved=$(ansi_name_to_hex "$COLOR")
+    if [[ -z "$_resolved" ]]; then
+        echo "Unknown color name: '$COLOR'. Use #rrggbb or a name like bright_blue, red, cyan." >&2
+        exit 1
+    fi
+    COLOR="$_resolved"
+fi
+
+# Strip leading section number: "1. ", "12. ", etc.
+TITLE="${TITLE##+([0-9]).+( )}"
+
+(( ALL_CAPS )) && TITLE="${TITLE^^}"
+
+# Derive ANSI true-color escape from a #rrggbb hex color
+hex_to_ansi() {
+    local hex="${1#'#'}"
+    local r g b
+    r=$(( 16#${hex:0:2} ))
+    g=$(( 16#${hex:2:2} ))
+    b=$(( 16#${hex:4:2} ))
+    printf '\e[1;38;2;%d;%d;%dm' "$r" "$g" "$b"
+}
+
+echo
+
+# ---------------------------------------------------------------------------
+# Default: SVG + chafa
+# ---------------------------------------------------------------------------
+if (( ! USE_FIGLET )); then
+
+    # Measure title text width in SVG user units (font-size 28, density 96 → 1px=1unit)
+    TW=$(echo "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9999 40'>\
+<text x='0' y='32' font-family='DejaVu Sans' font-size='28' font-weight='bold'>${TITLE}</text></svg>" \
+        | magick -background none -density 96 svg:- -trim -format "%w" info: 2>/dev/null)
+    [[ -n "$TW" && "$TW" -gt 0 ]] 2>/dev/null || TW=$(( ${#TITLE} * 15 ))
+
+    TRANSLATE=$(( TW + 7 ))
+    VB_WIDTH=$(( TW + 63 ))
+
+    echo "<svg xmlns='http://www.w3.org/2000/svg' fill='none'
+         viewBox='12 22 ${VB_WIDTH} 35'>
+      <path fill='#4580e8' d='M39.226 56.943 18.722 30.326c-1.54 1.985-4.89 6.395-6.09 7.92-1.201 1.524-.42 3.017.12 3.572l11.825 15.125z'/>
+      <path fill='#d23935' d='m24.939 41.402 14.106-18.46H24.278l-7.984 10.6z'/>
+      <text x='44' y='50'
+            font-family='DejaVu Sans, sans-serif' font-size='28' font-weight='bold'
+            fill='${COLOR}'>${TITLE}</text>
+      <g transform='translate(${TRANSLATE} 0)'>
+        <path fill='#1b9157' d='m41.775 22.943 20.502 26.616c1.54-1.985 4.89-6.395 6.09-7.92 1.201-1.524.42-3.016-.12-3.572L56.422 22.943z'/>
+        <path fill='#fbb53e' d='M56.062 38.484 41.955 56.943h14.767l7.984-10.6z'/>
+      </g>
+    </svg>" \
+        | magick -background transparent -density 300 svg:- png:- \
+        | chafa -s "x${HEIGHT}" -
+
+    echo
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# --figlet: block-character renderer using figlet + baked chevron .txt files
+# ---------------------------------------------------------------------------
+
+# Ensure chevron cache files exist (generated on demand, gitignored)
+[[ -f "$LEFT_FILE"  ]] || echo "$svg_chevron_left"  \
+    | magick -background transparent -density 300 svg:- png:- \
+    | chafa -s x5 - > "$LEFT_FILE"
+[[ -f "$RIGHT_FILE" ]] || echo "$svg_chevron_right" \
+    | magick -background transparent -density 300 svg:- png:- \
+    | chafa -s x5 - > "$RIGHT_FILE"
+
+ANSI_COLOR=$(hex_to_ansi "$COLOR")
+
+TMPDIR_H=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_H"' EXIT
+
+strip_cursor() { sed 's/\x1b\[?25[lh]//g'; }
+
+figlet_block() {
+    local text="$1" out="$2" lines max_w
+    lines=$(figlet -f small -w 200 "${text^^}")
+    max_w=$(echo "$lines" | awk '{ if (length > m) m = length } END { print m }')
+    echo "$lines" | awk -v w="$max_w" -v c="$ANSI_COLOR" -v r="$RESET" \
+        '{ printf "%s%-*s%s\n", c, w, $0, r }' > "$out"
+}
+
+pad_block() {
+    local file="$1" target="$2" pad_w="$3" count
+    count=$(wc -l < "$file")
+    while (( count < target )); do
+        printf '%*s\n' "$pad_w" '' >> "$file"
+        (( count++ ))
+    done
+}
+
+strip_cursor < "$LEFT_FILE"  > "$TMPDIR_H/left.txt"
+strip_cursor < "$RIGHT_FILE" > "$TMPDIR_H/right.txt"
+figlet_block "$TITLE" "$TMPDIR_H/fig.txt"
+
+LEFT_H=$(wc -l < "$TMPDIR_H/left.txt")
+RIGHT_H=$(wc -l < "$TMPDIR_H/right.txt")
+FIG_H=$(wc -l < "$TMPDIR_H/fig.txt")
+MAX_H=$(( LEFT_H > RIGHT_H ? LEFT_H : RIGHT_H ))
+MAX_H=$(( FIG_H  > MAX_H   ? FIG_H  : MAX_H  ))
+
+FIG_W=$(sed 's/\x1b\[[^m]*m//g' "$TMPDIR_H/fig.txt" | awk '{ if(length>m) m=length } END { print m }')
+
+pad_block "$TMPDIR_H/left.txt"  "$MAX_H" 0
+pad_block "$TMPDIR_H/fig.txt"   "$MAX_H" "$FIG_W"
+pad_block "$TMPDIR_H/right.txt" "$MAX_H" 0
+
+paste "$TMPDIR_H/left.txt" "$TMPDIR_H/fig.txt" "$TMPDIR_H/right.txt" | sed 's/\t/ /g'
+echo

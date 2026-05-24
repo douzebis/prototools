@@ -5,8 +5,24 @@
 #
 # SPDX-License-Identifier: MIT
 
+# Parse arguments: [--splash <file-or-name>] <commands_file>
+SPLASH_FILE=""
+SPLASH_NAME=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --splash) SPLASH_ARG="$2"; shift 2
+            if [[ -f "$SPLASH_ARG" ]]; then
+                SPLASH_FILE="$SPLASH_ARG"
+            else
+                SPLASH_NAME="$SPLASH_ARG"
+            fi
+            ;;
+        *)        break ;;
+    esac
+done
+
 CONFIG_FILE="$1"
-[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 <commands_file>"; exit 1; }
+[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] <commands_file>"; exit 1; }
 
 # Create a temporary directory
 trap '[[ -n "$TMPDIR" && -d "$TMPDIR" ]] && rm -rf "$TMPDIR"' EXIT
@@ -202,9 +218,29 @@ bind -x '"\C-k": delete_line' 2>/dev/null
 stty -ixon  # allow Ctrl-S (disable terminal XOFF)
 bind -x '"\C-s": save_commands' 2>/dev/null
 
+# F1: show mini-help
+show_help() {
+    # Erase the current prompt+input line, print help, readline redraws input.
+    printf "\r\033[K" >/dev/tty
+    printf "%s  F1      show this help\n" "$YELLOW" >/dev/tty
+    printf "  ↑/↓     browse history  (also Ctrl-P / Ctrl-N)\n" >/dev/tty
+    printf "  ENTER   run command\n" >/dev/tty
+    printf "  Ctrl-D  duplicate current line\n" >/dev/tty
+    printf "  Ctrl-L  insert empty line before current\n" >/dev/tty
+    printf "  Ctrl-K  delete current line\n" >/dev/tty
+    printf "  Ctrl-S  save history to file%s\n" "$RESET" >/dev/tty
+}
+bind -x '"\eOP": show_help' 2>/dev/null
+
 # --- Startup ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 clear
-printf "%s  ↑/↓  browse  |  ENTER  run  |  ctrl-S  save%s\n\n" "$GRAY" "$RESET"
+if [[ -n "$SPLASH_NAME" ]]; then
+    "$SCRIPT_DIR/header" "$SPLASH_NAME"
+elif [[ -f "$SPLASH_FILE" ]]; then
+    cat "$SPLASH_FILE"
+fi
+printf "%s  F1  help%s\n\n" "$YELLOW" "$RESET"
 
 # --- Main loop ---
 while true; do

@@ -89,6 +89,11 @@
       pythonPkgs."pytest-xdist"
       pythonPkgs.ruff
       pkgs.pyright
+      # Demo / ASCII-art utilities (not part of the released package)
+      figlet
+      toilet
+      imagemagick
+      chafa
     ];
 
     shellHook = ''

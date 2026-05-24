@@ -5,13 +5,13 @@
 # Full tutorial:                                                                 \
 #   github.com/ThalesGroup/prototools/blob/main/docs/tutorial.md                 \
 #                                                                                \
-# Run from the repo root:  ./demo/prompt demo/01-tutorial.sh                     \
+# Run from the repo root:  ./demo/prompt --splash prototools demo/01-tutorial.sh  \
 # Generated files go under ./stash/ (gitignored).                                \
 #
 
+demo/header "1. Protobufs are everywhere"
+
 # \
-#                                                                                \
-# === 1. PROTOBUFS ARE EVERYWHERE ============================================== \
 #                                                                                \
 # "I spent 2.5 years at Google, and most of what I did was pushing one protobuf  \
 #  from one place to another."                                                   \
@@ -29,10 +29,7 @@
 # language-neutral — the lingua franca of microservice communication.            \
 #
 
-# \
-#                                                                                \
-# === 2. SETUP ================================================================= \
-#
+demo/header "2. Setup"
 
 # Meet our two tools.
 prototext --version && reproto --version
@@ -43,9 +40,9 @@ export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
 GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
 GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
 
+demo/header "3. What's inside a protobuf?"
+
 # \
-#                                                                                \
-# === 3. WHAT'S INSIDE A PROTOBUF? ============================================= \
 #                                                                                \
 # Quick vocabulary:                                                              \
 #   protobuf  — a binary-encoded message on the wire                             \
@@ -70,10 +67,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB decode --type google.type.PostalAddres
 # Here is the schema that unlocked it — the .proto source.
 cat $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 
-# \
-#                                                                                \
-# === 4. SCHEMAS ARE PROTOBUFS TOO ============================================= \
-#
+demo/header "4. Schemas are protobufs too"
 
 # \
 #                                                                                \
@@ -87,9 +81,9 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb | head -20 && echo ...
 
+demo/header "5. Schema auto-inference"
+
 # \
-#                                                                                \
-# === 5. SCHEMA AUTO-INFERENCE ================================================= \
 #                                                                                \
 # prototext can infer the schema automatically: it scores every type in the DB   \
 # against the binary and picks the best match.  The score consolidates field     \
@@ -121,9 +115,9 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
 
+demo/header "6. Non-canonical protobufs"
+
 # \
-#                                                                                \
-# === 6. NON-CANONICAL PROTOBUFS =============================================== \
 #                                                                                \
 # The wire format allows encodings that are valid but non-canonical: repeated    \
 # optional fields, over-long varints, unexpected field ordering.  Standard       \
@@ -207,9 +201,9 @@ protoc --proto_path $GOOGLEAPIS_DESCS \
   | diff - stash/postal_patched.pb \
   || echo not-byte-exact
 
+demo/header "7. There is more"
+
 # \
-#                                                                                \
-# === 7. THERE IS MORE ========================================================= \
 #                                                                                \
 # reproto turns a serialised schema (FileDescriptorProto) back into readable     \
 # .proto source.  Useful when you have the binary but not the original source:   \
