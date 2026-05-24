@@ -27,20 +27,21 @@ pub fn build_compiled(
         return Err("no scoring-graph entries found in provided YAML strings".into());
     }
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
     Ok(graph::compile(&raw, &reg, &partition, &merged.roots))
 }
 
 pub fn build_from_strings(
     scoring_graphs: &[String],
     emit_yaml: bool,
+    on_progress: impl FnMut(u8),
 ) -> Result<(Vec<u8>, Option<String>), Box<dyn std::error::Error>> {
     let merged = load::merge_from_strings(scoring_graphs)?;
     if merged.states.is_empty() {
         return Err("no scoring-graph entries found in provided YAML strings".into());
     }
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, on_progress);
     let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let rkyv_bytes = serial::to_bytes(&compiled)?;
     let yaml = if emit_yaml {

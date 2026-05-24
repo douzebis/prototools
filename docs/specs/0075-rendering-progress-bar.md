@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# 0075 — Rendering progress bar
+# 0075 — Progress bars and spinners
 
 **Status:** implemented
 **App:** reproto
@@ -46,8 +46,7 @@ terminal.
 
 ## Non-goals
 
-- Progress bars for phases other than phase 7.
-- Rich markup or spinners in existing log messages.
+- Rich markup in existing log messages.
 - Changing how warnings are buffered or flushed.
 
 ---
@@ -95,67 +94,53 @@ throughout the codebase are unaffected.
 Rich's `Console` handles TTY detection automatically: ANSI codes are stripped
 when stderr is not a TTY, exactly as `click.secho` does today.
 
-### 3. Progress context manager (`lib/console.py`)
+### 3. Progress and spinner context managers (`lib/console.py`)
 
-Add a context manager `rendering_progress(total: int)` that:
+Add two context managers:
 
-- If stderr is not a TTY or `total == 0`: is a no-op (yields a dummy callable).
-- Otherwise: starts a `rich.progress.Progress` bar on the shared console and
-  yields an `advance()` callable.
+**`progress(label: str, total: int)`** — shows a `rich.progress.Progress` bar
+when `total > 0` and stderr is a TTY; otherwise is a no-op.  Yields an
+`advance(n=1)` callable.  Prints `label` to stderr via `rprint` after the bar
+closes, so the phase name persists on the terminal.
 
-```python
-@contextmanager
-def rendering_progress(total: int):
-    if not console.is_terminal or total == 0:
-        yield lambda: None
-        return
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Rendering", total=total)
-        yield lambda: progress.advance(task)
-```
+**`spinning(label: str)`** — shows a `rich.console.Console.status` spinner
+for steps whose duration is not known upfront.  No-op when stderr is not a
+TTY.  Prints `label` to stderr via `rprint` after the spinner closes.
 
-`transient=True` removes the bar from the terminal once it completes, leaving
-only the final log messages visible — consistent with the existing clean
-output style.
+Both context managers are responsible for the persistent phase-name trace.
+Callers must **not** print the phase name separately (no `cli_info` before
+the `with` block).
 
 Using the **same** `console` instance for both `rprint` and `Progress` is the
 key to correctness: rich internally intercepts writes to the console while
-`Live` is active and redraws the bar below any printed lines, preventing
+`Live` is active and redraws the indicator below any printed lines, preventing
 interleaving artefacts.
 
-### 4. Wire up in `_phase7_output` (`phases.py`)
+### 4. Canonical phase labels
 
-Before the rendering loop, collect the files to be rendered into a list (the
-loop already filters on the same conditions):
+Each phase and sub-step has a single canonical label used as the bar/spinner
+title and as the persistent trace printed on completion.
 
-```python
-summoned = [
-    re_fdp for re_fdp in ctx.nodes.values()
-    if isinstance(re_fdp, ReFileDescriptorProto)
-    and re_fdp.is_present()
-    and re_fdp.is_summoned
-    and not (re_fdp.name == ctx.variant_descriptor_proto
-             and not ctx.write_variant_descriptor)
-]
-```
+| Phase / step | Indicator | Label | Total |
+|---|---|---|---|
+| 1a — Seed loading | `spinning` | `Loading seed files` | unknown |
+| 1b — Import discovery | `spinning` | `Discovering imported files` | unknown (iterative) |
+| 2 — Merging into pool | `progress` | `Merging file descriptors` | `len(topo.files)` |
+| 3 — Building FQDN graph | `progress` | `Building FQDN graph` | `len(topo.files)` |
+| 4 — Pruning | plain print | `Processing exclusions` | — |
+| 5 — Reachability BFS | `progress` | `Computing reachability` | `len(ctx.nodes)` |
+| 6 sub-pass 1 — Summoning | `progress` | `Marking summoned nodes` | `len(ctx.nodes)` |
+| 6 sub-pass 2 — Import bridging | `spinning` | `Bridging import paths` | unknown (convergence loop) |
+| 6 sub-pass 3 — DB closure | `spinning` | `Closing DB dependencies` | unknown |
+| 7 — Rendering | `progress` | `Rendering proto files` | `len(summoned)` |
+| DB step 1 — Collect graphs | `progress` | `Collecting scoring graphs` | `len(summoned_files)` |
+| DB step 2 — Hopcroft (Rust) | `progress` | `Compiling global scoring graph` | 100 (dynamic %) |
+| DB step 3b — WKT deps | `spinning` | `Rendering WKT dependencies` | unknown |
+| DB step 4+5 — Serialize + index | `spinning` | `Writing schema DB` | unknown |
 
-Then wrap the loop:
-
-```python
-with rendering_progress(0 if ctx.quiet else len(summoned)) as advance:
-    for re_fdp in summoned:
-        ...  # existing rendering logic, unchanged
-        advance()
-```
-
-No other changes to `phases.py` logic.
+All `progress` indicators pass `total = 0` (suppressing the bar) when
+`ctx.quiet` is set.  Spinners and plain prints are also suppressed when
+`ctx.quiet` is set.
 
 ---
 
@@ -163,12 +148,12 @@ No other changes to `phases.py` logic.
 
 | File | Change |
 |------|--------|
-| `reproto/src/reproto/lib/console.py` | New — console singleton, `rprint`, `rendering_progress` |
+| `reproto/src/reproto/lib/console.py` | Console singleton, `rprint`, `progress` (persistent label, `advance(n=1)`), `spinning` (persistent label) |
 | `reproto/src/reproto/cli.py` | Replace 4 × `click.secho` with `rprint` |
-| `reproto/src/reproto/phases.py` | Collect summoned files into list; wrap loop with `rendering_progress` |
+| `reproto/src/reproto/phases.py` | Canonical labels throughout; remove `cli_info` phase-name prints; add spinners for phase 6 sub-passes 2 and 3 |
 
 ---
 
 ## Implemented in
 
-2026-05-22
+2026-05-24

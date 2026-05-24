@@ -44,14 +44,24 @@ use score_graph_lib::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
 ///     If any YAML string is malformed or the graph cannot be built.
 #[gen_stub_pyfunction]
 #[pyfunction]
-#[pyo3(signature = (scoring_graphs, emit_yaml = false))]
+#[pyo3(signature = (scoring_graphs, emit_yaml = false, on_progress = None))]
 fn build_graph<'py>(
     py: Python<'py>,
     scoring_graphs: Vec<String>,
     emit_yaml: bool,
+    on_progress: Option<Py<PyAny>>,
 ) -> PyResult<(Bound<'py, PyBytes>, Option<String>)> {
-    let (rkyv_bytes, yaml) = build_from_strings(&scoring_graphs, emit_yaml)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let result = py.detach(|| {
+        build_from_strings(&scoring_graphs, emit_yaml, |pct| {
+            if let Some(ref cb) = on_progress {
+                Python::attach(|py| {
+                    let _ = cb.call1(py, (pct as u64,));
+                });
+            }
+        })
+        .map_err(|e| e.to_string())
+    });
+    let (rkyv_bytes, yaml) = result.map_err(PyRuntimeError::new_err)?;
     Ok((PyBytes::new(py, &rkyv_bytes), yaml))
 }
 

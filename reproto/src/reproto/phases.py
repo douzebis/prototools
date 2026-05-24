@@ -327,8 +327,6 @@ def _phase1_load_files(
     topo: Topology,
 ) -> set[ReFile]:
     """Phase 1: Load seed files and recursively discover all imported dependencies."""
-    if not ctx.quiet:
-        cli_info('Loading seed files')
 
     # Pre-register fallback protos so W1 is suppressed for them.
     # The import-discovery loop calls load_from_path for every dependency; if a
@@ -370,26 +368,25 @@ def _phase1_load_files(
             if name not in known_files:
                 known_files[name] = file
 
-        if not ctx.quiet:
-            cli_info('Discovering and loading imported files')
-
+        from .lib.console import spinning
         # Read imported paths (if not pruned)
-        while topo.new_files:
+        with spinning('Discovering imported files', quiet=ctx.quiet):
+            while topo.new_files:
+                topo.merge_files()
+                for file in topo.files.values():
+                    assert isinstance(file, ReFile)
+                    if file.is_ref():
+                        if file not in known_files:
+                            name = file.name
+                            known_files[name] = file
+                            qfiles: list[QualFile] = load_from_path(ctx, in_repo, Path(name))
+                            if len(qfiles) != 1:
+                                pass  # W1 warning already emitted by load_from_path
+                            else:
+                                ReFile(topo, qfiles[0])
+                                if ctx.debug:
+                                    cli_info(f"  Loading: {name}")
             topo.merge_files()
-            for file in topo.files.values():
-                assert isinstance(file, ReFile)
-                if file.is_ref():
-                    if file not in known_files:
-                        name = file.name
-                        known_files[name] = file
-                        qfiles: list[QualFile] = load_from_path(ctx, in_repo, Path(name))
-                        if len(qfiles) != 1:
-                            pass  # W1 warning already emitted by load_from_path
-                        else:
-                            ReFile(topo, qfiles[0])
-                            if ctx.debug:
-                                cli_info(f"  Loading: {name}")
-        topo.merge_files()
 
     # Helper function to load embedded proto fallbacks
     def load_embedded_proto_fallback(proto_name: str) -> 'QualFile | None':
@@ -707,9 +704,7 @@ def _phase2_build_pool(
 
     # -------------------------------------------------------------------------
 
-    if not ctx.quiet:
-        cli_info('Sorting files topologically')
-        cli_info('Merging file descriptors into pool')
+    from .lib.console import progress as _progress
 
     # --- Locate descriptor.proto ---------------------------------------------
 
@@ -745,77 +740,84 @@ def _phase2_build_pool(
         ) -> None:
             pass
 
-    for i in itertools.count(start=1):
-        # Find leaf-files (i.e.: do not target other files)
-        for n in files:
-            is_leaf = all(t not in files for t in n.targets)
-            if is_leaf:
-                leaves.add(n)
-            else:
-                non_leaves.add(n)
-        if not leaves:
-            # No more leaf-files, exit the loop
-            break
-        # Merge the leaf-FDPs into the descriptors pool
-        if ctx.debug:
-            cli_info(f"  Rank {i}: processing {len(leaves)} files")
-        for n in leaves:
+    total_files = 0 if ctx.quiet else len(topo.files)
+    with _progress('Merging file descriptors', total_files) as advance:
+        for i in itertools.count(start=1):
+            # Find leaf-files (i.e.: do not target other files)
+            for n in files:
+                is_leaf = all(t not in files for t in n.targets)
+                if is_leaf:
+                    leaves.add(n)
+                else:
+                    non_leaves.add(n)
+            if not leaves:
+                # No more leaf-files, exit the loop
+                break
+            # Merge the leaf-FDPs into the descriptors pool
             if ctx.debug:
-                cli_info(f"  Merging: {n.name}")
-            if n.is_ref():
-                continue
-            if fqdn_matches_any(Fqdn(f'file:{n.name}'), prunings):
-                n.is_pruned = True
-                ctx.pruned_file_names.add(n.name)
-                continue
-            qf = n.qfile
-            contents = qf.contents
-            try:
-                match contents:
-                    case str():
-                        # Text format — contents is a bare FDP fragment (already
-                        # decapsulated by split_fdps; no entry{} wrapper present)
-                        fdp = text_format.Parse(
-                            contents,
-                            FileDescriptorProto(),
-                            allow_unknown_field=True,
-                            allow_unknown_extension=True,
-                            descriptor_pool=ctx.pool,
-                        )
-                        phase2_plugin(ctx, fdp)
-                        patch_go_package(ctx, fdp)
-                        _strip_self_dependency(fdp)
-                        if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                            continue
-                        _strip_unresolvable_dependencies(ctx, n, fdp)
-                        ctx.pool_db.Add(fdp)
-                        ctx.pool_db_fdps.append(fdp)
-
-                    case bytes():
-                        # Binary format — contents is a serialised single FDP
-                        fdp = FileDescriptorProto()
-                        fdp.ParseFromString(contents)
-                        try:
+                cli_info(f"  Rank {i}: processing {len(leaves)} files")
+            for n in leaves:
+                if ctx.debug:
+                    cli_info(f"  Merging: {n.name}")
+                if n.is_ref():
+                    advance()
+                    continue
+                if fqdn_matches_any(Fqdn(f'file:{n.name}'), prunings):
+                    n.is_pruned = True
+                    ctx.pruned_file_names.add(n.name)
+                    advance()
+                    continue
+                qf = n.qfile
+                contents = qf.contents
+                try:
+                    match contents:
+                        case str():
+                            # Text format — contents is a bare FDP fragment (already
+                            # decapsulated by split_fdps; no entry{} wrapper present)
+                            fdp = text_format.Parse(
+                                contents,
+                                FileDescriptorProto(),
+                                allow_unknown_field=True,
+                                allow_unknown_extension=True,
+                                descriptor_pool=ctx.pool,
+                            )
                             phase2_plugin(ctx, fdp)
                             patch_go_package(ctx, fdp)
                             _strip_self_dependency(fdp)
                             if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                advance()
                                 continue
                             _strip_unresolvable_dependencies(ctx, n, fdp)
                             ctx.pool_db.Add(fdp)
                             ctx.pool_db_fdps.append(fdp)
-                        except TypeError as e:
-                            # NOTE: TypeError can occur when attempting to add a descriptor
-                            # that conflicts with an existing one in the pool (e.g., duplicate
-                            # symbol names or incompatible descriptor types).
-                            cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
-            except message.DecodeError:
-                cli_warning(f"Skipping unparseable file: {n.name}")
-                n.is_pruned = True
-        # Prepare for next loop iteration
-        files = non_leaves
-        non_leaves = set()
-        leaves = set()
+
+                        case bytes():
+                            # Binary format — contents is a serialised single FDP
+                            fdp = FileDescriptorProto()
+                            fdp.ParseFromString(contents)
+                            try:
+                                phase2_plugin(ctx, fdp)
+                                patch_go_package(ctx, fdp)
+                                _strip_self_dependency(fdp)
+                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                                    advance()
+                                    continue
+                                _strip_unresolvable_dependencies(ctx, n, fdp)
+                                ctx.pool_db.Add(fdp)
+                                ctx.pool_db_fdps.append(fdp)
+                            except TypeError as e:
+                                # NOTE: TypeError can occur when attempting to add a descriptor
+                                # that conflicts with an existing one in the pool (e.g., duplicate
+                                # symbol names or incompatible descriptor types).
+                                cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
+                except message.DecodeError:
+                    cli_warning(f"Skipping unparseable file: {n.name}")
+                    n.is_pruned = True
+                advance()
+            # Prepare for next loop iteration
+            files = non_leaves
+            non_leaves = set()
+            leaves = set()
 
     if non_leaves:
         # The remaining files have a circular dependency; mark them pruned so
@@ -823,8 +825,6 @@ def _phase2_build_pool(
         for n in non_leaves:
             cli_warning(f"Circular dependency detected: {n.name}")
             n.is_pruned = True
-    if not ctx.quiet:
-        cli_info('File descriptor pool complete')
 
     # --- Build edition-default table from the variant's descriptor.pb --------
     # pool_db.FindFileByName returns the FileDescriptorProto directly.
@@ -840,16 +840,17 @@ def _phase3_build_graph(
     topo: Topology,
 ) -> None:
     """Phase 3: Build FQDN graph — create Re* wrapper nodes and populate ctx.nodes."""
-    if not ctx.quiet:
-        cli_info('Building FQDN dependency graph')
+    from .lib.console import progress as _progress
 
-    # Create ReFileDescriptorProto nodes for all loaded files
-    for file in topo.files.values():
-        if file.is_ref() or file.is_pruned:
-            continue
-        desc = file.qfile.desc
-        proto = ctx.pool_db.FindFileByName(desc.name)
-        ReFileDescriptorProto(ctx, proto)
+    total_files = 0 if ctx.quiet else len(topo.files)
+    with _progress('Building FQDN graph', total_files) as advance:
+        # Create ReFileDescriptorProto nodes for all loaded files
+        for file in topo.files.values():
+            if not (file.is_ref() or file.is_pruned):
+                desc = file.qfile.desc
+                proto = ctx.pool_db.FindFileByName(desc.name)
+                ReFileDescriptorProto(ctx, proto)
+            advance()
 
     ctx.merge_nodes()
 
@@ -875,7 +876,8 @@ def _phase3_build_graph(
 def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""
     if not ctx.quiet and prunings:
-        cli_info('Processing exclusions')
+        from .lib.console import rprint as _rprint
+        _rprint('Processing exclusions')
 
     transitive_prunnings: set[Node] = set()
     current_prunings: set[Node] = set()
@@ -939,8 +941,7 @@ def _phase5_reachability(
     topo: Topology,
 ) -> None:
     """Phase 5: Mark all nodes transitively reachable from seeds (forward propagation)."""
-    if not ctx.quiet:
-        cli_info('Computing reachability from seeds')
+    from .lib.console import progress as _progress
 
     transitive_reachables: set[Node] = set()
     current_reachables: set[Node] = set()
@@ -989,23 +990,26 @@ def _phase5_reachability(
 
     # --- Propagates forwards (targeted nodes) --------------------------------
 
-    while current_reachables:
-        transitive_reachables.update(current_reachables)
-        new_reachables: set[Node] = set()
-        for node in current_reachables:
-            for target in node.targets:
-                assert (isinstance(target, Node)
-                        and target is not None)
-                if target.is_pruned:
-                    continue
-                if not target.is_present():
-                    continue
-                if target not in transitive_reachables:
-                    if target.seeder is None:
-                        target.seeder = node
-                    target.is_reachable = True
-                    new_reachables.add(target)
-        current_reachables = new_reachables
+    total_nodes = 0 if ctx.quiet else len(ctx.nodes)
+    with _progress('Computing reachability', total_nodes) as advance:
+        while current_reachables:
+            transitive_reachables.update(current_reachables)
+            new_reachables: set[Node] = set()
+            for node in current_reachables:
+                advance()
+                for target in node.targets:
+                    assert (isinstance(target, Node)
+                            and target is not None)
+                    if target.is_pruned:
+                        continue
+                    if not target.is_present():
+                        continue
+                    if target not in transitive_reachables:
+                        if target.seeder is None:
+                            target.seeder = node
+                        target.is_reachable = True
+                        new_reachables.add(target)
+            current_reachables = new_reachables
 
     # --- Display the results (debug only) ------------------------------------
     if ctx.debug_fqdn:
@@ -1062,8 +1066,7 @@ def _shortest_lex_path(
 
 def _phase6_summoning(ctx: Context) -> None:
     """Phase 6: Mark container nodes of reachable nodes (backward propagation)."""
-    if not ctx.quiet:
-        cli_info('Marking containers of reachable nodes')
+    from .lib.console import progress as _progress, spinning as _spinning
 
     # --- Sub-pass 1: seed summoning ------------------------------------------
     # Mark every reachable node as summoned, then propagate upward through the
@@ -1071,11 +1074,14 @@ def _phase6_summoning(ctx: Context) -> None:
 
     current_summoned: set[Node] = set()
 
-    for node in ctx.nodes.values():
-        if not node.is_reachable:
-            continue
-        node.is_summoned = True
-        current_summoned.add(node)
+    total_nodes = 0 if ctx.quiet else len(ctx.nodes)
+    with _progress('Marking summoned nodes', total_nodes) as advance:
+        for node in ctx.nodes.values():
+            advance()
+            if not node.is_reachable:
+                continue
+            node.is_summoned = True
+            current_summoned.add(node)
 
     while current_summoned:
         new_summoned: set[Node] = set()
@@ -1137,30 +1143,30 @@ def _phase6_summoning(ctx: Context) -> None:
                 stack.append(c)
         return result
 
-    changed = True
-    while changed:
-        changed = False
-        summoned_files = [
-            node for node in ctx.nodes.values()
-            if isinstance(node, ReFileDescriptorProto)
-            and node.is_summoned
-        ]
-        for file_a in summoned_files:
-            for target in _all_type_targets(file_a):
-                file_c = _host_file(target)
-                if file_c is None or not file_c.is_summoned:
-                    continue
-                if file_c is file_a:
-                    continue
-                path = _shortest_lex_path(file_a, file_c, import_graph)
-                if not path:
-                    continue
-                # Summon all intermediate files (exclude start and end)
-                for intermediate in path[1:-1]:
-                    if not intermediate.is_summoned:
-                        intermediate.is_summoned = True
-                        changed = True
-
+    with _spinning('Bridging import paths', quiet=ctx.quiet):
+        changed = True
+        while changed:
+            changed = False
+            summoned_files = [
+                node for node in ctx.nodes.values()
+                if isinstance(node, ReFileDescriptorProto)
+                and node.is_summoned
+            ]
+            for file_a in summoned_files:
+                for target in _all_type_targets(file_a):
+                    file_c = _host_file(target)
+                    if file_c is None or not file_c.is_summoned:
+                        continue
+                    if file_c is file_a:
+                        continue
+                    path = _shortest_lex_path(file_a, file_c, import_graph)
+                    if not path:
+                        continue
+                    # Summon all intermediate files (exclude start and end)
+                    for intermediate in path[1:-1]:
+                        if not intermediate.is_summoned:
+                            intermediate.is_summoned = True
+                            changed = True
 
     # --- Sub-pass 3: DB dependency closure (only when --build-schema-db) ------
     # Identify fallback/WKT files that are transitive dependencies of summoned
@@ -1172,38 +1178,36 @@ def _phase6_summoning(ctx: Context) -> None:
         from .re_file import ReFileDescriptorProto as _ReFileFDP
         from .fake_types import Ref as _Ref
 
-        seen: set[str] = {
-            node.name for node in ctx.nodes.values()
-            if isinstance(node, _ReFileFDP) and node.is_summoned
-        }
-        work: list[_ReFileFDP] = [
-            node for node in ctx.nodes.values()
-            if isinstance(node, _ReFileFDP) and node.is_summoned
-        ]
-        while work:
-            file_node = work.pop()
-            for dep_name in file_node.dependency:
-                if dep_name in seen:
-                    continue
-                seen.add(dep_name)
-                fqdn = _ReFileFDP.fqdn_from_ref(_Ref(dep_name))
-                dep_node = ctx.find_node(fqdn)
-                if dep_node is None or not isinstance(dep_node, _ReFileFDP):
-                    continue
-                if not dep_node.is_present() or dep_node.is_pruned:
-                    continue
-                ctx.schema_db_extra_nodes.append(dep_node)
-                work.append(dep_node)
+        with _spinning('Closing DB dependencies', quiet=ctx.quiet):
+            seen: set[str] = {
+                node.name for node in ctx.nodes.values()
+                if isinstance(node, _ReFileFDP) and node.is_summoned
+            }
+            work: list[_ReFileFDP] = [
+                node for node in ctx.nodes.values()
+                if isinstance(node, _ReFileFDP) and node.is_summoned
+            ]
+            while work:
+                file_node = work.pop()
+                for dep_name in file_node.dependency:
+                    if dep_name in seen:
+                        continue
+                    seen.add(dep_name)
+                    fqdn = _ReFileFDP.fqdn_from_ref(_Ref(dep_name))
+                    dep_node = ctx.find_node(fqdn)
+                    if dep_node is None or not isinstance(dep_node, _ReFileFDP):
+                        continue
+                    if not dep_node.is_present() or dep_node.is_pruned:
+                        continue
+                    ctx.schema_db_extra_nodes.append(dep_node)
+                    work.append(dep_node)
 
 
 def _phase7_output(ctx: Context, out_repo: Path) -> None:
     """Phase 7: Generate and write reconstructed .proto files."""
-    if not ctx.quiet:
-        cli_info('Writing reconstructed .proto files.')
-
     create_option_message_classes(ctx)
 
-    from .lib.console import rendering_progress
+    from .lib.console import progress as _progress
 
     summoned = [
         re_fdp for re_fdp in ctx.nodes.values()
@@ -1214,7 +1218,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                  and not ctx.write_variant_descriptor)
     ]
 
-    with rendering_progress(0 if ctx.quiet else len(summoned)) as advance:
+    with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned)) as advance:
         for re_fdp in summoned:
             path = Path(re_fdp.name)
             res_path = out_repo / path
@@ -1300,9 +1304,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     YAML content is generated in-memory from the same logic as
     _phase_emit_scoring_graphs; no intermediate files are written to disk.
     """
-    if not ctx.quiet:
-        cli_info('Building schema DB')
-
+    from .lib.console import progress as _progress, spinning
     import yaml
     from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
@@ -1335,38 +1337,39 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
 
     scoring_graphs: list[str] = []
 
-    for re_file in ctx.nodes.values():
-        if not isinstance(re_file, ReFileDescriptorProto):
-            continue
-        if not re_file.is_present():
-            continue
-        if not re_file.is_summoned:
-            continue
-        proto_name = re_file.name
+    summoned_files = [
+        n for n in ctx.nodes.values()
+        if isinstance(n, ReFileDescriptorProto) and n.is_present() and n.is_summoned
+    ]
+    total_summoned = 0 if ctx.quiet else len(summoned_files)
+    with _progress('Collecting scoring graphs', total_summoned) as advance:
+        for re_file in summoned_files:
+            proto_name = re_file.name
+            try:
+                fd = ctx.pool.FindFileByName(proto_name)
+            except (KeyError, TypeError) as e:
+                from .lib.warnings import get_collector
+                get_collector().w6(proto_name, "schema db", str(e))
+                advance()
+                continue
 
-        try:
-            fd = ctx.pool.FindFileByName(proto_name)
-        except (KeyError, TypeError) as e:
-            from .lib.warnings import get_collector
-            get_collector().w6(proto_name, "schema db", str(e))
-            continue
+            group_fqdns = _collect_group_fqdns(fd)
+            messages: dict = {}
+            for msg_desc in fd.message_types_by_name.values():
+                _collect(msg_desc, messages, group_fqdns)
 
-        group_fqdns = _collect_group_fqdns(fd)
-        messages: dict = {}
-        for msg_desc in fd.message_types_by_name.values():
-            _collect(msg_desc, messages, group_fqdns)
+            entries = []
+            for msg_desc in fd.message_types_by_name.values():
+                node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
+                if node is None or not node.is_pruned:
+                    entries.append(msg_desc.full_name)
+            entries.sort()
 
-        entries = []
-        for msg_desc in fd.message_types_by_name.values():
-            node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
-            if node is None or not node.is_pruned:
-                entries.append(msg_desc.full_name)
-        entries.sort()
-
-        scoring_graphs.append(
-            str(yaml.dump({'entries': entries, 'messages': messages},
-                          sort_keys=False, allow_unicode=True))
-        )
+            scoring_graphs.append(
+                str(yaml.dump({'entries': entries, 'messages': messages},
+                              sort_keys=False, allow_unicode=True))
+            )
+            advance()
 
     if not scoring_graphs:
         from .lib.warnings import get_collector
@@ -1382,9 +1385,17 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             f'--build-schema-db requires the scoring_graph_lib extension: {e}'
         ) from e
 
-    from .lib.console import spinning
-    with spinning('Compiling scoring graph'):
-        baked_graph, _yaml = build_graph(scoring_graphs=scoring_graphs)
+    last_pct = 0
+
+    def _on_progress(pct: int) -> None:
+        nonlocal last_pct
+        advance(pct - last_pct)
+        last_pct = pct
+
+    with _progress('Compiling global scoring graph', total=0 if ctx.quiet else 100) as advance:
+        baked_graph, _yaml = build_graph(
+            scoring_graphs=scoring_graphs, on_progress=_on_progress
+        )
 
     # ── 3. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
     #
@@ -1412,23 +1423,24 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             for child in n.contains:
                 stack.append(child)
 
-    for extra_node in ctx.schema_db_extra_nodes:
-        _promote_subtree(extra_node)
-        saved_force = ctx.force_proto2_for_editions
-        if EDITIONS_COMPAT_REQUIRED and _fdp_syntax(extra_node.this) == "editions":
-            ctx.force_proto2_for_editions = True
-        slot = _DescOut()
-        ctx.out_desc = slot
-        try:
-            extra_node.render(ctx)
-        except (KeyError, ValueError, TypeError, AttributeError):
-            pass
-        finally:
-            ctx.out_desc = None
-            ctx.force_proto2_for_editions = saved_force
-        if slot.out is not None:
-            assert isinstance(slot.out, FileDescriptorProto)
-            ctx.schema_db_fdps.append(slot.out)
+    with spinning('Rendering WKT dependencies', quiet=ctx.quiet):
+        for extra_node in ctx.schema_db_extra_nodes:
+            _promote_subtree(extra_node)
+            saved_force = ctx.force_proto2_for_editions
+            if EDITIONS_COMPAT_REQUIRED and _fdp_syntax(extra_node.this) == "editions":
+                ctx.force_proto2_for_editions = True
+            slot = _DescOut()
+            ctx.out_desc = slot
+            try:
+                extra_node.render(ctx)
+            except (KeyError, ValueError, TypeError, AttributeError):
+                pass
+            finally:
+                ctx.out_desc = None
+                ctx.force_proto2_for_editions = saved_force
+            if slot.out is not None:
+                assert isinstance(slot.out, FileDescriptorProto)
+                ctx.schema_db_fdps.append(slot.out)
 
     fdp_by_name = {f.name: f for f in ctx.schema_db_fdps}
     # Kahn's algorithm: process files whose deps are already placed.
@@ -1463,17 +1475,18 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     # db_path.stem/     → sibling directory
     #   hopcroft.rkyv   → compiled Hopcroft scoring graph
 
-    raw_pb_bytes = fds.SerializeToString()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db_path.write_bytes(raw_pb_bytes)
+    with spinning('Writing schema DB', quiet=ctx.quiet):
+        raw_pb_bytes = fds.SerializeToString()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.write_bytes(raw_pb_bytes)
 
-    schema_db_dir = db_path.with_suffix('')
-    schema_db_dir.mkdir(parents=True, exist_ok=True)
-    (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
+        schema_db_dir = db_path.with_suffix('')
+        schema_db_dir.mkdir(parents=True, exist_ok=True)
+        (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
 
-    # ── 5. Build and write index.rkyv (spec 0068)
-    from .build_index import write_fds_index
-    write_fds_index(raw_pb_bytes, fds, schema_db_dir / 'index.rkyv')
+        # ── 5. Build and write index.rkyv (spec 0068)
+        from .build_index import write_fds_index
+        write_fds_index(raw_pb_bytes, fds, schema_db_dir / 'index.rkyv')
 
     if not ctx.quiet:
         eprintln = __import__('sys').stderr.write

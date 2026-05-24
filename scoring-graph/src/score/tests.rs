@@ -107,7 +107,7 @@ fn make_merged() -> Merged {
 fn build_graph() -> score_load::LoadedGraph {
     let merged = make_merged();
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
     let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -439,7 +439,7 @@ fn tc16_fixed_fields_known() {
         roots: vec!["M".to_string()],
     };
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
     let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.bin");
@@ -547,7 +547,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
     };
 
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
     let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("two.bin");
@@ -799,7 +799,7 @@ fn map_entry_states_are_distinct() {
     };
 
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
 
     let ame_id = raw.node_ids["AnnotatedMapEntry"];
     let moe_id = raw.node_ids["MultiOptionMapEntry"];
