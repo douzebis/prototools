@@ -94,6 +94,7 @@
       toilet
       imagemagick
       chafa
+      tree
     ];
 
     shellHook = ''

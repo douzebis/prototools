@@ -5,11 +5,12 @@
 # Full tutorial:                                                                 \
 #   github.com/ThalesGroup/prototools/blob/main/docs/tutorial.md                 \
 #                                                                                \
-# Run from the repo root:  ./demo/prompt --splash prototools demo/01-tutorial.sh  \
+# Run from the repo root:  ./demo/prompt --splash prototools demo/01-tutorial.sh \
 # Generated files go under ./stash/ (gitignored).                                \
 #
 
 demo/header "1. Protobufs are everywhere"
+demo/header "1. Protobufs are
 
 # \
 #                                                                                \
@@ -35,7 +36,8 @@ demo/header "2. Setup"
 prototext --version && reproto --version
 
 # Build the googleapis schema DB — we will use it throughout.
-export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+#export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+export GOOGLEAPIS_DB=/nix/store/qmnwx5798np062iydkky60g0jfq0dam9-googleapis-db/googleapis.desc
 # Companion paths: binary instances and decompiled .proto sources.
 GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
 GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
@@ -211,9 +213,55 @@ demo/header "7. There is more"
 # binary descriptor actually defines.                                            \
 #
 
+prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb | vim +'set ft=pbtxt' -
 # Decompile the PostalAddress descriptor back to .proto source.
-reproto --use-variant descriptor \
-    -O stash/reproto-out $GOOGLEAPIS_DESCS/google/type/postal_address.pb
+reproto -O stash/reproto-out \
+    --use-variant descriptor \
+    $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 
 # Human-readable .proto source, recovered from the binary.
-cat stash/reproto-out/google/type/postal_address.proto
+cat stash/reproto-out/google/type/postal_address.proto | tee /dev/tty | vim +'set ft=proto' -
+
+# \
+#                                                                                \
+# reproto can also decompile an entire schema DB back to .proto sources.         \
+# The full googleapis DB contains thousands of files.                            \
+#
+# Decompile the entire googleapis DB: thousands of .proto files reconstructed.
+reproto -O stash/meet-out --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS .
+
+# Browse the reconstructed sources — full import graph, all navigable.
+tree stash/meet-out
+
+# Open one file in VS Code: imports are live links to the sibling .proto files.
+code stash/meet-out/google/apps/meet/v2/service.proto
+
+# \
+#                                                                                \
+# That reconstructed thousands of files.  What if you only care about one        \
+# message type?  Pass its descriptor as the seed: reproto pulls only its         \
+# transitive closure.                                                            \
+#
+# Seed on ConferenceRecord only: thousands of files collapse to 2.
+reproto -O stash/meet-seed \
+    --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS google/apps/meet/v2/resource.pb
+
+tree stash/meet-seed
+
+# \
+#                                                                                \
+# You can also go the other way: start from the same seed and prune away         \
+# the boilerplate annotation files you don't need.                               \
+#
+# Prune the google/api annotation files present in the ConferenceRecord closure.
+reproto -O stash/meet-pruned \
+    --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS google/apps/meet/v2/resource.pb \
+    --prune 'file:google/api/field_behavior.proto' \
+    --prune 'file:google/api/resource.proto'
+
+tree stash/meet-pruned
+
+# THE END
