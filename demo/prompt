@@ -217,7 +217,7 @@ show_help() {
     printf "\r\033[K" >/dev/tty
     printf "%s  F1      show this help\n" "$YELLOW" >/dev/tty
     printf "  ↑/↓     browse history  (also Ctrl-P / Ctrl-N)\n" >/dev/tty
-    printf "  PgUp/↓  fast browse (5 steps)\n" >/dev/tty
+    printf "  PgUp/↓  fast browse (10 steps)\n" >/dev/tty
     printf "  ENTER   run command\n" >/dev/tty
     printf "  F2      duplicate current line\n" >/dev/tty
     printf "  F3      delete current line\n" >/dev/tty
@@ -228,7 +228,7 @@ show_help() {
 fast_up() {
     display_commands[$index]="$READLINE_LINE"
     commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
-    (( index -= 5 ))
+    (( index -= 10 ))
     if (( index < 0 )); then index=0; fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
@@ -237,7 +237,7 @@ fast_up() {
 fast_down() {
     display_commands[$index]="$READLINE_LINE"
     commands[$index]=$(echo "$READLINE_LINE" | tr -d '\n' | sed 's/\\  */ /g')
-    (( index += 5 ))
+    (( index += 10 ))
     if (( index >= n )); then index=$((n-1)); fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
