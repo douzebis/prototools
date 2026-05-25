@@ -228,6 +228,7 @@ cat stash/reproto-out/google/type/postal_address.proto | tee /dev/tty | vim +'se
 # The full googleapis DB contains thousands of files.                            \
 #
 # Decompile the entire googleapis DB: thousands of .proto files reconstructed.
+rm -rf stash/meet-out stash/meet-seed stash/meet-pruned
 reproto -O stash/meet-out --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS .
 
@@ -243,7 +244,7 @@ code stash/meet-out/google/apps/meet/v2/service.proto
 # message type?  Pass its descriptor as the seed: reproto pulls only its         \
 # transitive closure.                                                            \
 #
-# Seed on ConferenceRecord only: thousands of files collapse to 2.
+# Seed on ConferenceRecord only: thousands of files collapse to 4.
 reproto -O stash/meet-seed \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS google/apps/meet/v2/resource.pb
@@ -253,7 +254,7 @@ tree stash/meet-seed
 # \
 #                                                                                \
 # You can also go the other way: start from the same seed and prune away         \
-# the boilerplate annotation files you don't need.                               \
+# the boilerplate annotation files you don't need.  4 files become 2.           \
 #
 # Prune the google/api annotation files present in the ConferenceRecord closure.
 reproto -O stash/meet-pruned \

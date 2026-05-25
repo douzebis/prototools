@@ -19,8 +19,11 @@ the script needs to tell a story: why protobufs matter, what is hidden inside a
 binary blob, and how prototools lets you see things that standard decoders
 hide.
 
-This spec also clarifies the division of responsibility between the tutorial
-and the demo.
+This spec clarifies the division of responsibility between the tutorial and the
+demo, establishes presentation guidelines, and defines the narrative arc.
+
+Concrete googleapis command examples are collected separately in
+`docs/demo-examples.md`.
 
 ---
 
@@ -43,7 +46,11 @@ The two are kept in sync: when a tutorial section changes its commands the
 demo script is updated to match.  But the demo script is allowed to omit
 sections and to reorder material for narrative effect.
 
-#### Grouping and pacing
+---
+
+## Presentation guidelines
+
+### Grouping and pacing
 
 The presenter advances by hitting ENTER.  Each ENTER should correspond to one
 meaningful beat — a thought, a reveal, or a command whose output is worth
@@ -61,7 +68,26 @@ pausing on.  Rules of thumb:
   lets the presenter scroll, and closes cleanly with `q`.  Use `head` only
   when showing just the first few lines is the point.
 
-#### Multi-line comment syntax
+### VSCode workspace
+
+During the demo a VSCode window is open with a workspace that includes the
+`stash/` output directory (or relevant subdirectories).  This enables
+**Go to Definition** (`right-click → Find Definition`) on import paths in the
+reconstructed `.proto` files — a key demo beat.
+
+Guidelines to keep the workspace manageable:
+
+- **One workspace folder** — `stash/` — covers all reproto output.  All
+  `reproto -O` commands write under `stash/` (e.g. `stash/meet-seed`,
+  `stash/meet-pruned`) so a single workspace root sees all of them.
+- **Do not multiply top-level workspace folders**.  Adding a separate folder
+  per reproto run fragments the namespace and breaks cross-folder Go to
+  Definition.
+- **Stale file prevention**: always `rm -rf` the target subdirectory before
+  each `reproto -O` command so the workspace reflects only the current run's
+  output.  This is already done for the meet-* beats in the script.
+
+### Multi-line comment syntax
 
 Narrative text uses the `# \` continuation idiom so the runner displays the
 whole block as a single prompt entry:
@@ -87,7 +113,7 @@ Rules:
 - A blank line in the script file after the closing `#` acts as a visual
   separator between blocks in the source; it produces no extra prompt entry.
 
-#### Maintenance tooling
+### Maintenance tooling
 
 When adding or editing content lines in a block, use the following Python
 snippet to pad a line to column 82 and append ` \`:
@@ -164,9 +190,7 @@ Three quotes to use in the intro, in recommended presentation order:
 
 Recommended flow: open with Quote 1 (the cynical hook — gets a laugh), follow
 with Quote 3 (the "why it matters" pivot — reframes the story).  Quote 2 is
-available as a reinforcement if needed.  The point: protobufs aren't just
-busywork, they are the connective tissue of the infrastructure — which is
-exactly why understanding them matters.
+available as a reinforcement if needed.
 
 ---
 
@@ -182,9 +206,9 @@ Intro text covering:
 - They are compact (binary), self-describing (with a schema), and
   language-neutral — which is why they became the lingua franca of
   microservice communication.
-- Open with Quote 1 (the cynical hook), optionally followed by Quote 2 (the reinforcement).  The point: protobufs are
-  everywhere, understanding them is a basic skill for anyone debugging,
-  auditing, or operating distributed systems.
+- Open with Quote 1 (the cynical hook), optionally followed by Quote 2 (the
+  reinforcement).  The point: protobufs are everywhere, understanding them is
+  a basic skill for anyone debugging, auditing, or operating distributed systems.
 
 ### S2 — Binary mystery sequence
 
@@ -209,12 +233,9 @@ Still using `PostalAddress`:
 2. Reveal the self-referential twist: the descriptor format is itself defined
    in `descriptor.proto`, so a descriptor file is a protobuf whose schema is
    `google.protobuf.FileDescriptorSet`.
-3. Demonstrate: compile `google/type/postal_address.proto` alone (with
-   `--include_imports`) into a small `postal_address.desc`, then decode it
-   with `prototext decode` — it decodes as a `FileDescriptorSet` and shows
-   the schema for `PostalAddress` in human-readable form.  Using a small
-   self-contained descriptor keeps the output focused; the full
-   `googleapis.desc` would be distracting.
+3. Demonstrate: decode `google/type/postal_address.pb` as a
+   `FileDescriptorProto` with `prototext decode` — it shows the schema for
+   `PostalAddress` in human-readable form.
 
 ### S4 — Ambiguous inference
 
@@ -244,212 +265,22 @@ varint trick.
 3. `prototext decode -a`: `val_ohb: 1` annotation; score drops to -11.
 4. Lossless round-trip via `prototext encode` still works.
 
-### S7 — Closing beat (optional)
+### S7 — reproto: decompile and navigate
 
-Brief pointer to `reproto` (decompile a `FileDescriptorSet` back to `.proto`
-source) and to the editions→proto2 translation, as "there is more" material
-for the curious.
+Demonstrates reproto as a schema recovery and navigation tool:
+
+1. Decompile a single `FileDescriptorProto` back to `.proto` source.
+2. Decompile an entire schema DB — show the reconstructed tree.
+3. Seed on one descriptor to pull only its transitive closure.
+4. Prune annotation boilerplate to keep only business logic.
+5. Open the result in VSCode — imports are live links, Go to Definition works.
+
+See `docs/demo-examples.md` for the concrete commands and file counts.
 
 ---
 
 ## Open questions
 
-- [[Diagrams: the old `prototext.drawio.xml` has pages for "protobuf vanilla",
+- Diagrams: the old `prototext.drawio.xml` has pages for "protobuf vanilla",
   "overhang", "interleaved", and "hidden fields" that could be adapted.
-  Decide whether to port them to the OSS repo or produce new ones.]]
-
----
-
-## googleapis demo examples (reproto)
-
-All examples use:
-
-```
-DB=/nix/store/vsxp7p4lzzwjg2vbvw0ihm95vpiwskzv-googleapis-db
-```
-
-### A — Full closure: `google/apps/meet/v2/service.pb` (12 files)
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/apps/meet/v2/service.pb -O /tmp/out
-```
-
-Output (12 files): `google/api/{annotations,client,field_behavior,http,launch_stage,resource}.proto`,
-`google/apps/meet/v2/{resource,service}.proto`,
-`google/protobuf/{duration,empty,field_mask,timestamp}.proto`.
-
-Good opening example: one seed file, 12 output files, shows import bridging at work.
-
-### B — Summon: seed on one message type (2 files)
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/apps/meet/v2/service.pb \
-  --seed 'desc:.google.apps.meet.v2.ConferenceRecord' \
-  -O /tmp/out
-```
-
-Output: `google/apps/meet/v2/resource.proto` + `google/protobuf/timestamp.proto` only.
-Dramatic reduction: 12 → 2 files by seeding on one message.
-
-### C — Prune: strip annotation boilerplate (5 files)
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/apps/meet/v2/service.pb \
-  --prune 'file:google/api/annotations.proto' \
-  --prune 'file:google/api/client.proto' \
-  --prune 'file:google/api/field_behavior.proto' \
-  --prune 'file:google/api/http.proto' \
-  --prune 'file:google/api/launch_stage.proto' \
-  --prune 'file:google/api/resource.proto' \
-  -O /tmp/out
-```
-
-Output: `google/apps/meet/v2/{resource,service}.proto` +
-`google/protobuf/{empty,field_mask,timestamp}.proto` (5 files).
-Strips all `google/api/*` annotation boilerplate; keeps business logic.
-
-### D — Import bridge: `launch_stage.proto` (meet/v2)
-
-`service.proto` → `client.proto` → `launch_stage.proto`.
-`service.proto` does not directly import `launch_stage.proto`, but it imports
-`client.proto` which imports `launch_stage.proto`.  Since no field in
-`service.proto` or `resource.proto` directly references `LaunchStage`,
-this is a pure bridge: `launch_stage.proto` appears only to keep the import
-chain compilable.
-
-### E — Bridge chain: `iam_policy.proto` → `policy.proto` → `type/expr.proto`
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/cloud/billing/v1/cloud_billing.pb -O /tmp/out
-```
-
-Output includes `google/type/expr.proto`.  The chain:
-`cloud_billing.proto` imports `iam/v1/iam_policy.proto`, which imports
-`iam/v1/policy.proto`, which imports `google/type/expr.proto`.
-`policy.proto` has a field `condition` of type `google.type.Expr`.
-`cloud_billing.proto` does not directly import `type/expr.proto` — it arrives
-via the 2-hop bridge `iam_policy.proto` → `policy.proto` → `type/expr.proto`.
-
-### G — Hopcroft compression: `google/cloud/securitycenter/v2/ip_rules.pb`
-
-The cleanest Hopcroft example found in googleapis.  The file defines four messages:
-
-```proto
-message IpRules   { repeated Allowed allowed = 2; repeated Denied denied = 3; }
-message Allowed   { repeated IpRule ip_rules = 1; }
-message Denied    { repeated IpRule ip_rules = 1; }
-message IpRule    { string protocol = 1; repeated PortRange port_ranges = 2; }
-message PortRange { int64 min = 1; int64 max = 2; }
-```
-
-`Allowed` and `Denied` are structurally identical: both `{ repeated IpRule ip_rules = 1 }`.
-Hopcroft finds this automatically and merges them into one state.
-
-Command (seed on all four top-level messages to exclude descriptor.proto noise):
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/cloud/securitycenter/v2/ip_rules.pb \
-  --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \
-  --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
-  --seed 'desc:.google.cloud.securitycenter.v2.IpRule' \
-  --seed 'desc:.google.cloud.securitycenter.v2.IpRules' \
-  --build-schema-db /tmp/iprules.desc \
-  --emit-scoring-html /tmp/iprules.html
-```
-
-Raw graph (5 non-leaf nodes, 5 edges):
-- `IpRules` → `Allowed` (f2), `IpRules` → `Denied` (f3)
-- `Allowed` → `IpRule` (f1), `Denied` → `IpRule` (f1)
-- `IpRule` → `PortRange` (f2)
-
-Hopcroft graph (4 non-leaf nodes, 4 edges):
-- `IpRules` → `Allowed/Denied` (f2), `IpRules` → `Allowed/Denied` (f3)  ← same target node
-- `Allowed/Denied` → `IpRule` (f1)
-- `IpRule` → `PortRange` (f2)
-
-The demo point: `Allowed` and `Denied` have opposite semantics but identical wire
-structure — Hopcroft collapses them.  `IpRules`'s two edges now point to the same
-merged state.
-
-### F — Larger API: `google/cloud/kms/v1/service.pb` (16 files)
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/reproto-out/google/cloud/kms/v1/service.pb -O /tmp/out
-```
-
-Output (16 files) includes `google/longrunning/operations.proto` and
-`google/rpc/status.proto` because KMS RPCs return `Operation` objects which
-carry a `Status` error field.  Good for showing how a real-world API closure
-spans multiple Google API layers (kms → longrunning → rpc → protobuf WKTs).
-
-Pruned (no `google/api/*`): 10 files — `kms/v1/{resources,service}.proto`,
-`longrunning/operations.proto`, `rpc/status.proto`, five protobuf WKTs.
-
-### H — Hopcroft at scale: `OperationMetadata` (93 services, one state)
-
-Discovered by scanning the full googleapis corpus for Hopcroft-merged states.
-93 Google Cloud services each define their own `OperationMetadata` message with
-the same shape:
-
-```proto
-message OperationMetadata {
-  google.protobuf.Timestamp create_time = 1;
-  google.protobuf.Timestamp end_time = 2;
-  string target = 3;
-  string verb = 4;
-  string status_message = 5;
-  bool requested_cancellation = 6;
-  string api_version = 7;
-}
-```
-
-Independent teams, independent packages, identical wire structure — Hopcroft
-collapses all 93 into a single state.  The demo point: the scorer only needs
-to learn this shape once, regardless of which service produced the binary.
-
-Sample command (8 seeds from different services):
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/googleapis.desc \
-  --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
-  --seed 'desc:.google.cloud.apihub.v1.OperationMetadata' \
-  --seed 'desc:.google.cloud.apphub.v1.OperationMetadata' \
-  --seed 'desc:.google.cloud.auditmanager.v1.OperationMetadata' \
-  --seed 'desc:.google.cloud.baremetalsolution.v2.OperationMetadata' \
-  --seed 'desc:.google.cloud.batch.v1.OperationMetadata' \
-  --seed 'desc:.google.cloud.batch.v1alpha.OperationMetadata' \
-  --seed 'desc:.google.cloud.beyondcorp.appconnections.v1.AppConnectionOperationMetadata' \
-  --build-schema-db /tmp/opmeta.desc \
-  --emit-scoring-html /tmp/opmeta.html
-```
-
-Raw graph: 8 non-leaf nodes (one per seed, all structurally identical).
-Hopcroft graph: 1 non-leaf node (all 8 collapse to the same state).
-
-### I — Versioned API collapse: `QualifyingQuestion` v20–v24
-
-Five consecutive versions of the Google Ads API each define `QualifyingQuestion`
-with identical wire structure.  Hopcroft collapses all five into one state —
-showing that a schema DB built from v20 already covers v21 through v24 without
-any changes.
-
-```bash
-reproto -I $DB/reproto-out --use-variant descriptor \
-  $DB/googleapis.desc \
-  --seed 'desc:.google.ads.googleads.v20.resources.QualifyingQuestion' \
-  --seed 'desc:.google.ads.googleads.v21.resources.QualifyingQuestion' \
-  --seed 'desc:.google.ads.googleads.v22.resources.QualifyingQuestion' \
-  --seed 'desc:.google.ads.googleads.v23.resources.QualifyingQuestion' \
-  --seed 'desc:.google.ads.googleads.v24.resources.QualifyingQuestion' \
-  --build-schema-db /tmp/qualifying.desc \
-  --emit-scoring-html /tmp/qualifying.html
-```
-
-Raw graph: 5 non-leaf nodes.  Hopcroft graph: 1 non-leaf node.
+  Decide whether to port them to the OSS repo or produce new ones.
