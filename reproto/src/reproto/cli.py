@@ -159,12 +159,14 @@ _SECTIONS: dict[str, str] = {
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
     '--build-schema-db':      'Advanced',
-    '--emit-scoring-graphs':  'Advanced',
+    '--emit-scoring-yaml':    'Advanced',
     '--phase2-plugin':       'Advanced',
     '--keep-duplicates':     'Advanced',
     '--detailed-warnings':   'Diagnostics',
     '--quiet':               'Diagnostics',
-    '--graph':               'Diagnostics',
+    '--emit-scoring-html':   'Diagnostics',
+    '--with-leaf-nodes':     'Diagnostics',
+    '--hide':                'Diagnostics',
     '--debug':               'Diagnostics',
     '--debug-fqdn':          'Diagnostics',
 }
@@ -281,9 +283,16 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--emit-scoring-graphs',
+    '--emit-scoring-yaml',
     is_flag=True,
     help='Write per-file scoring-graph YAML files alongside .proto output under --output-root',
+)
+
+@click.option(
+    '--emit-scoring-graphs',
+    is_flag=True,
+    hidden=True,
+    help='Deprecated alias for --emit-scoring-yaml.',
 )
 
 @click.option(
@@ -433,10 +442,35 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--graph',
+    '--emit-scoring-html',
     required=False,
     type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
-    help='Write the FQDN dependency graph to FILE (HTML/pyvis format)',
+    help='Write scoring-graph HTML visualisations to FILE (raw) and FILE-hopcroft (Hopcroft-minimised); requires --build-schema-db',
+)
+
+@click.option(
+    '--emit-pyvis',
+    required=False,
+    hidden=True,
+    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
+    help='Deprecated alias for --emit-scoring-html.',
+)
+
+@click.option(
+    '--with-leaf-nodes',
+    is_flag=True,
+    help='Include leaf (wire-type sink) nodes in --emit-scoring-html graphs (hidden by default)',
+)
+
+@click.option(
+    '--hide', 'pyvis_hide',
+    type=str,
+    multiple=True,
+    help=(
+        'FQDN or glob pattern to hide from --emit-scoring-html graphs (same syntax as --prune). '
+        'Matched nodes and their incident edges are dropped from the HTML; '
+        'no effect on the schema DB.'
+    ),
 )
 
 @click.option(
@@ -468,6 +502,7 @@ def main(
         emit_binary: bool,
         dry_run: bool,
         build_schema_db: Path | None,
+        emit_scoring_yaml: bool,
         emit_scoring_graphs: bool,
         proto_variant: Path | None,
         use_variant: tuple[str, ...],
@@ -481,7 +516,10 @@ def main(
         keep_duplicates: bool,
         detailed_warnings: bool,
         quiet: bool,
-        graph: Path | None,
+        emit_scoring_html: Path | None,
+        emit_pyvis: Path | None,
+        with_leaf_nodes: bool,
+        pyvis_hide: tuple[str, ...],
         phase2_plugin: str | None,
         dump_resolved_features: str,
         debug: bool,
@@ -496,14 +534,24 @@ def main(
     from .lib.warnings import configure_collector
     configure_collector(detailed=detailed_warnings)
 
+    if emit_scoring_graphs:
+        import sys as _sys
+        _sys.stderr.write('warning: --emit-scoring-graphs is deprecated; use --emit-scoring-yaml\n')
+        emit_scoring_yaml = True
+    if emit_pyvis is not None:
+        import sys as _sys
+        _sys.stderr.write('warning: --emit-pyvis is deprecated; use --emit-scoring-html\n')
+        if emit_scoring_html is None:
+            emit_scoring_html = emit_pyvis
+
     # --output-root is required when .proto file output will be produced.
     # It is legitimately optional for modes that produce no .proto output:
     #   --build-schema-db   → writes only .desc / .rkyv artifacts
     #   --dry-run           → writes nothing at all
-    #   --graph             → writes a single HTML visualisation
+    #   --emit-scoring-html → writes HTML visualisations
     #   --dump-resolved-features → returns early before phase 7
     output_only_mode = bool(
-        build_schema_db is not None or dry_run or graph is not None
+        build_schema_db is not None or dry_run or emit_scoring_html is not None
         or dump_resolved_features
     )
     if proto_out is None and not output_only_mode:
@@ -565,7 +613,7 @@ def main(
     options = Options(
         binary=emit_binary,
         build_schema_db=build_schema_db,
-        emit_scoring_graphs=emit_scoring_graphs,
+        emit_scoring_yaml=emit_scoring_yaml,
         force_proto2_output=force_proto2_output,
         force_proto2_for_editions=force_proto2_for_editions or prost_workaround,
         debug=debug,
@@ -585,7 +633,9 @@ def main(
         write_variant_descriptor=emit_descriptor,
         dry_run=dry_run,
         go_root=go_root,
-        graph=graph,
+        emit_scoring_html=emit_scoring_html,
+        with_leaf_nodes=with_leaf_nodes,
+        pyvis_hide=pyvis_hide,
         keep_duplicates=keep_duplicates,
         detailed_warnings=detailed_warnings,
         quiet=quiet,
@@ -622,6 +672,13 @@ def main(
         return Fqdn(f'{prefix}:{normalised}')
 
     try:
+        for h in pyvis_hide:
+            prefix = h.split(':', 1)[0] if ':' in h else ''
+            if prefix != 'desc':
+                raise click.UsageError(
+                    f'--hide only accepts desc: patterns (got {h!r})'
+                )
+        options.pyvis_hide = tuple(_normalise_fqdn(h) for h in pyvis_hide)
         reproto(
             list(pb_path) if pb_path else [Path('.')],
             pb_files,

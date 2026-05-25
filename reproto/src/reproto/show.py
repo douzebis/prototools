@@ -1,105 +1,146 @@
-# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 #
 # SPDX-License-Identifier: MIT
 
-# graph_viewer.py
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import cast
 
+import yaml
 from pyvis.network import Network
 
-from typing import Any
 
-from .base import NodeBase
-from .context import Context
+def _fqdn_matches_any(fqdn: str, patterns: tuple[str, ...]) -> bool:
+    for p in patterns:
+        if PurePosixPath(f'/{fqdn}').full_match(f'/{p}'):
+            return True
+    return False
 
-# FQDNs of interest
-FOI = [
-    'desc:.production_midas.Manifest',
-    'fdsc:.production_midas.Manifest.data_governance_annotations',
-    'desc:.production_midas.Version',
-    'file:production/midas/proto/mantle/package_metadata.proto'
-    ''
-]
 
-def is_in(node: NodeBase[Any]) -> bool:
-    return 'midas' in node.fqdn or 'datapol' in node.fqdn
-
-def show_graph(ctx: Context, notebook: bool = False, output_path: Path = Path('graph.html')):
-    """
-    Display the interactive graph of ctx.nodes where each node has .targets
-    """
-    # Create a PyVis network
-    net = Network(height="90vh", width="100%", directed=True, bgcolor="#222222", cdn_resources='in_line')
-    
-    # Improve how physics looks
+def _make_network(title: str) -> Network:
+    """Create a pyvis Network with shared settings."""
+    net = Network(
+        height="90vh",
+        width="100%",
+        directed=True,
+        bgcolor="#222222",
+        cdn_resources='in_line',
+    )
+    net.heading = ''
     net.barnes_hut()
+    net.set_options("""{
+  "physics": {
+    "enabled": true,
+    "barnesHut": {
+      "gravitationalConstant": -8000,
+      "centralGravity": 0.3,
+      "springLength": 100,
+      "springConstant": 0.04,
+      "damping": 0.09,
+      "avoidOverlap": 1
+    },
+    "minVelocity": 0.75
+  }
+}""")
+    return net
 
-    # Add nodes
-    for fqdn, node in ctx.nodes.items():
-        if not is_in(node):
-            continue
-        if node.is_pruned:
-            color = "#000000"
-        else:
-            color = "#97fc9a"
-        if node.is_summoned:
-            shape = 'square'
-        else:
-            shape = 'dot'
-        label = str(fqdn)
-        if label.startswith('file:'):
-            size = 20
-        elif label == 'desc:.production_midas.Manifest':
-            size = 40
-            color = "#FF0000"
-        elif label == 'desc:.production_midas.Version':
-            size = 40
-            color = "#FF9D00"
-        else:
-            size = 10
-        net.add_node(fqdn, label=label, title=label, shape=shape, color=color, size=size)
 
-    # Add edges
-    for fqdn, node in ctx.nodes.items():
-        if not is_in(node):
-            continue
-        #parent = node.parent
-        #if parent is not None and is_in(parent):
-        #    net.add_edge(fqdn, parent.fqdn, color="#000000")
-        for target in node.targets:
-            if not is_in(target):
-                continue
-            if target not in node.contains:
-                net.add_edge(fqdn, target.fqdn, color="#ff0000")
-        for child in node.contains:
-            if not is_in(child):
-                continue
-            net.add_edge(fqdn, child.fqdn, color="#000dff")
+def render_scoring_graph(
+    compiled_yaml: str,
+    output_path: Path,
+    title: str,
+    node_colour: str,
+    with_leaf_nodes: bool = False,
+    hide: tuple[str, ...] = (),
+) -> None:
+    """Render a compiled scoring graph (states/transitions/roots YAML) to HTML."""
+    data = cast(dict, yaml.safe_load(compiled_yaml))
+    net = _make_network(title)
 
-    # Faster physics convergence
-    net.set_options("""
-    var options = {
-    "physics": {
-        "enabled": true,
-        "barnesHut": {
-        "gravitationalConstant": -8000,
-        "centralGravity": 0.3,
-        "springLength": 100,
-        "springConstant": 0.04,
-        "damping": 0.09,
-        "avoidOverlap": 1
-        },
-        "minVelocity": 0.75
+    # Determine which states have outgoing transitions (non-leaf) vs leaf.
+    states_with_outgoing: set[int] = {t['from'] for t in data.get('transitions', [])}
+    leaf_states: set[int] = {
+        s['id'] for s in data.get('states', []) if s['id'] not in states_with_outgoing
     }
+
+    # Build tooltip: state_id -> list of FQDNs from roots.
+    state_fqdns: dict[int, list[str]] = {}
+    for root in data.get('roots', []):
+        sid = root['state']
+        state_fqdns.setdefault(sid, []).append(root['fqdn'])
+
+    # Compute hidden state IDs from --hide patterns.
+    hidden_ids: set[int] = set()
+    if hide:
+        for sid, fqdns in state_fqdns.items():
+            if any(_fqdn_matches_any(f, hide) for f in fqdns):
+                hidden_ids.add(sid)
+
+    for state in data.get('states', []):
+        sid = state['id']
+        wt = state['wire_type']
+        is_string = state.get('is_string', False)
+        is_leaf = sid in leaf_states
+
+        if sid in hidden_ids:
+            continue
+        if is_leaf and not with_leaf_nodes:
+            continue
+
+        tooltip = ', '.join(state_fqdns.get(sid, []))
+
+        if not is_leaf:
+            net.add_node(
+                sid,
+                label=str(sid),
+                title=tooltip,
+                shape='dot',
+                color=node_colour,
+                size=20,
+            )
+        else:
+            if wt == 2 and is_string:
+                label = 'string'
+                colour = '#ff8844'
+            elif wt == 0:
+                label = 'varint'
+                colour = '#ffcc44'
+            elif wt == 1:
+                label = 'i64'
+                colour = '#ffcc44'
+            elif wt == 2:
+                label = 'len'
+                colour = '#ffcc44'
+            elif wt == 5:
+                label = 'i32'
+                colour = '#ffcc44'
+            else:
+                label = str(wt)
+                colour = '#ffcc44'
+            net.add_node(
+                sid,
+                label=label,
+                title=tooltip,
+                shape='square',
+                color=colour,
+                size=12,
+            )
+
+    edge_colours = {
+        'optional': '#4444ff',
+        'repeated': '#44aaff',
+        'packed':   '#884488',
     }
-    """)
+    for t in data.get('transitions', []):
+        if t['from'] in hidden_ids or t['to'] in hidden_ids:
+            continue
+        if not with_leaf_nodes and t['to'] in leaf_states:
+            continue
+        colour = edge_colours.get(t['label'], '#888888')
+        net.add_edge(
+            t['from'],
+            t['to'],
+            label=f"f{t['field']}",
+            color=colour,
+        )
 
-    # Point to local JS/CSS
-    net.set_template('local_assets/template.html')
-
-    # Generate and show
-    net.write_html(str(output_path), notebook=notebook)
-
-    if notebook:
-        from IPython.display import IFrame
-        return IFrame(str(output_path), width="100%", height="600px")
+    net.write_html(str(output_path))

@@ -368,10 +368,11 @@ def _phase1_load_files(
             if name not in known_files:
                 known_files[name] = file
 
-        from .lib.console import spinning
+        from .lib.console import progress_lazy as _progress_lazy
         # Read imported paths (if not pruned)
-        with spinning('Discovering imported files', quiet=ctx.quiet):
+        with _progress_lazy('Discovering imported files', quiet=ctx.quiet) as (advance, _):
             while topo.new_files:
+                advance()
                 topo.merge_files()
                 for file in topo.files.values():
                     assert isinstance(file, ReFile)
@@ -1066,7 +1067,7 @@ def _shortest_lex_path(
 
 def _phase6_summoning(ctx: Context) -> None:
     """Phase 6: Mark container nodes of reachable nodes (backward propagation)."""
-    from .lib.console import progress as _progress, spinning as _spinning
+    from .lib.console import progress as _progress, progress_lazy as _progress_lazy
 
     # --- Sub-pass 1: seed summoning ------------------------------------------
     # Mark every reachable node as summoned, then propagate upward through the
@@ -1143,10 +1144,11 @@ def _phase6_summoning(ctx: Context) -> None:
                 stack.append(c)
         return result
 
-    with _spinning('Bridging import paths', quiet=ctx.quiet):
+    with _progress_lazy('Bridging import paths', quiet=ctx.quiet) as (advance, _):
         changed = True
         while changed:
             changed = False
+            advance()
             summoned_files = [
                 node for node in ctx.nodes.values()
                 if isinstance(node, ReFileDescriptorProto)
@@ -1178,7 +1180,7 @@ def _phase6_summoning(ctx: Context) -> None:
         from .re_file import ReFileDescriptorProto as _ReFileFDP
         from .fake_types import Ref as _Ref
 
-        with _spinning('Closing DB dependencies', quiet=ctx.quiet):
+        with _progress_lazy('Closing DB dependencies', quiet=ctx.quiet) as (advance, _):
             seen: set[str] = {
                 node.name for node in ctx.nodes.values()
                 if isinstance(node, _ReFileFDP) and node.is_summoned
@@ -1188,6 +1190,7 @@ def _phase6_summoning(ctx: Context) -> None:
                 if isinstance(node, _ReFileFDP) and node.is_summoned
             ]
             while work:
+                advance()
                 file_node = work.pop()
                 for dep_name in file_node.dependency:
                     if dep_name in seen:
@@ -1304,7 +1307,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     YAML content is generated in-memory from the same logic as
     _phase_emit_scoring_graphs; no intermediate files are written to disk.
     """
-    from .lib.console import progress as _progress, spinning
+    from .lib.console import progress as _progress, progress_lazy as _progress_lazy
     import yaml
     from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
@@ -1385,16 +1388,24 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             f'--build-schema-db requires the scoring_graph_lib extension: {e}'
         ) from e
 
-    last_pct = 0
+    last_current = 0
+    total_set = False
 
-    def _on_progress(pct: int) -> None:
-        nonlocal last_pct
-        advance(pct - last_pct)
-        last_pct = pct
+    def _on_progress(current: int, total: int) -> None:
+        nonlocal last_current, total_set
+        if not total_set:
+            set_total(total)
+            total_set = True
+        advance(current - last_current)
+        last_current = current
 
-    with _progress('Compiling global scoring graph', total=0 if ctx.quiet else 100) as advance:
-        baked_graph, _yaml = build_graph(
-            scoring_graphs=scoring_graphs, on_progress=_on_progress
+    want_pyvis = ctx.emit_scoring_html is not None
+    with _progress_lazy('Compiling global scoring graph', quiet=ctx.quiet) as (advance, set_total):
+        baked_graph, compiled_yaml, initial_yaml = build_graph(
+            scoring_graphs=scoring_graphs,
+            emit_yaml=want_pyvis,
+            emit_initial_yaml=want_pyvis,
+            on_progress=_on_progress,
         )
 
     # ── 3. Assemble schemas.pb from FDPs collected by _phase7_output (spec 0076 §7)
@@ -1423,8 +1434,9 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             for child in n.contains:
                 stack.append(child)
 
-    with spinning('Rendering WKT dependencies', quiet=ctx.quiet):
+    with _progress_lazy('Rendering WKT dependencies', quiet=ctx.quiet) as (advance, _):
         for extra_node in ctx.schema_db_extra_nodes:
+            advance()
             _promote_subtree(extra_node)
             saved_force = ctx.force_proto2_for_editions
             if EDITIONS_COMPAT_REQUIRED and _fdp_syntax(extra_node.this) == "editions":
@@ -1475,24 +1487,59 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     # db_path.stem/     → sibling directory
     #   hopcroft.rkyv   → compiled Hopcroft scoring graph
 
-    with spinning('Writing schema DB', quiet=ctx.quiet):
+    with _progress_lazy('Writing schema DB', quiet=ctx.quiet) as (advance, _):
         raw_pb_bytes = fds.SerializeToString()
+        advance()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db_path.write_bytes(raw_pb_bytes)
+        advance()
 
         schema_db_dir = db_path.with_suffix('')
         schema_db_dir.mkdir(parents=True, exist_ok=True)
         (schema_db_dir / 'hopcroft.rkyv').write_bytes(baked_graph)
+        advance()
 
         # ── 5. Build and write index.rkyv (spec 0068)
         from .build_index import write_fds_index
         write_fds_index(raw_pb_bytes, fds, schema_db_dir / 'index.rkyv')
+        advance()
 
     if not ctx.quiet:
         eprintln = __import__('sys').stderr.write
         eprintln(f'  descriptor: {db_path}\n')
         eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
         eprintln(f'  index:      {schema_db_dir / "index.rkyv"}\n')
+
+    # ── 6. Write pyvis HTML visualisations (spec 0083) ────────────────────────
+    if want_pyvis and initial_yaml is not None and compiled_yaml is not None:
+        from .show import render_scoring_graph
+        pyvis_path = ctx.emit_scoring_html
+        assert pyvis_path is not None
+        # Strip trailing .html to compute stem, then build the two output paths.
+        p = str(pyvis_path)
+        stem = p[:-5] if p.endswith('.html') else p
+        raw_path = Path(stem + '.html')
+        hop_path = Path(stem + '-hopcroft.html')
+        render_scoring_graph(
+            compiled_yaml=initial_yaml,
+            output_path=raw_path,
+            title='Scoring graph (raw)',
+            node_colour='#97fc9a',
+            with_leaf_nodes=ctx.with_leaf_nodes,
+            hide=ctx.pyvis_hide,
+        )
+        render_scoring_graph(
+            compiled_yaml=compiled_yaml,
+            output_path=hop_path,
+            title='Scoring graph (Hopcroft minimised)',
+            node_colour='#aaaaff',
+            with_leaf_nodes=ctx.with_leaf_nodes,
+            hide=ctx.pyvis_hide,
+        )
+        if not ctx.quiet:
+            eprintln = __import__('sys').stderr.write
+            eprintln(f'  pyvis raw:       {raw_path}\n')
+            eprintln(f'  pyvis hopcroft:  {hop_path}\n')
 
 
 def _collect_group_fqdns(fd: Any) -> 'set[str]':

@@ -68,10 +68,12 @@ class Options:
     descriptor_proto: str = ""
     dry_run: bool = False
     build_schema_db: Path | None = None
-    emit_scoring_graphs: bool = False
+    emit_scoring_yaml: bool = False
     fallback_protos: list[str] = field(default_factory=list)
     go_root: str | None = None
-    graph: Path | None = None
+    emit_scoring_html: Path | None = None
+    with_leaf_nodes: bool = False
+    pyvis_hide: tuple[str, ...] = field(default_factory=tuple)
     keep_variant_descriptor: bool = False
     quiet: bool = False
     redact_comments: bool = False

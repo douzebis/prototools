@@ -182,7 +182,6 @@ from .phases import (
     _phase_emit_scoring_graphs,
     import_annotations,
 )
-from .show import show_graph
 from .topology import Topology
 
 __all__ = [
@@ -213,6 +212,12 @@ def reproto(
     from .lib.warnings import get_collector
 
     ctx = _make_context(options, prunings)
+
+    if ctx.emit_scoring_html is not None and ctx.build_schema_db is None:
+        import sys
+        sys.stderr.write('--emit-scoring-html requires --build-schema-db\n')
+        sys.exit(1)
+
     topo = Topology()
 
     # Suppress RuntimeWarnings from descriptor_database about symbol conflicts.
@@ -251,14 +256,12 @@ def reproto(
                 ctx.dry_run = True
             _phase7_output(ctx, out_repo or Path('.'))
             ctx.dry_run = saved_dry_run
-            if ctx.emit_scoring_graphs and out_repo is not None:
+            if ctx.emit_scoring_yaml and out_repo is not None:
                 _phase_emit_scoring_graphs(ctx, out_repo)
 
         if ctx.build_schema_db is not None:
             _phase_build_schema_db(ctx, ctx.build_schema_db)
 
-        if ctx.graph is not None:
-            show_graph(ctx, output_path=ctx.graph)
     finally:
         get_collector().flush()
 
