@@ -134,6 +134,9 @@ def _strip_unresolvable_field_types(
         except KeyError:
             return True
 
+    from .lib.warnings import get_collector
+    collector = get_collector()
+
     def _walk_messages(messages: Any, parent_fqdn: str) -> None:
         nonlocal stripped_count
         for msg in messages:
@@ -146,6 +149,8 @@ def _strip_unresolvable_field_types(
                     topo_file.stripped_field_types.setdefault(msg_fqdn, []).append(record)
                     to_remove.append(field)
                     stripped_count += 1
+                    if not ctx.quiet:
+                        collector.w4(field.type_name)
             for field in to_remove:
                 msg.field.remove(field)
             _walk_messages(msg.nested_type, msg_fqdn)
@@ -156,25 +161,20 @@ def _strip_unresolvable_field_types(
         svc_fqdn = f'{prefix}.{svc.name}'
         to_remove = []
         for method in svc.method:
-            if _is_unresolvable(method.input_type) or _is_unresolvable(method.output_type):
+            unresolvable_types = [
+                t for t in (method.input_type, method.output_type)
+                if _is_unresolvable(t)
+            ]
+            if unresolvable_types:
                 record = StrippedMethod(method.name, method.input_type, method.output_type)
                 topo_file.stripped_method_types.setdefault(svc_fqdn, []).append(record)
                 to_remove.append(method)
                 stripped_count += 1
+                if not ctx.quiet:
+                    for t in unresolvable_types:
+                        collector.w4(t)
         for method in to_remove:
             svc.method.remove(method)
-
-    if stripped_count and not ctx.quiet:
-        from .lib.warnings import get_collector
-        names = ', '.join(
-            f.name
-            for fields in topo_file.stripped_field_types.values()
-            for f in fields
-            if isinstance(f, StrippedField)
-        )
-        get_collector().w4(
-            f'stripped {stripped_count} unresolvable type(s) from {fdp.name}: {names}'
-        )
 
 # WellKnownTypeHasTargetsError: removed by spec 0052 — fallback WKTs may now
 # import other fallback files (e.g. type.proto imports any + source_context).
