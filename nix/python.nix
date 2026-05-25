@@ -345,7 +345,7 @@ EOF
       --use-variant all \
       --force-proto2-for-editions \
       --output-root="$out/reproto-out" \
-      --emit-scoring-graphs \
+      --emit-scoring-yaml \
       --emit-binary \
       --build-schema-db="$out/googleapis.desc" \
       "${googleapisPbs}/googleapis.pb"
@@ -479,7 +479,7 @@ print('\n'.join(lines[:$N_EXTRA]))
       --force-proto2-for-editions \
       -I"$PB" \
       --output-root="$out/reproto-out" \
-      --emit-scoring-graphs \
+      --emit-scoring-yaml \
       --build-schema-db="$out/custom.desc" \
       .
   '';

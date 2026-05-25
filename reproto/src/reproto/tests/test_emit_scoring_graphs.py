@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Tests for the --emit-scoring-graphs option (spec 0045).
+"""Tests for the --emit-scoring-yaml option (spec 0045).
 
 Each test compiles fixture .proto files with protoc, then runs the reproto CLI
-with --emit-scoring-graphs and inspects the resulting YAML files.
+with --emit-scoring-yaml and inspects the resulting YAML files.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _run_reproto(
         "--use-variant", "descriptor",
         *include_flags,
         f"--output-root={out_dir}",
-        "--emit-scoring-graphs",
+        "--emit-scoring-yaml",
     ]
     if extra_args:
         cmd.extend(extra_args)

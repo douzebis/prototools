@@ -430,7 +430,7 @@ def test_roundtrip_use_variant_all_api(tmp_path: Path) -> None:
             sys.executable, "-m", "reproto.cli",
             "--use-variant", "descriptor",
             "--use-variant", "all",
-            "--emit-scoring-graphs",
+            "--emit-scoring-yaml",
             f"-I{orig_dir}",
             f"--output-root={new_dir}",
             str(orig_pb),
@@ -451,7 +451,7 @@ def test_roundtrip_use_variant_all_api(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_scoring_graph_pruned_dependency(tmp_path: Path) -> None:
-    """reproto --emit-scoring-graphs must not crash when an import was pruned.
+    """reproto --emit-scoring-yaml must not crash when an import was pruned.
 
     dup_sym_a.proto and dup_sym_b.proto define identical symbols.  Whichever
     loses the duplicate race is pruned; dup_sym_importer.proto imports
@@ -493,7 +493,7 @@ def test_scoring_graph_pruned_dependency(tmp_path: Path) -> None:
         [
             sys.executable, "-m", "reproto.cli",
             "--use-variant", "descriptor",
-            "--emit-scoring-graphs",
+            "--emit-scoring-yaml",
             f"-I{orig_dir}",
             f"--output-root={new_dir}",
             *[str(p) for p in pbs],
