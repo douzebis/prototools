@@ -450,6 +450,10 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             outer_slot = ctx.out_desc
             fdp_out = _FDP()
             fdp_out.CopyFrom(self.this)
+            # file name and dependency paths: canonize via variant import rules (spec 0086)
+            fdp_out.name = canonize_dependency(ctx, fdp_out.name)
+            for i, dep in enumerate(fdp_out.dependency):
+                fdp_out.dependency[i] = canonize_dependency(ctx, dep)
             # source_code_info: always omitted
             fdp_out.ClearField('source_code_info')
             # syntax / edition: rewrite per ctx.target_syntax

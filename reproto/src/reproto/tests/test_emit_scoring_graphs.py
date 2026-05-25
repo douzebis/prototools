@@ -255,16 +255,24 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
-    """Variant import_rewrites: .proto and .yaml files are written under the
-    canonized path, not the original input path.
+    """Variant import_rewrites + namespace_rewrites: all outputs use canonized names.
 
-    Uses address_book + phone_number fixtures with a variant that rewrites
-    phone_number.proto -> canonical/phone_number.proto.
-    Verifies:
+    Uses address_book + phone_number fixtures with a variant that rewrites:
+    - phone_number.proto -> canonical/phone_number.proto  (import_rewrites)
+    - .tutorial.          -> .canonical.tutorial.          (namespace_rewrites)
+
+    Verifies §86.1/§86.2 (file paths):
     - output .proto is at canonical/phone_number.proto (not phone_number.proto)
     - output .yaml  is at canonical/phone_number.yaml  (not phone_number.yaml)
     - import statement inside address_book.proto references canonical/phone_number.proto
-    - original path phone_number.proto does NOT appear as an output file
+
+    Verifies §86.3 (binary fdp.name and fdp.dependency):
+    - phone_number.pb carries fdp.name == canonical/phone_number.proto
+    - address_book.pb carries the canonized dependency path
+
+    Verifies §86.4 (binary type_name):
+    - address_book.pb Person.phones field carries
+      type_name == .canonical.tutorial.PhoneNumber (not .tutorial.PhoneNumber)
     """
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
@@ -285,7 +293,10 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
         "  - match: phone_number.proto\n"
         "    action: rewrite\n"
         "    to: canonical/phone_number.proto\n"
-        "namespace_rewrites: []\n"
+        "namespace_rewrites:\n"
+        "  - match: .tutorial.\n"
+        "    action: rewrite\n"
+        "    to: .canonical.tutorial.\n"
         "orphans: {}\n"
         "annotation_modules: []\n"
     )
@@ -321,13 +332,14 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
             f"-I{FIXTURES_DIR}",
             f"--output-root={out_dir}",
             "--emit-scoring-yaml",
+            "--emit-binary",
             str(pb),
         ],
         capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
 
-    # .proto output must be at canonized path
+    # §86.1 — .proto output must be at canonized path
     assert (out_dir / "canonical" / "phone_number.proto").exists(), (
         "phone_number.proto must be written at canonical/phone_number.proto"
     )
@@ -335,7 +347,7 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
         "phone_number.proto must NOT be written at the original path"
     )
 
-    # .yaml output must be at canonized path
+    # §86.2 — .yaml output must be at canonized path
     assert (out_dir / "canonical" / "phone_number.yaml").exists(), (
         "phone_number.yaml must be written at canonical/phone_number.yaml"
     )
@@ -343,11 +355,40 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
         "phone_number.yaml must NOT be written at the original path"
     )
 
-    # import statement inside address_book.proto must reference the canonized path
+    # §86.1 — import statement inside address_book.proto must reference the canonized path
     ab_proto = (out_dir / "address_book.proto").read_text()
     assert 'import "canonical/phone_number.proto"' in ab_proto, (
         "address_book.proto must import canonical/phone_number.proto"
     )
     assert 'import "phone_number.proto"' not in ab_proto, (
         "address_book.proto must not import the original phone_number.proto path"
+    )
+
+    # §86.3 — binary phone_number.pb must carry the canonized file name
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+    pn_pb_path = out_dir / "canonical" / "phone_number.pb"
+    assert pn_pb_path.exists(), "phone_number.pb must be written at canonical/phone_number.pb"
+    pn_fdp = FileDescriptorProto()
+    pn_fdp.ParseFromString(pn_pb_path.read_bytes())
+    assert pn_fdp.name == "canonical/phone_number.proto", (
+        f"phone_number.pb fdp.name must be canonized, got {pn_fdp.name!r}"
+    )
+
+    # §86.3 — binary address_book.pb must carry the canonized dependency path
+    ab_pb_path = out_dir / "address_book.pb"
+    assert ab_pb_path.exists(), "address_book.pb must be written"
+    ab_fdp = FileDescriptorProto()
+    ab_fdp.ParseFromString(ab_pb_path.read_bytes())
+    assert "canonical/phone_number.proto" in ab_fdp.dependency, (
+        f"address_book.pb dependency must contain canonized path, got {list(ab_fdp.dependency)!r}"
+    )
+    assert "phone_number.proto" not in ab_fdp.dependency, (
+        "address_book.pb must not contain the original phone_number.proto dependency"
+    )
+
+    # §86.4 — binary address_book.pb Person.phones field must carry the canonized type_name
+    person_msg = next(m for m in ab_fdp.message_type if m.name == "Person")
+    phones_field = next(f for f in person_msg.field if f.name == "phones")
+    assert phones_field.type_name == ".canonical.tutorial.PhoneNumber", (
+        f"phones field type_name must be canonized, got {phones_field.type_name!r}"
     )
