@@ -33,7 +33,7 @@ def rprint(message: str, *, style: str | None = None) -> None:
 
 
 @contextmanager
-def progress(label: str, total: int) -> Generator[Callable[..., None], None, None]:
+def progress(label: str, total: int, quiet: bool = False) -> Generator[Callable[..., None], None, None]:
     """Context manager that shows a progress bar for a countable step.
 
     Yields an advance(n=1) callable.  Calling advance() moves the bar forward
@@ -42,10 +42,12 @@ def progress(label: str, total: int) -> Generator[Callable[..., None], None, Non
     The bar is suppressed when:
     - stderr is not a TTY (piped/redirected output), or
     - total == 0 (caller passes 0 to opt out, e.g. --quiet mode).
+    Label is suppressed when quiet=True.
     """
     if not console.is_terminal or total == 0:
         yield lambda n=1: None  # type: ignore[misc]
-        rprint(label)
+        if not quiet:
+            rprint(label)
         return
     with Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -76,7 +78,7 @@ def progress_lazy(
     """
     if quiet or not console.is_terminal:
         yield (lambda n=1: None, lambda n: None)  # type: ignore[misc]
-        if not quiet:
+        if not quiet and console.is_terminal:
             rprint(label)
         return
     with Progress(

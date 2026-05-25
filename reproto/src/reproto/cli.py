@@ -436,7 +436,7 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--quiet',
+    '--quiet', '-q',
     is_flag=True,
     help='Suppress progress messages',
 )
@@ -529,7 +529,7 @@ def main(
     Parse PB_FILES and generate output based on the options given.
     '''
     from reproto import Fqdn
-    from .reproto import DescriptorProtoMissingError, Options, reproto
+    from .reproto import DescriptorProtoMissingError, DescriptorProtoUnresolvedError, DescriptorProtoHasTargetsError, Options, reproto
     from . import variant as variant_mod
     from .lib.warnings import configure_collector
     configure_collector(detailed=detailed_warnings)
@@ -688,7 +688,19 @@ def main(
             options,
         )
     except DescriptorProtoMissingError:
-        raise click.ClickException('Could not find descriptor.proto')
+        raise click.ClickException(
+            'descriptor.proto not found in the input set; '
+            'add it to your -I tree or use --use-variant descriptor'
+        )
+    except DescriptorProtoUnresolvedError:
+        raise click.ClickException(
+            'descriptor.proto is referenced but could not be loaded; '
+            'add it to your -I tree or use --use-variant descriptor'
+        )
+    except DescriptorProtoHasTargetsError:
+        raise click.ClickException(
+            'descriptor.proto appears corrupted: it has dependencies of its own'
+        )
 
 if __name__ == '__main__':
     main()

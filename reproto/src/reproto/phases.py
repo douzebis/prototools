@@ -53,8 +53,11 @@ EDITIONS_COMPAT_REQUIRED = True
 class DescriptorProtoMissingError(Exception):
     """Raised when 'descriptor.proto' is missing."""
 
+class DescriptorProtoUnresolvedError(Exception):
+    """Raised when 'descriptor.proto' is referenced but not loaded."""
+
 class DescriptorProtoHasTargetsError(Exception):
-    """Raised when 'descriptor.proto' has targets."""
+    """Raised when 'descriptor.proto' itself has dependencies (corrupted)."""
 
 # WellKnownTypeHasTargetsError: removed by spec 0052 — fallback WKTs may now
 # import other fallback files (e.g. type.proto imports any + source_context).
@@ -419,7 +422,8 @@ def _phase1_load_files(
             qual_file.desc = fdp
             ReFile(topo, qual_file)
 
-            cli_attention(f"Using embedded fallback: {proto_name}")
+            if not ctx.quiet:
+                cli_attention(f"Using embedded fallback: {proto_name}")
             return qual_file
         except (ImportError, FileNotFoundError, DecodeError, IndexError, AttributeError) as e:
             if ctx.debug:
@@ -520,9 +524,10 @@ def _strip_unresolvable_dependencies(
             topo_file.stripped_dependencies.append(dep)
         fdp.dependency.remove(dep)
         if dep in ctx.pruned_file_names:
-            collector.w3(
-                f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
-            )
+            if not ctx.quiet:
+                collector.w3(
+                    f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
+                )
         else:
             collector.w1(dep)
 
@@ -718,8 +723,9 @@ def _phase2_build_pool(
         )
         raise DescriptorProtoMissingError
     descriptor_proto: ReFile = topo.files[ctx.variant_descriptor_proto]
-    if descriptor_proto.is_ref() or descriptor_proto.targets:
-        cli_error("Unexpected targets in descriptor.proto, aborting")
+    if descriptor_proto.is_ref():
+        raise DescriptorProtoUnresolvedError
+    if descriptor_proto.targets:
         raise DescriptorProtoHasTargetsError
 
     # --- Merging the file descriptor sets into pool_db ----------------------
@@ -742,7 +748,7 @@ def _phase2_build_pool(
             pass
 
     total_files = 0 if ctx.quiet else len(topo.files)
-    with _progress('Merging file descriptors', total_files) as advance:
+    with _progress('Merging file descriptors', total_files, quiet=ctx.quiet) as advance:
         for i in itertools.count(start=1):
             # Find leaf-files (i.e.: do not target other files)
             for n in files:
@@ -844,7 +850,7 @@ def _phase3_build_graph(
     from .lib.console import progress as _progress
 
     total_files = 0 if ctx.quiet else len(topo.files)
-    with _progress('Building FQDN graph', total_files) as advance:
+    with _progress('Building FQDN graph', total_files, quiet=ctx.quiet) as advance:
         # Create ReFileDescriptorProto nodes for all loaded files
         for file in topo.files.values():
             if not (file.is_ref() or file.is_pruned):
@@ -888,11 +894,20 @@ def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
         matched_nodes = _find_matching_nodes(pruning_pattern, ctx)
 
         if not matched_nodes:
-            cli_warning(f"Pruning target not found: {pruning_pattern}")
-            if '*' not in pruning_pattern and '?' not in pruning_pattern:
-                suggestion = _fuzzy_suggest(pruning_pattern, ctx)
-                if suggestion is not None:
-                    cli_attention(f"  Did you mean: {suggestion}?")
+            # Suppress the warning if the pattern was already satisfied at
+            # phase 2 (file was loaded but skipped into ctx.pruned_file_names
+            # before it could be added to ctx.nodes).
+            pat_str = str(pruning_pattern)
+            if pat_str.startswith('file:'):
+                already_pruned = pat_str[len('file:'):] in ctx.pruned_file_names
+            else:
+                already_pruned = False
+            if not already_pruned:
+                cli_warning(f"Pruning target not found: {pruning_pattern}")
+                if '*' not in pruning_pattern and '?' not in pruning_pattern:
+                    suggestion = _fuzzy_suggest(pruning_pattern, ctx)
+                    if suggestion is not None:
+                        cli_attention(f"  Did you mean: {suggestion}?")
             continue
 
         for matched_fqdn, matched_node in matched_nodes:
@@ -992,7 +1007,7 @@ def _phase5_reachability(
     # --- Propagates forwards (targeted nodes) --------------------------------
 
     total_nodes = 0 if ctx.quiet else len(ctx.nodes)
-    with _progress('Computing reachability', total_nodes) as advance:
+    with _progress('Computing reachability', total_nodes, quiet=ctx.quiet) as advance:
         while current_reachables:
             transitive_reachables.update(current_reachables)
             new_reachables: set[Node] = set()
@@ -1076,7 +1091,7 @@ def _phase6_summoning(ctx: Context) -> None:
     current_summoned: set[Node] = set()
 
     total_nodes = 0 if ctx.quiet else len(ctx.nodes)
-    with _progress('Marking summoned nodes', total_nodes) as advance:
+    with _progress('Marking summoned nodes', total_nodes, quiet=ctx.quiet) as advance:
         for node in ctx.nodes.values():
             advance()
             if not node.is_reachable:
@@ -1222,7 +1237,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
     ]
 
     from .mappings import canonize_dependency
-    with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned)) as advance:
+    with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned), quiet=ctx.quiet) as advance:
         for re_fdp in summoned:
             canonical_name = canonize_dependency(ctx, re_fdp.name)
             res_path = out_repo / Path(canonical_name)
