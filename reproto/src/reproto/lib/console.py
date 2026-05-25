@@ -61,6 +61,42 @@ def progress(label: str, total: int) -> Generator[Callable[..., None], None, Non
 
 
 @contextmanager
+def progress_lazy(
+    label: str, quiet: bool = False
+) -> Generator[tuple[Callable[..., None], Callable[[int], None]], None, None]:
+    """Context manager for a progress bar whose total is not known upfront.
+
+    Yields (advance, set_total) where:
+    - set_total(n) must be called once before any advance() calls to set the
+      bar total; until then the bar is indeterminate.
+    - advance(n=1) moves the bar forward by n steps.
+
+    Suppressed (no-op) when stderr is not a TTY or quiet=True.
+    Prints label on completion.
+    """
+    if quiet or not console.is_terminal:
+        yield (lambda n=1: None, lambda n: None)  # type: ignore[misc]
+        if not quiet:
+            rprint(label)
+        return
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as prog:
+        task = prog.add_task(label, total=None)
+
+        def set_total(n: int) -> None:
+            prog.update(task, total=n)
+
+        yield (lambda n=1: prog.advance(task, advance=n), set_total)  # type: ignore[misc]
+    rprint(label)
+
+
+@contextmanager
 def spinning(label: str, quiet: bool = False) -> Generator[None, None, None]:
     """Context manager that shows a spinner for an indeterminate blocking step.
 

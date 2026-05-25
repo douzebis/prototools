@@ -55,10 +55,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    let (_rkyv_bytes, yaml) = build_from_strings(&yamls, true, |_| {}).unwrap_or_else(|e| {
-        eprintln!("error building graph: {e}");
-        std::process::exit(1);
-    });
+    let (_rkyv_bytes, yaml, _initial_yaml) = build_from_strings(&yamls, true, false, |_, _| {})
+        .unwrap_or_else(|e| {
+            eprintln!("error building graph: {e}");
+            std::process::exit(1);
+        });
 
     print!("{}", yaml.unwrap());
 }

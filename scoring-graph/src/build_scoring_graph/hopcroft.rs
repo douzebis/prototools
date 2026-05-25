@@ -53,7 +53,7 @@ pub fn minimize(
     raw: &RawGraph,
     reg: &LeafRegistry,
     node_wire_types: &HashMap<u32, u8>,
-    mut on_progress: impl FnMut(u8),
+    mut on_progress: impl FnMut(u64, u64),
 ) -> Partition {
     let num_leaves = reg.num_leaves();
     let n = raw.num_nodes as usize;
@@ -159,24 +159,26 @@ pub fn minimize(
     }
 
     // ── Progress tracking ─────────────────────────────────────────────────────
-    // remaining_budget = Σ_blocks log₂(|block|), updated incrementally on each
-    // split: replacing log₂(s) with log₂(s₁) + log₂(s₂) strictly decreases
-    // the budget, giving a tightening same-unit upper bound on remaining splits.
-    let mut remaining_budget: f64 = blocks
-        .iter()
-        .map(|b| {
-            if b.len() > 1 {
-                (b.len() as f64).log2()
-            } else {
-                0.0
-            }
-        })
-        .sum();
-    let mut splits: u64 = 0;
-    let mut last_reported_pct: u8 = 0;
+    // Total budget = Σ_blocks log₂(|block|) — the Hopcroft upper bound on
+    // splits.  Progress is reported as worklist drain scaled onto [0, budget].
+    let log2 = |x: usize| -> f64 {
+        if x > 1 {
+            (x as f64).log2()
+        } else {
+            0.0
+        }
+    };
+    let initial_budget: u64 = blocks.iter().map(|b| log2(b.len())).sum::<f64>().ceil() as u64;
+    let initial_worklist_size: u64 = worklist.len() as u64;
+    let mut iterations: u64 = 0;
+    let mut last_reported: u64 = 0;
+
+    // Fire once before the loop so Python learns the total immediately.
+    on_progress(0, initial_budget);
 
     // ── Refinement loop ───────────────────────────────────────────────────────
     while let Some((a_id, field, label)) = worklist.pop_front() {
+        iterations += 1;
         in_worklist.remove(&(a_id, field, label));
 
         if a_id >= blocks.len() || blocks[a_id].is_empty() {
@@ -212,8 +214,6 @@ pub fn minimize(
             }
 
             // Perform the split: Y₁ gets a new block ID; Y₂ keeps y_id.
-            splits += 1;
-            let s = blocks[y_id].len();
             let y1_id = blocks.len();
             let mut y1_block: HashSet<usize> = HashSet::new();
             for &node in &y1_nodes {
@@ -227,10 +227,6 @@ pub fn minimize(
             let y2_id = y_id;
             let y1_len = y1_nodes.len();
             let y2_len = blocks[y2_id].len();
-
-            // Update remaining_budget: replace log₂(s) with log₂(s₁)+log₂(s₂).
-            let log2 = |x: usize| if x > 1 { (x as f64).log2() } else { 0.0 };
-            remaining_budget += log2(y1_len) + log2(y2_len) - log2(s);
 
             // Update worklist for every symbol (f', l') per textbook rule.
             for &(fp, lp) in &alphabet {
@@ -253,15 +249,20 @@ pub fn minimize(
         }
 
         // ── Progress report ───────────────────────────────────────────────────
-        let splits_f = splits as f64;
-        let raw = splits_f / (splits_f + remaining_budget.max(0.0));
-        let pct = (raw * 100.0) as u8;
-        if pct > last_reported_pct {
-            on_progress(pct);
-            last_reported_pct = pct;
+        // Scale worklist drain onto [0, initial_budget] and fire only when
+        // the integer percentage (current * 100 / initial_budget) advances
+        // by ≥ 1, to avoid overwhelming Python with callbacks.
+        if initial_budget > 0 && initial_worklist_size > 0 {
+            let current =
+                (iterations * initial_budget / initial_worklist_size).min(initial_budget - 1);
+            let pct = current * 100 / initial_budget;
+            if pct > last_reported {
+                on_progress(current, initial_budget);
+                last_reported = pct;
+            }
         }
     }
-    on_progress(100);
+    on_progress(initial_budget, initial_budget);
 
     // ── Renumber: non-leaf blocks first, then leaf blocks ─────────────────────
     let leaf_block_ids: Vec<usize> = (0..num_leaves).map(|li| block_of[msg_count + li]).collect();

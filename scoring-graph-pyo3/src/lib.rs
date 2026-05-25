@@ -4,7 +4,7 @@
 
 //! PyO3 module definition for `scoring_graph`.
 //!
-//! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False) -> tuple[bytes, str | None]`
+//! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False, emit_initial_yaml: bool = False) -> tuple[bytes, str | None, str | None]`
 //! to Python.
 
 use std::collections::HashMap;
@@ -28,15 +28,18 @@ use score_graph_lib::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
 ///     ``reproto --emit-scoring-graphs``.  One entry per file; order does
 ///     not matter.
 /// emit_yaml : bool, optional
-///     When True, also return the compiled graph as a human-readable YAML
-///     string (spec 0059 §2 format).  Default False.
+///     When True, also return the minimised (post-Hopcroft) compiled graph as
+///     a human-readable YAML string (spec 0059 §2 format).  Default False.
+/// emit_initial_yaml : bool, optional
+///     When True, also return the raw (pre-Hopcroft) compiled graph as a
+///     human-readable YAML string (spec 0059 §2 format).  Default False.
 ///
 /// Returns
 /// -------
-/// tuple[bytes, str | None]
+/// tuple[bytes, str | None, str | None]
 ///     First element: serialised ``.rkyv`` content (the baked graph).
-///     Second element: compiled-graph YAML string when ``emit_yaml=True``,
-///     otherwise ``None``.
+///     Second element: minimised YAML when ``emit_yaml=True``, else ``None``.
+///     Third element: raw YAML when ``emit_initial_yaml=True``, else ``None``.
 ///
 /// Raises
 /// ------
@@ -44,25 +47,31 @@ use score_graph_lib::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
 ///     If any YAML string is malformed or the graph cannot be built.
 #[gen_stub_pyfunction]
 #[pyfunction]
-#[pyo3(signature = (scoring_graphs, emit_yaml = false, on_progress = None))]
+#[pyo3(signature = (scoring_graphs, emit_yaml = false, emit_initial_yaml = false, on_progress = None))]
 fn build_graph<'py>(
     py: Python<'py>,
     scoring_graphs: Vec<String>,
     emit_yaml: bool,
+    emit_initial_yaml: bool,
     on_progress: Option<Py<PyAny>>,
-) -> PyResult<(Bound<'py, PyBytes>, Option<String>)> {
+) -> PyResult<(Bound<'py, PyBytes>, Option<String>, Option<String>)> {
     let result = py.detach(|| {
-        build_from_strings(&scoring_graphs, emit_yaml, |pct| {
-            if let Some(ref cb) = on_progress {
-                Python::attach(|py| {
-                    let _ = cb.call1(py, (pct as u64,));
-                });
-            }
-        })
+        build_from_strings(
+            &scoring_graphs,
+            emit_yaml,
+            emit_initial_yaml,
+            |current, total| {
+                if let Some(ref cb) = on_progress {
+                    Python::attach(|py| {
+                        let _ = cb.call1(py, (current, total));
+                    });
+                }
+            },
+        )
         .map_err(|e| e.to_string())
     });
-    let (rkyv_bytes, yaml) = result.map_err(PyRuntimeError::new_err)?;
-    Ok((PyBytes::new(py, &rkyv_bytes), yaml))
+    let (rkyv_bytes, yaml, initial_yaml) = result.map_err(PyRuntimeError::new_err)?;
+    Ok((PyBytes::new(py, &rkyv_bytes), yaml, initial_yaml))
 }
 
 /// Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 3).

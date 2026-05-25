@@ -27,15 +27,21 @@ pub fn build_compiled(
         return Err("no scoring-graph entries found in provided YAML strings".into());
     }
     let (raw, reg) = graph::build(&merged);
-    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_| {});
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
     Ok(graph::compile(&raw, &reg, &partition, &merged.roots))
 }
+
+/// Return type of [`build_from_strings`]: rkyv bytes, optional Hopcroft YAML,
+/// optional pre-Hopcroft (initial) YAML.
+pub type BuildResult =
+    Result<(Vec<u8>, Option<String>, Option<String>), Box<dyn std::error::Error>>;
 
 pub fn build_from_strings(
     scoring_graphs: &[String],
     emit_yaml: bool,
-    on_progress: impl FnMut(u8),
-) -> Result<(Vec<u8>, Option<String>), Box<dyn std::error::Error>> {
+    emit_initial_yaml: bool,
+    on_progress: impl FnMut(u64, u64),
+) -> BuildResult {
     let merged = load::merge_from_strings(scoring_graphs)?;
     if merged.states.is_empty() {
         return Err("no scoring-graph entries found in provided YAML strings".into());
@@ -44,10 +50,16 @@ pub fn build_from_strings(
     let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, on_progress);
     let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
     let rkyv_bytes = serial::to_bytes(&compiled)?;
+    let initial_yaml = if emit_initial_yaml {
+        let initial = graph::compile_initial(&raw, &reg, &merged.roots);
+        Some(serial::dump_compiled(&initial))
+    } else {
+        None
+    };
     let yaml = if emit_yaml {
         Some(serial::dump_compiled(&compiled))
     } else {
         None
     };
-    Ok((rkyv_bytes, yaml))
+    Ok((rkyv_bytes, yaml, initial_yaml))
 }

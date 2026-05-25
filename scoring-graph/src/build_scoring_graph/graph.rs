@@ -324,6 +324,98 @@ pub fn compile(
     }
 }
 
+/// Compile the raw graph (pre-Hopcroft) into a CompiledGraph using identity
+/// state IDs — every raw node becomes its own state, so the result shows the
+/// full unminimised structure.
+pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> CompiledGraph {
+    let msg_count = raw.node_ids.len() as u32;
+    let num_leaves = reg.num_leaves();
+
+    // ── Transitions ───────────────────────────────────────────────────────────
+    // Raw node IDs are dense 0..msg_count; leaf sentinels are remapped to
+    // stable IDs msg_count..msg_count+num_leaves.
+    let mut transitions: Vec<TransitionEntry> = raw
+        .edges
+        .iter()
+        .map(|e| {
+            let dst_id = if e.dst < msg_count {
+                e.dst
+            } else {
+                msg_count + leaf_sentinel_to_index(e.dst, reg) as u32
+            };
+            TransitionEntry {
+                state_id: e.src,
+                field_number: e.field_number,
+                label: e.label,
+                child_state_id: dst_id,
+            }
+        })
+        .collect();
+    transitions.sort_by_key(|t| (t.state_id, t.field_number));
+
+    // ── Nodes ─────────────────────────────────────────────────────────────────
+    let mut nodes: Vec<NodeEntry> = Vec::new();
+
+    // Non-leaf message nodes.
+    for (&node_id, &wt) in &raw.node_wire_types {
+        nodes.push(NodeEntry {
+            state_id: node_id,
+            wire_type: wt,
+            is_string: false,
+            enum_range_idx: 0xFFFF,
+        });
+    }
+
+    // Leaf nodes: use stable IDs msg_count..msg_count+num_leaves.
+    for li in 0..num_leaves {
+        let sentinel = leaf_sentinel(li, reg);
+        let attrs = leaf_attrs(sentinel, reg);
+        nodes.push(NodeEntry {
+            state_id: msg_count + li as u32,
+            wire_type: attrs.wire_type,
+            is_string: attrs.is_string,
+            enum_range_idx: attrs.enum_range_idx,
+        });
+    }
+    nodes.sort_by_key(|n| n.state_id);
+
+    // ── Roots ─────────────────────────────────────────────────────────────────
+    let mut root_entries: Vec<RootEntry> = Vec::new();
+    for fqdn in roots {
+        if let Some(&node_id) = raw.node_ids.get(fqdn) {
+            root_entries.push(RootEntry {
+                fqdn: fqdn.clone(),
+                state_id: node_id,
+            });
+        }
+    }
+
+    let num_states = msg_count + num_leaves as u32;
+    CompiledGraph {
+        nodes,
+        transitions,
+        roots: root_entries,
+        enum_ranges: reg.enum_ranges.clone(),
+        num_states,
+    }
+}
+
+/// Map a leaf sentinel back to its 0-based index in the leaf slot array.
+fn leaf_sentinel_to_index(sentinel: u32, reg: &LeafRegistry) -> usize {
+    match sentinel {
+        x if x == LEAF_VARINT => 0,
+        x if x == LEAF_I64 => 1,
+        x if x == LEAF_LEN => 2,
+        x if x == LEAF_STRING => 3,
+        x if x == LEAF_I32 => 4,
+        x => {
+            let idx = (u32::MAX - 5).wrapping_sub(x) as usize;
+            assert!(idx < reg.enum_ranges.len(), "unexpected leaf sentinel {x}");
+            NUM_FIXED_LEAVES + idx
+        }
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Return the sentinel node ID for the i-th leaf (0-indexed across fixed + enum).
