@@ -59,6 +59,123 @@ class DescriptorProtoUnresolvedError(Exception):
 class DescriptorProtoHasTargetsError(Exception):
     """Raised when 'descriptor.proto' itself has dependencies (corrupted)."""
 
+
+# ---------------------------------------------------------------------------
+# Spec 0087 — stripped unresolvable field/method type records
+# ---------------------------------------------------------------------------
+
+class StrippedField:
+    """Field stripped from a DescriptorProto before pool_db.Add() because its
+    type_name was not resolvable in pool_db at that time (spec 0087)."""
+    __slots__ = ('number', 'name', 'type_name', 'label')
+
+    def __init__(self, number: int, name: str, type_name: str, label: str) -> None:
+        self.number = number
+        self.name = name
+        self.type_name = type_name
+        self.label = label  # "optional" / "required" / "repeated"
+
+
+class StrippedMethod:
+    """Method stripped from a ServiceDescriptorProto before pool_db.Add()
+    because its input_type or output_type was not resolvable (spec 0087)."""
+    __slots__ = ('name', 'input_type', 'output_type')
+
+    def __init__(self, name: str, input_type: str, output_type: str) -> None:
+        self.name = name
+        self.input_type = input_type
+        self.output_type = output_type
+
+
+_LABEL_NAMES: dict[int, str] = {
+    FieldDescriptorProto.LABEL_OPTIONAL: 'optional',
+    FieldDescriptorProto.LABEL_REQUIRED: 'required',
+    FieldDescriptorProto.LABEL_REPEATED: 'repeated',
+}
+
+
+def _strip_unresolvable_field_types(
+    ctx: 'Context',
+    topo_file: 'ReFile',
+    fdp: FileDescriptorProto,
+) -> None:
+    """Strip fields/methods whose types are unresolvable due to pruning (spec 0087).
+
+    Called immediately after _strip_unresolvable_dependencies and before
+    every pool_db.Add() call.  Stripped records are accumulated on topo_file
+    keyed by FQDN; phase 3 dispatches them to the matching Re* nodes.
+
+    A type_name is unresolvable iff pool_db.FindFileContainingSymbol() raises
+    KeyError AND the symbol is not defined within fdp itself.
+
+    Correctness relies on two invariants:
+    - Topo-sort: all of fdp's surviving dependencies were already Add()ed to
+      pool_db in earlier ranks, so their symbols are present.
+    - _strip_unresolvable_dependencies ran first: pruned/absent imports are
+      already removed from fdp.dependency, so their symbols are the only ones
+      missing from pool_db at this point.
+    - Own-file symbols (types defined in fdp itself) are not in pool_db yet;
+      they are excluded via own_symbols to avoid false positives.
+    """
+    pkg = fdp.package
+    prefix = f'.{pkg}' if pkg else ''
+    own_symbols = set(_extract_fdp_symbols(fdp))
+    stripped_count = 0
+
+    def _is_unresolvable(type_name: str) -> bool:
+        if not type_name:
+            return False  # primitive field
+        name = type_name.lstrip('.')
+        if name in own_symbols:
+            return False  # defined in the same file
+        try:
+            ctx.pool_db.FindFileContainingSymbol(name)
+            return False
+        except KeyError:
+            return True
+
+    def _walk_messages(messages: Any, parent_fqdn: str) -> None:
+        nonlocal stripped_count
+        for msg in messages:
+            msg_fqdn = f'{parent_fqdn}.{msg.name}'
+            to_remove = []
+            for field in msg.field:
+                if _is_unresolvable(field.type_name):
+                    label_str = _LABEL_NAMES.get(field.label, 'optional')
+                    record = StrippedField(field.number, field.name, field.type_name, label_str)
+                    topo_file.stripped_field_types.setdefault(msg_fqdn, []).append(record)
+                    to_remove.append(field)
+                    stripped_count += 1
+            for field in to_remove:
+                msg.field.remove(field)
+            _walk_messages(msg.nested_type, msg_fqdn)
+
+    _walk_messages(fdp.message_type, prefix)
+
+    for svc in fdp.service:
+        svc_fqdn = f'{prefix}.{svc.name}'
+        to_remove = []
+        for method in svc.method:
+            if _is_unresolvable(method.input_type) or _is_unresolvable(method.output_type):
+                record = StrippedMethod(method.name, method.input_type, method.output_type)
+                topo_file.stripped_method_types.setdefault(svc_fqdn, []).append(record)
+                to_remove.append(method)
+                stripped_count += 1
+        for method in to_remove:
+            svc.method.remove(method)
+
+    if stripped_count and not ctx.quiet:
+        from .lib.warnings import get_collector
+        names = ', '.join(
+            f.name
+            for fields in topo_file.stripped_field_types.values()
+            for f in fields
+            if isinstance(f, StrippedField)
+        )
+        get_collector().w4(
+            f'stripped {stripped_count} unresolvable type(s) from {fdp.name}: {names}'
+        )
+
 # WellKnownTypeHasTargetsError: removed by spec 0052 — fallback WKTs may now
 # import other fallback files (e.g. type.proto imports any + source_context).
 # class WellKnownTypeHasTargetsError(Exception):
@@ -795,6 +912,7 @@ def _phase2_build_pool(
                                 advance()
                                 continue
                             _strip_unresolvable_dependencies(ctx, n, fdp)
+                            _strip_unresolvable_field_types(ctx, n, fdp)
                             ctx.pool_db.Add(fdp)
                             ctx.pool_db_fdps.append(fdp)
 
@@ -810,6 +928,7 @@ def _phase2_build_pool(
                                     advance()
                                     continue
                                 _strip_unresolvable_dependencies(ctx, n, fdp)
+                                _strip_unresolvable_field_types(ctx, n, fdp)
                                 ctx.pool_db.Add(fdp)
                                 ctx.pool_db_fdps.append(fdp)
                             except TypeError as e:
@@ -869,6 +988,10 @@ def _phase3_build_graph(
     # calls .name on an uninitialised node.
     # Also copy stripped_dependencies recorded in phase 2 onto the Re* nodes
     # so the render path can emit them as orphan import lines (spec 0053).
+    # Dispatch stripped field/method types to their Re* nodes (spec 0087).
+    from .re_descriptor import ReDescriptorProto as _ReDesc
+    from .re_service import ReServiceDescriptorProto as _ReSvc
+    from .fake_types import Ref as _Ref
     for name, file in topo.files.items():
         fqdn = ReFileDescriptorProto.fqdn_from_ref(name)
         node = ctx.find_file(fqdn)
@@ -878,6 +1001,18 @@ def _phase3_build_graph(
                                  or file.stripped_public_dependencies):
             node.stripped_dependencies = list(file.stripped_dependencies)
             node.stripped_public_dependencies = list(file.stripped_public_dependencies)
+        # spec 0087: dispatch stripped field records to ReDescriptorProto nodes
+        for msg_fqdn, fields in file.stripped_field_types.items():
+            msg_node_fqdn = _ReDesc.fqdn_from_ref(_Ref(msg_fqdn))
+            msg_node = ctx.find_node(msg_node_fqdn)
+            if isinstance(msg_node, _ReDesc):
+                msg_node.stripped_fields.extend(fields)
+        # spec 0087: dispatch stripped method records to ReServiceDescriptorProto nodes
+        for svc_fqdn, methods in file.stripped_method_types.items():
+            svc_node_fqdn = _ReSvc.fqdn_from_ref(_Ref(svc_fqdn))
+            svc_node = ctx.find_node(svc_node_fqdn)
+            if isinstance(svc_node, _ReSvc):
+                svc_node.stripped_methods.extend(methods)
 
 
 def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:

@@ -24,6 +24,11 @@ from .text import Block, BlockLine
 class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
     """Redescriptor for ServiceDescriptorProto."""
 
+    # Methods stripped from the FDP before pool_db.Add() because their
+    # input_type or output_type was not resolvable (spec 0087).
+    # Elements are StrippedMethod instances at runtime.
+    stripped_methods: list[Any]
+
     @property
     def method(self) -> RepeatedCompositeFieldContainer:
         return self.this.method
@@ -80,6 +85,16 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
         for block in option_blocks:
             out.extend(block)
         out.append_div_maybe(depth)
+
+        # --- Orphan methods (stripped unresolvable types, spec 0087) ----------
+        from .text import ORPHAN
+        for sm in self.stripped_methods:
+            out.append(BlockLine(
+                f'rpc {sm.name} ({sm.input_type}) returns ({sm.output_type});',
+                depth + 1, ORPHAN,
+            ))
+        if self.stripped_methods:
+            out.append_div_maybe(depth)
 
         # --- Service methods --------------------------------------------------
         for m in self.method:

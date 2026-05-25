@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0087 — Strip unresolvable field type_names before pool_db.Add()
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-05-25
 **App:** reproto
 
 ---

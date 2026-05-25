@@ -103,7 +103,13 @@ def _render_extend_blocks(
 
 class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
     """Redescriptor for DescriptorProto (message descriptors)."""
-    
+
+    # Fields stripped from the FDP before pool_db.Add() because their
+    # type_name was not resolvable (spec 0087).  Populated by phase 3.
+    # Typed as list[Any] here to avoid a circular import with phases.py;
+    # elements are StrippedField instances at runtime.
+    stripped_fields: list[Any]
+
     @property
     def DESCRIPTOR(self) -> Descriptor:
         return self.this.DESCRIPTOR
@@ -458,6 +464,15 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         for block in option_blocks:
             out.extend(block)
         if option_blocks or (self.this.HasField('options') and self.this.options.HasField('features') and ctx.target_syntax == "editions"):
+            out.append_div_maybe(depth)
+
+        # --- Orphan fields (stripped unresolvable types, spec 0087) -----------
+        for sf in self.stripped_fields:
+            out.append(BlockLine(
+                f'{sf.label} {sf.type_name} {sf.name} = {sf.number};',
+                depth + 1, ORPHAN,
+            ))
+        if self.stripped_fields:
             out.append_div_maybe(depth)
 
         # --- Message fields and oneofs (in declaration order) -----------------

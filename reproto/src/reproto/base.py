@@ -115,6 +115,13 @@ class NodeBase(Generic[MessageT], ABC):
             if isinstance(instance, _ReFile):
                 instance.stripped_dependencies = []
                 instance.stripped_public_dependencies = []
+            # Stripped unresolvable field types (spec 0087); message/service nodes.
+            from .re_descriptor import ReDescriptorProto as _ReDesc
+            from .re_service import ReServiceDescriptorProto as _ReSvc
+            if isinstance(instance, _ReDesc):
+                instance.stripped_fields = []
+            if isinstance(instance, _ReSvc):
+                instance.stripped_methods = []
 
             # Register in context
             ctx.new_nodes[fqdn] = instance

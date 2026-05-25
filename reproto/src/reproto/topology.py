@@ -46,6 +46,12 @@ class File:
         # or absent from the input); recorded for orphan rendering.
         self.stripped_dependencies: list[str] = []
         self.stripped_public_dependencies: list[str] = []
+        # Fields stripped because their type_name was not in pool_db at Add()
+        # time (spec 0087).  Keyed by message FQDN (e.g. ".pkg.Msg").
+        self.stripped_field_types: dict[str, list[object]] = {}
+        # Service methods stripped because their input_type or output_type was
+        # not in pool_db (spec 0087).  Keyed by service FQDN.
+        self.stripped_method_types: dict[str, list[object]] = {}
 
     def is_ref(self) -> bool:
         return self._qfile is None
