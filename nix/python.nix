@@ -353,8 +353,8 @@ EOF
     # ── Instantiate one .pb per sampled type ──────────────────────────────────
     # Number of types to instantiate (includes potential 0-byte skips).
     N_INSTANCES=400
-    TYPES_YAML=${../tests/stress/googleapis-types.yaml}
-    FIXTURES_DIR=${../tests/fixtures/instances}
+    TYPES_YAML=${builtins.path { name = "googleapis-types-yaml"; path = ../tests/stress/googleapis-types.yaml; }}
+    FIXTURES_DIR=${builtins.path { name = "googleapis-fixtures"; path = ../tests/fixtures/instances; }}
 
     # Phase 1: encode hand-crafted fixtures into .pb files.
     # These are committed to git (as annotated textproto with .pb extension)
