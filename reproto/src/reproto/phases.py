@@ -1221,10 +1221,11 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                  and not ctx.write_variant_descriptor)
     ]
 
+    from .mappings import canonize_dependency
     with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned)) as advance:
         for re_fdp in summoned:
-            path = Path(re_fdp.name)
-            res_path = out_repo / path
+            canonical_name = canonize_dependency(ctx, re_fdp.name)
+            res_path = out_repo / Path(canonical_name)
             if ctx.debug:
                 cli_info(f"  Writing: {res_path}")
 
@@ -1636,6 +1637,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         for nested in desc.nested_types:
             _collect(nested, messages, group_fqdns)
 
+    from .mappings import canonize_dependency
     for re_file in ctx.nodes.values():
         if not isinstance(re_file, ReFileDescriptorProto):
             continue
@@ -1644,6 +1646,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         if not re_file.is_summoned:
             continue
         proto_name = re_file.name
+        canonical_name = canonize_dependency(ctx, proto_name)
 
         try:
             fd = ctx.pool.FindFileByName(proto_name)
@@ -1670,7 +1673,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
                 entries.append(msg_desc.full_name)
         entries.sort()
 
-        yaml_path = out_dir / Path(proto_name).with_suffix('.yaml')
+        yaml_path = out_dir / Path(canonical_name).with_suffix('.yaml')
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         with open(yaml_path, 'w', encoding='utf-8') as fh:
             yaml.dump({'entries': entries, 'messages': messages}, fh,

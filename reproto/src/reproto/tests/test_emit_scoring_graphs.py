@@ -6,6 +6,8 @@
 
 Each test compiles fixture .proto files with protoc, then runs the reproto CLI
 with --emit-scoring-yaml and inspects the resulting YAML files.
+
+TC-6 (spec 0086) covers canonized output paths when a variant rewrites file names.
 """
 
 from __future__ import annotations
@@ -246,3 +248,106 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
     # The group message entries must have kind GROUP at the message level
     assert messages["test.field.GroupTest.RepeatedGroup"]["kind"] == "GROUP"
     assert messages["test.field.GroupTest.OptionalGroup"]["kind"] == "GROUP"
+
+
+# ---------------------------------------------------------------------------
+# TC-6: Canonized output paths via variant import rewrites (spec 0086)
+# ---------------------------------------------------------------------------
+
+def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
+    """Variant import_rewrites: .proto and .yaml files are written under the
+    canonized path, not the original input path.
+
+    Uses address_book + phone_number fixtures with a variant that rewrites
+    phone_number.proto -> canonical/phone_number.proto.
+    Verifies:
+    - output .proto is at canonical/phone_number.proto (not phone_number.proto)
+    - output .yaml  is at canonical/phone_number.yaml  (not phone_number.yaml)
+    - import statement inside address_book.proto references canonical/phone_number.proto
+    - original path phone_number.proto does NOT appear as an output file
+    """
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    # Compile address_book + phone_number into a single FDS with --include_imports
+    from reproto.tests.conftest import compile_proto_multi
+    pb = compile_proto_multi(pb_dir / "ab.pb", "address_book.proto", "phone_number.proto")
+
+    # Write a variant YAML that rewrites phone_number.proto -> canonical/phone_number.proto
+    variant_yaml = tmp_path / "test_variant.yaml"
+    variant_yaml.write_text(
+        "name: test\n"
+        "descriptor_proto: google/protobuf/descriptor.proto\n"
+        "well_known: {}\n"
+        "import_rewrites:\n"
+        "  - match: phone_number.proto\n"
+        "    action: rewrite\n"
+        "    to: canonical/phone_number.proto\n"
+        "namespace_rewrites: []\n"
+        "orphans: {}\n"
+        "annotation_modules: []\n"
+    )
+
+    # The custom variant has no embedded .pb files, so --use-variant descriptor
+    # cannot load the fallback from it.  Copy the embedded descriptor.pb from
+    # the built-in google-protobuf variant into the temp variant directory so
+    # load_embedded_proto_fallback() finds it under variant_root/variant_stem/.
+    import importlib.resources
+    embedded_pb = (
+        importlib.resources.files("reproto.variants")
+        .joinpath("google-protobuf")
+        .joinpath("google").joinpath("protobuf").joinpath("descriptor.pb")
+        .read_bytes()
+    )
+    descriptor_dir = tmp_path / "test_variant" / "google" / "protobuf"
+    descriptor_dir.mkdir(parents=True)
+    (descriptor_dir / "descriptor.pb").write_bytes(embedded_pb)
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    import os
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "reproto.cli",
+            "--proto-variant", str(variant_yaml),
+            "--use-variant", "descriptor",
+            f"-I{FIXTURES_DIR}",
+            f"--output-root={out_dir}",
+            "--emit-scoring-yaml",
+            str(pb),
+        ],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # .proto output must be at canonized path
+    assert (out_dir / "canonical" / "phone_number.proto").exists(), (
+        "phone_number.proto must be written at canonical/phone_number.proto"
+    )
+    assert not (out_dir / "phone_number.proto").exists(), (
+        "phone_number.proto must NOT be written at the original path"
+    )
+
+    # .yaml output must be at canonized path
+    assert (out_dir / "canonical" / "phone_number.yaml").exists(), (
+        "phone_number.yaml must be written at canonical/phone_number.yaml"
+    )
+    assert not (out_dir / "phone_number.yaml").exists(), (
+        "phone_number.yaml must NOT be written at the original path"
+    )
+
+    # import statement inside address_book.proto must reference the canonized path
+    ab_proto = (out_dir / "address_book.proto").read_text()
+    assert 'import "canonical/phone_number.proto"' in ab_proto, (
+        "address_book.proto must import canonical/phone_number.proto"
+    )
+    assert 'import "phone_number.proto"' not in ab_proto, (
+        "address_book.proto must not import the original phone_number.proto path"
+    )
