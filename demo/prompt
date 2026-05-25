@@ -289,8 +289,8 @@ while true; do
     fi
 
     # Final prompt string
-    prompt="${GRAY}[demo:$cwd_display]$ ${RESET}${LGRAY}"
-    prompt_bw="[demo:$cwd_display]$ "
+    prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
+    prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
 
     # 2. READ COMMAND (Execution pauses here until ENTER is hit)
