@@ -63,7 +63,7 @@ hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 # Let's decode it as a protobuf:
 prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-  | bat --style=numbers -l pbtxt
+  2>&1 | bat --style=numbers,header-filename -l pbtxt
 # \
 # 👆 No schema yet: field numbers and wire types, but no names.
 
@@ -71,7 +71,7 @@ prototext decode --raw \
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 
 # Here is the schema that unlocked it — the .proto source.
 bat --style=numbers,header-filename -l proto \
@@ -91,7 +91,7 @@ demo/header "4. Schema auto-inference"
 # Watch prototext infer the schema with no hint from us.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 # \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
@@ -156,12 +156,12 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_hidden.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 
 # prototext decode: preserves all contents.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 # \
 # 👆 Both occurrences visible: the secret first, then the real value.
 # \
@@ -190,7 +190,7 @@ hexdump -C stash/postal_patched.pb | head -1
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 # \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.              \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
@@ -207,7 +207,7 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_patched.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
@@ -215,7 +215,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     stash/postal_patched.pb \
   | prototext encode \
   | diff - stash/postal_patched.pb \
-  && echo -e "\033[32mbyte-exact\033[0m"
+  && printf '\033[32mbyte-exact\033[0m\n'
 
 demo/header "6. Building a scoring database"
 
@@ -233,18 +233,15 @@ demo/header "6. Building a scoring database"
 # a protobuf.  prototext can decode it:                                          \
 #
 
-prototext --descriptor-set $GOOGLEAPIS_DB \
+# For example, this is the descriptor for postal_address — self-referential! 🤯
+out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-  | bat --style=numbers,header-filename -r :10 -l pbtxt
-# \
-# 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
-# which is itself a .proto file.  Self-referential!                              \
-#
+); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers,header-filename -r :10 -l pbtxt <<< "$out"
 # \
 #                                                                                \
 # From descriptors, reproto can build a scoring DB — a compiled schema with      \
-# a scoring graph baked in.  --build-schema-db produces it from any seed.        \
+# a scoring graph side-car.  --build-schema-db produces it from any seed.       \
 #
 
 # \
@@ -274,7 +271,7 @@ reproto \
 # Auto-infer a Cloud Functions deployment operation — unique match, score 26.
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
-  | bat --style=numbers -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt
 # \
 # 👆 Score 26, unique match.
 # \
@@ -301,7 +298,7 @@ xdg-open stash/opmeta.html
 # Many nodes are structurally identical: 8 teams defined their own               \
 # OperationMetadata with the same 7 fields.  They are separate nodes here,       \
 # but they could be merged — a binary consistent with one is consistent with     \
-# all.  Deduplication collapses them automatically.                             \
+# all.  Hopcroft deduplication collapses them automatically.                    \
 #
 
 # Hopcroft graph: 8 OperationMetadata states collapsed into 1 amber+8 node.
@@ -343,12 +340,15 @@ demo/header "7. Decompiling descriptors"
 # you need to write code that audits or processes the corresponding protobufs.   \
 #
 
-# As an example, let's decompile the postal_address descriptor back into
-# its .proto source form.
+# \
+#                                                                                \
+# As an example, let's decompile the postal_address descriptor back into         \
+# its .proto source form.                                                        \
+#
 
 # This is how postal_address looks as a descriptor — a binary FileDescriptorProto:
-prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-  | bat --style=numbers -r :10 -l pbtxt
+out=$(prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
+); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers,header-filename -r 1:5 -l pbtxt <<< "$out"
 
 # Decompile it back to .proto source.
 reproto -q \
@@ -356,8 +356,8 @@ reproto -q \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # Let's see the result.
-bat --style=numbers,header-filename -l proto -r 1:5 \
-    stash/reproto-out/google/type/postal_address.proto
+out=$(cat stash/reproto-out/google/type/postal_address.proto \
+); vim +'set ft=proto' <(echo "$out"); bat --style=numbers,header-filename -r 1:5 -l proto <<< "$out"
 # \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
 # \
@@ -376,6 +376,7 @@ reproto -O stash/googleapis-out \
 # find-all-references works, and the full type hierarchy is explorable.          \
 #
 
+# Browse the decompiled googleapis sources.
 code --reuse-window stash/googleapis-out
 # \
 #                                                                                \
@@ -401,13 +402,10 @@ reproto -q \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     google/cloud/audit/audit_log.pb
-find stash/audit-seed -name '*.proto' | sort | bat --style=numbers
+find stash/audit-seed -name '*.proto' | sort | bat --style=numbers,header-filename
 # \
 # 👆 The transitive closure: every file AuditLog depends on, nothing more.
-# \
-#                                                                                \
-# Let's browse the decompiled AuditLog source.                                  \
-#
+# Let's browse the decompiled AuditLog source.
 code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # \
 #                                                                                \
@@ -422,7 +420,8 @@ reproto -q \
     -I $GOOGLEAPIS_DESCS \
     --prune 'file:google/rpc/status.proto' \
     google/cloud/audit/audit_log.pb
-find stash/audit-pruned -name '*.proto' | sort | bat --style=numbers
+# Let's look at what was produced:
+find stash/audit-pruned -name '*.proto' | sort | bat --style=numbers,header-filename
 # \
 # 👆 Prune status.proto: 8 files become 7.
 
@@ -430,10 +429,11 @@ find stash/audit-pruned -name '*.proto' | sort | bat --style=numbers
 bat --style=numbers,header-filename -l proto -r 13:22 -H 17 -H 20 \
     stash/audit-pruned/google/cloud/audit/audit_log.proto
 # \
-# 👆 status.proto import and AuditLog.status becomes a /// orphan                \
+# 👆 status.proto import and AuditLog.status become /// orphans.                 \
 # They are not silently dropped.                                                 \
 # Simon's team can see exactly what was cut and why.                             \
 #
+# Let's browse the pruned source.
 code --reuse-window stash/audit-pruned/google/cloud/audit/audit_log.proto
 
 demo/header "Conclusion"
