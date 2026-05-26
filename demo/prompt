@@ -147,9 +147,18 @@ _update_prompt() {
     local counter="$((index+1))/$n"
     _COUNTER_WIDTH=${#counter}
     prompt="${prefix}${counter}${suffix}"
-    # prompt_static: replace counter with cursor-forward of same visual width
-    local fwd=$'\033['"${_COUNTER_WIDTH}C"
-    prompt_static="${prefix}${fwd}${suffix}"
+    # prompt_static: replace counter with cursor-forward of same visual width,
+    # then pad readline's width accounting by appending _COUNTER_WIDTH repetitions
+    # of \001\033[D\002$ (cursor-left zero-width to readline, $ counted as +1 width).
+    # This makes readline's prompt width match the terminal reality, so that
+    # beginning-of-line (Ctrl-A) computes screen-line boundaries correctly on
+    # multi-line buffers.
+    local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'
+    local pad="" i
+    for (( i = 0; i < _COUNTER_WIDTH; i++ )); do
+        pad+=$'\001\033[D\002'"$"
+    done
+    prompt_static="${prefix}${fwd}${suffix}${pad}"
     prompt_bw="[demo:$cwd_display (${counter})]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
 }
