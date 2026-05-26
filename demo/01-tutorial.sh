@@ -409,22 +409,21 @@ code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # orphans the field that referenced it, leaving a /// comment so nothing is      \
 # silently lost.                                                                 \
 #
-
-# Prune status.proto: 8 files become 7, AuditLog.status becomes a /// orphan.
 reproto -q \
     -O stash/audit-pruned \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     --prune 'file:google/rpc/status.proto' \
     google/cloud/audit/audit_log.pb
-
 find stash/audit-pruned -name '*.proto' | sort
 # \
-#                                                                                \
-# The orphaned field is preserved as a /// comment — not silently dropped.       \
+# 👆 Prune status.proto: 8 files become 7.
+cat stash/audit-pruned/google/cloud/audit/audit_log.proto \
+    | tee >({ head -10; echo '...'; } > /dev/tty) | vim +'set ft=proto' -
+# \
+# 👆 AuditLog.status becomes a /// orphan — not silently dropped.                \
 # Simon's team can see exactly what was cut and why.                             \
 #
-
 code --reuse-window stash/audit-pruned/google/cloud/audit/audit_log.proto
 
 demo/header "Conclusion"

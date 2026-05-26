@@ -118,9 +118,13 @@ but nothing happens on screen.  Use blank lines deliberately:
   2. **After the command, not before it** — the `👆` finger points *up* at
      output already on screen.  Placing the note before the command it
      describes is backwards.
-  3. **Flush left** — write `# 👆 …` with no leading indent.  The finger
-     should visually align with the left edge of the terminal output above it,
-     unencumbered by a shell prompt.
+  3. **Flush left** — always open a 👆-note with a `# \` line immediately
+     before the `# 👆 …` line.  The demo runner renders the `# \` opener as
+     a bare continuation marker with no shell prompt, which causes the `👆`
+     on the next line to also appear flush-left — visually aligned with the
+     terminal output above it, unencumbered by a shell prompt.  A multi-line
+     👆-note is closed with a bare `#` terminator, exactly like a narrative
+     block.
 - **Section headers** (`demo/header "N. Title"`): always place one blank line
   before and one blank line after.  This gives the presenter two guard beats —
   one to let the previous section land, one to read the title before the first
