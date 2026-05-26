@@ -45,6 +45,7 @@ demo/header "2. Protobufs are everywhere"
 
 demo/header "3. What's inside a protobuf?"
 
+[[Move the vocabulary elsewhere further down the demo, as a kind of recap. Here it is too early]]
 # \
 #                                                                                \
 # Quick vocabulary:                                                              \
@@ -58,21 +59,22 @@ ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Raw bytes — this is what travels on the wire.
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | tee /dev/tty | vim -
-# 👆 No schema yet: field numbers and wire types, but no names.
+# Let's decode it as a protobuf:
 prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
+# 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 
 # Here is the schema that unlocked it — the .proto source.
 vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 
-demo/header "4. Schemas are protobufs too"
+demo/header "4. Schemas are protobufs too" [[This section is not in the right place]]
 
 # \
 #                                                                                \
@@ -96,7 +98,7 @@ demo/header "5. Schema auto-inference"
 
 # \
 #                                                                                \
-# prototext can infer the schema automatically: it scores every type in the DB   \
+# prototext can infer the schema automatically:[[Introduce that fact that we have a precompiled DB of schemas]] it scores every type in the DB   \
 # against the binary and picks the best match.  The score consolidates field     \
 # coverage, wire type matches, value plausibility, and more.                     \
 #
@@ -107,7 +109,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
 #                                                                                \
-# Notice the score at the top of the output — the higher, the better the fit.    \
+# 👆 Notice the score at the top of the output — the higher, the better the fit.    \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
 # picks the best candidate.                                                      \
 #
@@ -217,8 +219,8 @@ protoc \
     < stash/postal_patched.pb \
     | vim +'set ft=pbtxt' -
 
-demo/header "7. Decompiling schemas and building scoring databases"
-
+demo/header "7. Decompiling schemas and building scoring databases"[[In fact this section should just be about building scoring databases, not about decompiling schemas yet]]
+[[Here we should move part of the contents of current section 4. Explain that schemas can be compiled into descriptors and that from these descriptors, a scoring data base can be built, in order to determine which schema is a good fit for rendering a given protobuf]]
 # \
 #                                                                                \
 # So far we have been decoding binary protobufs.  But what about the            \
@@ -384,4 +386,11 @@ vim stash/audit-pruned/google/cloud/audit/audit_log.proto
 #   — a scalpel for extracting exactly the schema slice your tool needs         \
 #
 
+[[ Here we need an additional section about decompilation of descriptors. The narrative is that many times, descriptors are available (as reflective information inside binaries) but the .proto source is not available. How do we manage to retrieve the .proto, if we need them. We could need them for writing code that audits the corresponding protobufs for example. Particular case: what if we lack some of the descriptors (e.g. missing imported files)]]
+
 # THE END
+
+
+
+
+# 👆 Intentionally adding a few newlines sentinel before exiting
