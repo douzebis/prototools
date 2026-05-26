@@ -138,10 +138,18 @@ _update_prompt() {
     PS1="$prompt"
 }
 
-# Update PS1 with the new counter so readline redraws the prompt on the next
-# key event.  Called from navigation bind -x callbacks.
+# Manually overwrite the current readline line with an updated prompt.
+# Called from navigation bind -x callbacks after index and READLINE_LINE
+# have been updated.  We print \r + new_prompt + READLINE_LINE + \033[K to
+# the terminal; readline then redraws the same content on top (no doubling).
 _redraw_prompt() {
     _update_prompt
+    # Strip \001/\002 non-printing markers so the raw escape codes go to the
+    # terminal correctly (these wrappers are only meaningful inside readline).
+    local raw_prompt
+    raw_prompt="${prompt//$'\001'/}"
+    raw_prompt="${raw_prompt//$'\002'/}"
+    printf '\r%s%s\033[K' "$raw_prompt" "$READLINE_LINE" >/dev/tty
 }
 
 # Readline hooks for wrap-around Up/Down, preserving edits
