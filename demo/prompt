@@ -123,6 +123,21 @@ calculate_lines() {
     fi
 }
 
+# Rebuild prompt string and update READLINE_PROMPT so readline redraws it.
+_update_prompt() {
+    local cwd_display
+    local cwd="$PWD"
+    if [[ "$cwd" == "$HOME"* ]]; then
+        cwd_display="~${cwd#$HOME}"
+    else
+        cwd_display="$cwd"
+    fi
+    prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
+    prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
+    PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
+    READLINE_PROMPT="$prompt"
+}
+
 # Readline hooks for wrap-around Up/Down, preserving edits
 browse_up() {
     # Save current edits (could be multi-line)
@@ -132,11 +147,13 @@ browse_up() {
     (( index-- ))
     if (( index < 0 )); then
         index=0
+        _update_prompt
         return
     fi
     # Load the display version (multi-line format)
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
+    _update_prompt
 }
 
 browse_down() {
@@ -147,11 +164,13 @@ browse_down() {
     (( index++ ))
     if (( index >= n )); then
         index=$((n-1))
+        _update_prompt
         return
     fi
     # Load the display version (multi-line format)
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
+    _update_prompt
 }
 
 # === Line Editing Helpers ===
@@ -232,6 +251,7 @@ fast_up() {
     if (( index < 0 )); then index=0; fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
+    _update_prompt
 }
 
 fast_down() {
@@ -241,6 +261,7 @@ fast_down() {
     if (( index >= n )); then index=$((n-1)); fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
+    _update_prompt
 }
 
 _INPUTRC=$(mktemp)
@@ -278,20 +299,7 @@ printf "%s  F1  help%s\n\n" "$YELLOW" "$RESET"
 while true; do
 
     # 1. ASSEMBLE THE PROMPT
-
-    # Determine displayable $cwd length for width calculation
-    cwd="$PWD"
-    cwd_display=""
-    if [[ "$cwd" == "$HOME"* ]]; then
-        cwd_display="~${cwd#$HOME}"
-    else
-        cwd_display="$cwd"
-    fi
-
-    # Final prompt string
-    prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
-    prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
-    PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
+    _update_prompt
 
     # 2. READ COMMAND (Execution pauses here until ENTER is hit)
     # Pass the display version to readline (with actual newlines for multi-line commands)

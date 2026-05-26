@@ -44,25 +44,26 @@ def _make_network(title: str) -> Network:
     return net
 
 
-def _node_colour(fqdns: list[str], max_count: int) -> str:
+_BRIGHTNESS_CAP = 8   # FQDNs at which brightness maxes out
+
+
+def _node_colour(fqdns: list[str]) -> str:
     """Compute node colour for a non-leaf message node.
 
-    Top-level nodes (those that appear in any 'entries' list, i.e. have at
-    least one FQDN) use a red hue; internal nodes (no FQDN) use blue.
-    Brightness scales with the number of FQDNs: more merged types → brighter.
-    min brightness ~60, max brightness ~255.
+    Top-level nodes (have at least one FQDN) use an amber/gold hue.
+    Brightness scales linearly from count=1 (dim but readable) to
+    count>=8 (full brightness).  Internal nodes (no FQDN) use dim blue.
     """
     count = len(fqdns)
     if count == 0:
         return '#3355aa'  # dim blue — internal node with no named root
-    # Red hue: scale brightness from 80 (count=1) up toward 255 (many).
-    # brightness = 80 + 175 * min(count, max_count) / max(max_count, 1)
-    t = min(count, max_count) / max(max_count, 1)
-    v = int(80 + 175 * t)
-    # Red channel full, green and blue scale down to keep it red.
-    r = v
-    g = int(v * 0.2)
-    b = int(v * 0.2)
+    # t in [0, 1]: 0 at count=1, 1 at count>=_BRIGHTNESS_CAP
+    t = min(count - 1, _BRIGHTNESS_CAP - 1) / (_BRIGHTNESS_CAP - 1)
+    # Amber hue: R stays high, G scales with brightness, B stays low.
+    # dim: #886010  bright: #ffcc20
+    r = int(0x88 + t * (0xff - 0x88))
+    g = int(0x60 + t * (0xcc - 0x60))
+    b = int(0x10 + t * (0x20 - 0x10))
     return f'#{r:02x}{g:02x}{b:02x}'
 
 
@@ -98,12 +99,6 @@ def render_scoring_graph(
             if any(_fqdn_matches_any(f, hide) for f in fqdns):
                 hidden_ids.add(sid)
 
-    # Max FQDN count across all non-leaf nodes, for brightness scaling.
-    max_count = max(
-        (len(fqdns) for sid, fqdns in state_fqdns.items() if sid not in leaf_states),
-        default=1,
-    )
-
     for state in data.get('states', []):
         sid = state['id']
         wt = state['wire_type']
@@ -116,15 +111,22 @@ def render_scoring_graph(
             continue
 
         fqdns = state_fqdns.get(sid, [])
-        tooltip = '<br>'.join(fqdns) if fqdns else ''
+        tooltip = '\n'.join(fqdns) if fqdns else ''
+        # Label: short type name for named nodes, "+N" suffix when merged, blank for internal.
+        if len(fqdns) == 1:
+            node_label = fqdns[0].rsplit('.', 1)[-1]
+        elif len(fqdns) > 1:
+            node_label = f'{fqdns[0].rsplit(".", 1)[-1]}+{len(fqdns) - 1}'
+        else:
+            node_label = ''
 
         if not is_leaf:
             net.add_node(
                 sid,
-                label=str(sid),
+                label=node_label,
                 title=tooltip,
                 shape='dot',
-                color=_node_colour(fqdns, max_count),
+                color=_node_colour(fqdns),
                 size=20,
             )
         else:
@@ -174,3 +176,8 @@ def render_scoring_graph(
         )
 
     net.write_html(str(output_path))
+    # Patch tooltip CSS: pyvis uses white-space:nowrap which prevents line
+    # breaks in multi-FQDN tooltips.  Switch to pre-wrap so \n is respected.
+    html = output_path.read_text()
+    html = html.replace('white-space:nowrap', 'white-space:pre-wrap', 1)
+    output_path.write_text(html)
