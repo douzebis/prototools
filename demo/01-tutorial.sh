@@ -50,6 +50,7 @@ ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Raw bytes — this is what travels on the wire.
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | tee /dev/tty | vim -
+
 # Let's decode it as a protobuf:
 prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
@@ -132,7 +133,8 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
-# 👆 Let's look at the resulting protobuf:
+
+# Let's look at the resulting protobuf:
 hexdump -C stash/postal_hidden.pb | tee /dev/tty | vim -
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
@@ -162,7 +164,8 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
   | prototext encode > stash/postal_patched.pb
-# 👆 Let's look at what has been produced:
+
+# Let's look at what has been produced:
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
 hexdump -C stash/postal_patched.pb | head -1
 # 👆 Spot the difference: one extra byte.
@@ -170,7 +173,7 @@ hexdump -C stash/postal_patched.pb | head -1
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
 #                                                                                \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.             \
@@ -196,7 +199,7 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_patched.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 
 demo/header "6. Building a scoring database"
 
@@ -217,7 +220,7 @@ demo/header "6. Building a scoring database"
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
 #                                                                                \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —        \
@@ -230,10 +233,11 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 
 # Build a scoring DB for AuditLog.
-reproto -I $GOOGLEAPIS_DESCS \
-    --use-variant descriptor \
+reproto \
     --build-schema-db stash/audit.desc \
     --emit-scoring-html stash/audit.html \
+    --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS \
     google/cloud/audit/audit_log.pb
 # \
 #                                                                                \
@@ -249,14 +253,14 @@ reproto -I $GOOGLEAPIS_DESCS \
 
 # Raw graph: 5 nodes.  Hopcroft graph: 4 nodes — Allowed and Denied merged.
 reproto -q \
-    -I $GOOGLEAPIS_DESCS \
+    --build-schema-db stash/iprules.desc \
+    --emit-scoring-html stash/iprules.html \
     --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \
     --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
     --seed 'desc:.google.cloud.securitycenter.v2.IpRule' \
     --seed 'desc:.google.cloud.securitycenter.v2.IpRules' \
-    --build-schema-db stash/iprules.desc \
-    --emit-scoring-html stash/iprules.html \
     google/cloud/securitycenter/v2/ip_rules.pb
 
 # Raw graph: open in browser, inspect Allowed and Denied as separate nodes.
@@ -285,8 +289,10 @@ xdg-open stash/iprules-hopcroft.html
 
 # Raw: 177 nodes.  Hopcroft: 83 nodes.  8 OperationMetadata states become 1.
 reproto -q \
-    -I $GOOGLEAPIS_DESCS \
+    --build-schema-db stash/opmeta.desc \
+    --emit-scoring-html stash/opmeta.html \
     --use-variant descriptor \
+    -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
     --seed 'desc:.google.cloud.apihub.v1.OperationMetadata' \
     --seed 'desc:.google.cloud.apphub.v1.OperationMetadata' \
@@ -295,8 +301,6 @@ reproto -q \
     --seed 'desc:.google.cloud.batch.v1.OperationMetadata' \
     --seed 'desc:.google.cloud.batch.v1alpha.OperationMetadata' \
     --seed 'desc:.google.cloud.beyondcorp.appconnections.v1.AppConnectionOperationMetadata' \
-    --build-schema-db stash/opmeta.desc \
-    --emit-scoring-html stash/opmeta.html \
     $GOOGLEAPIS_DB
 
 xdg-open stash/opmeta.html
@@ -316,7 +320,7 @@ demo/header "7. Decompiling descriptors"
 #
 
 prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 
 # Decompile the PostalAddress descriptor back to .proto source.
 reproto -q \
@@ -364,7 +368,8 @@ demo/header "8. Seeding and pruning"
 reproto -q \
     -O stash/audit-seed \
     --use-variant descriptor \
-    -I $GOOGLEAPIS_DESCS google/cloud/audit/audit_log.pb
+    -I $GOOGLEAPIS_DESCS \
+    google/cloud/audit/audit_log.pb
 # 👆 The transitive closure: every file AuditLog depends on, nothing more.
 find stash/audit-seed -name '*.proto' | sort
 # \
@@ -379,8 +384,9 @@ find stash/audit-seed -name '*.proto' | sort
 reproto -q \
     -O stash/audit-pruned \
     --use-variant descriptor \
-    -I $GOOGLEAPIS_DESCS google/cloud/audit/audit_log.pb \
-    --prune 'file:google/rpc/status.proto'
+    -I $GOOGLEAPIS_DESCS \
+    --prune 'file:google/rpc/status.proto' \
+    google/cloud/audit/audit_log.pb
 
 find stash/audit-pruned -name '*.proto' | sort
 # \
