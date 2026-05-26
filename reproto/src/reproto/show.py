@@ -44,11 +44,32 @@ def _make_network(title: str) -> Network:
     return net
 
 
+def _node_colour(fqdns: list[str], max_count: int) -> str:
+    """Compute node colour for a non-leaf message node.
+
+    Top-level nodes (those that appear in any 'entries' list, i.e. have at
+    least one FQDN) use a red hue; internal nodes (no FQDN) use blue.
+    Brightness scales with the number of FQDNs: more merged types → brighter.
+    min brightness ~60, max brightness ~255.
+    """
+    count = len(fqdns)
+    if count == 0:
+        return '#3355aa'  # dim blue — internal node with no named root
+    # Red hue: scale brightness from 80 (count=1) up toward 255 (many).
+    # brightness = 80 + 175 * min(count, max_count) / max(max_count, 1)
+    t = min(count, max_count) / max(max_count, 1)
+    v = int(80 + 175 * t)
+    # Red channel full, green and blue scale down to keep it red.
+    r = v
+    g = int(v * 0.2)
+    b = int(v * 0.2)
+    return f'#{r:02x}{g:02x}{b:02x}'
+
+
 def render_scoring_graph(
     compiled_yaml: str,
     output_path: Path,
     title: str,
-    node_colour: str,
     with_leaf_nodes: bool = False,
     hide: tuple[str, ...] = (),
 ) -> None:
@@ -62,11 +83,13 @@ def render_scoring_graph(
         s['id'] for s in data.get('states', []) if s['id'] not in states_with_outgoing
     }
 
-    # Build tooltip: state_id -> list of FQDNs from roots.
+    # Build tooltip: state_id -> sorted list of FQDNs from roots.
     state_fqdns: dict[int, list[str]] = {}
     for root in data.get('roots', []):
         sid = root['state']
         state_fqdns.setdefault(sid, []).append(root['fqdn'])
+    for fqdns in state_fqdns.values():
+        fqdns.sort()
 
     # Compute hidden state IDs from --hide patterns.
     hidden_ids: set[int] = set()
@@ -74,6 +97,12 @@ def render_scoring_graph(
         for sid, fqdns in state_fqdns.items():
             if any(_fqdn_matches_any(f, hide) for f in fqdns):
                 hidden_ids.add(sid)
+
+    # Max FQDN count across all non-leaf nodes, for brightness scaling.
+    max_count = max(
+        (len(fqdns) for sid, fqdns in state_fqdns.items() if sid not in leaf_states),
+        default=1,
+    )
 
     for state in data.get('states', []):
         sid = state['id']
@@ -86,7 +115,8 @@ def render_scoring_graph(
         if is_leaf and not with_leaf_nodes:
             continue
 
-        tooltip = ', '.join(state_fqdns.get(sid, []))
+        fqdns = state_fqdns.get(sid, [])
+        tooltip = '<br>'.join(fqdns) if fqdns else ''
 
         if not is_leaf:
             net.add_node(
@@ -94,7 +124,7 @@ def render_scoring_graph(
                 label=str(sid),
                 title=tooltip,
                 shape='dot',
-                color=node_colour,
+                color=_node_colour(fqdns, max_count),
                 size=20,
             )
         else:
@@ -139,7 +169,7 @@ def render_scoring_graph(
         net.add_edge(
             t['from'],
             t['to'],
-            label=f"f{t['field']}",
+            label=str(t['field']),
             color=colour,
         )
 

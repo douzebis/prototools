@@ -1675,7 +1675,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             compiled_yaml=initial_yaml,
             output_path=raw_path,
             title='Scoring graph (raw)',
-            node_colour='#97fc9a',
             with_leaf_nodes=ctx.with_leaf_nodes,
             hide=ctx.pyvis_hide,
         )
@@ -1683,7 +1682,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             compiled_yaml=compiled_yaml,
             output_path=hop_path,
             title='Scoring graph (Hopcroft minimised)',
-            node_colour='#aaaaff',
             with_leaf_nodes=ctx.with_leaf_nodes,
             hide=ctx.pyvis_hide,
         )
