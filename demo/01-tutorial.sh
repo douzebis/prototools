@@ -9,8 +9,23 @@
 # Generated files go under ./stash/ (gitignored).                                \
 #
 
-demo/header "1. Protobufs are everywhere"
-demo/header "1. Protobufs are
+demo/header "1. Setup"
+
+# Meet our two tools.
+prototext --version && reproto --version
+# Build the googleapis schema DB — we will use it throughout.
+export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
+# Companion paths: binary instances and decompiled .proto sources.
+GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
+GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
+# Pre-clean stash output dirs to avoid stale files from previous runs.
+rm -rf stash/reproto-out stash/googleapis-out \
+    stash/audit-seed stash/audit-pruned \
+    stash/audit.desc stash/audit stash/audit.html \
+    stash/iprules.desc stash/iprules stash/iprules.html stash/iprules-hopcroft.html \
+    stash/opmeta.desc stash/opmeta stash/opmeta.html stash/opmeta-hopcroft.html
+
+demo/header "2. Protobufs are everywhere"
 
 # \
 #                                                                                \
@@ -30,41 +45,31 @@ demo/header "1. Protobufs are
 # language-neutral — the lingua franca of microservice communication.            \
 #
 
-demo/header "2. Setup"
-
-# Meet our two tools.
-prototext --version && reproto --version
-
-# Build the googleapis schema DB — we will use it throughout.
-export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
-export GOOGLEAPIS_DB=/nix/store/qmnwx5798np062iydkky60g0jfq0dam9-googleapis-db/googleapis.desc
-# Companion paths: binary instances and decompiled .proto sources.
-GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
-GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
-
 demo/header "3. What's inside a protobuf?"
 
 # \
 #                                                                                \
 # Quick vocabulary:                                                              \
-#   protobuf  — a binary-encoded message on the wire                             \
-#   schema    — the .proto definition that names fields and assigns types        \
+#   protobuf   — a binary-encoded message on the wire                            \
+#   schema     — the .proto definition that names fields and assigns types       \
 #   descriptor — a compiled schema, itself serialised as a protobuf              \
 #
 
 # Our running example: a postal address, serialised as a protobuf.
 ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
-
 # Raw bytes — this is what travels on the wire.
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | vim -
 vim $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
-
 # No schema yet: we see field numbers and wire types, but no names.
-prototext --descriptor-set $GOOGLEAPIS_DB decode -a --type google.protobuf.Empty     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | vim +'set ft=pbtxt' -
-
+prototext --descriptor-set $GOOGLEAPIS_DB \
+    decode -a --type google.protobuf.Empty \
+    $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
+    | vim +'set ft=pbtxt' -
 # With the right schema: the message becomes readable.
-prototext --descriptor-set $GOOGLEAPIS_DB decode --type google.type.PostalAddress     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | vim +'set ft=pbtxt' -
-
+prototext --descriptor-set $GOOGLEAPIS_DB \
+    decode --type google.type.PostalAddress \
+    $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
+    | vim +'set ft=pbtxt' -
 # Here is the schema that unlocked it — the .proto source.
 vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 
@@ -217,12 +222,11 @@ vim stash/reproto-out/google/type/postal_address.proto
 # The full googleapis DB contains thousands of files.                            \
 #
 # Decompile the entire googleapis DB: thousands of .proto files reconstructed.
-rm -rf stash/googleapis-out stash/audit-seed stash/audit-pruned
-reproto -q -O stash/googleapis-out --use-variant descriptor \
+reproto -O stash/googleapis-out --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS .
 
 # Browse the reconstructed sources — full import graph, all navigable.
-code stash/googleapis-out
+code --reuse-window stash/googleapis-out
 
 # \
 #                                                                                \
@@ -255,5 +259,73 @@ tree stash/audit-pruned
 
 # The orphaned field is still visible — nothing silently lost.
 grep '///' stash/audit-pruned/google/cloud/audit/audit_log.proto
+
+demo/header "8. Building a scoring DB"
+
+# \
+#                                                                                \
+# The .proto sources are useful for reading.  But prototext's auto-inference    \
+# needs a scoring DB: a compiled schema DB with a Hopcroft graph baked in.      \
+# --build-schema-db produces it; --emit-scoring-html also writes two pyvis      \
+# graphs — one raw, one after Hopcroft minimisation — for visual inspection.    \
+#
+
+# Build a scoring DB for AuditLog — same seed as before, different output.
+reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+    --build-schema-db stash/audit.desc \
+    --emit-scoring-html stash/audit.html \
+    google/cloud/audit/audit_log.pb
+
+# \
+#                                                                                \
+# Hopcroft minimisation: two message types with identical wire structure are     \
+# collapsed into one scoring state.  The scorer learns the shape once and        \
+# matches both types.                                                            \
+#                                                                                \
+# IpRules defines Allowed and Denied — opposite semantics, identical structure: \
+#   message Allowed { repeated IpRule ip_rules = 1; }                           \
+#   message Denied  { repeated IpRule ip_rules = 1; }                           \
+# Hopcroft finds this automatically.                                             \
+#
+
+# Raw graph: 5 nodes.  Hopcroft graph: 4 nodes — Allowed and Denied merged.
+reproto -q -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+    --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \
+    --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
+    --seed 'desc:.google.cloud.securitycenter.v2.IpRule' \
+    --seed 'desc:.google.cloud.securitycenter.v2.IpRules' \
+    --build-schema-db stash/iprules.desc \
+    --emit-scoring-html stash/iprules.html \
+    google/cloud/securitycenter/v2/ip_rules.pb
+
+# Raw graph: open in browser, inspect Allowed and Denied as separate nodes.
+xdg-open stash/iprules.html
+# Hopcroft graph: Allowed/Denied collapsed into one merged state.
+xdg-open stash/iprules-hopcroft.html
+
+# \
+#                                                                                \
+# At scale: 8 Google Cloud services each define their own OperationMetadata     \
+# with the same wire shape.  Independent teams, independent packages —           \
+# Hopcroft collapses all 8 into a single scoring state.  A DB built from one    \
+# service already covers the others.                                             \
+#
+
+# Raw: 177 nodes.  Hopcroft: 83 nodes.  8 OperationMetadata states become 1.
+reproto -q -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+    --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
+    --seed 'desc:.google.cloud.apihub.v1.OperationMetadata' \
+    --seed 'desc:.google.cloud.apphub.v1.OperationMetadata' \
+    --seed 'desc:.google.cloud.auditmanager.v1.OperationMetadata' \
+    --seed 'desc:.google.cloud.baremetalsolution.v2.OperationMetadata' \
+    --seed 'desc:.google.cloud.batch.v1.OperationMetadata' \
+    --seed 'desc:.google.cloud.batch.v1alpha.OperationMetadata' \
+    --seed 'desc:.google.cloud.beyondcorp.appconnections.v1.AppConnectionOperationMetadata' \
+    --build-schema-db stash/opmeta.desc \
+    --emit-scoring-html stash/opmeta.html \
+    $GOOGLEAPIS_DB
+
+xdg-open stash/opmeta.html
+xdg-open stash/opmeta-hopcroft.html
 
 # THE END
