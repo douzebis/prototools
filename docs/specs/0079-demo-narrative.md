@@ -122,24 +122,34 @@ but nothing happens on screen.  Use blank lines deliberately:
   2. **After the command, not before it** — the `👆` finger points *up* at
      output already on screen.  Placing the note before the command it
      describes is backwards.
-  3. **Flush left** — every 👆-note, whether single-line or multi-line, must
-     be opened with a `# \` line immediately before the `# 👆 …` line.  No
-     exceptions.  The demo runner renders the `# \` opener as a bare
-     continuation marker with no shell prompt, which causes the `👆` on the
-     next line to also appear flush-left — visually aligned with the terminal
-     output above it, unencumbered by a shell prompt.  A multi-line 👆-note
-     is closed with a bare `#` terminator, exactly like a narrative block.
+  3. **Flush left** — always open a 👆-note with a `# \` line immediately
+     before the `# 👆 …` line.  The demo runner renders the `# \` opener as
+     a bare continuation marker with no shell prompt, which causes the `👆`
+     on the next line to also appear flush-left — visually aligned with the
+     terminal output above it, unencumbered by a shell prompt.  A multi-line
+     👆-note is closed with a bare `#` terminator, exactly like a narrative
+     block.
 - **Section headers** (`demo/header "N. Title"`): always place one blank line
   before and one blank line after.  This gives the presenter two guard beats —
   one to let the previous section land, one to read the title before the first
   command appears.
-- **Commands that open a viewer** (vim, xdg-open) and whose results need to be
-  visible on the terminal before the viewer opens: pipe through
-  `tee >(bat -l LANG)` before `| vim +'set ft=LANG' -`, so the output is
-  rendered with syntax highlighting on the terminal before vim takes over.
-  For large outputs where only a preview is needed, use `tee >(bat -r :N -l LANG)`
-  to show just the first N lines.  Do not use `tee /dev/tty` — process
-  substitution with bat is both cleaner and adds colour.
+- **Commands that open a viewer** (vim) and whose results must remain visible
+  on the terminal after the viewer closes (so a `👆`-note has something to
+  point at): use the capture-then-replay pattern:
+
+  ```bash
+  out=$(CMD ARGS \
+  ); vim +'set ft=LANG' <(echo "$out"); bat --style=numbers -l LANG <<< "$out"
+  ```
+
+  This avoids the race condition that arises from `tee >(bat > /dev/tty)`:
+  bat now runs *after* vim closes, so its coloured output is the last thing
+  visible on the terminal when the `👆`-note fires.  Use `vim <(echo "$out")`
+  (process substitution, not `vim -`) to enable `:q` and silence the "Reading
+  from stdin" message.  For large outputs where only a preview is needed, add
+  `-r :N` to the bat invocation.  Do not use `tee /dev/tty` or
+  `tee >(bat > /dev/tty)` — they produce a race condition and are harder to
+  read.
 - **End-of-file sentinel**: the script must end with `# THE END` followed by
   several blank lines and a `# 👆 Intentionally adding a few newlines sentinel
   before exiting` comment.  The blank lines give the runner enough ENTER
