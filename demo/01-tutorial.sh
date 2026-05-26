@@ -32,6 +32,7 @@ demo/header "2. Protobufs are everywhere"
 #
 # \
 #                                                                                \
+# And the vendor agrees:                                                         \
 # "Protocol buffers are the most commonly-used data format at Google.  They are  \
 #  used extensively in inter-server communications as well as for archival       \
 #  storage of data on disk."                                                     \
@@ -41,6 +42,11 @@ demo/header "2. Protobufs are everywhere"
 #                                                                                \
 # Protobufs are compact (binary), self-describing (with a schema), and           \
 # language-neutral — the lingua franca of microservice communication.            \
+#                                                                                \
+# So when something goes wrong on the wire — a hidden field, a tampered value,   \
+# an anomalous encoding — standard tools won't show it.  They normalise the      \
+# input before you ever see it.  You need a tool that reads what was actually    \
+# sent, not what the SDK chose to show you.                                      \
 #
 
 demo/header "3. What's inside a protobuf?"
@@ -126,6 +132,7 @@ vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 #
 
 # Craft postal_hidden.pb: slip a secret organization field before the real one.
+# (The #@ annotations are prototext's wire-encoding hints — field number and type.)
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
@@ -229,7 +236,9 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # a scoring graph baked in.  --build-schema-db produces it from any seed.        \
 #
 
-# Build a scoring DB for OperationMetadata (8 services, same wire shape).
+# Build a scoring DB: 8 standard OperationMetadata + Cloud Functions v2.
+# Cloud Functions v2 has a richer shape: extra fields for build stages,
+# source token, build name, and operation type.
 reproto \
     --build-schema-db stash/opmeta.desc \
     --emit-scoring-html stash/opmeta.html \
@@ -243,17 +252,31 @@ reproto \
     --seed 'desc:.google.cloud.batch.v1.OperationMetadata' \
     --seed 'desc:.google.cloud.batch.v1alpha.OperationMetadata' \
     --seed 'desc:.google.cloud.beyondcorp.appconnections.v1.AppConnectionOperationMetadata' \
+    --seed 'desc:.google.cloud.functions.v2.OperationMetadata' \
     $GOOGLEAPIS_DB
 
-# prototext auto-infers against the new DB.
+# Auto-infer a Cloud Functions deployment operation — unique match, score 26.
+prototext --descriptor-set stash/opmeta.desc \
+    decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
+    | tee /dev/tty | vim +'set ft=pbtxt' -
+# 👆 Score 26, unique match: functions/v2 has extra fields (stages, build_name,
+# source_token, operation_type) that distinguish it from the other 8 types.
+# \
+#                                                                                \
+# Now try a batch OperationMetadata — same 7-field shape as 8 of the 9 types.    \
+# prototext cannot pick a winner: all 8 score equally.                           \
+#
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/batch/v1/OperationMetadata.pb \
     | tee /dev/tty | vim +'set ft=pbtxt' -
-
-prototext --descriptor-set stash/opmeta.desc \
-    decode $GOOGLEAPIS_PBS/google/cloud/apphub/v1/OperationMetadata.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
-
+# 👆 8-way tie at score 8: the wire bytes are consistent with all 8 standard     \
+# OperationMetadata types.  This is expected — they are wire-identical.          \
+# The scoring graph cannot distinguish what the schema cannot distinguish.       \
+# \
+#                                                                                \
+# The raw scoring graph encodes every distinct wire shape in the seed set.       \
+# Open it: each seed type is its own amber node, even the wire-identical ones.   \
+#
 # The scoring graph: open in browser.
 xdg-open stash/opmeta.html
 # \
@@ -270,16 +293,13 @@ xdg-open stash/opmeta.html
 #
 # \
 #                                                                                \
-# 177 nodes.  The graph encodes every distinct wire shape in the seed set.       \
-# Scoring a binary means walking this graph — so graph size matters.             \
-#                                                                                \
 # Many nodes are structurally identical: 8 teams defined their own               \
-# OperationMetadata with the same fields.  They are all different nodes here.    \
-# We can deduplicate them: merge nodes with identical outgoing structure.        \
-# This is what Hopcroft minimisation does automatically.                         \
+# OperationMetadata with the same 7 fields.  They are separate nodes here,       \
+# but they could be merged — a binary consistent with one is consistent with     \
+# all.  Hopcroft minimisation collapses them automatically.                      \
 #
 
-# Hopcroft graph: 83 nodes — 8 OperationMetadata states collapsed into 1.
+# Hopcroft graph: 8 OperationMetadata states collapsed into 1 amber+8 node.
 xdg-open stash/opmeta-hopcroft.html
 # \
 #                                                                                \
@@ -381,7 +401,6 @@ find stash/audit-seed -name '*.proto' | sort
 #                                                                                \
 # 8 files instead of thousands.  Let's browse the decompiled AuditLog source.    \
 #
-
 code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # \
 #                                                                                \
