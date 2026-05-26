@@ -109,11 +109,18 @@ but nothing happens on screen.  Use blank lines deliberately:
 - **Before a new command or narrative block**: always add one blank line.  The
   runner's color change is sufficient to focus attention, but the blank gives
   the presenter a natural pause beat.
-- **Notes about previous output**: a short inline comment (`# …`) that
-  highlights something in the output of the immediately preceding command is
-  an exception — no blank line before it, and it runs directly as the next
-  ENTER after the command.  These notes should begin with `# 👆` to signal
-  to the audience that the comment refers to what is already on screen.
+- **Notes about previous output** (`👆`-notes): a short inline comment
+  (`# 👆 …`) that highlights something in the output of the immediately
+  preceding command.  Three rules apply:
+  1. **No blank line before it** — the note must follow the command with no
+     separator, so it fires as the very next ENTER after the command output
+     lands.  A blank line would insert an empty beat between command and note.
+  2. **After the command, not before it** — the `👆` finger points *up* at
+     output already on screen.  Placing the note before the command it
+     describes is backwards.
+  3. **Flush left** — write `# 👆 …` with no leading indent.  The finger
+     should visually align with the left edge of the terminal output above it,
+     unencumbered by a shell prompt.
 - **Section headers** (`demo/header "N. Title"`): always place one blank line
   before and one blank line after.  This gives the presenter two guard beats —
   one to let the previous section land, one to read the title before the first

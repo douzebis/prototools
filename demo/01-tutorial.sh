@@ -82,7 +82,6 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
     | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
-#                                                                                \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
 # picks the best candidate.                                                      \
@@ -175,7 +174,6 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     stash/postal_patched.pb \
     | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
-#                                                                                \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.              \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
 #
@@ -222,7 +220,6 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
     | tee >((head -10 && echo ...)> /dev/tty) | vim +'set ft=pbtxt' -
 # \
-#                                                                                \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
 # which is itself a .proto file.  Self-referential!                              \
 #
@@ -334,6 +331,7 @@ reproto -q \
 # Let's see the result.
 cat stash/reproto-out/google/type/postal_address.proto \
     | tee /dev/tty | vim +'set ft=proto' -
+# \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
 # \
 #                                                                                \
@@ -376,8 +374,9 @@ reproto -q \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     google/cloud/audit/audit_log.pb
-# 👆 The transitive closure: every file AuditLog depends on, nothing more.
 find stash/audit-seed -name '*.proto' | sort
+# \
+# 👆 The transitive closure: every file AuditLog depends on, nothing more.
 # \
 #                                                                                \
 # 8 files instead of thousands.  Let's browse the decompiled AuditLog source.    \
