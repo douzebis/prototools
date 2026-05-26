@@ -65,7 +65,7 @@ vim \
 vim +'set ft=pbtxt' \
     <(prototext decode --raw \
         $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
@@ -73,7 +73,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode --type google.type.PostalAddress \
         $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 
 # Here is the schema that unlocked it — the .proto source.
 vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
@@ -93,7 +93,7 @@ demo/header "4. Schema auto-inference"
 vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
@@ -113,7 +113,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode --type google.cloud.compute.v1beta.UsableSubnetwork \
         $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 
 demo/header "5. Non-canonical protobufs"
 
@@ -158,13 +158,13 @@ vim +'set ft=pbtxt' \
         --decode google.type.PostalAddress \
         google/type/postal_address.proto \
         < stash/postal_hidden.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 
 # prototext decode: preserves all contents.
 vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode stash/postal_hidden.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # 👆 Both occurrences visible: the secret first, then the real value.
 # \
 #                                                                                \
@@ -191,7 +191,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode -a \
         stash/postal_patched.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.              \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
@@ -209,7 +209,7 @@ vim +'set ft=pbtxt' \
         --decode google.type.PostalAddress \
         google/type/postal_address.proto \
         < stash/postal_patched.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
@@ -239,7 +239,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode --type google.protobuf.FileDescriptorProto \
         $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-        | tee >(bat -r :10 -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -r :10 -l pbtxt > /dev/tty))
 # \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
 # which is itself a .proto file.  Self-referential!                              \
@@ -273,7 +273,7 @@ reproto \
 vim +'set ft=pbtxt' \
     <(prototext --descriptor-set stash/opmeta.desc \
         decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # 👆 Score 26, unique match: functions/v2 has extra fields (stages, build_name,
 # source_token, operation_type) that distinguish it from the other 8 types.
 # \
@@ -284,7 +284,7 @@ vim +'set ft=pbtxt' \
 vim +'set ft=pbtxt' \
     <(prototext --descriptor-set stash/opmeta.desc \
         decode $GOOGLEAPIS_PBS/google/cloud/batch/v1/OperationMetadata.pb \
-        | tee >(bat -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -l pbtxt > /dev/tty))
 # 👆 8-way tie at score 8: the wire bytes are consistent with all 8 standard     \
 # OperationMetadata types.  This is expected — they are wire-identical.          \
 # The scoring graph cannot distinguish what the schema cannot distinguish.       \
@@ -358,7 +358,7 @@ demo/header "7. Decompiling descriptors"
 # that encodes the schema of PostalAddress as a FileDescriptorProto.
 vim +'set ft=pbtxt' \
     <(prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-        | tee >(bat -r :10 -l pbtxt > /dev/tty))
+        | tee >(bat --style=numbers -r :10 -l pbtxt > /dev/tty))
 
 # Decompile the PostalAddress descriptor back to .proto source.
 reproto -q \
