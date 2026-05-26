@@ -58,13 +58,14 @@ demo/header "3. What's inside a protobuf?"
 ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Raw bytes — this is what travels on the wire.
-hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | tee /dev/tty | vim -
+vim <(hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | tee /dev/tty)
 
 # Let's decode it as a protobuf:
 vim +'set ft=pbtxt' \
     <(prototext decode --raw \
         $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
         | tee >(bat -l pbtxt))
+# \
 # 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
@@ -105,6 +106,7 @@ vim +'set ft=pbtxt' \
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
+# \
 # 👆 prototext finds a tie and asks us to be explicit.
 
 # With --type the ambiguity is resolved.
@@ -146,7 +148,8 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
   | prototext encode > stash/postal_hidden.pb
 
 # Let's look at the resulting protobuf:
-hexdump -C stash/postal_hidden.pb | tee /dev/tty | vim -
+vim <(hexdump -C stash/postal_hidden.pb | tee /dev/tty)
+# \
 # 👆 The hidden field is right there in the binary.
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
@@ -163,6 +166,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set $GOOGLEAPIS_DB \
         decode stash/postal_hidden.pb \
         | tee >(bat -l pbtxt))
+# \
 # 👆 Both occurrences visible: the secret first, then the real value.
 # \
 #                                                                                \
@@ -183,6 +187,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # Let's look at what has been produced:
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
 hexdump -C stash/postal_patched.pb | head -1
+# \
 # 👆 Spot the difference: one extra byte — `01` has become `81 00`.
 
 vim +'set ft=pbtxt' \
@@ -272,6 +277,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set stash/opmeta.desc \
         decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
         | tee >(bat -l pbtxt))
+# \
 # 👆 Score 26, unique match: functions/v2 has extra fields (stages, build_name,
 # source_token, operation_type) that distinguish it from the other 8 types.
 # \
@@ -283,6 +289,7 @@ vim +'set ft=pbtxt' \
     <(prototext --descriptor-set stash/opmeta.desc \
         decode $GOOGLEAPIS_PBS/google/cloud/batch/v1/OperationMetadata.pb \
         | tee >(bat -l pbtxt))
+# \
 # 👆 8-way tie at score 8: the wire bytes are consistent with all 8 standard     \
 # OperationMetadata types.  This is expected — they are wire-identical.          \
 # The scoring graph cannot distinguish what the schema cannot distinguish.       \
@@ -367,7 +374,8 @@ reproto -q \
 bat --style=numbers,header-filename -l proto \
     stash/reproto-out/google/type/postal_address.proto
 # \
-# 👆 Human-readable .proto source, recovered from the binary descriptor.
+# 👆 Human-readable .proto source, recovered from the binary descriptor.         \
+#
 # \
 #                                                                                \
 # reproto can decompile an entire schema DB — thousands of files at once.        \
