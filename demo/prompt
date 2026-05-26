@@ -145,7 +145,7 @@ _update_prompt() {
     local prefix="${GRAY}[demo:$cwd_display ("
     local suffix=")]\$ ${RESET}${LGRAY}"
     local counter="$((index+1))/$n"
-    _COUNTER_WIDTH=${#counter}
+    _COUNTER_WIDTH=${#"$n/$n"}
     prompt="${prefix}${counter}${suffix}"
     # prompt_static: replace counter with cursor-forward of same visual width
     local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'

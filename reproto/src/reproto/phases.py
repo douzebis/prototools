@@ -1091,12 +1091,12 @@ def _phase5_reachability(
     topo: Topology,
 ) -> None:
     """Phase 5: Mark all nodes transitively reachable from seeds (forward propagation)."""
-    from .lib.console import progress as _progress, spinning as _spinning
+    from .lib.console import progress as _progress, progress_lazy as _progress_lazy
 
     transitive_reachables: set[Node] = set()
     current_reachables: set[Node] = set()
 
-    with _spinning('Marking seeds', quiet=ctx.quiet):
+    with _progress_lazy('Marking seeds', quiet=ctx.quiet) as (advance, _):
         # Did the user explicitly specify seeds?
         if seeds:
             for seed_pattern in seeds:
