@@ -323,6 +323,14 @@ bind -x '"\036": delete_line'    2>/dev/null
 bind -x '"\e[5~": fast_up'       2>/dev/null
 bind -x '"\e[6~": fast_down'     2>/dev/null
 
+# Ctrl-A: beginning-of-line — re-print the counter first so the
+# cursor-forward in prompt_static lands on the right column.
+goto_bol() {
+    _preprint_counter
+    READLINE_POINT=0
+}
+bind -x '"\C-a": goto_bol' 2>/dev/null
+
 # Ctrl-S: save commands to file
 stty -ixon  # allow Ctrl-S (disable terminal XOFF)
 bind -x '"\C-s": save_commands' 2>/dev/null
