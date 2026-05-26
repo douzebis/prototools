@@ -27,6 +27,39 @@ Concrete googleapis command examples are collected separately in
 
 ---
 
+## The robustness thesis
+
+A recurring theme in the demo is one that rarely gets stated explicitly but is
+central to what prototools actually does:
+
+> Writing a decoder or decompiler that works correctly on sanitized, well-formed
+> input is moderately difficult.  Writing one that also survives — and does a
+> *useful* job — in the presence of incomplete, non-canonical, or deliberately
+> malformed input is much harder.
+
+Standard protobuf decoders (protoc, language SDKs) are designed for the happy
+path: they assume the input is canonical, produced by a conforming encoder, and
+matches the declared schema.  Any deviation is either silently normalized
+(over-long varints), silently discarded (repeated optional fields, unknown
+fields), or rejected with an opaque error.
+
+prototools is designed for the unhappy path:
+
+- **Incomplete**: no schema available → raw field-number rendering (`--raw`),
+  auto-inference from a DB.
+- **Non-canonical**: over-long varints, repeated optionals, unexpected field
+  ordering → preserved verbatim, annotated, round-trippable.
+- **Malformed**: invalid wire tags, truncated varints → rendered as
+  `INVALID_TAG_TYPE` / `INVALID_VARINT` rather than silently dropped.
+- **Schemaless**: binary descriptor blobs without source → reproto decompiles
+  them back to `.proto`.
+
+This framing is worth making explicit in the demo, even briefly.  It answers the
+implicit question "why not just use protoc?" — protoc is fine when everything is
+well-formed.  prototools is for when it isn't.
+
+---
+
 ## Division of responsibility
 
 ### `docs/tutorial.md` — reference walkthrough
