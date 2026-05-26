@@ -122,6 +122,11 @@ but nothing happens on screen.  Use blank lines deliberately:
   visible on the terminal before the viewer opens: pipe through
   `tee /dev/tty` before `| vim -` or similar, so the output is visible in the
   terminal while the next note or command is shown.
+- **End-of-file sentinel**: the script must end with `# THE END` followed by
+  several blank lines and a `# 👆 Intentionally adding a few newlines sentinel
+  before exiting` comment.  The blank lines give the runner enough ENTER
+  presses to clear the screen after the last beat without falling off the end
+  of the file abruptly.  Do not remove them.
 
 ### VSCode workspace
 
@@ -355,9 +360,7 @@ Use `google.type.PostalAddress` as the running example throughout the demo.
 6. `prototext` round-trip + `diff` → `byte-exact`.
 7. `protoc decode` → the OHB is gone, the revision field looks clean.
 
-### S7 — Decompiling schemas and building scoring databases
-
-#### Decompilation
+### S7 — Decompiling descriptors
 
 1. Narrative: `postal_address.pb` is the compiled schema — a
    `FileDescriptorProto`.  `reproto` turns it back into readable `.proto`.
@@ -373,25 +376,8 @@ Use `google.type.PostalAddress` as the running example throughout the demo.
    Definition navigates across files, find-all-references works, full type
    hierarchy is explorable.
 7. `code --reuse-window stash/googleapis-out` — open in VSCode.
-
-#### Scoring DB
-
-1. Narrative: the `.proto` sources are useful for reading, but prototext's
-   auto-inference needs a scoring DB — a compiled schema with a Hopcroft graph
-   baked in.
-2. `reproto ... --build-schema-db stash/audit.desc --emit-scoring-html stash/audit.html`
-   for AuditLog.
-3. Hopcroft narrative: IpRules example — Allowed and Denied have opposite
-   semantics but identical wire structure; Hopcroft finds this automatically.
-4. `reproto ... --emit-scoring-html stash/iprules.html ip_rules.pb`.
-5. `xdg-open stash/iprules.html` — raw graph (5 nodes), inspect Allowed/Denied.
-6. Graph legend narrative (audience reads while looking at the raw graph).
-7. `xdg-open stash/iprules-hopcroft.html` — Hopcroft graph (4 nodes),
-   Allowed/Denied merged.
-8. At-scale narrative: 8 OperationMetadata types across 8 services, same wire
-   shape.
-9. `reproto ... --emit-scoring-html stash/opmeta.html $GOOGLEAPIS_DB`.
-10. `xdg-open stash/opmeta.html` / `xdg-open stash/opmeta-hopcroft.html`.
+8. Narrative: missing imports handled gracefully via orphan `///` comments;
+   `--prune` makes this explicit and controlled.
 
 ### S8 — Seeding and pruning
 
