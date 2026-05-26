@@ -398,6 +398,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
         // ── decode ────────────────────────────────────────────────────────────
         Command::Decode {
             r#type,
+            raw,
             in_place,
             assume_binary,
             annotations,
@@ -411,7 +412,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             validate_input_root_absolute(&cli.input_root, &paths)?;
             validate_roots_not_same(&cli.input_root, &output_root)?;
 
-            let auto_infer = r#type.is_none();
+            let auto_infer = r#type.is_none() && !raw;
             if auto_infer && desc_ctx.graph.is_none() {
                 return Err(if cli.descriptor.is_some() {
                     "decode auto-inference requires a DB-backed descriptor \
@@ -427,6 +428,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             run_decode(
                 &mut desc_ctx,
                 r#type.as_deref(),
+                raw,
                 in_place,
                 assume_binary,
                 effective_annotations,
@@ -578,6 +580,7 @@ fn validate_roots_not_same(
 fn run_decode(
     desc_ctx: &mut DescriptorContext,
     type_name: Option<&str>,
+    raw: bool,
     in_place: bool,
     assume_binary: bool,
     annotations: bool,
@@ -588,6 +591,56 @@ fn run_decode(
     input_root: &Option<PathBuf>,
     paths: &[String],
 ) -> Result<(), String> {
+    // --raw: bypass all schema / inference logic and render field numbers +
+    // wire types directly.  No descriptor set required.
+    // Annotations are always enabled in raw mode: without them, schemaless
+    // fields are skipped by the renderer (they have no field names to display).
+    if raw {
+        let annotations = true;
+        let base = input_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        if paths.is_empty() {
+            if in_place {
+                return Err("--in-place cannot be used with stdin input".into());
+            }
+            if output_root.is_some() {
+                return Err("--output-root cannot be used with stdin input".into());
+            }
+            let mut data = Vec::new();
+            io::stdin()
+                .read_to_end(&mut data)
+                .map_err(|e| format!("reading stdin: {}", e))?;
+            let out = process(&data, true, assume_binary, None, annotations)?;
+            write_output(&out, output.as_deref())?;
+        } else {
+            let all_files = expand_all_paths(paths, &base)?;
+            if all_files.len() == 1 && !in_place && output_root.is_none() {
+                let f = &all_files[0];
+                let data = std::fs::read(&f.abs)
+                    .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+                let out = process(&data, true, assume_binary, None, annotations)?;
+                write_output(&out, output.as_deref())?;
+            } else {
+                if !in_place && output_root.is_none() {
+                    return Err(
+                        "multiple input files require --in-place (-i) or --output-root (-O)".into(),
+                    );
+                }
+                run_batch(
+                    all_files,
+                    true,
+                    assume_binary,
+                    None,
+                    annotations,
+                    in_place,
+                    output_root,
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
     let auto_infer = type_name.is_none();
 
     // Build schema if a type was given explicitly.

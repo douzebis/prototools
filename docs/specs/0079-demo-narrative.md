@@ -113,6 +113,37 @@ Rules:
 - A blank line in the script file after the closing `#` acts as a visual
   separator between blocks in the source; it produces no extra prompt entry.
 
+### reproto command layout
+
+Long `reproto` commands follow a canonical option ordering so they read
+consistently and are easy to scan on a projected screen.  The canonical order
+is:
+
+```
+reproto [-q] \
+    [-O OUTPUT_DIR] \
+    [--build-schema-db OUTPUT_DESC] \
+    [--emit-scoring-html OUTPUT_HTML] \
+    --use-variant descriptor \
+    -I INCLUDE_DIR \
+    [--seed 'desc:...' ...] \
+    [--prune '...'] \
+    INPUT_FILE_OR_DOT
+```
+
+Rules:
+- `-q` (quiet) comes first if present.
+- Output destinations (`-O`, `--build-schema-db`, `--emit-scoring-html`) come
+  before mode options.
+- `--use-variant descriptor` and `-I` come next (they configure the input
+  interpretation).
+- `--seed` and `--prune` qualifiers come last, just before the positional input.
+- Each option is on its own line, indented 4 spaces.
+- The positional input is always the last item, on its own line.
+- When `-O` and `--build-schema-db` are both present, `-O` is omitted (the two
+  modes are mutually exclusive in practice for demo purposes; use separate
+  reproto invocations).
+
 ### Maintenance tooling
 
 When adding or editing content lines in a block, use the following Python
@@ -196,84 +227,132 @@ available as a reinforcement if needed.
 
 ## Specification
 
-### S1 — Introductory beat
+The demo is structured in eight sections.
 
-Intro text covering:
+### S1 — Setup
 
-- Protobufs are Google's internal data interchange format, now open-source and
-  ubiquitous: gRPC, Kubernetes, Android, Cloud APIs, and most large-scale
-  distributed systems use them.
-- They are compact (binary), self-describing (with a schema), and
-  language-neutral — which is why they became the lingua franca of
-  microservice communication.
-- Open with Quote 1 (the cynical hook), optionally followed by Quote 2 (the
-  reinforcement).  The point: protobufs are everywhere, understanding them is
-  a basic skill for anyone debugging, auditing, or operating distributed systems.
+Tool version check, nix-build of the googleapis schema DB, and stash cleanup.
+No audience-facing narrative — fast administrative beat.
 
-### S2 — Binary mystery sequence
+### S2 — Protobufs are everywhere
+
+Two narrative blocks (two ENTER presses — intentional, two distinct quotes):
+
+- Quote 1 (HN hook), Quote 3 (authoritative pivot).
+- Bridge: protobufs are compact, self-describing, language-neutral — the lingua
+  franca of microservice communication.
+
+### S3 — What's inside a protobuf?
 
 Use `google.type.PostalAddress` as the running example throughout the demo.
 
-Steps:
+1. Vocabulary block: protobuf / schema / descriptor.
+2. `ls -lh` — establish the file is real and compact.
+3. `hexdump -C` — raw bytes, what travels on the wire.
+4. `prototext decode --raw` — field numbers and wire types without names,
+   no descriptor set required.  Annotations are always on in raw mode.
+5. `prototext decode --type google.type.PostalAddress` — with the right schema,
+   the message becomes readable.
+6. `vim postal_address.proto` — show the schema that unlocked it.
 
-1. Show the raw binary of a `PostalAddress.pb` with `hexdump -C`.
-2. Decode it *without* a schema (`prototext decode` with no `--descriptor`):
-   show field numbers and wire types — meaningful structure emerges, but no
-   names.
-3. Decode it *with* the googleapis schema DB and no `--type` flag: auto-infer
-   fires, field names appear, the message becomes readable.
-4. Show the score line — explain briefly what it means.
+### S4 — Schemas are protobufs too
 
-### S3 — Descriptor explainer
+1. Narrative: next to every `.proto` sits a `.pb` — the same schema compiled
+   by protoc into a `FileDescriptorProto`.
+2. `prototext decode --type google.protobuf.FileDescriptorProto postal_address.pb`
+   — the schema itself decoded as a protobuf.
+3. Narrative (after the reveal): the schema for `FileDescriptorProto` is defined
+   in `descriptor.proto` — self-referential.
 
-Still using `PostalAddress`:
+### S5 — Schema auto-inference
 
-1. Show what a descriptor *is*: a compiled `.proto` schema, serialised as a
-   binary protobuf (`FileDescriptorSet` / `FileDescriptorProto`).
-2. Reveal the self-referential twist: the descriptor format is itself defined
-   in `descriptor.proto`, so a descriptor file is a protobuf whose schema is
-   `google.protobuf.FileDescriptorSet`.
-3. Demonstrate: decode `google/type/postal_address.pb` as a
-   `FileDescriptorProto` with `prototext decode` — it shows the schema for
-   `PostalAddress` in human-readable form.
+1. `prototext decode PostalAddress.pb` (no `--type`) with `tee /dev/tty | vim`
+   — auto-infer fires, score line visible before vim opens.
+2. Narrative: score consolidates field coverage, wire type matches, value
+   plausibility.
+3. "Let's try another example and see what prototext does when two types are
+   equally plausible."
+4. `prototext decode UsableSubnetwork.pb` — tie, prototext asks for `--type`.
+5. `prototext decode --type ... UsableSubnetwork.pb` — ambiguity resolved.
 
-### S4 — Ambiguous inference
+### S6 — Non-canonical protobufs
 
-The `UsableSubnetwork` example from the existing tutorial: two types tie, the
-user must supply `--type` to resolve.  Keeps the running example theme —
-"sometimes the binary alone is not enough."
+#### Hidden field
 
-### S5 — Non-canonical encodings: hidden field (forensics beat)
+1. Narrative: wire format allows repeated optional fields; proto3 last-write-wins
+   silently discards earlier occurrences — a steganographic vector.
+2. Narrative: "we are going to slip a secret value before the real organization
+   field."
+3. Craft `postal_hidden.pb` via `prototext decode -a | sed | prototext encode`.
+4. `hexdump -C postal_hidden.pb` — extra field is in there.
+5. `protoc --decode` — only the last `organization` visible; secret gone.
+6. `prototext decode` — both occurrences in wire order; secret exposed.
 
-The `PostalAddress` hidden-field example (Section 6 of tutorial):
+#### Over-long varint
 
-1. Show the crafted `postal_hidden.pb`.
-2. Show `protoc --decode` → only `"S3NS"` visible.
-3. Show `prototext decode` → both `organization` values in wire order, secret
-   exposed.
-4. Explanation: proto3 last-write-wins silently discards earlier occurrences.
-   This is a real steganographic / exfiltration vector.
+1. Narrative: an extra byte on a varint does not change its value but makes the
+   encoding non-minimal; standard decoders strip it silently.
+2. Craft `postal_patched.pb` via `prototext decode -a | sed | prototext encode`.
+3. `hexdump` comparison — one extra byte.
+4. `prototext decode -a` — `val_ohb: 1` annotation visible.
+5. Narrative: "two round-trips — prototext preserves the anomaly byte-exact;
+   protoc silently strips it."
+6. `prototext` round-trip + `diff` → `byte-exact`.
+7. `protoc decode` → the OHB is gone, the revision field looks clean.
 
-### S6 — Non-canonical encodings: OHB varint
+### S7 — Decompiling schemas and building scoring databases
 
-The over-hanging byte example (Section 5 of tutorial), *after* S5.  By this
-point the audience understands wire format well enough to appreciate the
-varint trick.
+#### Decompilation
 
-1. Show `postal_patched.pb` — one extra byte on `revision`.
-2. `protoc --decode` / standard SDKs: silently normalise, no trace.
-3. `prototext decode -a`: `val_ohb: 1` annotation; score drops to -11.
-4. Lossless round-trip via `prototext encode` still works.
+1. Narrative: `postal_address.pb` is the compiled schema — a
+   `FileDescriptorProto`.  `reproto` turns it back into readable `.proto`.
+2. `prototext decode postal_address.pb | vim` — show what the binary looks like.
+3. `reproto -q -O stash/reproto-out --use-variant descriptor postal_address.pb`
+   — decompile.
+4. `vim stash/reproto-out/google/type/postal_address.proto` — human-readable
+   source recovered from the binary.
+5. `reproto -O stash/googleapis-out --use-variant descriptor -I $GOOGLEAPIS_DESCS .`
+   — decompile the entire googleapis DB (no `-q`; progress is reassuring for a
+   long-running step).
+6. Narrative: the proto language server understands the import graph — Go to
+   Definition navigates across files, find-all-references works, full type
+   hierarchy is explorable.
+7. `code --reuse-window stash/googleapis-out` — open in VSCode.
 
-### S7 — reproto: decompile and navigate
+#### Scoring DB
 
-Demonstrates reproto as a schema recovery and navigation tool:
+1. Narrative: the `.proto` sources are useful for reading, but prototext's
+   auto-inference needs a scoring DB — a compiled schema with a Hopcroft graph
+   baked in.
+2. `reproto ... --build-schema-db stash/audit.desc --emit-scoring-html stash/audit.html`
+   for AuditLog.
+3. Hopcroft narrative: IpRules example — Allowed and Denied have opposite
+   semantics but identical wire structure; Hopcroft finds this automatically.
+4. `reproto ... --emit-scoring-html stash/iprules.html ip_rules.pb`.
+5. `xdg-open stash/iprules.html` — raw graph (5 nodes), inspect Allowed/Denied.
+6. Graph legend narrative (audience reads while looking at the raw graph).
+7. `xdg-open stash/iprules-hopcroft.html` — Hopcroft graph (4 nodes),
+   Allowed/Denied merged.
+8. At-scale narrative: 8 OperationMetadata types across 8 services, same wire
+   shape.
+9. `reproto ... --emit-scoring-html stash/opmeta.html $GOOGLEAPIS_DB`.
+10. `xdg-open stash/opmeta.html` / `xdg-open stash/opmeta-hopcroft.html`.
 
-1. Decompile a single `FileDescriptorProto` back to `.proto` source.
-2. Decompile an entire schema DB — show the reconstructed tree.
-3. Seed on one descriptor to pull only its transitive closure.
-4. Prune annotation boilerplate to keep only business logic.
-5. Open the result in VSCode — imports are live links, Go to Definition works.
+### S8 — Seeding and pruning
+
+1. Narrative: Simon's audit team only needs AuditLog — thousands of files
+   collapse to the transitive closure.
+2. `reproto -q -O stash/audit-seed ... google/cloud/audit/audit_log.pb`.
+3. `find stash/audit-seed -name '*.proto' | sort` — the 8-file closure.
+4. Narrative: Simon's tool never needs RPC error statuses — prune
+   `google/rpc/status.proto`.
+5. `reproto -q -O stash/audit-pruned ... --prune 'file:google/rpc/status.proto'`.
+6. `find stash/audit-pruned -name '*.proto' | sort` — 7 files.
+7. Narrative: the orphaned field is preserved as a `///` comment — nothing
+   silently lost.
+8. `vim stash/audit-pruned/google/cloud/audit/audit_log.proto` — show the
+   orphan comment.
+9. Closing narrative: four-bullet summary of what prototools gives you.
 
 See `docs/demo-examples.md` for the concrete commands and file counts.
 

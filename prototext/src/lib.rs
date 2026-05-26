@@ -133,9 +133,15 @@ pub enum Command {
             short = 't',
             long = "type",
             value_name = "NAME",
+            conflicts_with = "raw",
             add = ArgValueCompleter::new(complete_type_names),
         )]
         r#type: Option<String>,
+
+        /// Decode without a schema: render raw field numbers and wire types.
+        /// Does not require --descriptor-set.  Mutually exclusive with --type.
+        #[arg(long, conflicts_with = "type")]
+        raw: bool,
 
         /// Rewrite each input file in place (exclusive with --output-root).
         /// Files are read fully before writing.
