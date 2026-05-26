@@ -134,7 +134,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 
 # Let's look at the resulting protobuf:
 hexdump -C stash/postal_hidden.pb | tee /dev/tty | vim -
-# 👆 The hidden field is right there in the binary — field 6, twice.[[Remove "field 6, twide" -> people can't read it in the binary]]
+# 👆 The hidden field is right there in the binary.
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
 protoc \
@@ -321,16 +321,20 @@ demo/header "7. Decompiling descriptors"
 # you need to write code that audits or processes the corresponding protobufs.   \
 #
 
+# First, let's decode the PostalAddress descriptor itself — a binary .pb file
+# that encodes the schema of PostalAddress as a FileDescriptorProto.
 prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >({ head -10; echo '...'; } > /dev/tty) | vim +'set ft=pbtxt' -
 
 # Decompile the PostalAddress descriptor back to .proto source.
 reproto -q \
     -O stash/reproto-out \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
+# Let's see the result.
+cat stash/reproto-out/google/type/postal_address.proto \
+    | tee /dev/tty | vim +'set ft=proto' -
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
-vim stash/reproto-out/google/type/postal_address.proto
 # \
 #                                                                                \
 # reproto can decompile an entire schema DB — thousands of files at once.        \
@@ -376,10 +380,16 @@ reproto -q \
 find stash/audit-seed -name '*.proto' | sort
 # \
 #                                                                                \
-# 8 files.  But Simon's tool only decodes payloads — it never needs to           \
-# interpret RPC error statuses.  Prune google/rpc/status.proto: reproto drops    \
-# the file and orphans the field that referenced it, leaving a /// comment so    \
-# nothing is silently lost.                                                      \
+# 8 files instead of thousands.  Let's browse the decompiled AuditLog source.    \
+#
+
+code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
+# \
+#                                                                                \
+# But Simon's tool only decodes payloads — it never needs to interpret RPC       \
+# error statuses.  Prune google/rpc/status.proto: reproto drops the file and     \
+# orphans the field that referenced it, leaving a /// comment so nothing is      \
+# silently lost.                                                                 \
 #
 
 # Prune status.proto: 8 files become 7, AuditLog.status becomes a /// orphan.
@@ -397,11 +407,15 @@ find stash/audit-pruned -name '*.proto' | sort
 # Simon's team can see exactly what was cut and why.                             \
 #
 
-vim stash/audit-pruned/google/cloud/audit/audit_log.proto
+code --reuse-window stash/audit-pruned/google/cloud/audit/audit_log.proto
+
+demo/header "Conclusion"
+
 # \
 #                                                                                \
 # prototools gives you:                                                          \
 #   — a forensic decoder that preserves wire anomalies standard tools hide       \
+#   — a schema DB that infers protobuf types without knowing the .proto source   \
 #   — a decompiler that recovers .proto sources from binary descriptors          \
 #   — a schema DB builder that collapses structurally equivalent types           \
 #   — a scalpel for extracting exactly the schema slice your tool needs          \
