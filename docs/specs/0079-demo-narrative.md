@@ -96,10 +96,14 @@ pausing on.  Rules of thumb:
 - **Reveal commands** whose output is the point of the beat stand alone.
 - **Paired comparisons** (e.g. two `hexdump` lines) are grouped together so
   both lines appear before the audience sees any output.
-- **File display**: prefer `cat FILE | vim -` over `cat FILE | head -N` when
-  the content is worth reading in full — vim opens read-only in the terminal,
-  lets the presenter scroll, and closes cleanly with `q`.  Use `head` only
-  when showing just the first few lines is the point.
+- **File display**: use `bat --style=numbers,header-filename -l LANG FILE`
+  to display a file with syntax highlighting, line numbers, and filename
+  header.  For large files where only the first few lines are the point,
+  add `-r :N` to limit the output to N lines.  Do not use bare `cat FILE`
+  or `cat FILE | head -N`.
+- **Interactive browsing**: when the presenter needs to scroll or search,
+  open the file in vim (`vim +'set ft=LANG' FILE`).  vim opens read-only
+  in the terminal and closes cleanly with `q`.
 
 ### Blank lines in the script
 
@@ -131,8 +135,11 @@ but nothing happens on screen.  Use blank lines deliberately:
   command appears.
 - **Commands that open a viewer** (vim, xdg-open) and whose results need to be
   visible on the terminal before the viewer opens: pipe through
-  `tee /dev/tty` before `| vim -` or similar, so the output is visible in the
-  terminal while the next note or command is shown.
+  `tee >(bat -l LANG)` before `| vim +'set ft=LANG' -`, so the output is
+  rendered with syntax highlighting on the terminal before vim takes over.
+  For large outputs where only a preview is needed, use `tee >(bat -r :N -l LANG)`
+  to show just the first N lines.  Do not use `tee /dev/tty` — process
+  substitution with bat is both cleaner and adds colour.
 - **End-of-file sentinel**: the script must end with `# THE END` followed by
   several blank lines and a `# 👆 Intentionally adding a few newlines sentinel
   before exiting` comment.  The blank lines give the runner enough ENTER

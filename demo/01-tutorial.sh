@@ -60,14 +60,14 @@ hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | tee /dev/tty | vim -
 # Let's decode it as a protobuf:
 prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 
 # Here is the schema that unlocked it — the .proto source.
 vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
@@ -86,7 +86,7 @@ demo/header "4. Schema auto-inference"
 # Watch prototext infer the schema with no hint from us.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
@@ -105,7 +105,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 
 demo/header "5. Non-canonical protobufs"
 
@@ -148,12 +148,12 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_hidden.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 
 # prototext decode: preserves all contents.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # 👆 Both occurrences visible: the secret first, then the real value.
 # \
 #                                                                                \
@@ -179,7 +179,7 @@ hexdump -C stash/postal_patched.pb | head -1
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.              \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
@@ -196,7 +196,7 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_patched.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
@@ -225,7 +225,7 @@ demo/header "6. Building a scoring database"
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | tee >((head -10 && echo ...)> /dev/tty) | vim +'set ft=pbtxt' -
+    | tee >(bat -r :10 -l pbtxt) | vim +'set ft=pbtxt' -
 # \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
 # which is itself a .proto file.  Self-referential!                              \
@@ -258,7 +258,7 @@ reproto \
 # Auto-infer a Cloud Functions deployment operation — unique match, score 26.
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # 👆 Score 26, unique match: functions/v2 has extra fields (stages, build_name,
 # source_token, operation_type) that distinguish it from the other 8 types.
 # \
@@ -268,7 +268,7 @@ prototext --descriptor-set stash/opmeta.desc \
 #
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/batch/v1/OperationMetadata.pb \
-    | tee /dev/tty | vim +'set ft=pbtxt' -
+    | tee >(bat -l pbtxt) | vim +'set ft=pbtxt' -
 # 👆 8-way tie at score 8: the wire bytes are consistent with all 8 standard     \
 # OperationMetadata types.  This is expected — they are wire-identical.          \
 # The scoring graph cannot distinguish what the schema cannot distinguish.       \
@@ -341,7 +341,7 @@ demo/header "7. Decompiling descriptors"
 # First, let's decode the PostalAddress descriptor itself — a binary .pb file
 # that encodes the schema of PostalAddress as a FileDescriptorProto.
 prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | tee >({ head -10; echo '...'; } > /dev/tty) | vim +'set ft=pbtxt' -
+    | tee >(bat -r :10 -l pbtxt) | vim +'set ft=pbtxt' -
 
 # Decompile the PostalAddress descriptor back to .proto source.
 reproto -q \
@@ -349,8 +349,8 @@ reproto -q \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # Let's see the result.
-cat stash/reproto-out/google/type/postal_address.proto \
-    | tee /dev/tty | vim +'set ft=proto' -
+bat --style=numbers,header-filename -l proto \
+    stash/reproto-out/google/type/postal_address.proto
 # \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
 # \
@@ -418,8 +418,9 @@ reproto -q \
 find stash/audit-pruned -name '*.proto' | sort
 # \
 # 👆 Prune status.proto: 8 files become 7.
-cat stash/audit-pruned/google/cloud/audit/audit_log.proto \
-    | tee >({ head -10; echo '...'; } > /dev/tty) | vim +'set ft=proto' -
+bat --style=numbers,header-filename -l proto \
+    -H $(grep -n '///' stash/audit-pruned/google/cloud/audit/audit_log.proto | head -1 | cut -d: -f1) \
+    stash/audit-pruned/google/cloud/audit/audit_log.proto
 # \
 # 👆 AuditLog.status becomes a /// orphan — not silently dropped.                \
 # Simon's team can see exactly what was cut and why.                             \
