@@ -146,7 +146,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
 
-# Let's look at the resulting protobuf:
+# Let's look at the resulting patched protobuf:
 hexdump -C stash/postal_hidden.pb
 # \
 # 👆 The hidden field is right there in the binary.
@@ -164,14 +164,14 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 5
 # \
-# 👆 Both occurrences visible: the secret first, then the real value, in wire order.
+# 👆 Both occurrences visible: the secret first, then the real value, all fields in wire order.
 # \
 #                                                                                \
 # --- Over-long varint ---                                                       \
 #                                                                                \
-# An extra byte on a varint field does not change its value, but makes the       \
-# encoding non-minimal.  Standard decoders strip it without a word.  prototext   \
-# decode -a flags it and preserves it through encode.                            \
+# A spurious continuation-byte on a varint does not change its decoded value,    \
+# but makes the encoding non-minimal.  Standard decoders strip it silently.      \
+# prototext decode -a flags it and preserves it through encode.                  \
 #
 
 # Craft postal_patched.pb: inject an over-long varint on the revision field.
@@ -206,13 +206,19 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
 #
 
+# \
+#                                                                                \
+# prototext decode | prototext encode achieves a bit-perfect round-trip even    \
+# with non-canonical or anomalous protobufs.  Nothing is silently normalised.   \
+#
+
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
   | prototext encode \
   | diff - stash/postal_patched.pb \
-  && printf '\033[32mbyte-exact\033[0m\n'
+  && echo "$(tput setaf 2)bit-perfect accuracy$(tput sgr0)"
 
 demo/header "6. Building a scoring database"
 
@@ -227,18 +233,18 @@ demo/header "6. Building a scoring database"
 #                                                                                \
 # A .proto source file compiles into a descriptor — a FileDescriptorProto.      \
 # postal_address.pb is exactly that: the PostalAddress schema, serialised as     \
-# a protobuf.                                                                    \
+# a protobuf.  Let's have a look at it:                                          \
 #
 
-# Example: the descriptor for postal_address.
-vim +'set ft=pbtxt' \
-    <(prototext --descriptor-set $GOOGLEAPIS_DB \
+# Vernacular: the PostalAddress schema as a descriptor.
+vim +'set ft=pbtxt' <( \
+    prototext --descriptor-set $GOOGLEAPIS_DB \
         decode --type google.protobuf.FileDescriptorProto \
         $GOOGLEAPIS_DESCS/google/type/postal_address.pb)
 
 # Auto-referential! 🤯 — the descriptor schema, decoded using itself.
-vim +'set ft=pbtxt' \
-    <(prototext decode \
+vim +'set ft=pbtxt' <( \
+    prototext decode \
         prototext/fixtures/prebuilt/descriptor.pb)
 
 # \
@@ -271,7 +277,7 @@ reproto \
     --seed 'desc:.google.cloud.functions.v2.OperationMetadata' \
     $GOOGLEAPIS_DB
 
-# Auto-infer a Cloud Functions deployment operation — unique match, score 26.
+# Auto-infer a Cloud Functions deployment operation.
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 1 -H 2
@@ -380,7 +386,7 @@ reproto -O stash/googleapis-out \
 #
 
 # Browse the decompiled googleapis sources.
-code --reuse-window stash/googleapis-out
+code --reuse-window stash/googleapis-out/google/type/postal_address.proto
 # \
 #                                                                                \
 # What if some descriptors are missing — imported files not available?           \
@@ -449,6 +455,14 @@ demo/header "Conclusion"
 #   — a decompiler that recovers .proto sources from binary descriptors          \
 #   — a schema DB builder that collapses structurally equivalent types           \
 #   — a scalpel for extracting exactly the schema slice your tool needs          \
+#
+
+# \
+#                                                                                \
+# prototools is open source — MIT licence.                                       \
+#   github.com/ThalesGroup/prototools                                            \
+#                                                                                \
+# ~34 000 lines of Rust and Python.                                              \
 #
 
 # THE END
