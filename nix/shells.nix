@@ -95,6 +95,7 @@
       imagemagick
       chafa
       tree
+      bat
     ];
 
     shellHook = ''
