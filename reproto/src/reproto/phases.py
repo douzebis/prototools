@@ -865,7 +865,7 @@ def _phase2_build_pool(
             pass
 
     total_files = 0 if ctx.quiet else len(topo.files)
-    with _progress('Merging file descriptors', total_files, quiet=ctx.quiet) as advance:
+    with _progress('Loading descriptors', total_files, quiet=ctx.quiet) as advance:
         for i in itertools.count(start=1):
             # Find leaf-files (i.e.: do not target other files)
             for n in files:
@@ -969,7 +969,7 @@ def _phase3_build_graph(
     from .lib.console import progress as _progress
 
     total_files = 0 if ctx.quiet else len(topo.files)
-    with _progress('Building FQDN graph', total_files, quiet=ctx.quiet) as advance:
+    with _progress('Building type graph', total_files, quiet=ctx.quiet) as advance:
         # Create ReFileDescriptorProto nodes for all loaded files
         for file in topo.files.values():
             if not (file.is_ref() or file.is_pruned):
@@ -1018,7 +1018,7 @@ def _phase3_build_graph(
 def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""
     from .lib.console import spinning as _spinning
-    label = 'Processing exclusions' if prunings else 'Preparing graph'
+    label = 'Processing exclusions' if prunings else 'Applying pruning rules'
     with _spinning(label, quiet=ctx.quiet):
         transitive_prunnings: set[Node] = set()
         current_prunings: set[Node] = set()
@@ -1096,7 +1096,7 @@ def _phase5_reachability(
     transitive_reachables: set[Node] = set()
     current_reachables: set[Node] = set()
 
-    with _spinning('Resolving seeds', quiet=ctx.quiet):
+    with _spinning('Marking seeds', quiet=ctx.quiet):
         # Did the user explicitly specify seeds?
         if seeds:
             for seed_pattern in seeds:
@@ -1330,7 +1330,7 @@ def _phase6_summoning(ctx: Context) -> None:
         from .re_file import ReFileDescriptorProto as _ReFileFDP
         from .fake_types import Ref as _Ref
 
-        with _progress_lazy('Closing DB dependencies', quiet=ctx.quiet) as (advance, _):
+        with _progress_lazy('Pulling in WKT dependencies', quiet=ctx.quiet) as (advance, _):
             seen: set[str] = {
                 node.name for node in ctx.nodes.values()
                 if isinstance(node, _ReFileFDP) and node.is_summoned
@@ -1496,7 +1496,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         if isinstance(n, ReFileDescriptorProto) and n.is_present() and n.is_summoned
     ]
     total_summoned = 0 if ctx.quiet else len(summoned_files)
-    with _progress('Collecting scoring graphs', total_summoned, quiet=ctx.quiet) as advance:
+    with _progress('Collecting scoring data', total_summoned, quiet=ctx.quiet) as advance:
         for re_file in summoned_files:
             proto_name = re_file.name
             try:
@@ -1551,7 +1551,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         last_current = current
 
     want_pyvis = ctx.emit_scoring_html is not None
-    with _progress_lazy('Compiling global scoring graph', quiet=ctx.quiet) as (advance, set_total):
+    with _progress_lazy('Compiling scoring graph', quiet=ctx.quiet) as (advance, set_total):
         baked_graph, compiled_yaml, initial_yaml = build_graph(
             scoring_graphs=scoring_graphs,
             emit_yaml=want_pyvis,
@@ -1585,7 +1585,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             for child in n.contains:
                 stack.append(child)
 
-    with _progress_lazy('Rendering WKT dependencies', quiet=ctx.quiet) as (advance, _):
+    with _progress_lazy('Rendering WKT proto files', quiet=ctx.quiet) as (advance, _):
         for extra_node in ctx.schema_db_extra_nodes:
             advance()
             _promote_subtree(extra_node)

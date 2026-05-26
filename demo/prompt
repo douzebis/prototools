@@ -135,7 +135,8 @@ _update_prompt() {
     prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
     prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
-    READLINE_PROMPT="$prompt"
+    PS1="$prompt"
+    bind 'redraw-current-line' 2>/dev/null
 }
 
 # Readline hooks for wrap-around Up/Down, preserving edits
@@ -303,7 +304,7 @@ while true; do
 
     # 2. READ COMMAND (Execution pauses here until ENTER is hit)
     # Pass the display version to readline (with actual newlines for multi-line commands)
-    read -e -i "${display_commands[$index]}" -p "$prompt" usercmd || break
+    read -e -i "${display_commands[$index]}" usercmd || break
 
     # If we just resumed, skip execution
     if (( resume_after_fg )); then
