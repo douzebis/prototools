@@ -123,7 +123,7 @@ calculate_lines() {
     fi
 }
 
-# Rebuild prompt string and update READLINE_PROMPT so readline redraws it.
+# Rebuild prompt string and set PS1 so readline picks it up on next redraw.
 _update_prompt() {
     local cwd_display
     local cwd="$PWD"
@@ -135,14 +135,13 @@ _update_prompt() {
     prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
     prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
+    PS1="$prompt"
 }
 
-# Update the terminal title bar with the current position counter.
-# Called from navigation bind -x callbacks — avoids touching the readline
-# display (which cannot be re-prompted mid-edit without producing doubles).
+# Update PS1 with the new counter so readline redraws the prompt on the next
+# key event.  Called from navigation bind -x callbacks.
 _redraw_prompt() {
     _update_prompt
-    printf '\033]0;demo (%d/%d)\007' "$((index+1))" "$n" >/dev/tty
 }
 
 # Readline hooks for wrap-around Up/Down, preserving edits
@@ -310,7 +309,7 @@ while true; do
 
     # 2. READ COMMAND (Execution pauses here until ENTER is hit)
     # Pass the display version to readline (with actual newlines for multi-line commands)
-    read -e -i "${display_commands[$index]}" -p "$prompt" usercmd || break
+    read -e -i "${display_commands[$index]}" usercmd || break
 
     # If we just resumed, skip execution
     if (( resume_after_fg )); then
