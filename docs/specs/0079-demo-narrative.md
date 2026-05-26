@@ -103,18 +103,25 @@ pausing on.  Rules of thumb:
 
 ### Blank lines in the script
 
-Blank lines in the script produce an empty ENTER press that advances to the
-next command without doing anything visible.  Avoid them except around section
-headers:
+A blank line in the script produces an empty ENTER press — the runner advances
+but nothing happens on screen.  Use blank lines deliberately:
 
-- **No blank line** between a narrative block and the command that follows it,
-  nor between a command and the narrative block that follows it, nor between
-  consecutive commands.  The color change when the runner highlights the next
-  command is sufficient to focus the audience's attention.
-- **Section headers** (`demo/header "N. Title"`) are the exception: always
-  place one blank line before and one blank line after each header.  This
-  gives the presenter two guard beats — one to let the previous section land,
-  one to read the section title before the first command appears.
+- **Before a new command or narrative block**: always add one blank line.  The
+  runner's color change is sufficient to focus attention, but the blank gives
+  the presenter a natural pause beat.
+- **Notes about previous output**: a short inline comment (`# …`) that
+  highlights something in the output of the immediately preceding command is
+  an exception — no blank line before it, and it runs directly as the next
+  ENTER after the command.  These notes should begin with `# 👆` to signal
+  to the audience that the comment refers to what is already on screen.
+- **Section headers** (`demo/header "N. Title"`): always place one blank line
+  before and one blank line after.  This gives the presenter two guard beats —
+  one to let the previous section land, one to read the title before the first
+  command appears.
+- **Commands that open a viewer** (vim, xdg-open) and whose results need to be
+  visible on the terminal before the viewer opens: pipe through
+  `tee /dev/tty` before `| vim -` or similar, so the output is visible in the
+  terminal while the next note or command is shown.
 
 ### VSCode workspace
 
