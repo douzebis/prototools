@@ -230,8 +230,8 @@ code --reuse-window stash/googleapis-out
 
 # \
 #                                                                                \
-# Thousands of files — but a security analyst does not need all of googleapis.  \
-# She only cares about one message: AuditLog, the record of every Cloud API     \
+# Thousands of files — but Simon's audit team does not need all of googleapis.  \
+# They only care about one message: AuditLog, the record of every Cloud API     \
 # call.  Pass its descriptor as the seed: reproto pulls only its transitive     \
 # closure.                                                                       \
 #
@@ -244,7 +244,7 @@ tree stash/audit-seed
 
 # \
 #                                                                                \
-# 8 files.  But the analyst's tool only decodes payloads — it never needs to    \
+# 8 files.  But Simon's tool only decodes payloads — it never needs to          \
 # interpret RPC error statuses.  Prune google/rpc/status.proto: reproto drops   \
 # the file and orphans the field that referenced it, leaving a /// comment so   \
 # nothing is silently lost.                                                      \
