@@ -61,6 +61,7 @@ ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Let's decode it as a protobuf:
+\
 prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   2>&1 | bat --style=numbers,header-filename -l pbtxt
@@ -68,12 +69,14 @@ prototext decode --raw \
 # 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | bat --style=numbers,header-filename -l pbtxt
 
 # Here is the schema that unlocked it — the .proto source.
+\
 bat --style=numbers,header-filename -l proto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 
@@ -89,6 +92,7 @@ demo/header "4. Schema auto-inference"
 #
 
 # Watch prototext infer the schema with no hint from us.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 1 -H 2
@@ -101,6 +105,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #                                                                                \
 # Let's try another example.                                                     \
 #
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
@@ -109,6 +114,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # 👆 prototext finds a tie and asks us to be explicit.
 
 # With --type the ambiguity is resolved.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
@@ -131,6 +137,7 @@ demo/header "5. Non-canonical protobufs"
 # discarded by standard decoders.  This is a real steganographic / exfiltration  \
 # vector.  prototext decode preserves wire order and exposes all occurrences.    \
 #
+\
 bat --style=numbers,header-filename -l proto -r 13:25 -H 24 \
     $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 # \
@@ -141,6 +148,7 @@ bat --style=numbers,header-filename -l proto -r 13:25 -H 24 \
 
 # Craft postal_hidden.pb: slip a secret organization field before the real one.
 # (The #@ annotations are prototext's wire-encoding hints — field number and type.)
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
@@ -152,6 +160,7 @@ hexdump -C stash/postal_hidden.pb
 # 👆 The hidden field is right there in the binary.
 
 # Standard decoder (protoc): only shows the last occurrence — secret gone.
+\
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
@@ -160,6 +169,7 @@ protoc \
   | bat --style=numbers,header-filename -l pbtxt
 
 # prototext decode: preserves all contents.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 5
@@ -175,6 +185,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 
 # Craft postal_patched.pb: inject an over-long varint on the revision field.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
@@ -189,6 +200,7 @@ hexdump -C stash/postal_patched.pb | head -1
 # 👆 Spot the difference: one extra byte — `01` has become `81 00`.
 
 # protoc is oblivious to the non-canonical serialization.
+\
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
@@ -197,6 +209,7 @@ protoc \
   | bat --style=numbers,header-filename -l pbtxt
 
 # prototext -a decodes with full anomaly annotations.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
@@ -213,6 +226,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 
 # prototext round-trip: the over-hung byte is preserved exactly.
+\
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
@@ -261,6 +275,7 @@ vim +'set ft=pbtxt' <( \
 # for build stages, source token, build name, and operation type.               \
 #
 
+\
 reproto \
     --build-schema-db stash/opmeta.desc \
     --emit-scoring-html stash/opmeta.html \
@@ -278,6 +293,7 @@ reproto \
     $GOOGLEAPIS_DB
 
 # Auto-infer a Cloud Functions deployment operation.
+\
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 1 -H 2
@@ -322,6 +338,7 @@ xdg-open stash/opmeta-hopcroft.html
 #
 
 # IpRules toy example: 5 nodes raw, 4 nodes after Hopcroft.
+\
 reproto -q \
     --build-schema-db stash/iprules.desc \
     --emit-scoring-html stash/iprules.html \
@@ -356,15 +373,19 @@ demo/header "7. Decompiling descriptors"
 #
 
 # This is again how postal_address looks as a descriptor — a binary FileDescriptorProto:
-out=$(prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
+out=$( \
+    prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
 ); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers,header-filename -r 1:5 -l pbtxt <<< "$out"
 
 # Decompile it back to .proto source.
+\
 reproto -q \
     -O stash/reproto-out \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # Let's see the result.
+\
+vim stash/reproto-out/google/type/postal_address.proto; \
 bat --style=numbers,header-filename -l proto \
     stash/reproto-out/google/type/postal_address.proto
 # \
@@ -375,6 +396,7 @@ bat --style=numbers,header-filename -l proto \
 #
 
 # Decompile the entire googleapis DB: thousands of .proto files reconstructed.
+\
 reproto -O stash/googleapis-out \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS .
@@ -406,6 +428,7 @@ demo/header "8. Seeding and pruning"
 #
 
 # Seed on AuditLog: thousands of files collapse to 8.
+\
 reproto -q \
     -O stash/audit-seed \
     --use-variant descriptor \
@@ -423,6 +446,7 @@ code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # orphans the field that referenced it, leaving a /// comment so nothing is      \
 # silently lost.                                                                 \
 #
+\
 reproto -q \
     -O stash/audit-pruned \
     --use-variant descriptor \
@@ -435,6 +459,7 @@ find stash/audit-pruned -name '*.proto' | sort | bat --style=numbers,header-file
 # 👆 Prune status.proto: 8 files become 7.
 
 # Let's look at the impact on audit_log.proto:
+\
 bat --style=numbers,header-filename -l proto -r 13:22 -H 17 -H 20 \
     stash/audit-pruned/google/cloud/audit/audit_log.proto
 # \
