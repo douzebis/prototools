@@ -58,23 +58,24 @@ demo/header "3. What's inside a protobuf?"
 ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Raw bytes — this is what travels on the wire.
-out=$(hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-); vim <(echo "$out"); bat --style=numbers <<< "$out"
+hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 
 # Let's decode it as a protobuf:
-out=$(prototext decode --raw \
+prototext decode --raw \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
+# \
 # 👆 No schema yet: field numbers and wire types, but no names.
 
 # With the right schema: the message becomes readable.
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.type.PostalAddress \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
 
 # Here is the schema that unlocked it — the .proto source.
-vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
+bat --style=numbers,header-filename -l proto \
+    $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 
 demo/header "4. Schema auto-inference"
 
@@ -88,9 +89,9 @@ demo/header "4. Schema auto-inference"
 #
 
 # Watch prototext infer the schema with no hint from us.
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
 # \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
@@ -103,13 +104,14 @@ out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
+# \
 # 👆 prototext finds a tie and asks us to be explicit.
 
 # With --type the ambiguity is resolved.
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers,header-filename -l pbtxt
 
 demo/header "5. Non-canonical protobufs"
 
@@ -128,7 +130,8 @@ demo/header "5. Non-canonical protobufs"
 # discarded by standard decoders.  This is a real steganographic / exfiltration  \
 # vector.  prototext decode preserves wire order and exposes all occurrences.    \
 #
-vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
+bat --style=numbers,header-filename -l proto -r 13:25 -H 24 \
+    $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 # \
 #                                                                                \
 # We are going to slip a secret value before the real organization field,        \
@@ -143,22 +146,23 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
   | prototext encode > stash/postal_hidden.pb
 
 # Let's look at the resulting protobuf:
-out=$(hexdump -C stash/postal_hidden.pb \
-); vim <(echo "$out"); bat --style=numbers <<< "$out"
+hexdump -C stash/postal_hidden.pb
+# \
 # 👆 The hidden field is right there in the binary.
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
-out=$(protoc \
+protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_hidden.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
 
 # prototext decode: preserves all contents.
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
+# \
 # 👆 Both occurrences visible: the secret first, then the real value.
 # \
 #                                                                                \
@@ -179,12 +183,14 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # Let's look at what has been produced:
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
 hexdump -C stash/postal_patched.pb | head -1
+# \
 # 👆 Spot the difference: one extra byte — `01` has become `81 00`.
 
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+# prototext -a decodes with full anomaly annotations.
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
 # \
 # 👆 prototext -a flags it: look for val_ohb on the revision field.              \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
@@ -196,12 +202,12 @@ out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 
 # protoc decode: the OHB is silently normalised — the revision field looks clean.
-out=$(protoc \
+protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_patched.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
+  | bat --style=numbers -l pbtxt
 
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
@@ -209,7 +215,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     stash/postal_patched.pb \
   | prototext encode \
   | diff - stash/postal_patched.pb \
-  && echo byte-exact
+  && echo -e "\033[32mbyte-exact\033[0m"
 
 demo/header "6. Building a scoring database"
 
@@ -227,10 +233,10 @@ demo/header "6. Building a scoring database"
 # a protobuf.  prototext can decode it:                                          \
 #
 
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
+prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -r :10 -l pbtxt <<< "$out"
+  | bat --style=numbers,header-filename -r :10 -l pbtxt
 # \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
 # which is itself a .proto file.  Self-referential!                              \
@@ -241,9 +247,14 @@ out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
 # a scoring graph baked in.  --build-schema-db produces it from any seed.        \
 #
 
-# Build a scoring DB: 8 standard OperationMetadata + Cloud Functions v2.
-# Cloud Functions v2 has a richer shape: extra fields for build stages,
-# source token, build name, and operation type.
+# \
+#                                                                                \
+# Let's build a scoring graph for a specific slice of googleapis: every         \
+# OperationMetadata variant across Google Cloud APIs.  Each team defines its    \
+# own — most share the same 7 fields, but Cloud Functions v2 has extra fields   \
+# for build stages, source token, build name, and operation type.               \
+#
+
 reproto \
     --build-schema-db stash/opmeta.desc \
     --emit-scoring-html stash/opmeta.html \
@@ -261,22 +272,11 @@ reproto \
     $GOOGLEAPIS_DB
 
 # Auto-infer a Cloud Functions deployment operation — unique match, score 26.
-out=$(prototext --descriptor-set stash/opmeta.desc \
+prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
-# 👆 Score 26, unique match: functions/v2 has extra fields (stages, build_name,
-# source_token, operation_type) that distinguish it from the other 8 types.
+  | bat --style=numbers -l pbtxt
 # \
-#                                                                                \
-# Now try a batch OperationMetadata — same 7-field shape as 8 of the 9 types.    \
-# prototext cannot pick a winner: all 8 score equally.                           \
-#
-out=$(prototext --descriptor-set stash/opmeta.desc \
-    decode $GOOGLEAPIS_PBS/google/cloud/batch/v1/OperationMetadata.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -l pbtxt <<< "$out"
-# 👆 8-way tie at score 8: the wire bytes are consistent with all 8 standard     \
-# OperationMetadata types.  This is expected — they are wire-identical.          \
-# The scoring graph cannot distinguish what the schema cannot distinguish.       \
+# 👆 Score 26, unique match.
 # \
 #                                                                                \
 # The raw scoring graph encodes every distinct wire shape in the seed set.       \
@@ -301,7 +301,7 @@ xdg-open stash/opmeta.html
 # Many nodes are structurally identical: 8 teams defined their own               \
 # OperationMetadata with the same 7 fields.  They are separate nodes here,       \
 # but they could be merged — a binary consistent with one is consistent with     \
-# all.  Hopcroft minimisation collapses them automatically.                      \
+# all.  Deduplication collapses them automatically.                             \
 #
 
 # Hopcroft graph: 8 OperationMetadata states collapsed into 1 amber+8 node.
@@ -343,18 +343,20 @@ demo/header "7. Decompiling descriptors"
 # you need to write code that audits or processes the corresponding protobufs.   \
 #
 
-# First, let's decode the PostalAddress descriptor itself — a binary .pb file
-# that encodes the schema of PostalAddress as a FileDescriptorProto.
-out=$(prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers -r :10 -l pbtxt <<< "$out"
+# As an example, let's decompile the postal_address descriptor back into
+# its .proto source form.
 
-# Decompile the PostalAddress descriptor back to .proto source.
+# This is how postal_address looks as a descriptor — a binary FileDescriptorProto:
+prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
+  | bat --style=numbers -r :10 -l pbtxt
+
+# Decompile it back to .proto source.
 reproto -q \
     -O stash/reproto-out \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # Let's see the result.
-bat --style=numbers,header-filename -l proto \
+bat --style=numbers,header-filename -l proto -r 1:5 \
     stash/reproto-out/google/type/postal_address.proto
 # \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
@@ -387,10 +389,10 @@ demo/header "8. Seeding and pruning"
 
 # \
 #                                                                                \
-# Thousands of files — but Simon's audit team does not need all of googleapis.   \
-# They only care about one message: AuditLog, the record of every Cloud API      \
-# call.  Pass its descriptor as the seed: reproto pulls only its transitive      \
-# closure.                                                                       \
+# The decompilation is thousands of files — but Simon's audit team does not      \
+# need all of googleapis.  They only care about one message: AuditLog, the      \
+# record of every Cloud API call.  Pass its descriptor as the seed: reproto     \
+# pulls only its transitive closure.                                             \
 #
 
 # Seed on AuditLog: thousands of files collapse to 8.
@@ -399,12 +401,12 @@ reproto -q \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     google/cloud/audit/audit_log.pb
-find stash/audit-seed -name '*.proto' | sort
+find stash/audit-seed -name '*.proto' | sort | bat --style=numbers
 # \
 # 👆 The transitive closure: every file AuditLog depends on, nothing more.
 # \
 #                                                                                \
-# 8 files instead of thousands.  Let's browse the decompiled AuditLog source.    \
+# Let's browse the decompiled AuditLog source.                                  \
 #
 code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # \
@@ -420,11 +422,12 @@ reproto -q \
     -I $GOOGLEAPIS_DESCS \
     --prune 'file:google/rpc/status.proto' \
     google/cloud/audit/audit_log.pb
-find stash/audit-pruned -name '*.proto' | sort
+find stash/audit-pruned -name '*.proto' | sort | bat --style=numbers
 # \
 # 👆 Prune status.proto: 8 files become 7.
-bat --style=numbers,header-filename -l proto -r 13:22 \
-    $(grep -n '///' stash/audit-pruned/google/cloud/audit/audit_log.proto | cut -d: -f1 | sed 's/^/-H /') \
+
+# Let's look at the impact on audit_log.proto:
+bat --style=numbers,header-filename -l proto -r 13:22 -H 17 -H 20 \
     stash/audit-pruned/google/cloud/audit/audit_log.proto
 # \
 # 👆 status.proto import and AuditLog.status becomes a /// orphan                \
