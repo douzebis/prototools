@@ -16,8 +16,8 @@ prototext --version && reproto --version
 # Build the googleapis schema DB — we will use it throughout.
 export GOOGLEAPIS_DB=$(nix-build -A googleapis-db --no-out-link)/googleapis.desc
 # Companion paths: binary instances and decompiled .proto sources.
-GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
-GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
+export GOOGLEAPIS_PBS=$(dirname $GOOGLEAPIS_DB)/instances
+export GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/reproto-out
 # Pre-clean stash output dirs to avoid stale files from previous runs.
 rm -rf stash/reproto-out stash/googleapis-out \
     stash/audit-seed stash/audit-pruned \
@@ -297,6 +297,18 @@ reproto -q -I $GOOGLEAPIS_DESCS --use-variant descriptor \
     --build-schema-db stash/iprules.desc \
     --emit-scoring-html stash/iprules.html \
     google/cloud/securitycenter/v2/ip_rules.pb
+
+# \
+#                                                                                \
+# Graph legend:                                                                  \
+#   nodes  — amber/gold = top-level message (brighter = more merged types)      \
+#             blue      = internal sub-message (no top-level name)               \
+#   edges  — blue       = optional field                                         \
+#             light blue = repeated field                                        \
+#             purple    = packed repeated field                                  \
+#             gray      = required field (proto2 only)                           \
+#   label  — short type name; "+N" suffix if N extra types collapsed into it    \
+#
 
 # Raw graph: open in browser, inspect Allowed and Denied as separate nodes.
 xdg-open stash/iprules.html

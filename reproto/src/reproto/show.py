@@ -28,6 +28,13 @@ def _make_network(title: str) -> Network:
     net.heading = ''
     net.barnes_hut()
     net.set_options("""{
+  "nodes": {
+    "font": { "face": "sans-serif", "color": "#88cc88", "size": 13 }
+  },
+  "edges": {
+    "font": { "face": "sans-serif", "color": "#888888", "size": 11,
+              "align": "middle" }
+  },
   "physics": {
     "enabled": true,
     "barnesHut": {
