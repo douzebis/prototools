@@ -40,7 +40,7 @@ demo/header "2. Protobufs are everywhere"
 #
 # \
 #                                                                                \
-# And the vendor agrees:                                                         \
+# Google themselves agree:                                                       \
 # "Protocol buffers are the most commonly-used data format at Google.  They are  \
 #  used extensively in inter-server communications as well as for archival       \
 #  storage of data on disk."                                                     \
