@@ -1496,7 +1496,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         if isinstance(n, ReFileDescriptorProto) and n.is_present() and n.is_summoned
     ]
     total_summoned = 0 if ctx.quiet else len(summoned_files)
-    with _progress('Collecting scoring graphs', total_summoned) as advance:
+    with _progress('Collecting scoring graphs', total_summoned, quiet=ctx.quiet) as advance:
         for re_file in summoned_files:
             proto_name = re_file.name
             try:
