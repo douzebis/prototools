@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+# Pad narrative block continuation lines in demo scripts to column 82.
+#
+# Rules (from docs/specs/0079-demo-narrative.md):
+#   - Block opener lines are bare '# \' — left unchanged.
+#   - Every other continuation line starts with '#' and must end with ' \'
+#     at display column 82 (backslash at col 82, space before it at col 81).
+#   - Display width uses Unicode east-asian-width: wide/fullwidth chars (e.g.
+#     emoji like 👆) count as 2 columns, all others as 1.
+#   - Bare '#' terminator lines (no backslash) are left unchanged.
+#
+# Usage:
+#   demo/align-comments demo/01-tutorial.sh
+#   demo/align-comments demo/01-tutorial.sh demo/02-other.sh ...
+#
+# The file is rewritten in place.
+
+import sys
+import unicodedata
+
+
+def display_width(s: str) -> int:
+    w = 0
+    for ch in s:
+        ea = unicodedata.east_asian_width(ch)
+        w += 2 if ea in ('W', 'F') else 1
+    return w
+
+
+def pad_line(line: str) -> str:
+    """Pad a narrative continuation line so the trailing '\\' sits at display col 82."""
+    stripped = line.rstrip('\n')
+
+    # Not a narrative line at all
+    if not stripped.startswith('#'):
+        return line
+
+    # Bare opener — leave as-is
+    if stripped == '# \\':
+        return line
+
+    # Terminator (bare '#') — leave as-is
+    if stripped == '#':
+        return line
+
+    # Must end with '\' to be a continuation line
+    if not stripped.endswith('\\'):
+        return line
+
+    # Strip trailing backslash (and any trailing spaces before it)
+    content = stripped.rstrip('\\').rstrip()
+
+    # Target: content padded so that display_width(content) == 81,
+    # then append '\'. That puts '\' at display column 82.
+    target_width = 81
+    current = display_width(content)
+    if current < target_width:
+        content = content + ' ' * (target_width - current)
+    # If content is already wider than 81, just ensure one space before '\'
+    elif not content.endswith(' '):
+        content = content + ' '
+
+    return content + '\\\n'
+
+
+def process(path: str) -> None:
+    with open(path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    fixed = [pad_line(line) for line in lines]
+    with open(path, 'w', encoding='utf-8') as f:
+        f.writelines(fixed)
+    print(f'aligned: {path}')
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print(f'Usage: {sys.argv[0]} FILE...', file=sys.stderr)
+        sys.exit(1)
+    for path in sys.argv[1:]:
+        process(path)
