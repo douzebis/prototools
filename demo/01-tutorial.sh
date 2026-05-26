@@ -418,11 +418,12 @@ reproto -q \
 find stash/audit-pruned -name '*.proto' | sort
 # \
 # 👆 Prune status.proto: 8 files become 7.
-bat --style=numbers,header-filename -l proto \
-    -H $(grep -n '///' stash/audit-pruned/google/cloud/audit/audit_log.proto | head -1 | cut -d: -f1) \
+bat --style=numbers,header-filename -l proto -r 13:22 \
+    $(grep -n '///' stash/audit-pruned/google/cloud/audit/audit_log.proto | cut -d: -f1 | sed 's/^/-H /') \
     stash/audit-pruned/google/cloud/audit/audit_log.proto
 # \
-# 👆 AuditLog.status becomes a /// orphan — not silently dropped.                \
+# 👆 status.proto import and AuditLog.status becomes a /// orphan                \
+# They are not silently dropped.                                                 \
 # Simon's team can see exactly what was cut and why.                             \
 #
 code --reuse-window stash/audit-pruned/google/cloud/audit/audit_log.proto
