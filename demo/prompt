@@ -135,7 +135,15 @@ _update_prompt() {
     prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
     prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
-    PS1="$prompt"
+}
+
+# Redraw the prompt in-place during an active read -e session.
+# Called from navigation bind -x callbacks only (not from the main loop).
+_redraw_prompt() {
+    _update_prompt
+    # Strip \001/\002 readline non-printing wrappers for raw tty output.
+    local raw_prompt="${prompt//[$'\001'$'\002']/}"
+    printf '\r%s' "$raw_prompt" >/dev/tty
     bind 'redraw-current-line' 2>/dev/null
 }
 
@@ -148,13 +156,13 @@ browse_up() {
     (( index-- ))
     if (( index < 0 )); then
         index=0
-        _update_prompt
+        _redraw_prompt
         return
     fi
     # Load the display version (multi-line format)
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
-    _update_prompt
+    _redraw_prompt
 }
 
 browse_down() {
@@ -165,13 +173,13 @@ browse_down() {
     (( index++ ))
     if (( index >= n )); then
         index=$((n-1))
-        _update_prompt
+        _redraw_prompt
         return
     fi
     # Load the display version (multi-line format)
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
-    _update_prompt
+    _redraw_prompt
 }
 
 # === Line Editing Helpers ===
@@ -252,7 +260,7 @@ fast_up() {
     if (( index < 0 )); then index=0; fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
-    _update_prompt
+    _redraw_prompt
 }
 
 fast_down() {
@@ -262,7 +270,7 @@ fast_down() {
     if (( index >= n )); then index=$((n-1)); fi
     READLINE_LINE="${display_commands[$index]}"
     READLINE_POINT=${#READLINE_LINE}
-    _update_prompt
+    _redraw_prompt
 }
 
 _INPUTRC=$(mktemp)
@@ -304,7 +312,7 @@ while true; do
 
     # 2. READ COMMAND (Execution pauses here until ENTER is hit)
     # Pass the display version to readline (with actual newlines for multi-line commands)
-    read -e -i "${display_commands[$index]}" usercmd || break
+    read -e -i "${display_commands[$index]}" -p "$prompt" usercmd || break
 
     # If we just resumed, skip execution
     if (( resume_after_fg )); then
