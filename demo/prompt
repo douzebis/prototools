@@ -137,14 +137,12 @@ _update_prompt() {
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
 }
 
-# Redraw the prompt in-place during an active read -e session.
-# Called from navigation bind -x callbacks only (not from the main loop).
+# Update the terminal title bar with the current position counter.
+# Called from navigation bind -x callbacks — avoids touching the readline
+# display (which cannot be re-prompted mid-edit without producing doubles).
 _redraw_prompt() {
     _update_prompt
-    # Strip \001/\002 readline non-printing wrappers for raw tty output.
-    local raw_prompt="${prompt//[$'\001'$'\002']/}"
-    printf '\r%s' "$raw_prompt" >/dev/tty
-    bind 'redraw-current-line' 2>/dev/null
+    printf '\033]0;demo (%d/%d)\007' "$((index+1))" "$n" >/dev/tty
 }
 
 # Readline hooks for wrap-around Up/Down, preserving edits
