@@ -33,7 +33,6 @@ demo/header "2. Protobufs are everywhere"
 #  storage of data on disk."                                                     \
 #   — protobuf.dev/overview, Google                                              \
 #
-
 # \
 #                                                                                \
 # Protobufs are compact (binary), self-describing (with a schema), and           \
@@ -49,7 +48,6 @@ demo/header "3. What's inside a protobuf?"
 #   schema     — the .proto definition that names fields and assigns types       \
 #   descriptor — a compiled schema, itself serialised as a protobuf              \
 #
-
 # Our running example: a postal address, serialised as a protobuf.
 ls -lh $GOOGLEAPIS_PBS/google/type/PostalAddress.pb
 # Raw bytes — this is what travels on the wire.
@@ -74,13 +72,11 @@ demo/header "4. Schemas are protobufs too"
 # a FileDescriptorProto.  Next to every .proto in our DB sits a .pb:            \
 # the same schema, serialised as a protobuf.                                    \
 #
-
 # Let's decode postal_address.pb as a FileDescriptorProto.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
     | vim +'set ft=pbtxt' -
-
 # \
 #                                                                                \
 # The schema for FileDescriptorProto is defined in descriptor.proto —           \
@@ -95,30 +91,25 @@ demo/header "5. Schema auto-inference"
 # against the binary and picks the best match.  The score consolidates field     \
 # coverage, wire type matches, value plausibility, and more.                     \
 #
-
 # Watch prototext infer the schema with no hint from us.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
     | tee /dev/tty | vim +'set ft=pbtxt' -
-
 # \
 #                                                                                \
 # Notice the score at the top of the output — the higher, the better the fit.    \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
 # picks the best candidate.                                                      \
 #
-
 # \
 #                                                                                \
 # Let's try another example from googleapis — and see what prototext does       \
 # when two types are equally plausible.                                          \
 #
-
 # Here prototext finds a tie and asks us to be explicit.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
-
 # With --type the ambiguity is resolved.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
@@ -134,7 +125,6 @@ demo/header "6. Non-canonical protobufs"
 # decoders silently normalise or discard them — a potential side channel.        \
 # prototext decode -a exposes every anomaly; prototext encode preserves them.    \
 #
-
 # \
 #                                                                                \
 # --- Hidden field ---                                                           \
@@ -143,22 +133,18 @@ demo/header "6. Non-canonical protobufs"
 # discarded by standard decoders.  This is a real steganographic / exfiltration  \
 # vector.  prototext decode preserves wire order and exposes all occurrences.    \
 #
-
 # \
 #                                                                                \
 # We are going to slip a secret value before the real organization field,        \
 # hidden in plain sight inside a valid protobuf.                                 \
 #
-
 # Craft postal_hidden.pb: slip a secret organization field before the real one.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
-
 # The extra field is invisible to the naked eye — but it is in there.
 hexdump -C stash/postal_hidden.pb
-
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
@@ -166,12 +152,10 @@ protoc \
     google/type/postal_address.proto \
     < stash/postal_hidden.pb \
     | vim +'set ft=pbtxt' -
-
 # prototext decode: preserves wire order — both occurrences visible.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
     | vim +'set ft=pbtxt' -
-
 # \
 #                                                                                \
 # --- Over-long varint ---                                                       \
@@ -180,31 +164,26 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # encoding non-minimal.  Standard decoders strip it without a word.  prototext   \
 # decode -a flags it and preserves it through encode.                            \
 #
-
 # Craft postal_patched.pb: inject an over-long varint on the revision field.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
   | prototext encode > stash/postal_patched.pb
-
 # Spot the difference: one extra byte.
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
 hexdump -C stash/postal_patched.pb | head -1
-
 # prototext -a flags it: look for val_ohb on the revision field.
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
     | vim +'set ft=pbtxt' -
-
 # \
 #                                                                                \
 # Two round-trips: prototext preserves the anomaly byte-exact.                  \
 # protoc silently strips it — the OHB disappears without a trace.               \
 #
-
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
@@ -212,7 +191,6 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
   | prototext encode \
   | diff - stash/postal_patched.pb \
   && echo byte-exact
-
 # protoc decode: the OHB is silently normalised — the revision field looks clean.
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
@@ -229,7 +207,6 @@ demo/header "7. Decompiling schemas and building scoring databases"
 # schemas themselves?  postal_address.pb is the compiled schema —               \
 # a FileDescriptorProto.  reproto turns it back into readable .proto source.    \
 #
-
 prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
     | vim +'set ft=pbtxt' -
 # Decompile the PostalAddress descriptor back to .proto source.
@@ -237,10 +214,8 @@ reproto -q \
     -O stash/reproto-out \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
-
 # Human-readable .proto source, recovered from the binary.
 vim stash/reproto-out/google/type/postal_address.proto
-
 # \
 #                                                                                \
 # reproto can also decompile an entire schema DB back to .proto sources.         \
@@ -250,7 +225,6 @@ vim stash/reproto-out/google/type/postal_address.proto
 reproto -O stash/googleapis-out \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS .
-
 # \
 #                                                                                \
 # Browse the reconstructed sources in VSCode.  The proto language server        \
@@ -258,21 +232,18 @@ reproto -O stash/googleapis-out \
 # find-all-references works, and the full type hierarchy is explorable.          \
 #
 code --reuse-window stash/googleapis-out
-
 # \
 #                                                                                \
 # The .proto sources are useful for reading.  But prototext's auto-inference    \
 # needs a scoring DB: a compiled schema with a Hopcroft graph baked in.         \
 # --build-schema-db produces it from any descriptor seed.                       \
 #
-
 # Build a scoring DB for AuditLog.
 reproto -I $GOOGLEAPIS_DESCS \
     --use-variant descriptor \
     --build-schema-db stash/audit.desc \
     --emit-scoring-html stash/audit.html \
     google/cloud/audit/audit_log.pb
-
 # \
 #                                                                                \
 # Hopcroft minimisation: two message types with identical wire structure are     \
@@ -284,7 +255,6 @@ reproto -I $GOOGLEAPIS_DESCS \
 #   message Denied  { repeated IpRule ip_rules = 1; }                           \
 # Hopcroft finds this automatically.                                             \
 #
-
 # Raw graph: 5 nodes.  Hopcroft graph: 4 nodes — Allowed and Denied merged.
 reproto -q \
     -I $GOOGLEAPIS_DESCS \
@@ -296,10 +266,8 @@ reproto -q \
     --build-schema-db stash/iprules.desc \
     --emit-scoring-html stash/iprules.html \
     google/cloud/securitycenter/v2/ip_rules.pb
-
 # Raw graph: open in browser, inspect Allowed and Denied as separate nodes.
 xdg-open stash/iprules.html
-
 # \
 #                                                                                \
 # Graph legend:                                                                  \
@@ -311,10 +279,8 @@ xdg-open stash/iprules.html
 #             gray      = required field (proto2 only)                           \
 #   label  — short type name; "+N" suffix if N extra types collapsed into it    \
 #
-
 # Hopcroft graph: Allowed/Denied collapsed into one merged state.
 xdg-open stash/iprules-hopcroft.html
-
 # \
 #                                                                                \
 # At scale: 8 Google Cloud services each define their own OperationMetadata     \
@@ -322,7 +288,6 @@ xdg-open stash/iprules-hopcroft.html
 # Hopcroft collapses all 8 into a single scoring state.  A DB built from one    \
 # service already covers the others.                                             \
 #
-
 # Raw: 177 nodes.  Hopcroft: 83 nodes.  8 OperationMetadata states become 1.
 reproto -q \
     -I $GOOGLEAPIS_DESCS \
@@ -338,7 +303,6 @@ reproto -q \
     --build-schema-db stash/opmeta.desc \
     --emit-scoring-html stash/opmeta.html \
     $GOOGLEAPIS_DB
-
 xdg-open stash/opmeta.html
 xdg-open stash/opmeta-hopcroft.html
 
@@ -356,10 +320,8 @@ reproto -q \
     -O stash/audit-seed \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS google/cloud/audit/audit_log.pb
-
 # The transitive closure: every file AuditLog depends on, nothing more.
 find stash/audit-seed -name '*.proto' | sort
-
 # \
 #                                                                                \
 # 8 files.  But Simon's tool only decodes payloads — it never needs to          \
@@ -373,16 +335,13 @@ reproto -q \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS google/cloud/audit/audit_log.pb \
     --prune 'file:google/rpc/status.proto'
-
 find stash/audit-pruned -name '*.proto' | sort
-
 # \
 #                                                                                \
 # The orphaned field is preserved as a /// comment — not silently dropped.      \
 # Simon's team can see exactly what was cut and why.                             \
 #
 vim stash/audit-pruned/google/cloud/audit/audit_log.proto
-
 # \
 #                                                                                \
 # prototools gives you:                                                          \
@@ -393,7 +352,3 @@ vim stash/audit-pruned/google/cloud/audit/audit_log.proto
 #
 
 # THE END
-
-
-
-# (A few newline sentinels added...)

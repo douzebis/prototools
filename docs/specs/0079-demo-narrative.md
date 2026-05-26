@@ -101,6 +101,21 @@ pausing on.  Rules of thumb:
   lets the presenter scroll, and closes cleanly with `q`.  Use `head` only
   when showing just the first few lines is the point.
 
+### Blank lines in the script
+
+Blank lines in the script produce an empty ENTER press that advances to the
+next command without doing anything visible.  Avoid them except around section
+headers:
+
+- **No blank line** between a narrative block and the command that follows it,
+  nor between a command and the narrative block that follows it, nor between
+  consecutive commands.  The color change when the runner highlights the next
+  command is sufficient to focus the audience's attention.
+- **Section headers** (`demo/header "N. Title"`) are the exception: always
+  place one blank line before and one blank line after each header.  This
+  gives the presenter two guard beats — one to let the previous section land,
+  one to read the section title before the first command appears.
+
 ### VSCode workspace
 
 During the demo a VSCode window is open with a workspace that includes the
