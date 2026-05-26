@@ -88,20 +88,19 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 # \
 #                                                                                \
-# Let's try another example — and see what prototext does when two types        \
-# are equally plausible.                                                         \
+# Let's try another example.                                                     \
 #
 
-# Here prototext finds a tie and asks us to be explicit.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
+# 👆 prototext finds a tie and asks us to be explicit.
 
 # With --type the ambiguity is resolved.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.cloud.compute.v1beta.UsableSubnetwork \
     $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 
 demo/header "5. Non-canonical protobufs"
 
@@ -120,6 +119,8 @@ demo/header "5. Non-canonical protobufs"
 # discarded by standard decoders.  This is a real steganographic / exfiltration  \
 # vector.  prototext decode preserves wire order and exposes all occurrences.    \
 #
+
+vim $GOOGLEAPIS_DESCS/google/type/postal_address.proto
 # \
 #                                                                                \
 # We are going to slip a secret value before the real organization field,        \
@@ -131,8 +132,8 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
-# 👆 The extra field is invisible to the naked eye — but it is in there.
-hexdump -C stash/postal_hidden.pb
+# 👆 Let's look at the resulting protobuf:
+hexdump -C stash/postal_hidden.pb | tee /dev/tty | vim -
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
 protoc \
@@ -140,12 +141,12 @@ protoc \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_hidden.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 
-# prototext decode: preserves wire order — both occurrences visible.
+# prototext decode: preserves all contents.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
-    | vim +'set ft=pbtxt' -
+    | tee /dev/tty | vim +'set ft=pbtxt' -
 # \
 #                                                                                \
 # --- Over-long varint ---                                                       \
@@ -161,15 +162,20 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
   | prototext encode > stash/postal_patched.pb
-# 👆 Spot the difference: one extra byte.
+# 👆 Let's look at what has been produced:
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
 hexdump -C stash/postal_patched.pb | head -1
-# 👆 prototext -a flags it: look for val_ohb on the revision field.
-# (val_ohb = over-hung byte — the extra byte that shouldn't be there.)
+# 👆 Spot the difference: one extra byte.
+
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode -a \
     stash/postal_patched.pb \
     | vim +'set ft=pbtxt' -
+# \
+#                                                                                \
+# 👆 prototext -a flags it: look for val_ohb on the revision field.             \
+# (val_ohb = over-hung byte — the extra byte that shouldn't be there.)          \
+#
 # \
 #                                                                                \
 # Two round-trips: prototext preserves the anomaly byte-exact.                  \
