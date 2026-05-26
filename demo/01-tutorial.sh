@@ -91,7 +91,7 @@ demo/header "4. Schema auto-inference"
 # Watch prototext infer the schema with no hint from us.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
-  | bat --style=numbers,header-filename -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt -H 1 -H 2
 # \
 # 👆 Notice the score at the top of the output — the higher, the better the fit. \
 # The googleapis DB contains thousands of types; prototext scores them all and   \
@@ -103,7 +103,8 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode \
-    $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb
+    $GOOGLEAPIS_PBS/google/cloud/compute/v1beta/UsableSubnetwork.pb \
+  2>&1 | bat --style=header-filename -l yaml -H 4 -H 6
 # \
 # 👆 prototext finds a tie and asks us to be explicit.
 
@@ -150,7 +151,7 @@ hexdump -C stash/postal_hidden.pb
 # \
 # 👆 The hidden field is right there in the binary.
 
-# Standard decoder (protoc): only sees the last occurrence — secret gone.
+# Standard decoder (protoc): only shows the last occurrence — secret gone.
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
@@ -161,9 +162,9 @@ protoc \
 # prototext decode: preserves all contents.
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode stash/postal_hidden.pb \
-  | bat --style=numbers,header-filename -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt -H 5
 # \
-# 👆 Both occurrences visible: the secret first, then the real value.
+# 👆 Both occurrences visible: the secret first, then the real value, in wire order.
 # \
 #                                                                                \
 # --- Over-long varint ---                                                       \
@@ -180,34 +181,30 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
   | prototext encode > stash/postal_patched.pb
 
-# Let's look at what has been produced:
+# Let's compare BEFORE the patch...
 hexdump -C $GOOGLEAPIS_PBS/google/type/PostalAddress.pb | head -1
+# ... with AFTER the patch.
 hexdump -C stash/postal_patched.pb | head -1
 # \
 # 👆 Spot the difference: one extra byte — `01` has become `81 00`.
 
-# prototext -a decodes with full anomaly annotations.
-prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
-    stash/postal_patched.pb \
-  | bat --style=numbers,header-filename -l pbtxt
-# \
-# 👆 prototext -a flags it: look for val_ohb on the revision field.              \
-# (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
-#
-# \
-#                                                                                \
-# protoc is oblivious: it decodes the patched protobuf as if nothing happened.   \
-# The OHB disappears without a trace.                                            \
-#
-
-# protoc decode: the OHB is silently normalised — the revision field looks clean.
+# protoc is oblivious to the non-canonical serialization.
 protoc \
     --proto_path $GOOGLEAPIS_DESCS \
     --decode google.type.PostalAddress \
     google/type/postal_address.proto \
     < stash/postal_patched.pb \
   | bat --style=numbers,header-filename -l pbtxt
+
+# prototext -a decodes with full anomaly annotations.
+prototext --descriptor-set $GOOGLEAPIS_DB \
+    decode -a \
+    stash/postal_patched.pb \
+  | bat --style=numbers,header-filename -l pbtxt -H 5
+# \
+# 👆 prototext -a flags it: look for val_ohb on the revision field.              \
+# (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
+#
 
 # prototext round-trip: the over-hung byte is preserved exactly.
 prototext --descriptor-set $GOOGLEAPIS_DB \
@@ -228,16 +225,22 @@ demo/header "6. Building a scoring database"
 #
 # \
 #                                                                                \
-# A .proto source file compiles into a descriptor — a FileDescriptorProto.       \
+# A .proto source file compiles into a descriptor — a FileDescriptorProto.      \
 # postal_address.pb is exactly that: the PostalAddress schema, serialised as     \
-# a protobuf.  prototext can decode it:                                          \
+# a protobuf.                                                                    \
 #
 
-# For example, this is the descriptor for postal_address — self-referential! 🤯
-out=$(prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode --type google.protobuf.FileDescriptorProto \
-    $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers,header-filename -r :10 -l pbtxt <<< "$out"
+# Example: the descriptor for postal_address.
+vim +'set ft=pbtxt' \
+    <(prototext --descriptor-set $GOOGLEAPIS_DB \
+        decode --type google.protobuf.FileDescriptorProto \
+        $GOOGLEAPIS_DESCS/google/type/postal_address.pb)
+
+# Auto-referential! 🤯 — the descriptor schema, decoded using itself.
+vim +'set ft=pbtxt' \
+    <(prototext decode \
+        prototext/fixtures/prebuilt/descriptor.pb)
+
 # \
 #                                                                                \
 # From descriptors, reproto can build a scoring DB — a compiled schema with      \
@@ -271,7 +274,7 @@ reproto \
 # Auto-infer a Cloud Functions deployment operation — unique match, score 26.
 prototext --descriptor-set stash/opmeta.desc \
     decode $GOOGLEAPIS_PBS/google/cloud/functions/v2/OperationMetadata.pb \
-  | bat --style=numbers,header-filename -l pbtxt
+  | bat --style=numbers,header-filename -l pbtxt -H 1 -H 2
 # \
 # 👆 Score 26, unique match.
 # \
@@ -346,7 +349,7 @@ demo/header "7. Decompiling descriptors"
 # its .proto source form.                                                        \
 #
 
-# This is how postal_address looks as a descriptor — a binary FileDescriptorProto:
+# This is again how postal_address looks as a descriptor — a binary FileDescriptorProto:
 out=$(prototext decode $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
 ); vim +'set ft=pbtxt' <(echo "$out"); bat --style=numbers,header-filename -r 1:5 -l pbtxt <<< "$out"
 
@@ -356,8 +359,8 @@ reproto -q \
     --use-variant descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # Let's see the result.
-out=$(cat stash/reproto-out/google/type/postal_address.proto \
-); vim +'set ft=proto' <(echo "$out"); bat --style=numbers,header-filename -r 1:5 -l proto <<< "$out"
+bat --style=numbers,header-filename -l proto \
+    stash/reproto-out/google/type/postal_address.proto
 # \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
 # \
