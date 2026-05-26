@@ -644,6 +644,24 @@ complete translation reference.
 
 ---
 
+## Live demo
+
+A fully scripted live demo is available at `demo/01-tutorial.sh`.  It covers
+the same ground as this tutorial — decoding, schema auto-inference, non-canonical
+protobufs, scoring DB construction, decompilation, and seeding/pruning — in a
+step-by-step presenter format driven by `demo/prompt`.
+
+To run it from the repo root:
+
+```bash
+./demo/prompt --splash prototools demo/01-tutorial.sh
+```
+
+Generated files are written under `stash/` (gitignored).  The demo takes
+approximately one hour end-to-end.
+
+---
+
 ## Further reading
 
 - `man prototext` — full option reference for `prototext`
