@@ -51,27 +51,38 @@ def _make_network(title: str) -> Network:
     return net
 
 
-_BRIGHTNESS_CAP = 8   # FQDNs at which brightness maxes out
+# 5-step Fibonacci brightness scale for top-level (named) nodes.
+# Each step covers a Fibonacci range of merged-type counts:
+#   step 1: count == 1          (single)
+#   step 2: count == 2
+#   step 3: count in 3..4
+#   step 4: count in 5..7
+#   step 5: count >= 8
+# Colours are amber/gold, evenly spread so adjacent steps are clearly distinct.
+_BRIGHTNESS_STEPS = [
+    (1, '#664400'),   # step 1 — darkest amber
+    (2, '#995500'),   # step 2
+    (3, '#cc8800'),   # step 3
+    (5, '#ffaa00'),   # step 4
+    (8, '#ffdd44'),   # step 5 — brightest gold
+]
 
 
 def _node_colour(fqdns: list[str]) -> str:
     """Compute node colour for a non-leaf message node.
 
-    Top-level nodes (have at least one FQDN) use an amber/gold hue.
-    Brightness scales linearly from count=1 (dim but readable) to
-    count>=8 (full brightness).  Internal nodes (no FQDN) use dim blue.
+    Top-level nodes (have at least one FQDN) use an amber/gold hue on a
+    5-step Fibonacci brightness scale keyed on merged-type count.
+    Internal nodes (no FQDN) use dim blue.
     """
     count = len(fqdns)
     if count == 0:
         return '#3355aa'  # dim blue — internal node with no named root
-    # t in [0, 1]: 0 at count=1, 1 at count>=_BRIGHTNESS_CAP
-    t = min(count - 1, _BRIGHTNESS_CAP - 1) / (_BRIGHTNESS_CAP - 1)
-    # Amber hue: R stays high, G scales with brightness, B stays low.
-    # dim: #886010  bright: #ffcc20
-    r = int(0x88 + t * (0xff - 0x88))
-    g = int(0x60 + t * (0xcc - 0x60))
-    b = int(0x10 + t * (0x20 - 0x10))
-    return f'#{r:02x}{g:02x}{b:02x}'
+    colour = _BRIGHTNESS_STEPS[0][1]
+    for threshold, c in _BRIGHTNESS_STEPS:
+        if count >= threshold:
+            colour = c
+    return colour
 
 
 def render_scoring_graph(
@@ -168,6 +179,7 @@ def render_scoring_graph(
         'optional': '#4444ff',
         'repeated': '#44aaff',
         'packed':   '#884488',
+        'required': '#cc2222',
     }
     for t in data.get('transitions', []):
         if t['from'] in hidden_ids or t['to'] in hidden_ids:

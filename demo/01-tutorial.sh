@@ -134,7 +134,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 
 # Let's look at the resulting protobuf:
 hexdump -C stash/postal_hidden.pb | tee /dev/tty | vim -
-# 👆 The hidden field is right there in the binary — field 6, twice.
+# 👆 The hidden field is right there in the binary — field 6, twice.[[Remove "field 6, twide" -> people can't read it in the binary]]
 
 # Standard decoder (protoc): only sees the last occurrence — secret gone.
 protoc \
@@ -220,7 +220,7 @@ demo/header "6. Building a scoring database"
 prototext --descriptor-set $GOOGLEAPIS_DB \
     decode --type google.protobuf.FileDescriptorProto \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb \
-    | tee >(head -10 > /dev/tty) | vim +'set ft=pbtxt' -
+    | tee >((head -10 && echo ...)> /dev/tty) | vim +'set ft=pbtxt' -
 # \
 #                                                                                \
 # 👆 The schema for FileDescriptorProto is defined in descriptor.proto —         \
@@ -229,11 +229,11 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # \
 #                                                                                \
 # From descriptors, reproto can build a scoring DB — a compiled schema with      \
-# a Hopcroft graph baked in.  --build-schema-db produces it from any seed.       \
+# a scoring graph baked in.  --build-schema-db produces it from any seed.        \
 #
 
 # Build a scoring DB for OperationMetadata (8 services, same wire shape).
-reproto -q \
+reproto \
     --build-schema-db stash/opmeta.desc \
     --emit-scoring-html stash/opmeta.html \
     --use-variant descriptor \
@@ -262,12 +262,13 @@ xdg-open stash/opmeta.html
 # \
 #                                                                                \
 # Graph legend:                                                                  \
-#   nodes  — amber/gold = top-level message (brighter = more merged types)       \
+#   nodes  — amber/gold = top-level message; 5 brightness steps (Fibonacci):     \
+#               1 type → darkest  2 → dim  3-4 → mid  5-7 → bright  8+ → gold    \
 #             blue      = internal sub-message (no top-level name)               \
 #   edges  — blue       = optional field                                         \
 #             light blue = repeated field                                        \
 #             purple    = packed repeated field                                  \
-#             gray      = required field (proto2 only)                           \
+#             red       = required field (proto2 only)                           \
 #   label  — short type name; "+N" suffix if N extra types collapsed into it     \
 #
 # \
