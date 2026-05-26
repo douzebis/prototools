@@ -1017,73 +1017,72 @@ def _phase3_build_graph(
 
 def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
     """Phase 4: Mark user-specified prunings and propagate to contained children."""
-    if not ctx.quiet and prunings:
-        from .lib.console import rprint as _rprint
-        _rprint('Processing exclusions')
+    from .lib.console import spinning as _spinning
+    label = 'Processing exclusions' if prunings else 'Preparing graph'
+    with _spinning(label, quiet=ctx.quiet):
+        transitive_prunnings: set[Node] = set()
+        current_prunings: set[Node] = set()
 
-    transitive_prunnings: set[Node] = set()
-    current_prunings: set[Node] = set()
+        # Start from user-specified prunings
+        for pruning_pattern in prunings:  # the user-specified prunings
+            matched_nodes = _find_matching_nodes(pruning_pattern, ctx)
 
-    # Start from user-specified prunings
-    for pruning_pattern in prunings:  # the user-specified prunings
-        matched_nodes = _find_matching_nodes(pruning_pattern, ctx)
-
-        if not matched_nodes:
-            # Suppress the warning if the pattern was already satisfied at
-            # phase 2 (file was loaded but skipped into ctx.pruned_file_names
-            # before it could be added to ctx.nodes).
-            pat_str = str(pruning_pattern)
-            if pat_str.startswith('file:'):
-                already_pruned = pat_str[len('file:'):] in ctx.pruned_file_names
-            else:
-                already_pruned = False
-            if not already_pruned:
-                cli_warning(f"Pruning target not found: {pruning_pattern}")
-                if '*' not in pruning_pattern and '?' not in pruning_pattern:
-                    suggestion = _fuzzy_suggest(pruning_pattern, ctx)
-                    if suggestion is not None:
-                        cli_attention(f"  Did you mean: {suggestion}?")
-            continue
-
-        for matched_fqdn, matched_node in matched_nodes:
-            assert isinstance(matched_node, Node)
-            if not matched_node.is_present():
+            if not matched_nodes:
+                # Suppress the warning if the pattern was already satisfied at
+                # phase 2 (file was loaded but skipped into ctx.pruned_file_names
+                # before it could be added to ctx.nodes).
+                pat_str = str(pruning_pattern)
+                if pat_str.startswith('file:'):
+                    already_pruned = pat_str[len('file:'):] in ctx.pruned_file_names
+                else:
+                    already_pruned = False
+                if not already_pruned:
+                    cli_warning(f"Pruning target not found: {pruning_pattern}")
+                    if '*' not in pruning_pattern and '?' not in pruning_pattern:
+                        suggestion = _fuzzy_suggest(pruning_pattern, ctx)
+                        if suggestion is not None:
+                            cli_attention(f"  Did you mean: {suggestion}?")
                 continue
-            matched_node.is_pruned = True
-            # Enforce "prune overrides seed": if this is a file node, clear
-            # is_seed so that phase 5's default-seed path does not mark it
-            # reachable.
-            if isinstance(matched_node, ReFileDescriptorProto):
-                topo_file = topo.files.get(matched_node.name)
-                if topo_file is not None:
-                    topo_file.is_seed = False
-            current_prunings.add(matched_node)
 
-    # --- Propagate stumps (contains relation) --------------------------------
-
-    while current_prunings:
-        transitive_prunnings.update(current_prunings)
-        new_prunings: set[Node] = set()
-        for node in current_prunings:
-            for child in node.contains:
-                assert (isinstance(child, Node)
-                        and child is not None
-                        and not child.is_pruned)
-                if not child.is_present():
+            for matched_fqdn, matched_node in matched_nodes:
+                assert isinstance(matched_node, Node)
+                if not matched_node.is_present():
                     continue
-                if child not in transitive_prunnings:
-                    child.is_pruned = True
-                    new_prunings.add(child)
-        current_prunings = new_prunings
+                matched_node.is_pruned = True
+                # Enforce "prune overrides seed": if this is a file node, clear
+                # is_seed so that phase 5's default-seed path does not mark it
+                # reachable.
+                if isinstance(matched_node, ReFileDescriptorProto):
+                    topo_file = topo.files.get(matched_node.name)
+                    if topo_file is not None:
+                        topo_file.is_seed = False
+                current_prunings.add(matched_node)
 
-    # Register all pruned file names (both topology-pruned from phase 2/3 and
-    # user-pruned here) with the warning collector, so that W5 warnings for
-    # their importers are suppressed — their absence from pool_db is intentional.
-    from .lib.warnings import get_collector
-    _collector = get_collector()
-    for name, file in topo.files.items():
-        if file.is_pruned:
-            _collector.register_pruned_file(name)
+        # --- Propagate stumps (contains relation) --------------------------------
+
+        while current_prunings:
+            transitive_prunnings.update(current_prunings)
+            new_prunings: set[Node] = set()
+            for node in current_prunings:
+                for child in node.contains:
+                    assert (isinstance(child, Node)
+                            and child is not None
+                            and not child.is_pruned)
+                    if not child.is_present():
+                        continue
+                    if child not in transitive_prunnings:
+                        child.is_pruned = True
+                        new_prunings.add(child)
+            current_prunings = new_prunings
+
+        # Register all pruned file names (both topology-pruned from phase 2/3 and
+        # user-pruned here) with the warning collector, so that W5 warnings for
+        # their importers are suppressed — their absence from pool_db is intentional.
+        from .lib.warnings import get_collector
+        _collector = get_collector()
+        for name, file in topo.files.items():
+            if file.is_pruned:
+                _collector.register_pruned_file(name)
 
 
 def _phase5_reachability(
@@ -1092,50 +1091,51 @@ def _phase5_reachability(
     topo: Topology,
 ) -> None:
     """Phase 5: Mark all nodes transitively reachable from seeds (forward propagation)."""
-    from .lib.console import progress as _progress
+    from .lib.console import progress as _progress, spinning as _spinning
 
     transitive_reachables: set[Node] = set()
     current_reachables: set[Node] = set()
 
-    # Did the user explicitly specify seeds?
-    if seeds:
-        for seed_pattern in seeds:
-            matched_nodes = _find_matching_nodes(seed_pattern, ctx)
+    with _spinning('Resolving seeds', quiet=ctx.quiet):
+        # Did the user explicitly specify seeds?
+        if seeds:
+            for seed_pattern in seeds:
+                matched_nodes = _find_matching_nodes(seed_pattern, ctx)
 
-            if not matched_nodes:
-                cli_warning(f"Seed not found: {seed_pattern}")
-                if '*' not in seed_pattern and '?' not in seed_pattern:
-                    suggestion = _fuzzy_suggest(seed_pattern, ctx)
-                    if suggestion is not None:
-                        cli_attention(f"  Did you mean: {suggestion}?")
-                continue
-
-            for matched_fqdn, matched_node in matched_nodes:
-                assert isinstance(matched_node, Node)
-                if not matched_node.is_present():
+                if not matched_nodes:
+                    cli_warning(f"Seed not found: {seed_pattern}")
+                    if '*' not in seed_pattern and '?' not in seed_pattern:
+                        suggestion = _fuzzy_suggest(seed_pattern, ctx)
+                        if suggestion is not None:
+                            cli_attention(f"  Did you mean: {suggestion}?")
                     continue
-                if matched_node.is_pruned:
-                    cli_info(f"  Skipping pruned seed: {matched_fqdn}")
-                    continue
-                matched_node.is_reachable = True
-                current_reachables.add(matched_node)
 
-    # If not, use the seed-files as seeds
-    else:
-        # Re-mark seed files
-        for fqdn, node in ctx.nodes.items():
-            prefix, ref = parse_fqdn(fqdn)
-            if prefix != FILE:
-                continue
-            # Extract file name from fqdn
-            # fqdn format: "file:path/to/file.proto"
-            # parse_fqdn returns ref as "path/to/file.proto"
-            name = ref
-            assert name in topo.files
-            file = topo.files[name]
-            if not file.is_ref() and file.is_seed:
-                node.is_reachable = True
-                current_reachables.add(node)
+                for matched_fqdn, matched_node in matched_nodes:
+                    assert isinstance(matched_node, Node)
+                    if not matched_node.is_present():
+                        continue
+                    if matched_node.is_pruned:
+                        cli_info(f"  Skipping pruned seed: {matched_fqdn}")
+                        continue
+                    matched_node.is_reachable = True
+                    current_reachables.add(matched_node)
+
+        # If not, use the seed-files as seeds
+        else:
+            # Re-mark seed files
+            for fqdn, node in ctx.nodes.items():
+                prefix, ref = parse_fqdn(fqdn)
+                if prefix != FILE:
+                    continue
+                # Extract file name from fqdn
+                # fqdn format: "file:path/to/file.proto"
+                # parse_fqdn returns ref as "path/to/file.proto"
+                name = ref
+                assert name in topo.files
+                file = topo.files[name]
+                if not file.is_ref() and file.is_seed:
+                    node.is_reachable = True
+                    current_reachables.add(node)
 
     initial_nodes = current_reachables  # for --debug
 
