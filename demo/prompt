@@ -148,7 +148,7 @@ _update_prompt() {
     _COUNTER_WIDTH=${#counter}
     prompt="${prefix}${counter}${suffix}"
     # prompt_static: replace counter with cursor-forward of same visual width
-    local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'
+    local fwd=$'\033['"${_COUNTER_WIDTH}C"
     prompt_static="${prefix}${fwd}${suffix}"
     prompt_bw="[demo:$cwd_display (${counter})]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
@@ -322,14 +322,6 @@ bind -x '"\035": duplicate_line' 2>/dev/null
 bind -x '"\036": delete_line'    2>/dev/null
 bind -x '"\e[5~": fast_up'       2>/dev/null
 bind -x '"\e[6~": fast_down'     2>/dev/null
-
-# Ctrl-A: beginning-of-line — re-print the counter first so the
-# cursor-forward in prompt_static lands on the right column.
-goto_bol() {
-    _preprint_counter
-    READLINE_POINT=0
-}
-bind -x '"\C-a": goto_bol' 2>/dev/null
 
 # Ctrl-S: save commands to file
 stty -ixon  # allow Ctrl-S (disable terminal XOFF)
