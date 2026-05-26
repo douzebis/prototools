@@ -156,7 +156,7 @@ _update_prompt() {
     local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'
     local pad="" i
     for (( i = 0; i < _COUNTER_WIDTH; i++ )); do
-        pad+=$'\001\033[D\002'"$"
+        pad+=$'\001\033[D\002 '
     done
     prompt_static="${prefix}${fwd}${suffix}${pad}"
     prompt_bw="[demo:$cwd_display (${counter})]$ "
