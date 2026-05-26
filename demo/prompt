@@ -123,7 +123,17 @@ calculate_lines() {
     fi
 }
 
-# Rebuild prompt string and set PS1 so readline picks it up on next redraw.
+# Fixed display width of the counter field "(X/N)" — always as wide as "(N/N)"
+# so the cursor-forward escape in prompt_static is constant across all indices.
+_COUNTER_WIDTH=0  # set dynamically in _update_prompt per current index
+
+# Rebuild prompt strings.
+#   prompt        — full prompt with real counter, used for direct display.
+#   prompt_static — prompt where the counter region is replaced by a
+#                   cursor-forward escape (readline-invisible); used for
+#                   read -e -p so readline's baked prompt skips over the
+#                   counter that we pre-print manually.
+#   prompt_bw / PROMPT_DISPLAY_WIDTH — plain-text width for line-wrap calc.
 _update_prompt() {
     local cwd_display
     local cwd="$PWD"
@@ -132,24 +142,42 @@ _update_prompt() {
     else
         cwd_display="$cwd"
     fi
-    prompt="${GRAY}[demo:$cwd_display ($((index+1))/$n)]$ ${RESET}${LGRAY}"
-    prompt_bw="[demo:$cwd_display ($((index+1))/$n)]$ "
+    local prefix="${GRAY}[demo:$cwd_display ("
+    local suffix=")]\$ ${RESET}${LGRAY}"
+    local counter="$((index+1))/$n"
+    _COUNTER_WIDTH=${#counter}
+    prompt="${prefix}${counter}${suffix}"
+    # prompt_static: replace counter with cursor-forward of same visual width
+    local fwd=$'\001\033['"${_COUNTER_WIDTH}C"$'\002'
+    prompt_static="${prefix}${fwd}${suffix}"
+    prompt_bw="[demo:$cwd_display (${counter})]$ "
     PROMPT_DISPLAY_WIDTH="${#prompt_bw}"
-    PS1="$prompt"
 }
 
-# Manually overwrite the current readline line with an updated prompt.
-# Called from navigation bind -x callbacks after index and READLINE_LINE
-# have been updated.  We print \r + new_prompt + READLINE_LINE + \033[K to
-# the terminal; readline then redraws the same content on top (no doubling).
+# Pre-print the counter, then \r back to column 0 so readline starts fresh.
+# readline's prompt_static paints "[demo:cwd (" then cursor-forwards over the
+# counter we left here, then continues with ")]$ ".
+_preprint_counter() {
+    local cwd_display cwd="$PWD"
+    if [[ "$cwd" == "$HOME"* ]]; then
+        cwd_display="~${cwd#$HOME}"
+    else
+        cwd_display="$cwd"
+    fi
+    local raw_gray
+    raw_gray="${GRAY//$'\001'/}"; raw_gray="${raw_gray//$'\002'/}"
+    local counter="$((index+1))/$n"
+    # Print full prefix + counter to position counter at correct column, then \r.
+    printf '\r%s[demo:%s (%s\r' "$raw_gray" "$cwd_display" "$counter" >/dev/tty
+}
+
+# Update just the counter in place (called from navigation callbacks).
+# Moves to column 0, repaints the gray prefix + counter, then returns
+# cursor to start of line — readline redraws prompt_static on top, which
+# cursor-forwards over the counter we just painted.
 _redraw_prompt() {
     _update_prompt
-    # Strip \001/\002 non-printing markers so the raw escape codes go to the
-    # terminal correctly (these wrappers are only meaningful inside readline).
-    local raw_prompt
-    raw_prompt="${prompt//$'\001'/}"
-    raw_prompt="${raw_prompt//$'\002'/}"
-    printf '\r%s%s\033[K' "$raw_prompt" "$READLINE_LINE" >/dev/tty
+    _preprint_counter
 }
 
 # Readline hooks for wrap-around Up/Down, preserving edits
@@ -315,9 +343,12 @@ while true; do
     # 1. ASSEMBLE THE PROMPT
     _update_prompt
 
-    # 2. READ COMMAND (Execution pauses here until ENTER is hit)
+    # 2. Pre-print the counter at column 0; read -e -p will cursor-forward over it.
+    _preprint_counter
+
+    # 3. READ COMMAND (Execution pauses here until ENTER is hit)
     # Pass the display version to readline (with actual newlines for multi-line commands)
-    read -e -i "${display_commands[$index]}" usercmd || break
+    read -e -i "${display_commands[$index]}" -p "$prompt_static" usercmd || break
 
     # If we just resumed, skip execution
     if (( resume_after_fg )); then
