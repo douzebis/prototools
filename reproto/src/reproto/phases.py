@@ -1473,13 +1473,12 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
             if field_node is not None and field_node.is_pruned:
                 continue
-            kind, child, enum_min, enum_max = _scoring_kind(f)
-            entry: dict = {'number': f.number, 'kind': kind}
+            type_str, child, range_ = _scoring_kind(f)
+            entry: dict = {'number': f.number, 'type': type_str}
             if child is not None:
                 entry['child'] = child
-            if enum_min is not None:
-                entry['enum_min'] = enum_min
-                entry['enum_max'] = enum_max
+            if range_ is not None:
+                entry['range'] = list(range_)
             label = _field_label(f)
             if label != 'optional':
                 entry['label'] = label
@@ -1720,39 +1719,47 @@ def _field_label(field: Any) -> str:
     return 'optional'
 
 
-def _scoring_kind(field: Any) -> 'tuple[str, str | None, int | None, int | None]':
-    """Map a FieldDescriptor to a (ScoringKind, child_fqdn, enum_min, enum_max) tuple (spec 0045 §3)."""
+def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]':
+    """Map a FieldDescriptor to a (type_str, child_fqdn, range) tuple (spec 0077 §5)."""
     from google.protobuf.descriptor import FieldDescriptor as FD
     TYPE = field.type
     if TYPE == FD.TYPE_MESSAGE:
-        return 'MESSAGE', field.message_type.full_name, None, None
+        return 'message', field.message_type.full_name, None
     if TYPE == FD.TYPE_GROUP:
-        return 'MESSAGE', field.message_type.full_name, None, None
+        return 'group', field.message_type.full_name, None
     if TYPE == FD.TYPE_STRING:
-        return 'LEN_STRING', None, None, None
+        return 'string', None, None
     if TYPE == FD.TYPE_BYTES:
-        return 'LEN_BYTES', None, None, None
+        return 'bytes', None, None
     if TYPE in (FD.TYPE_DOUBLE, FD.TYPE_FIXED64, FD.TYPE_SFIXED64):
         if field.is_packed:
-            return 'LEN_PACKED', None, None, None
-        return 'I64', None, None, None
+            return 'LEN_PACKED', None, None
+        return 'double', None, None
     if TYPE in (FD.TYPE_FLOAT, FD.TYPE_FIXED32, FD.TYPE_SFIXED32):
         if field.is_packed:
-            return 'LEN_PACKED', None, None, None
-        return 'I32', None, None, None
+            return 'LEN_PACKED', None, None
+        return 'float', None, None
+    if TYPE == FD.TYPE_BOOL:
+        if field.is_packed:
+            return 'LEN_PACKED', None, None
+        return 'bool', None, (0, 1)
     if TYPE == FD.TYPE_ENUM:
         if field.is_packed:
-            return 'LEN_PACKED', None, None, None
+            return 'LEN_PACKED', None, None
         values = list(field.enum_type.values_by_number.keys())
-        return 'ENUM', None, min(values), max(values)
-    varint_types = {
-        FD.TYPE_INT32, FD.TYPE_INT64, FD.TYPE_UINT32, FD.TYPE_UINT64,
-        FD.TYPE_SINT32, FD.TYPE_SINT64, FD.TYPE_BOOL,
-    }
-    if TYPE in varint_types:
+        return 'enum', None, (min(values), max(values))
+    if TYPE == FD.TYPE_INT32:
         if field.is_packed:
-            return 'LEN_PACKED', None, None, None
-        return 'VARINT', None, None, None
+            return 'LEN_PACKED', None, None
+        return 'int32', None, None
+    if TYPE in (FD.TYPE_UINT32, FD.TYPE_SINT32):
+        if field.is_packed:
+            return 'LEN_PACKED', None, None
+        return 'uint32', None, None
+    if TYPE in (FD.TYPE_INT64, FD.TYPE_UINT64, FD.TYPE_SINT64):
+        if field.is_packed:
+            return 'LEN_PACKED', None, None
+        return 'uint64', None, None
     raise ValueError(f'Unknown field type: {TYPE}')
 
 
@@ -1769,13 +1776,12 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
             field_node = ctx.nodes.get(Fqdn(f'fdsc:.{f.full_name}'))
             if field_node is not None and field_node.is_pruned:
                 continue
-            kind, child, enum_min, enum_max = _scoring_kind(f)
-            entry: dict = {'number': f.number, 'kind': kind}
+            type_str, child, range_ = _scoring_kind(f)
+            entry: dict = {'number': f.number, 'type': type_str}
             if child is not None:
                 entry['child'] = child
-            if enum_min is not None:
-                entry['enum_min'] = enum_min
-                entry['enum_max'] = enum_max
+            if range_ is not None:
+                entry['range'] = list(range_)
             label = _field_label(f)
             if label != 'optional':
                 entry['label'] = label

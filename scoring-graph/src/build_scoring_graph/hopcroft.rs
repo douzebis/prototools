@@ -24,8 +24,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::graph::{
-    leaf_attrs, LeafRegistry, RawGraph, LEAF_I32, LEAF_I64, LEAF_LEN, LEAF_STRING, LEAF_VARINT,
-    NUM_FIXED_LEAVES,
+    leaf_attrs, LeafRegistry, RawGraph, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN, LEAF_STRING,
+    LEAF_UINT32, LEAF_UINT64, NUM_FIXED_LEAVES,
 };
 
 // ── Partition ─────────────────────────────────────────────────────────────────
@@ -60,21 +60,31 @@ pub fn minimize(
     let msg_count = n - num_leaves;
 
     // ── node_index: map raw node ID to contiguous index 0..n ─────────────────
-    let enum_sentinel_min = if num_leaves > NUM_FIXED_LEAVES {
-        LEAF_VARINT - (num_leaves - NUM_FIXED_LEAVES) as u32
+    // Dynamic range sentinels descend from u32::MAX-8:
+    //   sentinel for range leaf i = u32::MAX - 8 - i
+    // With num_dynamic = num_leaves - NUM_FIXED_LEAVES dynamic leaves, the
+    // lowest dynamic sentinel is u32::MAX - 8 - (num_dynamic - 1).
+    let num_dynamic = if num_leaves > NUM_FIXED_LEAVES {
+        (num_leaves - NUM_FIXED_LEAVES) as u32
     } else {
-        LEAF_VARINT
+        0
     };
+    // Inclusive lower bound of the dynamic sentinel range (wraps to 0 when
+    // num_dynamic == 0, but then `x <= u32::MAX - 8` can't hold because all
+    // fixed-leaf arms fire first).
+    let dynamic_sentinel_min = (u32::MAX - 8).wrapping_sub(num_dynamic.wrapping_sub(1));
 
     let node_index = |node: u32| -> usize {
         match node {
-            x if x == LEAF_VARINT => msg_count,
-            x if x == LEAF_I64 => msg_count + 1,
-            x if x == LEAF_LEN => msg_count + 2,
-            x if x == LEAF_STRING => msg_count + 3,
-            x if x == LEAF_I32 => msg_count + 4,
-            x if x >= enum_sentinel_min && x < LEAF_VARINT => {
-                let i = (u32::MAX - 5).wrapping_sub(x) as usize;
+            x if x == LEAF_UINT64 => msg_count,
+            x if x == LEAF_UINT32 => msg_count + 1,
+            x if x == LEAF_INT32 => msg_count + 2,
+            x if x == LEAF_I64 => msg_count + 3,
+            x if x == LEAF_LEN => msg_count + 4,
+            x if x == LEAF_STRING => msg_count + 5,
+            x if x == LEAF_I32 => msg_count + 6,
+            x if num_dynamic > 0 && x >= dynamic_sentinel_min && x <= u32::MAX - 8 => {
+                let i = (u32::MAX - 8).wrapping_sub(x) as usize;
                 msg_count + NUM_FIXED_LEAVES + i
             }
             x => x as usize,
@@ -115,6 +125,8 @@ pub fn minimize(
     // ── Initial partition P₀ ─────────────────────────────────────────────────
     let mut sig_to_block: HashMap<(u8, Vec<(u32, u8)>), usize> = HashMap::new();
     let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::new();
+    // Note: leaf partition key is (wire_type, is_string, range_idx).
+    // wire_type 8 = UINT32, 9 = INT32 ensure they start in distinct classes.
     let mut block_of: Vec<usize> = vec![0usize; n];
     let mut num_blocks: usize = 0;
 
@@ -131,7 +143,7 @@ pub fn minimize(
     for li in 0..num_leaves {
         let sentinel = leaf_sentinel_for_index(li, reg);
         let attrs = leaf_attrs(sentinel, reg);
-        let key = (attrs.wire_type, attrs.is_string, attrs.enum_range_idx);
+        let key = (attrs.wire_type, attrs.is_string, attrs.range_idx);
         let b = leaf_attr_to_block.entry(key).or_insert_with(|| {
             let b = num_blocks;
             num_blocks += 1;
@@ -293,11 +305,13 @@ pub fn minimize(
 
 fn leaf_sentinel_for_index(li: usize, _reg: &LeafRegistry) -> u32 {
     match li {
-        0 => LEAF_VARINT,
-        1 => LEAF_I64,
-        2 => LEAF_LEN,
-        3 => LEAF_STRING,
-        4 => LEAF_I32,
-        i => u32::MAX - 4 - 1 - (i - NUM_FIXED_LEAVES) as u32,
+        0 => LEAF_UINT64,
+        1 => LEAF_UINT32,
+        2 => LEAF_INT32,
+        3 => LEAF_I64,
+        4 => LEAF_LEN,
+        5 => LEAF_STRING,
+        6 => LEAF_I32,
+        i => u32::MAX - 7 - 1 - (i - NUM_FIXED_LEAVES) as u32,
     }
 }

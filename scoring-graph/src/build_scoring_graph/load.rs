@@ -27,10 +27,11 @@ struct YamlMessage {
 #[derive(Debug, Deserialize)]
 struct YamlField {
     number: u32,
+    #[serde(rename = "type")]
     kind: String,
     child: Option<String>,
-    enum_min: Option<i32>,
-    enum_max: Option<i32>,
+    /// Range [min, max] for bool and enum fields.
+    range: Option<(i32, i32)>,
     /// "optional" (default), "required", or "repeated"
     #[serde(default)]
     label: String,
@@ -43,10 +44,10 @@ struct YamlField {
 pub struct ScoringField {
     pub number: u32,
     pub kind: ScoringKind,
-    /// FQDN of child message type; set iff kind is LenMsg or Group.
+    /// FQDN of child message type; set iff kind is Node.
     pub child: Option<String>,
-    /// Enum value range [min, max]; set iff kind is Enum.
-    pub enum_range: Option<(i32, i32)>,
+    /// Value range [min, max]; set iff kind is Range (bool or enum).
+    pub range: Option<(i32, i32)>,
     /// Field cardinality: optional (default), required, or repeated.
     pub label: FieldLabel,
 }
@@ -60,7 +61,14 @@ pub enum FieldLabel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoringKind {
-    Varint,
+    /// `int32`: 2's-complement 32-bit; veto if wire value in invalid gap.
+    Int32,
+    /// `uint32`, `sint32`: unsigned/zigzag 32-bit; veto if wire value > 0xFFFF_FFFF.
+    Uint32,
+    /// `int64`, `uint64`, `sint64`: any 64-bit varint; no range veto.
+    Uint64,
+    /// `bool` or enum field: dynamic range `[min, max]` checked at walk time.
+    Range,
     I64,
     LenString,
     LenBytes,
@@ -69,7 +77,6 @@ pub enum ScoringKind {
     Node,
     LenPacked,
     I32,
-    Enum,
 }
 
 impl ScoringKind {
@@ -156,13 +163,10 @@ fn parse_fields(
             )
             .into());
         }
-        let enum_range = if kind == ScoringKind::Enum {
-            let min = f
-                .enum_min
-                .ok_or_else(|| format!("{fqdn} field {}: ENUM kind requires enum_min", f.number))?;
-            let max = f
-                .enum_max
-                .ok_or_else(|| format!("{fqdn} field {}: ENUM kind requires enum_max", f.number))?;
+        let range = if kind == ScoringKind::Range {
+            let (min, max) = f.range.ok_or_else(|| {
+                format!("{fqdn} field {}: bool/enum kind requires range", f.number)
+            })?;
             Some((min, max))
         } else {
             None
@@ -179,7 +183,7 @@ fn parse_fields(
             number: f.number,
             kind,
             child: f.child,
-            enum_range,
+            range,
             label,
         });
     }
@@ -190,15 +194,16 @@ fn parse_fields(
 
 fn parse_kind(s: &str) -> Option<ScoringKind> {
     match s {
-        "VARINT" => Some(ScoringKind::Varint),
-        "I64" => Some(ScoringKind::I64),
-        "LEN_STRING" => Some(ScoringKind::LenString),
-        "LEN_BYTES" => Some(ScoringKind::LenBytes),
-        // "MESSAGE" is the current name; "LEN_MSG" accepted for backward compat.
-        "MESSAGE" | "LEN_MSG" => Some(ScoringKind::Node),
+        "int32" => Some(ScoringKind::Int32),
+        "uint32" | "sint32" => Some(ScoringKind::Uint32),
+        "int64" | "uint64" | "sint64" => Some(ScoringKind::Uint64),
+        "bool" | "enum" => Some(ScoringKind::Range),
+        "string" => Some(ScoringKind::LenString),
+        "bytes" => Some(ScoringKind::LenBytes),
+        "message" | "group" => Some(ScoringKind::Node),
         "LEN_PACKED" => Some(ScoringKind::LenPacked),
-        "I32" => Some(ScoringKind::I32),
-        "ENUM" => Some(ScoringKind::Enum),
+        "float" => Some(ScoringKind::I32),
+        "double" => Some(ScoringKind::I64),
         _ => None,
     }
 }
@@ -217,7 +222,7 @@ impl PartialEq for ScoringField {
         self.number == other.number
             && self.kind == other.kind
             && self.child == other.child
-            && self.enum_range == other.enum_range
+            && self.range == other.range
             && self.label == other.label
     }
 }

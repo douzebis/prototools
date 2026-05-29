@@ -30,43 +30,43 @@ messages:
     kind: LENDEL
     fields:
       - number: 1
-        kind: VARINT
+        type: uint64
       - number: 2
-        kind: LEN_STRING
+        type: string
 
   TypeB:
     kind: LENDEL
     fields:
       - number: 1
-        kind: LEN_STRING
+        type: string
       - number: 2
-        kind: VARINT
+        type: uint64
 
   TypeC:
     kind: LENDEL
     fields:
       - number: 1
-        kind: VARINT
+        type: uint64
       - number: 2
-        kind: LEN_STRING
+        type: string
 
   TypeD:
     kind: LENDEL
     fields:
       - number: 1
-        kind: LEN_STRING
+        type: string
       - number: 2
-        kind: VARINT
+        type: uint64
 
   Root1:
     kind: LENDEL
     fields:
       - number: 1
-        kind: MESSAGE
+        type: message
         child: TypeA
         label: repeated
       - number: 2
-        kind: MESSAGE
+        type: message
         child: TypeB
         label: repeated
 
@@ -74,10 +74,10 @@ messages:
     kind: LENDEL
     fields:
       - number: 1
-        kind: MESSAGE
+        type: message
         child: TypeC
         label: repeated
       - number: 2
-        kind: MESSAGE
+        type: message
         child: TypeD
         label: repeated

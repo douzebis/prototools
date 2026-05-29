@@ -13,18 +13,18 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// One node (state) in the compiled graph.
 ///
-/// `wire_type` is the raw protobuf wire type this node's payload arrives on
-/// (0=VARINT, 1=I64, 2=LEN, 3=START_GROUP, 5=I32).
+/// `wire_type`: 0=UINT64, 1=I64, 2=LEN, 3=START_GROUP, 5=I32, 8=UINT32, 9=INT32.
 ///
 /// `is_string`: true iff wire_type=2 and a UTF-8 check is required.
 ///
-/// `enum_range_idx`: 0xFFFF = not an enum; otherwise index into `enum_ranges`.
+/// `range_idx`: 0xFFFF = no range (fixed leaf or non-leaf node);
+///              otherwise index into `ranges` (RANGE dynamic leaf).
 #[derive(Debug, Archive, Serialize, Deserialize)]
 pub struct NodeEntry {
     pub state_id: u32,
     pub wire_type: u8,
     pub is_string: bool,
-    pub enum_range_idx: u16,
+    pub range_idx: u16,
 }
 
 /// One edge in the compiled graph, sorted by (state_id, field_number).
@@ -54,8 +54,8 @@ pub struct CompiledGraph {
     /// Transition table, sorted by (state_id, field_number).
     pub transitions: Vec<TransitionEntry>,
     pub roots: Vec<RootEntry>,
-    /// ENUM ranges in order; NodeEntry with enum_range_idx=i covers [enum_ranges[i].0, enum_ranges[i].1].
-    pub enum_ranges: Vec<(i32, i32)>,
+    /// RANGE leaf ranges in order; NodeEntry with range_idx=i covers [ranges[i].0, ranges[i].1].
+    pub ranges: Vec<(i32, i32)>,
     pub num_states: u32,
 }
 
@@ -99,16 +99,22 @@ pub fn dump_compiled(graph: &CompiledGraph) -> String {
     out.push_str("states:\n");
     for n in &graph.nodes {
         out.push_str(&format!("  - id: {}\n", n.state_id));
-        out.push_str(&format!("    wire_type: {}\n", n.wire_type));
-        out.push_str(&format!(
-            "    is_string: {}\n",
-            if n.is_string { "true" } else { "false" }
-        ));
-        if n.enum_range_idx == 0xFFFF {
-            out.push_str("    enum_range: null\n");
-        } else {
-            let (min, max) = graph.enum_ranges[n.enum_range_idx as usize];
-            out.push_str(&format!("    enum_range: [{}, {}]\n", min, max));
+        let type_str = match n.wire_type {
+            9 => "int32",
+            8 => "uint32",
+            0 if n.range_idx == 0xFFFF => "uint64",
+            0 => "range",
+            1 => "double",
+            2 if n.is_string => "string",
+            2 => "bytes",
+            3 => "group",
+            5 => "float",
+            _ => "unknown",
+        };
+        out.push_str(&format!("    type: {type_str}\n"));
+        if n.range_idx != 0xFFFF {
+            let (min, max) = graph.ranges[n.range_idx as usize];
+            out.push_str(&format!("    range: [{min}, {max}]\n"));
         }
     }
 

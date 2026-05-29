@@ -86,26 +86,26 @@ def test_TC1_basic_emission(tmp_path: Path) -> None:
 
     # PrimitiveTypes covers most scalar kinds (field numbers per fixture)
     prim = {f["number"]: f for f in messages["test.field.PrimitiveTypes"]["fields"]}
-    assert prim[1]["kind"] == "VARINT"     # int32
-    assert prim[2]["kind"] == "VARINT"     # int64
-    assert prim[3]["kind"] == "VARINT"     # uint32
-    assert prim[4]["kind"] == "VARINT"     # uint64
-    assert prim[5]["kind"] == "VARINT"     # sint32
-    assert prim[6]["kind"] == "VARINT"     # sint64
-    assert prim[7]["kind"] == "I32"        # fixed32
-    assert prim[8]["kind"] == "I64"        # fixed64
-    assert prim[9]["kind"] == "I32"        # sfixed32
-    assert prim[10]["kind"] == "I64"       # sfixed64
-    assert prim[11]["kind"] == "I32"       # float
-    assert prim[12]["kind"] == "I64"       # double
-    assert prim[13]["kind"] == "VARINT"    # bool
-    assert prim[14]["kind"] == "LEN_STRING"
-    assert prim[15]["kind"] == "LEN_BYTES"
+    assert prim[1]["type"] == "int32"      # req_int32
+    assert prim[2]["type"] == "uint64"     # opt_int64  (int64 → UINT64 leaf)
+    assert prim[3]["type"] == "uint32"     # rep_uint32
+    assert prim[4]["type"] == "uint64"     # req_uint64
+    assert prim[5]["type"] == "uint32"     # opt_sint32 (sint32 → UINT32 leaf)
+    assert prim[6]["type"] == "uint64"     # rep_sint64 (sint64 → UINT64 leaf)
+    assert prim[7]["type"] == "float"      # req_fixed32
+    assert prim[8]["type"] == "double"     # opt_fixed64
+    assert prim[9]["type"] == "float"      # rep_sfixed32
+    assert prim[10]["type"] == "double"    # req_sfixed64
+    assert prim[11]["type"] == "float"     # opt_float
+    assert prim[12]["type"] == "double"    # rep_double
+    assert prim[13]["type"] == "bool"      # req_bool
+    assert prim[14]["type"] == "string"    # opt_string
+    assert prim[15]["type"] == "bytes"     # rep_bytes
 
-    # ComplexTypes: message field must have kind MESSAGE and correct child
+    # ComplexTypes: message field must have type message and correct child
     complex_fields = {f["number"]: f for f in messages["test.field.ComplexTypes"]["fields"]}
     msg_field = complex_fields[1]
-    assert msg_field["kind"] == "MESSAGE"
+    assert msg_field["type"] == "message"
     assert msg_field["child"] == "test.field.NestedMessage"
     assert "child" not in complex_fields[4]  # enum field — no child
 
@@ -176,9 +176,9 @@ def test_TC3_cross_file_reference(tmp_path: Path) -> None:
     ab_data = _load_yaml(out_dir / "address_book.yaml")
     ab_messages = ab_data["messages"]
 
-    # Person.phones (field 4) is repeated PhoneNumber — MESSAGE with child
+    # Person.phones (field 4) is repeated PhoneNumber — message with child
     person_fields = {f["number"]: f for f in ab_messages["tutorial.Person"]["fields"]}
-    assert person_fields[4]["kind"] == "MESSAGE"
+    assert person_fields[4]["type"] == "message"
     assert person_fields[4]["child"] == "tutorial.PhoneNumber"
 
     # PhoneNumber must NOT be defined in address_book.yaml
@@ -212,9 +212,9 @@ def test_TC4_proto3_implicit_packing(tmp_path: Path) -> None:
     data = _load_yaml(out_dir / "packed_proto3.yaml")
     fields = {f["number"]: f for f in data["messages"]["mockup.Packed"]["fields"]}
 
-    assert fields[1]["kind"] == "LEN_PACKED"  # default_int: implicitly packed in proto3
-    assert fields[2]["kind"] == "LEN_PACKED"  # explicit_true
-    assert fields[3]["kind"] == "VARINT"      # explicit_false
+    assert fields[1]["type"] == "LEN_PACKED"  # default_int: implicitly packed in proto3
+    assert fields[2]["type"] == "LEN_PACKED"  # explicit_true
+    assert fields[3]["type"] == "int32"       # explicit_false (repeated int32, not packed)
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +237,12 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
     messages = data["messages"]
     fields = {f["number"]: f for f in messages["test.field.GroupTest"]["fields"]}
 
-    # field 1: repeated group RepeatedGroup — field kind is MESSAGE (spec 0058)
-    assert fields[1]["kind"] == "MESSAGE"
+    # field 1: repeated group RepeatedGroup — field type is group (spec 0058)
+    assert fields[1]["type"] == "group"
     assert fields[1]["child"] == "test.field.GroupTest.RepeatedGroup"
 
-    # field 3: optional group OptionalGroup — field kind is MESSAGE (spec 0058)
-    assert fields[3]["kind"] == "MESSAGE"
+    # field 3: optional group OptionalGroup — field type is group (spec 0058)
+    assert fields[3]["type"] == "group"
     assert fields[3]["child"] == "test.field.GroupTest.OptionalGroup"
 
     # The group message entries must have kind GROUP at the message level

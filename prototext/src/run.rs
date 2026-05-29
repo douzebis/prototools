@@ -16,7 +16,7 @@ use prototext_core::{
 };
 use score_graph_lib::score::{
     load::{load_graph, LoadedGraph},
-    score_all,
+    score_all, ScoringOpts,
 };
 
 use crate::inputs::{expand_path, InputFile};
@@ -170,7 +170,11 @@ pub enum InferOutcome {
 
 /// Score `pb_bytes` against `graph` and return the inference outcome,
 /// or a hard error (e.g. all entries vetoed, or encoding failure).
-pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferOutcome, String> {
+pub fn infer_type(
+    pb_bytes: &[u8],
+    graph: &LoadedGraph,
+    scoring_opts: &ScoringOpts,
+) -> Result<InferOutcome, String> {
     let binary_buf;
     let pb_bytes = {
         let opts = RenderOpts {
@@ -183,7 +187,7 @@ pub fn infer_type(pb_bytes: &[u8], graph: &LoadedGraph) -> Result<InferOutcome, 
         binary_buf.as_slice()
     };
 
-    let mut results = score_all(pb_bytes, graph);
+    let mut results = score_all(pb_bytes, graph, scoring_opts);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
@@ -326,6 +330,7 @@ pub fn list_schemas_one(
     path_label: &str,
     top: Option<usize>,
     detailed_score: bool,
+    scoring_opts: &ScoringOpts,
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let binary_buf;
@@ -340,7 +345,7 @@ pub fn list_schemas_one(
         binary_buf.as_slice()
     };
 
-    let mut results = score_all(pb_bytes, graph);
+    let mut results = score_all(pb_bytes, graph, scoring_opts);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
         (true, false) => std::cmp::Ordering::Greater,
@@ -403,11 +408,15 @@ pub fn run(cli: Cli) -> Result<(), String> {
             assume_binary,
             annotations,
             detailed_score,
+            no_strict_ranges,
             output_root: cmd_output_root,
             paths,
         } => {
             let effective_annotations = annotations;
             let output_root = cli.output_root.or(cmd_output_root);
+            let scoring_opts = ScoringOpts {
+                strict_ranges: !no_strict_ranges,
+            };
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
             validate_roots_not_same(&cli.input_root, &output_root)?;
@@ -433,6 +442,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 assume_binary,
                 effective_annotations,
                 detailed_score,
+                &scoring_opts,
                 cli.strict,
                 &cli.output,
                 output_root.as_ref(),
@@ -465,6 +475,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
         Command::ListSchemas {
             top,
             detailed_score,
+            no_strict_ranges,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -476,7 +487,17 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      or a wkt-db-enabled build"
                 }
             })?;
-            run_list_schemas(graph, top, detailed_score, &cli.input_root, &paths)
+            let scoring_opts = ScoringOpts {
+                strict_ranges: !no_strict_ranges,
+            };
+            run_list_schemas(
+                graph,
+                top,
+                detailed_score,
+                &scoring_opts,
+                &cli.input_root,
+                &paths,
+            )
         }
 
         // ── instantiate-schema ────────────────────────────────────────────────
@@ -585,6 +606,7 @@ fn run_decode(
     assume_binary: bool,
     annotations: bool,
     detailed_score: bool,
+    scoring_opts: &ScoringOpts,
     strict: bool,
     output: &Option<PathBuf>,
     output_root: Option<&PathBuf>,
@@ -677,7 +699,7 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap(); // checked earlier
-            match infer_type(&data, graph)? {
+            match infer_type(&data, graph, scoring_opts)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
                     rep.report_ambiguous("<stdin>", &tied, detailed_score);
@@ -716,7 +738,7 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap();
-            match infer_type(&data, graph)? {
+            match infer_type(&data, graph, scoring_opts)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
                     rep.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score);
@@ -755,6 +777,7 @@ fn run_decode(
             assume_binary,
             annotations,
             detailed_score,
+            scoring_opts,
             strict,
             in_place,
             output_root,
@@ -826,6 +849,7 @@ fn run_list_schemas(
     graph: &LoadedGraph,
     top: Option<usize>,
     detailed_score: bool,
+    scoring_opts: &ScoringOpts,
     input_root: &Option<PathBuf>,
     paths: &[String],
 ) -> Result<(), String> {
@@ -840,7 +864,15 @@ fn run_list_schemas(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        return list_schemas_one(&data, graph, "<stdin>", top, detailed_score, &mut out);
+        return list_schemas_one(
+            &data,
+            graph,
+            "<stdin>",
+            top,
+            detailed_score,
+            scoring_opts,
+            &mut out,
+        );
     }
 
     let all_files = expand_all_paths(paths, &base)?;
@@ -848,7 +880,15 @@ fn run_list_schemas(
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
         let label = f.abs.display().to_string();
-        list_schemas_one(&data, graph, &label, top, detailed_score, &mut out)?;
+        list_schemas_one(
+            &data,
+            graph,
+            &label,
+            top,
+            detailed_score,
+            scoring_opts,
+            &mut out,
+        )?;
     }
     Ok(())
 }
@@ -893,7 +933,7 @@ fn run_score(
             },
         )
         .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
-        let results = score_all(&binary, graph);
+        let results = score_all(&binary, graph, &ScoringOpts::default());
         let result = results
             .iter()
             .find(|r| r.fqdn == type_name || r.fqdn == format!(".{}", type_name))
@@ -1039,6 +1079,7 @@ fn run_batch_infer(
     assume_binary: bool,
     annotations: bool,
     detailed_score: bool,
+    scoring_opts: &ScoringOpts,
     strict: bool,
     in_place: bool,
     output_root: Option<&PathBuf>,
@@ -1077,7 +1118,7 @@ fn run_batch_infer(
                 continue;
             }
         };
-        match infer_type(&data, graph) {
+        match infer_type(&data, graph, scoring_opts) {
             Err(e) => reporter.report_error(&f.abs.display().to_string(), &e),
             Ok(InferOutcome::Ambiguous(tied)) => {
                 reporter.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score)

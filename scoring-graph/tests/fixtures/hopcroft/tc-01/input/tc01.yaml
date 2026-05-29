@@ -11,9 +11,9 @@ messages:
     kind: LENDEL
     fields:
       - number: 1
-        kind: VARINT
+        type: uint64
   B:
     kind: LENDEL
     fields:
       - number: 1
-        kind: VARINT
+        type: uint64

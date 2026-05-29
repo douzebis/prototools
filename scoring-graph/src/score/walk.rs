@@ -80,10 +80,15 @@ struct WalkState<'a> {
     vetoed: Vec<u64>,
     /// If set, print a message to stderr whenever this FQDN is vetoed.
     debug_fqdn: Option<String>,
+    strict_ranges: bool,
 }
 
 impl<'a> WalkState<'a> {
-    fn new(graph: &'a ArchivedCompiledGraph, scores: &'a mut Vec<EntryScore>) -> Self {
+    fn new(
+        graph: &'a ArchivedCompiledGraph,
+        scores: &'a mut Vec<EntryScore>,
+        opts: &ScoringOpts,
+    ) -> Self {
         let n = scores.len();
         let words = n.div_ceil(64);
         WalkState {
@@ -91,6 +96,7 @@ impl<'a> WalkState<'a> {
             scores,
             vetoed: vec![0u64; words],
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
+            strict_ranges: opts.strict_ranges,
         }
     }
 
@@ -136,9 +142,24 @@ fn group_by_state(pairs: impl Iterator<Item = (u32, u16)>) -> Vec<ActiveEntry> {
     result
 }
 
+/// Options controlling walk behaviour.
+pub struct ScoringOpts {
+    /// If true (default), out-of-range RANGE values are vetoed.
+    /// If false (--no-strict-ranges), they increment non_canonical instead.
+    pub strict_ranges: bool,
+}
+
+impl Default for ScoringOpts {
+    fn default() -> Self {
+        Self {
+            strict_ranges: true,
+        }
+    }
+}
+
 /// Score all root entries in `graph` simultaneously against `pb`.
 /// Returns one `EntryScore` per root entry, in graph order.
-pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph) -> Vec<EntryScore> {
+pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -> Vec<EntryScore> {
     assert!(
         graph.roots.len() <= u16::MAX as usize,
         "entry count {} exceeds u16::MAX",
@@ -166,7 +187,7 @@ pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph) -> Vec<EntryScore> {
             .map(|(i, r)| (r.state_id.to_native(), i as u16)),
     );
 
-    let mut ws = WalkState::new(graph, &mut scores);
+    let mut ws = WalkState::new(graph, &mut scores, opts);
     score_message_multi(pb, 0, initial_active, None, &mut ws);
 
     scores
@@ -439,7 +460,10 @@ fn node_wire_type(graph: &ArchivedCompiledGraph, state_id: u32) -> u8 {
         if ns < state_id {
             lo = mid + 1;
         } else if ns == state_id {
-            return n[mid].wire_type;
+            // wire_type 8 (UINT32) and 9 (INT32) are internal discriminants;
+            // their actual protobuf wire type is 0 (varint).
+            let wt = n[mid].wire_type;
+            return if wt == 8 || wt == 9 { 0 } else { wt };
         } else {
             hi = mid;
         }
@@ -675,36 +699,66 @@ fn score_message_multi(
                                 .find(|n| n.state_id.to_native() == child);
                             let mut do_veto = false;
                             if let Some(n) = node {
-                                let eri = n.enum_range_idx.to_native();
-                                if eri != 0xFFFF {
-                                    if val >= (1u64 << 32) {
-                                        do_veto = true;
-                                    } else {
-                                        // Truncated negative non-canonical.
-                                        if (0x8000_0000..=0xFFFF_FFFF).contains(&val) {
+                                let wt = n.wire_type;
+                                let ri = n.range_idx.to_native();
+                                match wt {
+                                    9 => {
+                                        // INT32: veto if in invalid gap (0xFFFF_FFFF, 0xFFFF_FFFF_8000_0000)
+                                        if val > 0xFFFF_FFFF && val < 0xFFFF_FFFF_8000_0000u64 {
+                                            do_veto = true;
+                                        } else if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
+                                            // truncated negative int32 (4-byte encoding)
                                             for &e in &ae.entries {
                                                 ws.scores[e as usize].non_canonical += 1;
                                             }
                                         }
-                                        let range = ws.graph.enum_ranges.get(eri as usize);
-                                        if let Some(range) = range {
-                                            let (min, max) = (
-                                                range.0.to_native() as i64,
-                                                range.1.to_native() as i64,
-                                            );
-                                            let signed = val as i32 as i64;
-                                            if signed < min || signed > max {
-                                                do_veto = true;
+                                    }
+                                    8 => {
+                                        // UINT32: veto if > 32-bit
+                                        if val > 0xFFFF_FFFF {
+                                            do_veto = true;
+                                        }
+                                    }
+                                    0 if ri != 0xFFFF => {
+                                        // RANGE (bool / enum)
+                                        if val >= (1u64 << 32) {
+                                            do_veto = true;
+                                        } else {
+                                            if (0x8000_0000u64..=0xFFFF_FFFFu64).contains(&val) {
+                                                for &e in &ae.entries {
+                                                    ws.scores[e as usize].non_canonical += 1;
+                                                }
+                                            }
+                                            let range = ws.graph.ranges.get(ri as usize);
+                                            if let Some(range) = range {
+                                                let (min, max) = (
+                                                    range.0.to_native() as i64,
+                                                    range.1.to_native() as i64,
+                                                );
+                                                let signed = val as i32 as i64;
+                                                if signed < min || signed > max {
+                                                    if ws.strict_ranges {
+                                                        do_veto = true;
+                                                    } else {
+                                                        for &e in &ae.entries {
+                                                            ws.scores[e as usize].non_canonical +=
+                                                                1;
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    _ => {} // UINT64 or non-varint: no range check
                                 }
                             }
                             if do_veto {
                                 for &e in &ae.entries {
                                     ws.set_vetoed(
                                         e,
-                                        &format!("enum value out of range on field {field_number}"),
+                                        &format!(
+                                            "varint value out of range on field {field_number}"
+                                        ),
                                     );
                                 }
                                 ae.entries.clear();

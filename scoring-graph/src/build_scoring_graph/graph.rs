@@ -16,67 +16,85 @@ use super::serial::{NodeEntry, RootEntry, TransitionEntry};
 // Message/group nodes get dense IDs 0..msg_count.  Leaf nodes occupy sentinel
 // IDs near u32::MAX; they are converted to stable block IDs by compile().
 //
-// Fixed leaves (by wire_type + attributes):
-//   VARINT         wire_type=0, not string, not enum
-//   I64            wire_type=1
-//   LEN (bytes)    wire_type=2, not string
-//   LEN_STRING     wire_type=2, is_string=true
-//   I32            wire_type=5
+// Fixed leaves (wire_type in NodeEntry):
+//   UINT64   wire_type=0, range_idx=0xFFFF   int64/uint64/sint64
+//   UINT32   wire_type=8                     uint32/sint32
+//   INT32    wire_type=9                     int32
+//   I64      wire_type=1
+//   LEN      wire_type=2, not string
+//   STRING   wire_type=2, is_string=true
+//   I32      wire_type=5
 //
-// Dynamic ENUM leaves: wire_type=0, enum_range_idx=i; allocated by LeafRegistry.
+// Dynamic RANGE leaves: wire_type=0, range_idx=i; allocated by LeafRegistry.
+// Sentinel layout (descending from u32::MAX):
+//   u32::MAX      = LEAF_I32
+//   u32::MAX - 1  = LEAF_STRING
+//   u32::MAX - 2  = LEAF_LEN
+//   u32::MAX - 3  = LEAF_I64
+//   u32::MAX - 4  = LEAF_UINT64
+//   u32::MAX - 5  = LEAF_UINT32
+//   u32::MAX - 6  = LEAF_INT32
+//   u32::MAX - 7  = (gap — matches pre-existing sentinel arithmetic)
+//   u32::MAX - 8  = RANGE leaf 0
+//   u32::MAX - 9  = RANGE leaf 1
+//   ...
 
-pub const LEAF_VARINT: u32 = u32::MAX - 4;
+pub const LEAF_INT32: u32 = u32::MAX - 6;
+pub const LEAF_UINT32: u32 = u32::MAX - 5;
+pub const LEAF_UINT64: u32 = u32::MAX - 4;
 pub const LEAF_I64: u32 = u32::MAX - 3;
 pub const LEAF_LEN: u32 = u32::MAX - 2;
 pub const LEAF_STRING: u32 = u32::MAX - 1;
 pub const LEAF_I32: u32 = u32::MAX;
 
-pub const NUM_FIXED_LEAVES: usize = 5;
+pub const NUM_FIXED_LEAVES: usize = 7;
 
 // ── LeafRegistry ──────────────────────────────────────────────────────────────
 
-/// Tracks the fixed scalar leaves plus dynamically allocated ENUM leaves.
+/// Tracks the fixed scalar leaves plus dynamically allocated RANGE leaves.
 pub struct LeafRegistry {
-    enum_map: HashMap<(i32, i32), u32>,
-    pub enum_ranges: Vec<(i32, i32)>,
+    range_map: HashMap<(i32, i32), u32>,
+    pub ranges: Vec<(i32, i32)>,
 }
 
 impl LeafRegistry {
     pub fn new() -> Self {
         Self {
-            enum_map: HashMap::new(),
-            enum_ranges: Vec::new(),
+            range_map: HashMap::new(),
+            ranges: Vec::new(),
         }
     }
 
-    /// Return the sentinel for an ENUM leaf with the given range, allocating
+    /// Return the sentinel for a RANGE leaf with the given range, allocating
     /// a new one if this (min, max) pair has not been seen before.
-    pub fn enum_sentinel(&mut self, min: i32, max: i32) -> u32 {
-        let idx = self.enum_map.len();
-        *self.enum_map.entry((min, max)).or_insert_with(|| {
-            self.enum_ranges.push((min, max));
-            // index 0 → u32::MAX - 5, index 1 → u32::MAX - 6, …
-            u32::MAX - 4 - 1 - idx as u32
+    pub fn range_sentinel(&mut self, min: i32, max: i32) -> u32 {
+        let idx = self.range_map.len();
+        *self.range_map.entry((min, max)).or_insert_with(|| {
+            self.ranges.push((min, max));
+            // index 0 → u32::MAX - 8, index 1 → u32::MAX - 9, …
+            u32::MAX - 7 - 1 - idx as u32
         })
     }
 
-    /// Total number of leaves (fixed + enum).
+    /// Total number of leaves (fixed + range).
     pub fn num_leaves(&self) -> usize {
-        NUM_FIXED_LEAVES + self.enum_ranges.len()
+        NUM_FIXED_LEAVES + self.ranges.len()
     }
 }
 
 fn leaf_for_field(field: &ScoringField, reg: &mut LeafRegistry) -> u32 {
     match field.kind {
-        ScoringKind::Varint => LEAF_VARINT,
+        ScoringKind::Int32 => LEAF_INT32,
+        ScoringKind::Uint32 => LEAF_UINT32,
+        ScoringKind::Uint64 => LEAF_UINT64,
+        ScoringKind::Range => {
+            let (min, max) = field.range.expect("Range field must have range");
+            reg.range_sentinel(min, max)
+        }
         ScoringKind::I64 => LEAF_I64,
         ScoringKind::LenBytes | ScoringKind::LenPacked => LEAF_LEN,
         ScoringKind::LenString => LEAF_STRING,
         ScoringKind::I32 => LEAF_I32,
-        ScoringKind::Enum => {
-            let (min, max) = field.enum_range.expect("Enum field must have enum_range");
-            reg.enum_sentinel(min, max)
-        }
         ScoringKind::Node => {
             panic!("leaf_for_field called on node kind")
         }
@@ -85,46 +103,57 @@ fn leaf_for_field(field: &ScoringField, reg: &mut LeafRegistry) -> u32 {
 
 /// Attributes of a leaf node, used for Hopcroft initial partition and NodeEntry.
 pub struct LeafAttrs {
+    /// Wire type stored in NodeEntry; 8=UINT32, 9=INT32 for the new varint kinds.
     pub wire_type: u8,
     pub is_string: bool,
-    /// 0xFFFF = not an enum.
-    pub enum_range_idx: u16,
+    /// 0xFFFF = no range (fixed leaf); otherwise index into `ranges`.
+    pub range_idx: u16,
 }
 
 pub fn leaf_attrs(sentinel: u32, reg: &LeafRegistry) -> LeafAttrs {
     match sentinel {
-        s if s == LEAF_VARINT => LeafAttrs {
+        s if s == LEAF_INT32 => LeafAttrs {
+            wire_type: 9,
+            is_string: false,
+            range_idx: 0xFFFF,
+        },
+        s if s == LEAF_UINT32 => LeafAttrs {
+            wire_type: 8,
+            is_string: false,
+            range_idx: 0xFFFF,
+        },
+        s if s == LEAF_UINT64 => LeafAttrs {
             wire_type: 0,
             is_string: false,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         },
         s if s == LEAF_I64 => LeafAttrs {
             wire_type: 1,
             is_string: false,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         },
         s if s == LEAF_LEN => LeafAttrs {
             wire_type: 2,
             is_string: false,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         },
         s if s == LEAF_STRING => LeafAttrs {
             wire_type: 2,
             is_string: true,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         },
         s if s == LEAF_I32 => LeafAttrs {
             wire_type: 5,
             is_string: false,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         },
         s => {
-            let idx = (u32::MAX - 5).wrapping_sub(s) as usize;
-            assert!(idx < reg.enum_ranges.len(), "unexpected leaf sentinel {s}");
+            let idx = (u32::MAX - 8).wrapping_sub(s) as usize;
+            assert!(idx < reg.ranges.len(), "unexpected leaf sentinel {s}");
             LeafAttrs {
                 wire_type: 0,
                 is_string: false,
-                enum_range_idx: idx as u16,
+                range_idx: idx as u16,
             }
         }
     }
@@ -280,22 +309,17 @@ pub fn compile(
         let sentinel = leaf_sentinel(li, reg);
         let block = partition.block_of_sentinel(sentinel, reg);
         let attrs = leaf_attrs(sentinel, reg);
-        node_attrs.insert(
-            block,
-            (attrs.wire_type, attrs.is_string, attrs.enum_range_idx),
-        );
+        node_attrs.insert(block, (attrs.wire_type, attrs.is_string, attrs.range_idx));
     }
 
     let mut nodes: Vec<NodeEntry> = node_attrs
         .into_iter()
-        .map(
-            |(state_id, (wire_type, is_string, enum_range_idx))| NodeEntry {
-                state_id,
-                wire_type,
-                is_string,
-                enum_range_idx,
-            },
-        )
+        .map(|(state_id, (wire_type, is_string, range_idx))| NodeEntry {
+            state_id,
+            wire_type,
+            is_string,
+            range_idx,
+        })
         .collect();
     nodes.sort_by_key(|n| n.state_id);
 
@@ -319,7 +343,7 @@ pub fn compile(
         nodes,
         transitions,
         roots: root_entries,
-        enum_ranges: reg.enum_ranges.clone(),
+        ranges: reg.ranges.clone(),
         num_states: partition.num_blocks() as u32,
     }
 }
@@ -362,7 +386,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             state_id: node_id,
             wire_type: wt,
             is_string: false,
-            enum_range_idx: 0xFFFF,
+            range_idx: 0xFFFF,
         });
     }
 
@@ -374,7 +398,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
             state_id: msg_count + li as u32,
             wire_type: attrs.wire_type,
             is_string: attrs.is_string,
-            enum_range_idx: attrs.enum_range_idx,
+            range_idx: attrs.range_idx,
         });
     }
     nodes.sort_by_key(|n| n.state_id);
@@ -395,7 +419,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
         nodes,
         transitions,
         roots: root_entries,
-        enum_ranges: reg.enum_ranges.clone(),
+        ranges: reg.ranges.clone(),
         num_states,
     }
 }
@@ -403,14 +427,16 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
 /// Map a leaf sentinel back to its 0-based index in the leaf slot array.
 fn leaf_sentinel_to_index(sentinel: u32, reg: &LeafRegistry) -> usize {
     match sentinel {
-        x if x == LEAF_VARINT => 0,
-        x if x == LEAF_I64 => 1,
-        x if x == LEAF_LEN => 2,
-        x if x == LEAF_STRING => 3,
-        x if x == LEAF_I32 => 4,
+        x if x == LEAF_UINT64 => 0,
+        x if x == LEAF_UINT32 => 1,
+        x if x == LEAF_INT32 => 2,
+        x if x == LEAF_I64 => 3,
+        x if x == LEAF_LEN => 4,
+        x if x == LEAF_STRING => 5,
+        x if x == LEAF_I32 => 6,
         x => {
-            let idx = (u32::MAX - 5).wrapping_sub(x) as usize;
-            assert!(idx < reg.enum_ranges.len(), "unexpected leaf sentinel {x}");
+            let idx = (u32::MAX - 8).wrapping_sub(x) as usize;
+            assert!(idx < reg.ranges.len(), "unexpected leaf sentinel {x}");
             NUM_FIXED_LEAVES + idx
         }
     }
@@ -418,15 +444,17 @@ fn leaf_sentinel_to_index(sentinel: u32, reg: &LeafRegistry) -> usize {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Return the sentinel node ID for the i-th leaf (0-indexed across fixed + enum).
+/// Return the sentinel node ID for the i-th leaf (0-indexed across fixed + range).
 fn leaf_sentinel(li: usize, _reg: &LeafRegistry) -> u32 {
     match li {
-        0 => LEAF_VARINT,
-        1 => LEAF_I64,
-        2 => LEAF_LEN,
-        3 => LEAF_STRING,
-        4 => LEAF_I32,
-        i => u32::MAX - 4 - 1 - (i - NUM_FIXED_LEAVES) as u32,
+        0 => LEAF_UINT64,
+        1 => LEAF_UINT32,
+        2 => LEAF_INT32,
+        3 => LEAF_I64,
+        4 => LEAF_LEN,
+        5 => LEAF_STRING,
+        6 => LEAF_I32,
+        i => u32::MAX - 7 - 1 - (i - NUM_FIXED_LEAVES) as u32,
     }
 }
 
@@ -437,14 +465,16 @@ impl Partition {
     pub fn block_of_sentinel(&self, node: u32, reg: &LeafRegistry) -> u32 {
         let msg_count = self.block_of.len() - reg.num_leaves();
         match node {
-            x if x == LEAF_VARINT => self.block_of[msg_count],
-            x if x == LEAF_I64 => self.block_of[msg_count + 1],
-            x if x == LEAF_LEN => self.block_of[msg_count + 2],
-            x if x == LEAF_STRING => self.block_of[msg_count + 3],
-            x if x == LEAF_I32 => self.block_of[msg_count + 4],
+            x if x == LEAF_UINT64 => self.block_of[msg_count],
+            x if x == LEAF_UINT32 => self.block_of[msg_count + 1],
+            x if x == LEAF_INT32 => self.block_of[msg_count + 2],
+            x if x == LEAF_I64 => self.block_of[msg_count + 3],
+            x if x == LEAF_LEN => self.block_of[msg_count + 4],
+            x if x == LEAF_STRING => self.block_of[msg_count + 5],
+            x if x == LEAF_I32 => self.block_of[msg_count + 6],
             x => {
-                let idx = (u32::MAX - 5).wrapping_sub(x) as usize;
-                assert!(idx < reg.enum_ranges.len(), "unexpected leaf sentinel {x}");
+                let idx = (u32::MAX - 8).wrapping_sub(x) as usize;
+                assert!(idx < reg.ranges.len(), "unexpected leaf sentinel {x}");
                 self.block_of[msg_count + NUM_FIXED_LEAVES + idx]
             }
         }

@@ -12,24 +12,24 @@ messages:
     kind: LENDEL
     fields:
       - number: 1
-        kind: LEN_STRING
+        type: string
       - number: 2
-        kind: VARINT
+        type: uint64
   MultiOptionMapEntry:
     kind: LENDEL
     fields:
       - number: 1
-        kind: VARINT
+        type: uint64
       - number: 2
-        kind: LEN_STRING
+        type: string
   MapWithOptions:
     kind: LENDEL
     fields:
       - number: 1
-        kind: MESSAGE
+        type: message
         child: AnnotatedMapEntry
         label: repeated
       - number: 2
-        kind: MESSAGE
+        type: message
         child: MultiOptionMapEntry
         label: repeated

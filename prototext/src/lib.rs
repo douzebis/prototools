@@ -164,6 +164,11 @@ pub enum Command {
         #[arg(long = "detailed-score")]
         detailed_score: bool,
 
+        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
+        /// penalties. 32-bit overflow always vetoes regardless.
+        #[arg(long = "no-strict-ranges")]
+        no_strict_ranges: bool,
+
         /// Root directory for output files in batch mode (exclusive with
         /// --output and --in-place).
         #[arg(
@@ -225,6 +230,11 @@ pub enum Command {
         /// non_canonical) alongside the consolidated score for each type.
         #[arg(long = "detailed-score")]
         detailed_score: bool,
+
+        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
+        /// penalties. 32-bit overflow always vetoes regardless.
+        #[arg(long = "no-strict-ranges")]
+        no_strict_ranges: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

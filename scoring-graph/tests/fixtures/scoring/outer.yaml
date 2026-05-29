@@ -9,21 +9,20 @@ messages:
   Inner:
     fields:
     - number: 1
-      kind: VARINT
+      type: uint64
   Outer:
     fields:
     - number: 1
-      kind: VARINT
+      type: uint64
       label: required
     - number: 2
-      kind: LEN_STRING
+      type: string
     - number: 3
-      kind: VARINT
+      type: uint64
       label: repeated
     - number: 4
-      kind: LEN_MSG
+      type: message
       child: Inner
     - number: 5
-      kind: ENUM
-      enum_min: 0
-      enum_max: 2
+      type: enum
+      range: [0, 2]

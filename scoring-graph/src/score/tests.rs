@@ -10,15 +10,15 @@
 //! enum Status { OK = 0; WARN = 1; ERR = 2; }
 //!
 //! message Inner {
-//!   optional uint32 value = 1;   // VARINT optional
+//!   optional uint32 value = 1;   // UINT32 optional
 //! }
 //!
 //! message Outer {
-//!   required uint32 id     = 1;  // VARINT required
+//!   required uint32 id     = 1;  // UINT32 required
 //!   optional string name   = 2;  // LEN_STRING optional
-//!   repeated uint32 tags   = 3;  // VARINT repeated
+//!   repeated uint32 tags   = 3;  // UINT32 repeated
 //!   optional Inner  child  = 4;  // LEN_MSG → Inner optional
-//!   optional Status status = 5;  // ENUM [0..2] optional
+//!   optional Status status = 5;  // RANGE [0..2] optional
 //! }
 //! ```
 //!
@@ -35,7 +35,16 @@ use crate::score::{load as score_load, walk};
 
 /// Score `pb` against the graph and return the result for entry `fqdn`.
 fn score_entry(pb: &[u8], graph: &score_load::LoadedGraph, fqdn: &str) -> walk::EntryScore {
-    let mut results = walk::score_all(pb, graph);
+    score_entry_opts(pb, graph, fqdn, &walk::ScoringOpts::default())
+}
+
+fn score_entry_opts(
+    pb: &[u8],
+    graph: &score_load::LoadedGraph,
+    fqdn: &str,
+    opts: &walk::ScoringOpts,
+) -> walk::EntryScore {
+    let mut results = walk::score_all(pb, graph, opts);
     let pos = results
         .iter()
         .position(|r| r.fqdn == fqdn)
@@ -48,46 +57,46 @@ fn score_entry(pb: &[u8], graph: &score_load::LoadedGraph, fqdn: &str) -> walk::
 fn make_merged() -> Merged {
     let inner_fields = vec![ScoringField {
         number: 1,
-        kind: ScoringKind::Varint,
+        kind: ScoringKind::Uint32,
         child: None,
-        enum_range: None,
+        range: None,
         label: FieldLabel::Optional,
     }];
 
     let outer_fields = vec![
         ScoringField {
             number: 1,
-            kind: ScoringKind::Varint,
+            kind: ScoringKind::Uint32,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Required,
         },
         ScoringField {
             number: 2,
             kind: ScoringKind::LenString,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 3,
-            kind: ScoringKind::Varint,
+            kind: ScoringKind::Uint32,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Repeated,
         },
         ScoringField {
             number: 4,
             kind: ScoringKind::Node,
             child: Some("Inner".to_string()),
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 5,
-            kind: ScoringKind::Enum,
+            kind: ScoringKind::Range,
             child: None,
-            enum_range: Some((0, 2)),
+            range: Some((0, 2)),
             label: FieldLabel::Optional,
         },
     ];
@@ -421,14 +430,14 @@ fn tc16_fixed_fields_known() {
                         number: 1,
                         kind: ScoringKind::I32,
                         child: None,
-                        enum_range: None,
+                        range: None,
                         label: FieldLabel::Optional,
                     },
                     ScoringField {
                         number: 2,
                         kind: ScoringKind::I64,
                         child: None,
-                        enum_range: None,
+                        range: None,
                         label: FieldLabel::Optional,
                     },
                 ],
@@ -499,39 +508,39 @@ fn tc19_repeated_field_multiple_occurrences() {
 fn build_two_entry_graph() -> score_load::LoadedGraph {
     let inner_fields = vec![ScoringField {
         number: 1,
-        kind: ScoringKind::Varint,
+        kind: ScoringKind::Uint32,
         child: None,
-        enum_range: None,
+        range: None,
         label: FieldLabel::Optional,
     }];
 
     let outer_fields = vec![
         ScoringField {
             number: 1,
-            kind: ScoringKind::Varint,
+            kind: ScoringKind::Uint32,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Required,
         },
         ScoringField {
             number: 2,
             kind: ScoringKind::LenString,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 4,
             kind: ScoringKind::Node,
             child: Some("Inner".to_string()),
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 5,
-            kind: ScoringKind::Enum,
+            kind: ScoringKind::Range,
             child: None,
-            enum_range: Some((0, 2)),
+            range: Some((0, 2)),
             label: FieldLabel::Optional,
         },
     ];
@@ -575,7 +584,7 @@ fn mt01_shared_root_state_both_scored() {
     let g = build_two_entry_graph();
     // A message with only field 1 (varint).
     let pb = field_varint(1, 42);
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -600,7 +609,7 @@ fn mt02_mismatch_vetoes_one_entry_only() {
     let g = build_two_entry_graph();
     // field 2 sent as VARINT — Outer expects LEN, Inner has no field 2.
     let pb = field_varint(2, 99);
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -627,7 +636,7 @@ fn mt03_veto_in_submessage_propagates_upward() {
     let bad_inner = field_len(1, b"oops");
     let pb = field_len(4, &bad_inner);
 
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -651,7 +660,7 @@ fn mt04_tag_overhang_increments_all_active_entries() {
     let mut pb = varint_ohb(1u64 << 3, 1); // tag: field=1, wt=VARINT (0), ohb=1
     pb.extend(varint(7)); // value
 
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -679,7 +688,7 @@ fn mt05_len_prefix_overhang_increments_all_active_entries() {
     pb.extend(varint_ohb(inner_payload.len() as u64, 1)); // length with ohb=1
     pb.extend(&inner_payload);
 
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -698,7 +707,7 @@ fn mt05_len_prefix_overhang_increments_all_active_entries() {
 fn mt06_enum_oor_vetoes_only_enum_entry() {
     let g = build_two_entry_graph();
     let pb = field_varint(5, 99);
-    let results = walk::score_all(&pb, &g);
+    let results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
 
     let outer = entry_score(&results, "Outer");
     let inner = entry_score(&results, "Inner");
@@ -743,30 +752,30 @@ fn map_entry_states_are_distinct() {
             number: 1,
             kind: ScoringKind::LenString,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 2,
-            kind: ScoringKind::Varint,
+            kind: ScoringKind::Uint32,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
     ];
     let multi_option_entry_fields = vec![
         ScoringField {
             number: 1,
-            kind: ScoringKind::Varint,
+            kind: ScoringKind::Uint32,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
         ScoringField {
             number: 2,
             kind: ScoringKind::LenString,
             child: None,
-            enum_range: None,
+            range: None,
             label: FieldLabel::Optional,
         },
     ];
@@ -775,14 +784,14 @@ fn map_entry_states_are_distinct() {
             number: 1,
             kind: ScoringKind::Node,
             child: Some("AnnotatedMapEntry".to_string()),
-            enum_range: None,
+            range: None,
             label: FieldLabel::Repeated,
         },
         ScoringField {
             number: 2,
             kind: ScoringKind::Node,
             child: Some("MultiOptionMapEntry".to_string()),
-            enum_range: None,
+            range: None,
             label: FieldLabel::Repeated,
         },
     ];
@@ -811,4 +820,218 @@ fn map_entry_states_are_distinct() {
         "AnnotatedMapEntry (block {ame_block}) and MultiOptionMapEntry (block {moe_block}) \
          must be in distinct states after minimisation"
     );
+}
+
+// ── Spec 0077: varint leaf refinement tests ───────────────────────────────────
+
+fn build_single_field_graph(
+    kind: ScoringKind,
+    range: Option<(i32, i32)>,
+) -> score_load::LoadedGraph {
+    let merged = Merged {
+        states: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "M".to_string(),
+                vec![ScoringField {
+                    number: 1,
+                    kind,
+                    child: None,
+                    range,
+                    label: FieldLabel::Optional,
+                }],
+            );
+            m
+        },
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["M".to_string()],
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.bin");
+    serial::write(&compiled, &path).unwrap();
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).unwrap()
+}
+
+/// TC-77-01: RANGE/bool strict — wire value 2 on bool field → vetoed.
+#[test]
+fn tc77_01_bool_range_veto() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((0, 1)));
+    let pb = field_varint(1, 2);
+    let s = score_entry(&pb, &g, "M");
+    assert!(s.vetoed, "bool value 2 should be vetoed");
+}
+
+/// TC-77-02: RANGE/enum strict — wire value outside [0,2] → vetoed.
+#[test]
+fn tc77_02_enum_range_veto_strict() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
+    let pb = field_varint(1, 99);
+    let s = score_entry(&pb, &g, "M");
+    assert!(s.vetoed, "enum value 99 outside [0,2] should be vetoed");
+}
+
+/// TC-77-03: RANGE/enum --no-strict-ranges — out-of-range → non_canonical++, not vetoed.
+#[test]
+fn tc77_03_enum_range_no_strict() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
+    let pb = field_varint(1, 99);
+    let opts = walk::ScoringOpts {
+        strict_ranges: false,
+    };
+    let s = score_entry_opts(&pb, &g, "M", &opts);
+    assert!(!s.vetoed, "should not be vetoed with --no-strict-ranges");
+    assert!(s.non_canonical > 0, "should increment non_canonical");
+}
+
+/// TC-77-04: RANGE, val >= 2^32 — always vetoed even with --no-strict-ranges.
+#[test]
+fn tc77_04_range_32bit_overflow_always_veto() {
+    let g = build_single_field_graph(ScoringKind::Range, Some((0, 2)));
+    let pb = field_varint(1, 1u64 << 32);
+    let opts = walk::ScoringOpts {
+        strict_ranges: false,
+    };
+    let s = score_entry_opts(&pb, &g, "M", &opts);
+    assert!(s.vetoed, "val >= 2^32 on RANGE should always veto");
+}
+
+/// TC-77-05: UINT32 — wire value 2^32 → vetoed (always).
+#[test]
+fn tc77_05_uint32_overflow_veto() {
+    let g = build_single_field_graph(ScoringKind::Uint32, None);
+    let pb = field_varint(1, 1u64 << 32);
+    let s = score_entry(&pb, &g, "M");
+    assert!(s.vetoed, "uint32 value 2^32 should be vetoed");
+}
+
+/// TC-77-06: UINT32 — wire value 0xFFFF_FFFF → not vetoed.
+#[test]
+fn tc77_06_uint32_max_valid() {
+    let g = build_single_field_graph(ScoringKind::Uint32, None);
+    let pb = field_varint(1, 0xFFFF_FFFF);
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "uint32 max value should not be vetoed");
+}
+
+/// TC-77-07: INT32 — wire value 0x1_0000_0000 (in invalid gap) → vetoed (always).
+#[test]
+fn tc77_07_int32_gap_veto() {
+    let g = build_single_field_graph(ScoringKind::Int32, None);
+    let pb = field_varint(1, 0x1_0000_0000u64);
+    let s = score_entry(&pb, &g, "M");
+    assert!(s.vetoed, "int32 value in invalid gap should be vetoed");
+}
+
+/// TC-77-08: INT32 — wire value 0xFFFF_FFFF_8000_0000 (valid negative int32) →
+/// not vetoed, non_canonical not incremented (canonical 10-byte encoding).
+#[test]
+fn tc77_08_int32_negative_canonical() {
+    let g = build_single_field_graph(ScoringKind::Int32, None);
+    let pb = field_varint(1, 0xFFFF_FFFF_8000_0000u64);
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "valid negative int32 should not be vetoed");
+    assert_eq!(
+        s.non_canonical, 0,
+        "canonical 10-byte encoding should not be non-canonical"
+    );
+}
+
+/// TC-77-09: INT32 — wire value in [0x8000_0000, 0xFFFF_FFFF] (truncated negative) →
+/// not vetoed, non_canonical++.
+#[test]
+fn tc77_09_int32_truncated_negative() {
+    let g = build_single_field_graph(ScoringKind::Int32, None);
+    let pb = field_varint(1, 0x8000_0000u64);
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed, "truncated negative int32 should not be vetoed");
+    assert_eq!(
+        s.non_canonical, 1,
+        "truncated negative should increment non_canonical"
+    );
+}
+
+/// TC-77-10: INT32 — wire value 0x7FFF_FFFF (max positive int32) → not vetoed, no non_canonical.
+#[test]
+fn tc77_10_int32_max_positive() {
+    let g = build_single_field_graph(ScoringKind::Int32, None);
+    let pb = field_varint(1, 0x7FFF_FFFF);
+    let s = score_entry(&pb, &g, "M");
+    assert!(!s.vetoed);
+    assert_eq!(s.non_canonical, 0);
+}
+
+/// TC-77-11: UINT64 (int64 field) — large value 2^63 → not vetoed.
+#[test]
+fn tc77_11_uint64_large_value() {
+    let g = build_single_field_graph(ScoringKind::Uint64, None);
+    let pb = field_varint(1, 1u64 << 63);
+    let s = score_entry(&pb, &g, "M");
+    assert!(
+        !s.vetoed,
+        "large value on uint64/int64 field should not be vetoed"
+    );
+}
+
+/// TC-77-12: Discrimination benefit — bool vs int32 on the same field.
+///
+/// Two competing schemas:
+///   Bool   { field 1: bool  (RANGE [0,1]) }
+///   Int32  { field 1: int32 (INT32)       }
+///
+/// Value 802 on field 1:
+///   - Bool  → vetoed   (802 outside [0,1])
+///   - Int32 → not vetoed (802 is a valid positive int32)
+///
+/// This is the core discrimination benefit introduced by spec 0077: before
+/// this change both schemas collapsed into a single VARINT leaf and 802 would
+/// not veto either candidate.
+#[test]
+fn tc77_12_bool_vs_int32_discrimination() {
+    let merged = Merged {
+        states: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "Bool".to_string(),
+                vec![ScoringField {
+                    number: 1,
+                    kind: ScoringKind::Range,
+                    child: None,
+                    range: Some((0, 1)),
+                    label: FieldLabel::Optional,
+                }],
+            );
+            m.insert(
+                "Int32".to_string(),
+                vec![ScoringField {
+                    number: 1,
+                    kind: ScoringKind::Int32,
+                    child: None,
+                    range: None,
+                    label: FieldLabel::Optional,
+                }],
+            );
+            m
+        },
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec!["Bool".to_string(), "Int32".to_string()],
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("g.bin");
+    serial::write(&compiled, &path).unwrap();
+    let _ = std::mem::ManuallyDrop::new(dir);
+    let g = score_load::load_graph(&path).unwrap();
+
+    let pb = field_varint(1, 802);
+    let bool_s = score_entry(&pb, &g, "Bool");
+    let int32_s = score_entry(&pb, &g, "Int32");
+
+    assert!(bool_s.vetoed, "Bool: 802 outside [0,1] should veto");
+    assert!(!int32_s.vetoed, "Int32: 802 is a valid positive int32");
 }
