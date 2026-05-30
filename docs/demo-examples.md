@@ -130,8 +130,8 @@ reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
   --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
   --seed 'desc:.google.cloud.securitycenter.v2.IpRule' \
   --seed 'desc:.google.cloud.securitycenter.v2.IpRules' \
-  --build-schema-db stash/iprules.desc \
-  --emit-scoring-html stash/iprules.html
+  --schema-db-out stash/iprules.desc \
+  --scoring-html-out stash/iprules.html
 ```
 
 Raw graph (5 non-leaf nodes, 5 edges):
@@ -185,8 +185,8 @@ reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
   --seed 'desc:.google.cloud.batch.v1.OperationMetadata' \
   --seed 'desc:.google.cloud.batch.v1alpha.OperationMetadata' \
   --seed 'desc:.google.cloud.beyondcorp.appconnections.v1.AppConnectionOperationMetadata' \
-  --build-schema-db stash/opmeta.desc \
-  --emit-scoring-html stash/opmeta.html
+  --schema-db-out stash/opmeta.desc \
+  --scoring-html-out stash/opmeta.html
 ```
 
 Raw graph: 8 non-leaf nodes (one per seed, all structurally identical).
@@ -209,8 +209,8 @@ reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
   --seed 'desc:.google.ads.googleads.v22.resources.QualifyingQuestion' \
   --seed 'desc:.google.ads.googleads.v23.resources.QualifyingQuestion' \
   --seed 'desc:.google.ads.googleads.v24.resources.QualifyingQuestion' \
-  --build-schema-db stash/qualifying.desc \
-  --emit-scoring-html stash/qualifying.html
+  --schema-db-out stash/qualifying.desc \
+  --scoring-html-out stash/qualifying.html
 ```
 
 Raw graph: 5 non-leaf nodes.  Hopcroft graph: 1 non-leaf node.

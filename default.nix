@@ -174,7 +174,7 @@ let
   #               when wktRkyv is null (never the case here).
   #   python    — reprotoBare depends only on the Python codec, not on any Rust
   #               binary.  reprotoTests/googleapisTests/customTests use rust.prototext (lazy).
-  #   wktRkyv   — uses python.reprotoBare to run reproto --build-schema-db.
+  #   wktRkyv   — uses python.reprotoBare to run reproto --schema-db-out.
   #               Does NOT depend on rust.prototext, breaking the cycle.
   #
   # All shared Crane artefacts (depsCache, rustTests, etc.) come from the
@@ -216,11 +216,11 @@ let
       ${pkgs.lib.concatStringsSep " \\\n      " wktSources}
 
     # Build the Hopcroft scoring graph from the WKT descriptor.
-    # reproto -I takes a directory of .pb files; PB_FILES are positional.
-    # --build-schema-db writes schemas.desc and schemas/hopcroft.rkyv.
+    # reproto -I takes a directory of .pb files; DESCRIPTOR_FILES are positional.
+    # --schema-db-out writes schemas.desc and schemas/hopcroft.rkyv.
     # We copy hopcroft.rkyv to $out/wkt.rkyv for the build.rs fast-path.
     python -m reproto.cli \
-      --build-schema-db="$out/schemas.desc" \
+      --schema-db-out="$out/schemas.desc" \
       -I "$out" \
       wkt.desc
     cp "$out/schemas/hopcroft.rkyv" "$out/wkt.rkyv"

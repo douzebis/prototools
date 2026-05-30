@@ -55,7 +55,7 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'reproto \- reconstruct .proto source files from compiled protobuf descriptor sets')
     buf.append(r'.SH SYNOPSIS')
     buf.append(r'.B reproto')
-    buf.append(r'[\fIOPTIONS\fR] \fIPB_FILES\fR...')
+    buf.append(r'[\fIOPTIONS\fR] \fIDESCRIPTOR_FILES\fR...')
     buf.append(r'.SH DESCRIPTION')
     buf.append(
         r'.B reproto'
@@ -73,10 +73,13 @@ def _render(cmd: click.Command) -> str:
     for param in cmd.params:
         if isinstance(param, click.Argument):
             buf.append(r'.TP')
-            buf.append(r'\fBPB_FILES\fR')
+            buf.append(r'\fBDESCRIPTOR_FILES\fR')
             buf.append(
-                r'One or more binary descriptor set files (\fI.pb\fR) to process.'
-                '\nPaths are resolved relative to directories given by \\fB\\-I\\fR,'
+                r'One or more descriptor files to process.'
+                '\nAccepts binary \\fBFileDescriptorSet\\fR, binary \\fBFileDescriptorProto\\fR,'
+                '\n\\fB#@\\fR prototext\\-format descriptors, or directories (processed recursively).'
+                '\nAny file extension is accepted; \\fI.pb\\fR and \\fI.desc\\fR are conventional.'
+                '\nPaths are resolved relative to directories given by \\fB\\-I\\fR (\\fB\\-\\-desc\\-root\\fR),'
                 '\nor relative to the current working directory if \\fB\\-I\\fR is not provided.'
             )
 

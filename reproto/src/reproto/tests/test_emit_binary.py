@@ -70,7 +70,7 @@ def _reproto_cmd(orig_dir: Path, out_dir: Path, extra_args: list[str]) -> list[s
         "--use-variant", "descriptor",
         "--emit-binary",
         f"-I{orig_dir}",
-        f"--output-root={out_dir}",
+        f"--proto-out={out_dir}",
         *extra_args,
     ]
 

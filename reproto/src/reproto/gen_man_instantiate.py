@@ -89,9 +89,10 @@ def _render(cmd: click.Command) -> str:
 
     buf.append(r'.SH ENVIRONMENT')
     buf.append(r'.TP')
-    buf.append(r'\fBPROTOTEXT_DEFAULT_DESCRIPTOR\fR')
+    buf.append(r'\fBPROTOTEXT_DESCRIPTOR_SET\fR')
     buf.append(r'Path to a \fI.desc\fR FileDescriptorSet used as the default when')
-    buf.append(r'\fB\-\-descriptor\fR is not provided.')
+    buf.append(r'\fB\-\-descriptor\-set\fR is not provided.')
+    buf.append(r'\fBPROTOTEXT_DEFAULT_DESCRIPTOR\fR is accepted as a deprecated fallback.')
 
     buf.append(r'.SH EXAMPLES')
     buf.append(r'.PP')
@@ -99,7 +100,7 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'.PP')
     buf.append(r'.nf')
     buf.append(
-        r'reproto\-instantiate\-schema \-\-descriptor googleapis.desc \-\-seed 42 \\'
+        r'reproto\-instantiate\-schema \-\-descriptor\-set googleapis.desc \-\-seed 42 \\'
     )
     buf.append(r'  \-O out/ google.type.PostalAddress google.protobuf.Timestamp')
     buf.append(r'.fi')

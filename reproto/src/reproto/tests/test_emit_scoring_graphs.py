@@ -53,7 +53,7 @@ def _run_reproto(
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
         *include_flags,
-        f"--output-root={out_dir}",
+        f"--proto-out={out_dir}",
         "--emit-scoring-yaml",
     ]
     if extra_args:
@@ -330,7 +330,7 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
             "--proto-variant", str(variant_yaml),
             "--use-variant", "descriptor",
             f"-I{FIXTURES_DIR}",
-            f"--output-root={out_dir}",
+            f"--proto-out={out_dir}",
             "--emit-scoring-yaml",
             "--emit-binary",
             str(pb),

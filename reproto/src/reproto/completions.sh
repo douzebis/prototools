@@ -13,8 +13,10 @@ _reproto_completion() {
     # Options that consume a value argument (used for = stripping and for
     # detecting a missing empty slot before the current word).
     declare -A takes_value=(
-        ["--pb-path"]=1      ["-I"]=1
-        ["--output-root"]=1  ["-O"]=1
+        ["--desc-root"]=1    ["-I"]=1
+        ["--pb-path"]=1
+        ["--proto-out"]=1    ["-O"]=1
+        ["--output-root"]=1
         ["--proto-variant"]=1
         ["--use-variant"]=1
         ["--seed"]=1         ["-s"]=1

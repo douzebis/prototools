@@ -17,15 +17,24 @@ from .instantiate import generate_instance, load_pool
 @click.command()
 @click.version_option()
 @click.option(
-    '--descriptor-set', '--descriptor',
+    '--descriptor-set',
     'descriptor_path',
     required=False,
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help=(
         'Path to the .desc FileDescriptorSet to load. '
-        'Falls back to $PROTOTEXT_DEFAULT_DESCRIPTOR if not provided.'
+        '[env: PROTOTEXT_DESCRIPTOR_SET]'
     ),
+)
+@click.option(
+    '--descriptor',
+    'descriptor_deprecated',
+    required=False,
+    default=None,
+    hidden=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help='Deprecated alias for --descriptor-set.',
 )
 @click.option(
     '-O', '--output-root',
@@ -59,7 +68,8 @@ from .instantiate import generate_instance, load_pool
 )
 @click.argument('fqdns', nargs=-1, required=True)
 def main(
-    descriptor_path: Path,
+    descriptor_path: Path | None,
+    descriptor_deprecated: Path | None,
     output_root: Path | None,
     seed: int,
     max_depth: int,
@@ -72,12 +82,31 @@ def main(
     FQDNS are fully-qualified message type names.  For each FQDN an output file
     is written to <output-root>/<fqdn-with-dots-as-slashes>.pb.
     """
+    import sys as _sys
+
+    # Handle deprecated --descriptor alias.
+    if descriptor_deprecated is not None:
+        if not quiet:
+            _sys.stderr.write('warning: --descriptor is deprecated; use --descriptor-set\n')
+        if descriptor_path is None:
+            descriptor_path = descriptor_deprecated
+
     root = output_root or Path('.')
     if descriptor_path is None:
-        env_val = os.environ.get('PROTOTEXT_DEFAULT_DESCRIPTOR')
+        env_val = os.environ.get('PROTOTEXT_DESCRIPTOR_SET')
+        if env_val is None:
+            # Fallback to old env var name with deprecation warning.
+            old_val = os.environ.get('PROTOTEXT_DEFAULT_DESCRIPTOR')
+            if old_val is not None:
+                if not quiet:
+                    _sys.stderr.write(
+                        'warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; '
+                        'use PROTOTEXT_DESCRIPTOR_SET\n'
+                    )
+                env_val = old_val
         if env_val is None:
             raise click.UsageError(
-                'No descriptor specified. Use --descriptor-set or set PROTOTEXT_DEFAULT_DESCRIPTOR.'
+                'No descriptor specified. Use --descriptor-set or set PROTOTEXT_DESCRIPTOR_SET.'
             )
         descriptor_path = Path(env_val)
     pool = load_pool(descriptor_path)

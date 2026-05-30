@@ -46,7 +46,7 @@ S5 — Non-canonical protobufs (~12 min)  — richest section
 - OHB narrative blocks: ~1 min read
 - `sed | encode` craft: ~5 s + ~15 s explain
 - `hexdump head -1` x2 (diff): ~15 s + 30 s explain
-- `prototext decode -a | vim`: ~5 s + 1 min vim + 👆 discussion
+- `prototext decode | vim`: ~5 s + 1 min vim + 👆 discussion
 - `protoc decode | vim` (OHB gone): ~5 s + 1 min vim
 - `diff && echo byte-exact`: instant, ~30 s punchline
 
@@ -54,7 +54,7 @@ S6 — Building a scoring database (~10 min)
 - 2 narrative blocks (vocab + FDP): ~1 min
 - `prototext decode FileDescriptorProto | vim`: ~5 s + 1 min vim
 - 2 narrative blocks: ~30 s
-- `reproto --build-schema-db` (9 seeds): ~15-30 s machine + ~30 s explain
+- `reproto --schema-db-out` (9 seeds): ~15-30 s machine + ~30 s explain
 - `prototext decode functions/v2 | vim`: ~5 s + 1 min vim + 👆 discussion
 - Narrative + `prototext decode batch/v1 | vim`: ~5 s + 1 min vim + 👆 tie discussion
 - `xdg-open opmeta.html` + legend narrative + graph discussion: ~2 min

@@ -205,7 +205,7 @@ protoc \
 
 ```
 reproto \
-    --build-schema-db=stash/wkt.desc \
+    --schema-db-out=stash/wkt.desc \
     stash/wkt.pb
 ```
 
@@ -241,14 +241,14 @@ field names from the schema.
 
 ## Section 5 — Annotations and non-canonical encoding
 
-By default, `prototext decode` outputs clean, human-readable text with no
-annotations — suitable for reading or diffing.  Pass `-a` / `--annotations`
-to enable inline wire-type comments:
+By default, `prototext decode` outputs text with inline wire-type comments
+(annotations) — required for lossless round-tripping.  Pass `--no-annotations`
+to suppress them for clean, human-readable output:
 
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     $INST/google/type/PostalAddress.pb
 ```
 
@@ -275,7 +275,7 @@ round-tripping possible (see Section 7).
 **Non-canonical encoding.**  The protobuf wire format allows several kinds of
 non-canonical encoding that are semantically equivalent but byte-for-byte
 different from what a normal encoder would produce.  Standard tools silently
-normalise these; `prototext decode -a` preserves them.  For example, varints
+normalise these; `prototext decode` (with annotations, the default) preserves them.  For example, varints
 can carry redundant continuation bytes (OHB — Over-Hanging Bytes): the value 1
 is canonically `\x01` but can also be encoded as `\x81\x00` (one extra byte,
 same value).  The `val_ohb` annotation records how many such bytes were seen.
@@ -286,7 +286,7 @@ saving the result:
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     $INST/google/type/PostalAddress.pb > stash/PostalAddress.textpb
 ```
 
@@ -320,11 +320,11 @@ hexdump -C stash/postal_patched.pb | head -1
 ```
 
 The patched file is one byte longer (`81 00` instead of `01`).  Now
-decode it with annotations:
+decode it (annotations on by default):
 
 ```
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     stash/postal_patched.pb | head -6
 ```
 
@@ -363,7 +363,7 @@ invisible.
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     $INST/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   > stash/postal_hidden.textpb
@@ -420,7 +420,7 @@ through `prototext encode` and compare with the original:
 ```
 INST=$(dirname $GOOGLEAPIS_DB)/instances
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     $INST/google/type/PostalAddress.pb \
   | prototext encode \
   | diff - $INST/google/type/PostalAddress.pb \
@@ -435,7 +435,7 @@ The round-trip is byte-exact even for the patched non-canonical version:
 
 ```
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     stash/postal_patched.pb \
   | prototext encode \
   | diff - stash/postal_patched.pb \
@@ -554,7 +554,7 @@ protoc \
 
 ```
 reproto --use-variant descriptor \
-    --output-root=stash/out_editions \
+    --proto-out=stash/out_editions \
     stash/editions_rendering.pb
 ```
 
@@ -592,7 +592,7 @@ message AllFeatures {
 ```
 reproto --use-variant descriptor \
     --force-proto2-output \
-    --output-root=stash/out_proto2 \
+    --proto-out=stash/out_proto2 \
     stash/editions_rendering.pb
 ```
 

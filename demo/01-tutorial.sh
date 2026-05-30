@@ -303,7 +303,7 @@ vim +'set ft=pbtxt' <( \
 # \
 #                                                                                \
 # From descriptors, reproto can build a scoring DB — a compiled schema with      \
-# a scoring graph side-car.  --build-schema-db produces it from any seed.        \
+# a scoring graph side-car.  --schema-db-out produces it from any seed.          \
 #
 
 # \
@@ -316,8 +316,8 @@ vim +'set ft=pbtxt' <( \
 
 \
 reproto \
-    --build-schema-db stash/opmeta.desc \
-    --emit-scoring-html stash/opmeta.html \
+    --schema-db-out stash/opmeta.desc \
+    --scoring-html-out stash/opmeta.html \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
@@ -385,8 +385,8 @@ xdg-open stash/opmeta-hopcroft.html
 # IpRules toy example: 5 nodes raw, 4 nodes after Hopcroft.
 \
 reproto -q \
-    --build-schema-db stash/iprules.desc \
-    --emit-scoring-html stash/iprules.html \
+    --schema-db-out stash/iprules.desc \
+    --scoring-html-out stash/iprules.html \
     --use-variant descriptor \
     -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \

@@ -46,7 +46,7 @@ def _run_reproto(
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
         *include_flags,
-        f"--output-root={out_dir}",
+        f"--proto-out={out_dir}",
     ]
     for seed in (seeds or []):
         cmd.extend(["--seed", seed])

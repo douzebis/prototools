@@ -24,6 +24,10 @@ logger = logging.getLogger()  # root logger
 logger.setLevel(logging.INFO)
 
 # Add special CLIWarningHandlers
+
+# Set to True once --quiet is parsed; gates CLIWarningHandler.emit().
+_quiet: bool = False
+
 class CLIErrorHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_err', False):
@@ -31,7 +35,7 @@ class CLIErrorHandler(logging.Handler):
 
 class CLIWarningHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
-        if getattr(record, 'cli_warn', False):
+        if getattr(record, 'cli_warn', False) and not _quiet:
             rprint(record.getMessage(), style='bold yellow')
 
 class CLIInfoHandler(logging.Handler):
@@ -104,7 +108,7 @@ def _complete_paths(
 
 
 def complete_pb_files(ctx: click.Context, param: click.Parameter, incomplete: str):
-    '''Custom completer for PB_FILES argument (relative to -I).'''
+    '''Custom completer for DESCRIPTOR_FILES argument (relative to -I).'''
     include_dirs = list(ctx.params.get('pb_path') or ['.'])
     items = _complete_paths(incomplete, include_dirs, suffixes=('.pb', '.textpb'))
     # Re-tag as 'arg_I' so the shell script knows these paths are relative to
@@ -137,14 +141,14 @@ _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',
                         'source_context', 'field_mask', 'type', 'api',
                         'all')
 
-# Maps each long option name (or 'PB_FILES' for the argument) to its section
-# heading.  Options in the same section appear consecutively in --help output
-# (guaranteed by declaration order).  A new heading is printed whenever the
-# section changes.
+# Maps each long option name (or 'DESCRIPTOR_FILES' for the argument) to its
+# section heading.  Options in the same section appear consecutively in --help
+# output (guaranteed by declaration order).  A new heading is printed whenever
+# the section changes.
 _SECTIONS: dict[str, str] = {
-    'PB_FILES':              'Input',
-    '--pb-path':             'Input',
-    '--output-root':         'Output',
+    'DESCRIPTOR_FILES':      'Input',
+    '--desc-root':           'Input',
+    '--proto-out':           'Output',
     '--emit-binary':         'Output',
     '--dry-run':             'Output',
     '--proto-variant':       'Variant / Schema',
@@ -158,16 +162,16 @@ _SECTIONS: dict[str, str] = {
     '--redact-comments':     'Rendering',
     '--redact-orphans':      'Rendering',
     '--go-root':             'Rendering',
-    '--build-schema-db':      'Advanced',
-    '--emit-scoring-yaml':    'Advanced',
+    '--schema-db-out':       'Advanced',
+    '--emit-scoring-yaml':   'Advanced',
+    '--scoring-html-out':    'Advanced',
+    '--with-leaf-nodes':     'Advanced',
+    '--hide':                'Advanced',
+    '--debug':               'Advanced',
     '--phase2-plugin':       'Advanced',
     '--keep-duplicates':     'Advanced',
     '--detailed-warnings':   'Diagnostics',
     '--quiet':               'Diagnostics',
-    '--emit-scoring-html':   'Diagnostics',
-    '--with-leaf-nodes':     'Diagnostics',
-    '--hide':                'Diagnostics',
-    '--debug':               'Diagnostics',
     '--debug-fqdn':          'Diagnostics',
 }
 
@@ -220,10 +224,33 @@ class _SectionedContext(click.Context):
 class _SectionedCommand(click.Command):
     context_class = _SectionedContext
 
+    def format_epilog(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        """Write the epilog verbatim (no wrapping) so multi-line examples look correct."""
+        if self.epilog:
+            formatter.write_paragraph()
+            formatter.write(self.epilog + '\n')
+
 
 @click.command(
     cls=_SectionedCommand,
-    help='Parse PB_FILES and generate output based on the options given.',
+    help='Parse DESCRIPTOR_FILES and generate output based on the options given.',
+    epilog=(
+        'Examples:\n\n'
+        '  # Decompile a descriptor to .proto source\n'
+        '  reproto -O out/ schema.desc\n\n'
+        '  # Build a scoring DB from a descriptor slice\n'
+        '  reproto --schema-db-out slice.desc \\\n'
+        '      --seed desc:.com.example.MyMessage schema.desc\n\n'
+        '  # Decompile all types reachable from a seed, pruning a noisy package\n'
+        '  reproto -O out/ \\\n'
+        '      --seed desc:.com.example.Root \\\n'
+        '      --prune file:google/protobuf/struct.proto \\\n'
+        '      schema.desc\n\n'
+        '  # Score and visualise the graph (advanced)\n'
+        '  reproto --schema-db-out out.desc \\\n'
+        '      --scoring-html-out out.html \\\n'
+        '      schema.desc'
+    ),
 )
 @click.version_option(
     version=_reproto_version,
@@ -235,24 +262,50 @@ class _SectionedCommand(click.Command):
     required=True,
     type=click.Path(path_type=Path),
     nargs=-1,
+    metavar='DESCRIPTOR_FILES',
     shell_complete=complete_pb_files,
 )
 @click.option(
-    '-I',
-    '--pb-path',
+    '-I', '--desc-root',
+    'pb_path',
     type=click.Path(file_okay=False, dir_okay=True, exists=True, path_type=Path),
     multiple=True,
-    help='Search path for .pb files (like protoc -I); PB_FILES are resolved relative to these directories',
+    help=(
+        'Root directory for resolving relative DESCRIPTOR_FILES paths '
+        'and for locating imports (repeatable; like protoc -I).'
+    ),
 )
 
 @click.option(
-    '-O', '--output-root',
+    '--pb-path',
+    'pb_path_deprecated',
+    type=click.Path(file_okay=False, dir_okay=True, exists=True, path_type=Path),
+    multiple=True,
+    hidden=True,
+    help='Deprecated alias for --desc-root.',
+)
+
+@click.option(
+    '-O', '--proto-out',
     'proto_out',
     required=False,
     default=None,
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     shell_complete=complete_dir_path,
-    help='Output directory for generated proto files (created if absent)',
+    help=(
+        'Output directory for generated .proto files (created if absent). '
+        'Not required when using --schema-db-out, --scoring-html-out, or --dry-run.'
+    ),
+)
+
+@click.option(
+    '--output-root',
+    'output_root_deprecated',
+    required=False,
+    default=None,
+    hidden=True,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    help='Deprecated alias for --proto-out.',
 )
 
 @click.option(
@@ -265,34 +318,6 @@ class _SectionedCommand(click.Command):
     '--dry-run',
     is_flag=True,
     help='Do not actually create .proto files',
-)
-
-@click.option(
-    '--build-schema-db',
-    'build_schema_db',
-    required=False,
-    default=None,
-    type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help=(
-        'Build the full schema DB at PATH (must end in .desc): '
-        'writes PATH (FileDescriptorSet of all loaded FDPs), '
-        'PATH-stem/hopcroft.rkyv (compiled scoring graph), and '
-        'PATH-stem/index.rkyv (lazy-loading FDS index). '
-        'YAML and FDPs stay in memory; no intermediate files are written.'
-    ),
-)
-
-@click.option(
-    '--emit-scoring-yaml',
-    is_flag=True,
-    help='Write per-file scoring-graph YAML files alongside .proto output under --output-root',
-)
-
-@click.option(
-    '--emit-scoring-graphs',
-    is_flag=True,
-    hidden=True,
-    help='Deprecated alias for --emit-scoring-yaml.',
 )
 
 @click.option(
@@ -367,6 +392,9 @@ class _SectionedCommand(click.Command):
          'Without this flag, output syntax matches the input (polyglot mode).',
 )
 
+# Note: --schema-db-out forces --force-proto2-for-editions unconditionally
+# because prost-reflect does not yet support editions syntax in compiled graphs.
+# See upstream issue #1347.
 @click.option(
     '--force-proto2-for-editions',
     is_flag=True,
@@ -374,8 +402,7 @@ class _SectionedCommand(click.Command):
     help=(
         'Translate editions-syntax files to proto2 in output and binary '
         'descriptors. Symmetric with --force-proto2-output but limited to '
-        'editions files only. --build-schema-db forces this unconditionally '
-        '(prost-reflect does not yet support editions, upstream PR #1347).'
+        'editions files only. --schema-db-out forces this unconditionally.'
     ),
 )
 @click.option(
@@ -404,6 +431,91 @@ class _SectionedCommand(click.Command):
     required=False,
     type=str,
     help='Force go_package option in reconstructed .proto files',
+)
+
+@click.option(
+    '--schema-db-out',
+    'build_schema_db',
+    required=False,
+    default=None,
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    help=(
+        'Write the schema DB to FILE (must end in .desc). '
+        'Writes FILE (FileDescriptorSet of all loaded FDPs), '
+        'FILE-stem/hopcroft.rkyv (compiled scoring graph), and '
+        'FILE-stem/index.rkyv (lazy-loading FDS index).'
+    ),
+)
+
+@click.option(
+    '--build-schema-db',
+    'build_schema_db_deprecated',
+    required=False,
+    default=None,
+    hidden=True,
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    help='Deprecated alias for --schema-db-out.',
+)
+
+@click.option(
+    '--emit-scoring-yaml',
+    is_flag=True,
+    help='Write per-file scoring-graph YAML files alongside .proto output under --proto-out',
+)
+
+@click.option(
+    '--emit-scoring-graphs',
+    is_flag=True,
+    hidden=True,
+    help='Deprecated alias for --emit-scoring-yaml.',
+)
+
+@click.option(
+    '--scoring-html-out',
+    'emit_scoring_html',
+    required=False,
+    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
+    help='Write scoring-graph HTML visualisations to FILE; requires --schema-db-out',
+)
+
+@click.option(
+    '--emit-scoring-html',
+    'emit_scoring_html_deprecated',
+    required=False,
+    hidden=True,
+    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
+    help='Deprecated alias for --scoring-html-out.',
+)
+
+@click.option(
+    '--emit-pyvis',
+    required=False,
+    hidden=True,
+    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
+    help='Deprecated alias for --scoring-html-out.',
+)
+
+@click.option(
+    '--with-leaf-nodes',
+    is_flag=True,
+    help='Include leaf (wire-type sink) nodes in --scoring-html-out graphs (hidden by default)',
+)
+
+@click.option(
+    '--hide', 'pyvis_hide',
+    type=str,
+    multiple=True,
+    help=(
+        'FQDN or glob pattern to hide from --scoring-html-out graphs (same syntax as --prune). '
+        'Matched nodes and their incident edges are dropped from the HTML; '
+        'no effect on the schema DB.'
+    ),
+)
+
+@click.option(
+    '--debug',
+    is_flag=True,
+    help='Print detailed debug information (development only)',
 )
 
 @click.option(
@@ -438,39 +550,7 @@ class _SectionedCommand(click.Command):
 @click.option(
     '--quiet', '-q',
     is_flag=True,
-    help='Suppress progress messages',
-)
-
-@click.option(
-    '--emit-scoring-html',
-    required=False,
-    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
-    help='Write scoring-graph HTML visualisations to FILE (raw) and FILE-hopcroft (Hopcroft-minimised); requires --build-schema-db',
-)
-
-@click.option(
-    '--emit-pyvis',
-    required=False,
-    hidden=True,
-    type=click.Path(file_okay=True, dir_okay=False, writable=True, path_type=Path),
-    help='Deprecated alias for --emit-scoring-html.',
-)
-
-@click.option(
-    '--with-leaf-nodes',
-    is_flag=True,
-    help='Include leaf (wire-type sink) nodes in --emit-scoring-html graphs (hidden by default)',
-)
-
-@click.option(
-    '--hide', 'pyvis_hide',
-    type=str,
-    multiple=True,
-    help=(
-        'FQDN or glob pattern to hide from --emit-scoring-html graphs (same syntax as --prune). '
-        'Matched nodes and their incident edges are dropped from the HTML; '
-        'no effect on the schema DB.'
-    ),
+    help='Suppress progress messages and warnings.  Errors are always printed.',
 )
 
 @click.option(
@@ -481,12 +561,6 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--debug',
-    is_flag=True,
-    help='Print detailed debug information (development only)',
-)
-
-@click.option(
     '--debug-fqdn',
     is_flag=True,
     help='Print detailed information about FQDNs (development only)',
@@ -494,14 +568,17 @@ class _SectionedCommand(click.Command):
 
 def main(
         pb_files: list[Path],
-        pb_path: list[Path],
+        pb_path: tuple[Path, ...],
+        pb_path_deprecated: tuple[Path, ...],
         force_proto2_output: bool,
         force_proto2_for_editions: bool,
         prost_workaround: bool,
         proto_out: Path | None,
+        output_root_deprecated: Path | None,
         emit_binary: bool,
         dry_run: bool,
         build_schema_db: Path | None,
+        build_schema_db_deprecated: Path | None,
         emit_scoring_yaml: bool,
         emit_scoring_graphs: bool,
         proto_variant: Path | None,
@@ -517,6 +594,7 @@ def main(
         detailed_warnings: bool,
         quiet: bool,
         emit_scoring_html: Path | None,
+        emit_scoring_html_deprecated: Path | None,
         emit_pyvis: Path | None,
         with_leaf_nodes: bool,
         pyvis_hide: tuple[str, ...],
@@ -526,8 +604,33 @@ def main(
         debug_fqdn: bool,
 ):
     '''
-    Parse PB_FILES and generate output based on the options given.
+    Parse DESCRIPTOR_FILES and generate output based on the options given.
     '''
+    global _quiet
+    _quiet = quiet
+
+    import sys as _sys
+
+    # Merge deprecated alias values into canonical params.
+    pb_path = pb_path + pb_path_deprecated
+
+    # Handle deprecated option aliases (emit warnings, merge into canonical params).
+    if output_root_deprecated is not None:
+        if not quiet:
+            _sys.stderr.write('warning: --output-root is deprecated; use --proto-out\n')
+        if proto_out is None:
+            proto_out = output_root_deprecated
+    if build_schema_db_deprecated is not None:
+        if not quiet:
+            _sys.stderr.write('warning: --build-schema-db is deprecated; use --schema-db-out\n')
+        if build_schema_db is None:
+            build_schema_db = build_schema_db_deprecated
+    if emit_scoring_html_deprecated is not None:
+        if not quiet:
+            _sys.stderr.write('warning: --emit-scoring-html is deprecated; use --scoring-html-out\n')
+        if emit_scoring_html is None:
+            emit_scoring_html = emit_scoring_html_deprecated
+
     from reproto import Fqdn
     from .reproto import DescriptorProtoMissingError, DescriptorProtoUnresolvedError, DescriptorProtoHasTargetsError, Options, reproto
     from . import variant as variant_mod
@@ -535,27 +638,32 @@ def main(
     configure_collector(detailed=detailed_warnings)
 
     if emit_scoring_graphs:
-        import sys as _sys
         _sys.stderr.write('warning: --emit-scoring-graphs is deprecated; use --emit-scoring-yaml\n')
         emit_scoring_yaml = True
     if emit_pyvis is not None:
-        import sys as _sys
-        _sys.stderr.write('warning: --emit-pyvis is deprecated; use --emit-scoring-html\n')
+        _sys.stderr.write('warning: --emit-pyvis is deprecated; use --scoring-html-out\n')
         if emit_scoring_html is None:
             emit_scoring_html = emit_pyvis
 
-    # --output-root is required when .proto file output will be produced.
+    # --proto-out is required when .proto file output will be produced.
     # It is legitimately optional for modes that produce no .proto output:
-    #   --build-schema-db   → writes only .desc / .rkyv artifacts
-    #   --dry-run           → writes nothing at all
-    #   --emit-scoring-html → writes HTML visualisations
+    #   --schema-db-out       → writes only .desc / .rkyv artifacts
+    #   --dry-run             → writes nothing at all
+    #   --scoring-html-out    → writes HTML visualisations
     #   --dump-resolved-features → returns early before phase 7
     output_only_mode = bool(
         build_schema_db is not None or dry_run or emit_scoring_html is not None
         or dump_resolved_features
     )
     if proto_out is None and not output_only_mode:
-        raise click.UsageError('Missing option \'-O\' / \'--output-root\'.')
+        raise click.UsageError(
+            "Missing option '-O' / '--proto-out'.\n"
+            "Required when generating .proto output.  Alternatives:\n"
+            "  - Add -O DIR                   to write .proto files to DIR\n"
+            "  - Add --schema-db-out FILE     to write a schema DB only\n"
+            "  - Add --scoring-html-out FILE  to write HTML graphs only\n"
+            "  - Add --dry-run                to run without writing any files"
+        )
     if proto_out is not None:
         proto_out.mkdir(parents=True, exist_ok=True)
 
@@ -608,7 +716,7 @@ def main(
         fallback_protos.append(_wk('google/protobuf/api.proto'))
 
     if build_schema_db is not None and not str(build_schema_db).endswith('.desc'):
-        raise click.UsageError('--build-schema-db PATH must end in .desc')
+        raise click.UsageError('--schema-db-out PATH must end in .desc')
 
     options = Options(
         binary=emit_binary,
@@ -671,6 +779,40 @@ def main(
         normalised = rest.replace('.', '/').lstrip('/')
         return Fqdn(f'{prefix}:{normalised}')
 
+    def _resolve_seed_or_prune(value: str) -> str:
+        """Auto-resolve a bare (no-prefix) seed/prune value to a canonical FQDN.
+
+        - If value already has a known prefix (e.g. 'file:foo.proto') → pass through.
+        - If value contains a wildcard and no prefix → prepend 'file:' unconditionally.
+          (Wildcards expand to multiple results; trying all prefixes would invariably
+          trigger the ambiguity error in the multi-match case.)
+        - Otherwise (bare non-wildcard, no prefix): use syntax heuristics to
+          determine the prefix:
+          - Values containing '/' or ending in a file extension (.proto, .pb, .desc)
+            are treated as file: paths.
+          - Values that look like dotted qualified names (e.g. 'com.example.Foo')
+            are treated as desc: FQDNs.
+          - If both or neither heuristic matches, pass through as-is so that
+            _normalise_fqdn produces the original 'missing prefix' error.
+        """
+        if ':' in value and value.split(':', 1)[0] in _VALID_PREFIXES:
+            return value  # already has a valid prefix
+        has_wildcard = any(c in value for c in ('*', '?'))
+        if has_wildcard:
+            return f'file:{value}'
+        # Bare non-wildcard: use syntax heuristics
+        file_like = '/' in value or any(
+            value.endswith(ext) for ext in ('.proto', '.pb', '.desc', '.textpb')
+        )
+        # Dotted name with no slashes and no file extension → desc:
+        desc_like = not file_like and '.' in value
+        if file_like and not desc_like:
+            return f'file:{value}'
+        if desc_like and not file_like:
+            return f'desc:{value}'
+        # Ambiguous or no heuristic match → pass through; _normalise_fqdn will error
+        return value
+
     try:
         for h in pyvis_hide:
             prefix = h.split(':', 1)[0] if ':' in h else ''
@@ -682,8 +824,8 @@ def main(
         reproto(
             list(pb_path) if pb_path else [Path('.')],
             pb_files,
-            [_normalise_fqdn(s) for s in seeds],
-            [_normalise_fqdn(p) for p in stumps],
+            [_normalise_fqdn(_resolve_seed_or_prune(s)) for s in seeds],
+            [_normalise_fqdn(_resolve_seed_or_prune(p)) for p in stumps],
             proto_out,
             options,
         )

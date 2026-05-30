@@ -158,7 +158,7 @@ let
     ];
     propagatedBuildInputs = reprotoPropagatedDeps ++ [
       prototextCodec   # reproto.load imports prototext_codec_lib at module load time
-      scoringGraphLib  # reproto --build-schema-db imports scoring_graph_lib
+      scoringGraphLib  # reproto --schema-db-out imports scoring_graph_lib
     ];
 
     doCheck = false;
@@ -286,7 +286,7 @@ EOF
   #
   # Two derivations:
   #   googleapisDb    — fetches pinned googleapis corpus, compiles protos,
-  #                     runs reproto --build-schema-db, and instantiates
+  #                     runs reproto --schema-db-out, and instantiates
   #                     N_INSTANCES .pb messages: hand-crafted fixtures first,
   #                     then a seeded pseudo-random draw for the remainder.
   #                     Cached by Nix; only rebuilt when inputs change.
@@ -344,10 +344,10 @@ EOF
     reproto \
       --use-variant all \
       --force-proto2-for-editions \
-      --output-root="$out/reproto-out" \
+      --proto-out="$out/reproto-out" \
       --emit-scoring-yaml \
       --emit-binary \
-      --build-schema-db="$out/googleapis.desc" \
+      --schema-db-out="$out/googleapis.desc" \
       "${googleapisPbs}/googleapis.pb"
 
     # ── Instantiate one .pb per sampled type ──────────────────────────────────
@@ -423,7 +423,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   #
   # Two derivations:
   #   customDb    — compiles reproto fixture protos + opentelemetry-proto corpus,
-  #                 runs reproto --build-schema-db.
+  #                 runs reproto --schema-db-out.
   #   customTests — runs pytest with CUSTOM_DB pointing at customDb.
   # ---------------------------------------------------------------------------
 
@@ -478,9 +478,9 @@ print('\n'.join(lines[:$N_EXTRA]))
       --use-variant all \
       --force-proto2-for-editions \
       -I"$PB" \
-      --output-root="$out/reproto-out" \
+      --proto-out="$out/reproto-out" \
       --emit-scoring-yaml \
-      --build-schema-db="$out/custom.desc" \
+      --schema-db-out="$out/custom.desc" \
       .
   '';
 

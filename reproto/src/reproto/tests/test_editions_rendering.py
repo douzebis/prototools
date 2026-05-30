@@ -325,7 +325,7 @@ def test_T13_editions_rendering_golden(tmp_path: Path) -> None:
         sys.executable, "-m", "reproto.cli",
         "--use-variant", "descriptor",
         f"-I{orig_dir}",
-        f"--output-root={out_dir}",
+        f"--proto-out={out_dir}",
         str(pb_path),
     ]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
@@ -398,7 +398,7 @@ def test_T14_force_proto2_output_golden(tmp_path: Path) -> None:
         "--use-variant", "descriptor",
         "--force-proto2-output",
         f"-I{orig_dir}",
-        f"--output-root={out_dir}",
+        f"--proto-out={out_dir}",
         str(pb_path),
     ]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
