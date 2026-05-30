@@ -137,6 +137,8 @@ thread_local! {
     pub(super) static INDENT_SIZE:  Cell<usize>     = const { Cell::new(2) };
     // Tracks recursion depth; managed via `enter_level()` / `LevelGuard`.
     pub(super) static LEVEL:        Cell<usize>     = const { Cell::new(0) };
+    // When true, google.protobuf.Any fields are expanded inline (spec 0089).
+    pub(super) static EXPAND_ANY:   Cell<bool>      = const { Cell::new(true) };
     // Optional header lines injected after the magic line (e.g. # Type / # Score).
     pub static EXTRA_HEADER: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -176,6 +178,7 @@ pub fn decode_and_render(
     schema: Option<&ParsedSchema>,
     annotations: bool,
     indent_size: usize,
+    expand_any: bool,
 ) -> Vec<u8> {
     let capacity = buf.len() * 8;
     let mut out = Vec::with_capacity(capacity);
@@ -199,6 +202,7 @@ pub fn decode_and_render(
     ANNOTATIONS.with(|c| c.set(annotations));
     INDENT_SIZE.with(|c| c.set(indent_size));
     LEVEL.with(|c| c.set(0));
+    EXPAND_ANY.with(|c| c.set(expand_any));
 
     // Build a flat name→MessageDescriptor map for nested-type lookups.
     // Keyed by bare FQN (no leading dot), matching prost-reflect's convention.

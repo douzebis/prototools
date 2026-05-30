@@ -178,22 +178,37 @@ pub struct RawGraph {
     pub node_wire_types: HashMap<u32, u8>,
 }
 
+/// Reserved raw node ID for `google.protobuf.Any` (spec 0089 §9).
+pub const ANY_NODE_ID: u32 = 0;
+/// Reserved raw node ID for `google.protobuf.MessageSet` (spec 0089 §9, future).
+pub const MESSAGE_SET_NODE_ID: u32 = 1;
+
 pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     let mut reg = LeafRegistry::new();
 
-    // Assign dense IDs to non-leaf nodes.
+    // Pre-allocate reserved IDs for the two sentinel node types (spec 0089 §9).
+    // These are inserted unconditionally so block IDs 0/1 are always reserved
+    // for Any and MessageSet in the Hopcroft output.
     let mut node_ids: HashMap<String, u32> = HashMap::new();
+    node_ids.insert("google.protobuf.Any".to_owned(), ANY_NODE_ID);
+    node_ids.insert("google.protobuf.MessageSet".to_owned(), MESSAGE_SET_NODE_ID);
+
+    // Assign dense IDs to non-leaf nodes, starting from 2.
+    let mut next_id: u32 = 2;
     for fqdn in merged.states.keys() {
-        let id = node_ids.len() as u32;
-        node_ids.entry(fqdn.clone()).or_insert(id);
+        node_ids.entry(fqdn.clone()).or_insert_with(|| {
+            let id = next_id;
+            next_id += 1;
+            id
+        });
     }
     // Also ensure every child FQDN referenced but not defined gets a node ID.
     for fields in merged.states.values() {
         for f in fields {
             if let Some(child) = &f.child {
                 if !node_ids.contains_key(child) {
-                    let id = node_ids.len() as u32;
-                    node_ids.insert(child.clone(), id);
+                    node_ids.insert(child.clone(), next_id);
+                    next_id += 1;
                 }
             }
         }

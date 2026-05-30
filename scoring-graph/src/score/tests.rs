@@ -881,6 +881,7 @@ fn tc77_03_enum_range_no_strict() {
     let pb = field_varint(1, 99);
     let opts = walk::ScoringOpts {
         strict_ranges: false,
+        expand_any: true,
     };
     let s = score_entry_opts(&pb, &g, "M", &opts);
     assert!(!s.vetoed, "should not be vetoed with --no-strict-ranges");
@@ -894,6 +895,7 @@ fn tc77_04_range_32bit_overflow_always_veto() {
     let pb = field_varint(1, 1u64 << 32);
     let opts = walk::ScoringOpts {
         strict_ranges: false,
+        expand_any: true,
     };
     let s = score_entry_opts(&pb, &g, "M", &opts);
     assert!(s.vetoed, "val >= 2^32 on RANGE should always veto");

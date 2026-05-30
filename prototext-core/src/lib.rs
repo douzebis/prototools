@@ -25,6 +25,9 @@ pub struct RenderOpts {
     pub include_annotations: bool,
     /// Indentation step in spaces.
     pub indent: usize,
+    /// When `true` (default), expand `google.protobuf.Any` fields inline
+    /// using the type resolved from `type_url` (spec 0089).
+    pub expand_any: bool,
 }
 
 impl Default for RenderOpts {
@@ -33,6 +36,7 @@ impl Default for RenderOpts {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         }
     }
 }
@@ -91,6 +95,7 @@ pub fn render_as_text(
         schema,
         opts.include_annotations,
         opts.indent,
+        opts.expand_any,
     ))
 }
 

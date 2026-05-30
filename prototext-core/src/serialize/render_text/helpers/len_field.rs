@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
-use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START};
+use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START, EXPAND_ANY};
 use super::annotations::{field_decl, push_tag_modifiers, AnnWriter};
+use super::any_field::render_any_expansion;
 use super::output::{wfl_prefix_n, wob_prefix_n, write_close_brace, write_dec_u64};
 use super::scalar::render_invalid;
 
@@ -161,6 +162,25 @@ pub(in super::super) fn render_len_field(
     // to the mismatch handler below.
     if let Kind::Message(nested_msg_desc) = fs.kind() {
         if !fs.is_group() {
+            // Any expansion intercept (spec 0089): if the field type is
+            // google.protobuf.Any and EXPAND_ANY is set, try to expand the
+            // value inline using the resolved type from type_url.
+            if EXPAND_ANY.with(|c| c.get())
+                && nested_msg_desc.full_name() == "google.protobuf.Any"
+                && render_any_expansion(
+                    field_number,
+                    fs,
+                    all_schemas,
+                    tag_ohb,
+                    tag_oor,
+                    len_ohb,
+                    data,
+                    out,
+                )
+            {
+                return;
+            }
+
             let nested_schema: Option<&MessageDescriptor> = all_schemas
                 .and_then(|m| m.get(nested_msg_desc.full_name()))
                 .map(|v| &**v);

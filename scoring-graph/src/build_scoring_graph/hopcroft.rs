@@ -24,8 +24,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::graph::{
-    leaf_attrs, LeafRegistry, RawGraph, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN, LEAF_STRING,
-    LEAF_UINT32, LEAF_UINT64, NUM_FIXED_LEAVES,
+    leaf_attrs, LeafRegistry, RawGraph, ANY_NODE_ID, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN,
+    LEAF_STRING, LEAF_UINT32, LEAF_UINT64, MESSAGE_SET_NODE_ID, NUM_FIXED_LEAVES,
 };
 
 // ── Partition ─────────────────────────────────────────────────────────────────
@@ -131,7 +131,17 @@ pub fn minimize(
     let mut num_blocks: usize = 0;
 
     for i in 0..msg_count {
-        let wt = node_wire_types.get(&(i as u32)).copied().unwrap_or(2);
+        // Reserved nodes (spec 0089 §9): ANY_NODE_ID and MESSAGE_SET_NODE_ID each
+        // get their own unconditional singleton block so they are never merged
+        // with any other node regardless of structural equivalence.
+        let node_id = i as u32;
+        if node_id == ANY_NODE_ID || node_id == MESSAGE_SET_NODE_ID {
+            let b = num_blocks;
+            num_blocks += 1;
+            block_of[i] = b;
+            continue;
+        }
+        let wt = node_wire_types.get(&node_id).copied().unwrap_or(2);
         let s = sig[i].clone();
         let b = sig_to_block.entry((wt, s)).or_insert_with(|| {
             let b = num_blocks;

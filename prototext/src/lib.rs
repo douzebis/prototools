@@ -169,6 +169,10 @@ pub enum Command {
         #[arg(long = "no-strict-ranges")]
         no_strict_ranges: bool,
 
+        /// Suppress google.protobuf.Any expansion; render value as raw bytes.
+        #[arg(long = "no-expand-any")]
+        no_expand_any: bool,
+
         /// Root directory for output files in batch mode (exclusive with
         /// --output and --in-place).
         #[arg(
@@ -235,6 +239,10 @@ pub enum Command {
         /// penalties. 32-bit overflow always vetoes regardless.
         #[arg(long = "no-strict-ranges")]
         no_strict_ranges: bool,
+
+        /// Suppress google.protobuf.Any expansion; score value as plain bytes.
+        #[arg(long = "no-expand-any")]
+        no_expand_any: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

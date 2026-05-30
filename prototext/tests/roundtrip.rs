@@ -55,6 +55,7 @@ fn enum_known_value_renders_symbolic_name() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -81,6 +82,7 @@ fn enum_unknown_value_renders_numeric_with_enum_unknown() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -109,6 +111,7 @@ fn packed_enum_renders_symbolic_names() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -148,6 +151,7 @@ fn enum_annotation_roundtrips_wire() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -157,6 +161,7 @@ fn enum_annotation_roundtrips_wire() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -175,6 +180,7 @@ fn no_annotations_omits_unknown_fields() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -198,6 +204,7 @@ fn enum_named_float_roundtrip_is_varint() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -207,6 +214,7 @@ fn enum_named_float_roundtrip_is_varint() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -286,6 +294,7 @@ fn float_canonical_nan_renders_bare_nan() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -315,6 +324,7 @@ fn float_noncanonical_nan_renders_with_modifier() {
                 assume_binary: true,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -337,6 +347,7 @@ fn float_noncanonical_nan_renders_with_modifier() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -363,6 +374,7 @@ fn float_noncanonical_nan_roundtrips() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -372,6 +384,7 @@ fn float_noncanonical_nan_roundtrips() {
                 assume_binary: false,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -394,6 +407,7 @@ fn double_canonical_nan_renders_bare_nan() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -423,6 +437,7 @@ fn double_noncanonical_nan_renders_with_modifier() {
                 assume_binary: true,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -445,6 +460,7 @@ fn double_noncanonical_nan_renders_with_modifier() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -471,6 +487,7 @@ fn double_noncanonical_nan_roundtrips() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -480,6 +497,7 @@ fn double_noncanonical_nan_roundtrips() {
                 assume_binary: false,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -505,6 +523,7 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -525,6 +544,7 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -550,6 +570,7 @@ fn float_packed_noncanonical_nan_roundtrips() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -559,6 +580,7 @@ fn float_packed_noncanonical_nan_roundtrips() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -581,6 +603,7 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -601,6 +624,7 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -626,6 +650,7 @@ fn double_packed_noncanonical_nan_roundtrips() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -635,6 +660,7 @@ fn double_packed_noncanonical_nan_roundtrips() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -661,6 +687,7 @@ fn float_packed_all_nan_variants_roundtrip() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -670,6 +697,7 @@ fn float_packed_all_nan_variants_roundtrip() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -696,6 +724,7 @@ fn double_packed_all_nan_variants_roundtrip() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -705,6 +734,7 @@ fn double_packed_all_nan_variants_roundtrip() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -734,6 +764,7 @@ fn float_subnormals_roundtrip() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -743,6 +774,7 @@ fn float_subnormals_roundtrip() {
                 assume_binary: false,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -772,6 +804,7 @@ fn double_subnormals_roundtrip() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -781,6 +814,7 @@ fn double_subnormals_roundtrip() {
                 assume_binary: false,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -925,6 +959,7 @@ fn packed_int32_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -943,6 +978,7 @@ fn packed_int32_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -972,6 +1008,7 @@ fn packed_float_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -990,6 +1027,7 @@ fn packed_float_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1018,6 +1056,7 @@ fn packed_double_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1036,6 +1075,7 @@ fn packed_double_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1066,6 +1106,7 @@ fn canonical_float_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1084,6 +1125,7 @@ fn canonical_float_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1113,6 +1155,7 @@ fn noncanonical_float_nan_matches_protoc_output() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -1131,6 +1174,7 @@ fn noncanonical_float_nan_matches_protoc_output() {
                 assume_binary: true,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -1159,6 +1203,7 @@ fn canonical_double_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1177,6 +1222,7 @@ fn canonical_double_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1205,6 +1251,7 @@ fn noncanonical_double_nan_matches_protoc_output() {
                 assume_binary: true,
                 include_annotations: true,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -1223,6 +1270,7 @@ fn noncanonical_double_nan_matches_protoc_output() {
                 assume_binary: true,
                 include_annotations: false,
                 indent: 1,
+                expand_any: true,
             },
         )
         .unwrap();
@@ -1253,6 +1301,7 @@ fn packed_float_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1271,6 +1320,7 @@ fn packed_float_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1298,6 +1348,7 @@ fn packed_double_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1316,6 +1367,7 @@ fn packed_double_nan_matches_protoc_output() {
             assume_binary: true,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1387,6 +1439,7 @@ fn extension_field_renders_with_bracketed_fqn() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1423,6 +1476,7 @@ fn extension_field_roundtrip() {
             assume_binary: true,
             include_annotations: true,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1434,6 +1488,7 @@ fn extension_field_roundtrip() {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: true,
         },
     )
     .unwrap();
@@ -1484,11 +1539,13 @@ fn selftest_roundtrip() {
         assume_binary: true,
         include_annotations: true,
         indent: 1,
+        expand_any: true,
     };
     let opts_dec = RenderOpts {
         assume_binary: false,
         include_annotations: false,
         indent: 1,
+        expand_any: true,
     };
 
     let mut rng = seed;

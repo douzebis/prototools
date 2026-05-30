@@ -119,8 +119,7 @@ def render_scoring_graph(
 
     for state in data.get('states', []):
         sid = state['id']
-        wt = state['wire_type']
-        is_string = state.get('is_string', False)
+        wt = state['type']
         is_leaf = sid in leaf_states
 
         if sid in hidden_ids:
@@ -148,19 +147,19 @@ def render_scoring_graph(
                 size=20,
             )
         else:
-            if wt == 2 and is_string:
+            if wt == 'string':
                 label = 'string'
                 colour = '#ff8844'
-            elif wt == 0:
-                label = 'varint'
+            elif wt in ('range', 'uint32', 'int32', 'uint64'):
+                label = wt
                 colour = '#ffcc44'
-            elif wt == 1:
+            elif wt == 'double':
                 label = 'i64'
                 colour = '#ffcc44'
-            elif wt == 2:
+            elif wt == 'bytes':
                 label = 'len'
                 colour = '#ffcc44'
-            elif wt == 5:
+            elif wt == 'float':
                 label = 'i32'
                 colour = '#ffcc44'
             else:

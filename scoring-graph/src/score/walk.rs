@@ -81,6 +81,7 @@ struct WalkState<'a> {
     /// If set, print a message to stderr whenever this FQDN is vetoed.
     debug_fqdn: Option<String>,
     strict_ranges: bool,
+    expand_any: bool,
 }
 
 impl<'a> WalkState<'a> {
@@ -97,6 +98,7 @@ impl<'a> WalkState<'a> {
             vetoed: vec![0u64; words],
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
             strict_ranges: opts.strict_ranges,
+            expand_any: opts.expand_any,
         }
     }
 
@@ -147,12 +149,17 @@ pub struct ScoringOpts {
     /// If true (default), out-of-range RANGE values are vetoed.
     /// If false (--no-strict-ranges), they increment non_canonical instead.
     pub strict_ranges: bool,
+    /// If true (default), google.protobuf.Any fields are expanded using the
+    /// type resolved from type_url and scored against the wrapped type.
+    /// If false (--no-expand-any), value scores as a plain bytes match.
+    pub expand_any: bool,
 }
 
 impl Default for ScoringOpts {
     fn default() -> Self {
         Self {
             strict_ranges: true,
+            expand_any: true,
         }
     }
 }
@@ -547,6 +554,74 @@ fn apply_cardinality_multi(
     }
 }
 
+// ── Any expansion helpers (spec 0089 §8) ──────────────────────────────────────
+
+/// Block ID 0 is permanently reserved for `google.protobuf.Any` (spec 0089 §9).
+const ANY_BLOCK_ID: u32 = 0;
+
+/// Scan `any_bytes` for field 1 (WT_LEN, wire type 2) and return its value as
+/// a UTF-8 `&str`, or `None` if absent, empty, or not valid UTF-8.
+fn extract_type_url(any_bytes: &[u8]) -> Option<&str> {
+    let mut pos = 0;
+    let buflen = any_bytes.len();
+    while pos < buflen {
+        let tag = parse_wiretag(any_bytes, pos);
+        if tag.garbage.is_some() {
+            return None;
+        }
+        let field_number = tag.field_number;
+        let wire_type = tag.wire_type;
+        pos = tag.next_pos;
+        match wire_type {
+            WT_VARINT => {
+                let vr = parse_varint(any_bytes, pos);
+                if vr.garbage.is_some() {
+                    return None;
+                }
+                pos = vr.next_pos;
+            }
+            WT_I64 => {
+                if pos + 8 > buflen {
+                    return None;
+                }
+                pos += 8;
+            }
+            WT_LEN => {
+                let lr = parse_varint(any_bytes, pos);
+                if lr.garbage.is_some() {
+                    return None;
+                }
+                pos = lr.next_pos;
+                let len = lr.value as usize;
+                if pos + len > buflen {
+                    return None;
+                }
+                let payload = &any_bytes[pos..pos + len];
+                pos += len;
+                if field_number == 1 {
+                    // Field 1 = type_url (string).
+                    if payload.is_empty() {
+                        return None;
+                    }
+                    return std::str::from_utf8(payload).ok();
+                }
+            }
+            WT_START_GROUP => {
+                // Skip nested group blindly; for Any payloads this should not appear.
+                pos = parse_group_blind(any_bytes, pos, field_number)?;
+            }
+            WT_I32 => {
+                if pos + 4 > buflen {
+                    return None;
+                }
+                pos += 4;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn score_message_multi(
     buf: &[u8],
     start: usize,
@@ -876,8 +951,50 @@ fn score_message_multi(
                 active.retain(|ae| !ae.entries.is_empty());
 
                 if !child_pairs.is_empty() {
-                    let child_active = group_by_state(child_pairs.into_iter());
-                    score_message_multi(payload, 0, child_active, None, ws);
+                    // Separate Any candidates (child_state == ANY_BLOCK_ID) from
+                    // normal message candidates (spec 0089 §6).
+                    let (any_pairs, normal_pairs): (Vec<_>, Vec<_>) = child_pairs
+                        .into_iter()
+                        .partition(|(child, _)| *child == ANY_BLOCK_ID);
+
+                    if !any_pairs.is_empty() && ws.expand_any {
+                        // Resolve type_url from the Any payload.
+                        let resolved_state: Option<u32> =
+                            extract_type_url(payload).and_then(|type_url| {
+                                let fqdn = if let Some(slash) = type_url.rfind('/') {
+                                    &type_url[slash + 1..]
+                                } else {
+                                    type_url
+                                };
+                                ws.graph
+                                    .roots
+                                    .iter()
+                                    .find(|r| r.fqdn.as_str() == fqdn)
+                                    .map(|r| r.state_id.to_native())
+                            });
+                        match resolved_state {
+                            Some(root_state) => {
+                                // Recurse into the wrapped type: replace state_id 0
+                                // with the resolved root entry state; keep entry indices.
+                                let any_active =
+                                    group_by_state(any_pairs.iter().map(|&(_, e)| (root_state, e)));
+                                score_message_multi(payload, 0, any_active, None, ws);
+                            }
+                            None => {
+                                // Unknown type_url or not a root: score value as plain
+                                // bytes match — one match, no penalty (already counted
+                                // above when we pushed to child_pairs).
+                                // No recursion needed; match was already recorded.
+                            }
+                        }
+                    } else if !any_pairs.is_empty() {
+                        // expand_any disabled: plain bytes match already counted above.
+                    }
+
+                    if !normal_pairs.is_empty() {
+                        let child_active = group_by_state(normal_pairs.into_iter());
+                        score_message_multi(payload, 0, child_active, None, ws);
+                    }
                     propagate_vetoes(&mut active, ws);
                 }
             }

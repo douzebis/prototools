@@ -126,7 +126,13 @@ impl SchemaHandle {
         if !assume_binary && is_prototext_text(data) {
             return data.to_vec();
         }
-        decode_and_render(data, Some(self.inner.as_ref()), include_annotations, indent)
+        decode_and_render(
+            data,
+            Some(self.inner.as_ref()),
+            include_annotations,
+            indent,
+            true,
+        )
     }
 }
 
@@ -219,7 +225,7 @@ fn format_as_text<'py>(
     }
 
     let parsed_schema = schema.map(|sh| sh.inner.as_ref());
-    let rendered = decode_and_render(raw, parsed_schema, include_annotations, indent_size);
+    let rendered = decode_and_render(raw, parsed_schema, include_annotations, indent_size, true);
     Ok(PyBytes::new(py, &rendered))
 }
 

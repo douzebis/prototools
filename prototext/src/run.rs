@@ -135,6 +135,7 @@ fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: false,
         };
         render_as_bytes(&bytes, opts).map_err(|e: CodecError| {
             format!("decoding prototext descriptor '{}': {}", path.display(), e)
@@ -181,6 +182,7 @@ pub fn infer_type(
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: false,
         };
         binary_buf = render_as_bytes(pb_bytes, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
@@ -277,11 +279,13 @@ pub fn process(
     assume_binary: bool,
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
+    expand_any: bool,
 ) -> Result<Vec<u8>, String> {
     let opts = RenderOpts {
         assume_binary,
         include_annotations: annotations,
         indent: 1,
+        expand_any,
     };
     if decode {
         render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
@@ -339,6 +343,7 @@ pub fn list_schemas_one(
             assume_binary: false,
             include_annotations: false,
             indent: 1,
+            expand_any: false,
         };
         binary_buf = render_as_bytes(pb_bytes, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
@@ -409,6 +414,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             annotations,
             detailed_score,
             no_strict_ranges,
+            no_expand_any,
             output_root: cmd_output_root,
             paths,
         } => {
@@ -416,6 +422,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             let output_root = cli.output_root.or(cmd_output_root);
             let scoring_opts = ScoringOpts {
                 strict_ranges: !no_strict_ranges,
+                expand_any: !no_expand_any,
             };
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
@@ -441,6 +448,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 in_place,
                 assume_binary,
                 effective_annotations,
+                !no_expand_any,
                 detailed_score,
                 &scoring_opts,
                 cli.strict,
@@ -476,6 +484,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             top,
             detailed_score,
             no_strict_ranges,
+            no_expand_any,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -489,6 +498,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 strict_ranges: !no_strict_ranges,
+                expand_any: !no_expand_any,
             };
             run_list_schemas(
                 graph,
@@ -605,6 +615,7 @@ fn run_decode(
     in_place: bool,
     assume_binary: bool,
     annotations: bool,
+    expand_any: bool,
     detailed_score: bool,
     scoring_opts: &ScoringOpts,
     strict: bool,
@@ -633,7 +644,7 @@ fn run_decode(
             io::stdin()
                 .read_to_end(&mut data)
                 .map_err(|e| format!("reading stdin: {}", e))?;
-            let out = process(&data, true, assume_binary, None, annotations)?;
+            let out = process(&data, true, assume_binary, None, annotations, false)?;
             write_output(&out, output.as_deref())?;
         } else {
             let all_files = expand_all_paths(paths, &base)?;
@@ -641,7 +652,7 @@ fn run_decode(
                 let f = &all_files[0];
                 let data = std::fs::read(&f.abs)
                     .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-                let out = process(&data, true, assume_binary, None, annotations)?;
+                let out = process(&data, true, assume_binary, None, annotations, false)?;
                 write_output(&out, output.as_deref())?;
             } else {
                 if !in_place && output_root.is_none() {
@@ -655,6 +666,7 @@ fn run_decode(
                     assume_binary,
                     None,
                     annotations,
+                    false,
                     in_place,
                     output_root,
                 )?;
@@ -714,7 +726,14 @@ fn run_decode(
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
-                    let out = process(&data, true, assume_binary, Some(&infer_schema), annotations);
+                    let out = process(
+                        &data,
+                        true,
+                        assume_binary,
+                        Some(&infer_schema),
+                        annotations,
+                        expand_any,
+                    );
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
                     return Ok(());
@@ -722,7 +741,14 @@ fn run_decode(
             }
         }
 
-        let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
+        let out = process(
+            &data,
+            true,
+            assume_binary,
+            schema.as_ref(),
+            annotations,
+            expand_any,
+        )?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -753,7 +779,14 @@ fn run_decode(
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
-                    let out = process(&data, true, assume_binary, Some(&infer_schema), annotations);
+                    let out = process(
+                        &data,
+                        true,
+                        assume_binary,
+                        Some(&infer_schema),
+                        annotations,
+                        expand_any,
+                    );
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
                     return Ok(());
@@ -761,7 +794,14 @@ fn run_decode(
             }
         }
 
-        let out = process(&data, true, assume_binary, schema.as_ref(), annotations)?;
+        let out = process(
+            &data,
+            true,
+            assume_binary,
+            schema.as_ref(),
+            annotations,
+            expand_any,
+        )?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -776,6 +816,7 @@ fn run_decode(
             all_files,
             assume_binary,
             annotations,
+            expand_any,
             detailed_score,
             scoring_opts,
             strict,
@@ -791,6 +832,7 @@ fn run_decode(
         assume_binary,
         schema.as_ref(),
         annotations,
+        expand_any,
         in_place,
         output_root,
     )
@@ -820,7 +862,7 @@ fn run_encode(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let out = process(&data, false, false, None, false)?;
+        let out = process(&data, false, false, None, false, false)?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -831,7 +873,7 @@ fn run_encode(
         let f = &all_files[0];
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-        let out = process(&data, false, false, None, false)?;
+        let out = process(&data, false, false, None, false, false)?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -840,7 +882,16 @@ fn run_encode(
         return Err("multiple input files require --in-place (-i) or --output-root (-O)".into());
     }
 
-    run_batch(all_files, false, false, None, false, in_place, output_root)
+    run_batch(
+        all_files,
+        false,
+        false,
+        None,
+        false,
+        false,
+        in_place,
+        output_root,
+    )
 }
 
 // ── list-schemas handler ──────────────────────────────────────────────────────
@@ -930,6 +981,7 @@ fn run_score(
                 assume_binary,
                 include_annotations: false,
                 indent: 1,
+                expand_any: false,
             },
         )
         .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
@@ -1078,6 +1130,7 @@ fn run_batch_infer(
     all_files: Vec<InputFile>,
     assume_binary: bool,
     annotations: bool,
+    expand_any: bool,
     detailed_score: bool,
     scoring_opts: &ScoringOpts,
     strict: bool,
@@ -1147,7 +1200,14 @@ fn run_batch_infer(
             }
         };
         EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
-        let raw_out = process(data, true, assume_binary, Some(&schema), annotations);
+        let raw_out = process(
+            data,
+            true,
+            assume_binary,
+            Some(&schema),
+            annotations,
+            expand_any,
+        );
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());
         let raw_out = match raw_out {
             Ok(o) => o,
@@ -1177,12 +1237,14 @@ fn run_batch_infer(
 
 // ── batch helper ──────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn run_batch(
     all_files: Vec<InputFile>,
     decode: bool,
     assume_binary: bool,
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
+    expand_any: bool,
     in_place: bool,
     output_root: Option<&PathBuf>,
 ) -> Result<(), String> {
@@ -1232,7 +1294,14 @@ fn run_batch(
         };
 
         let dest = output_path_for(&f, in_place, output_root);
-        match process(&data, decode, assume_binary, schema, annotations) {
+        match process(
+            &data,
+            decode,
+            assume_binary,
+            schema,
+            annotations,
+            expand_any,
+        ) {
             Ok(out) => {
                 if let Err(e) = write_output(&out, Some(&dest)) {
                     eprintln!("error: {}", e);
@@ -1302,6 +1371,7 @@ fn run_instantiate_schema(
         assume_binary: true,
         include_annotations: true,
         indent: 1,
+        expand_any: true,
     };
     let text_bytes = render_as_text(&binary, Some(&schema), render_opts)
         .map_err(|e: CodecError| e.to_string())?;
