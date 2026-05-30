@@ -18,3 +18,4 @@
 /ruff.toml
 /schema-db/data/
 /docs/specs/0043-hopcroft-db-bp-protodb.md
+protoscan/src/protoscan/tests/__pycache__/

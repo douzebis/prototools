@@ -218,6 +218,22 @@ let
     '';
   };
 
+  # Tests run separately so that the installable protoscan package has doCheck = false
+  # (avoiding pytest during nix-shell) while ci still enforces test passage.
+  protoscanTests = pkgs.runCommand "protoscan-tests" {
+    buildInputs = [
+      (pythonPkgs.python.withPackages (_: [
+        protoscan
+        pythonPkgs.pytest
+        pythonPkgs."pytest-xdist"
+      ]))
+    ];
+  } ''
+    export PYTHONPATH="${../protoscan}/src"
+    pytest -p no:cacheprovider ${../protoscan}/src/protoscan/tests/ -x
+    touch $out
+  '';
+
   # ---------------------------------------------------------------------------
   # Python lint — pyright type checking for the reproto Python package.
   #
@@ -508,6 +524,7 @@ in {
     reproto
     reprotoTests
     protoscan
+    protoscanTests
     pythonLint
     pythonRuff
     googleapisPbs
