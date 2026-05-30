@@ -78,7 +78,7 @@ def _reproto_cmd(orig_dir: Path, out_dir: Path, extra_args: list[str]) -> list[s
 def _decode_fdp(pb_path: Path) -> str:
     """Decode a bare FileDescriptorProto .pb as annotated prototext."""
     r = subprocess.run(
-        ["prototext", "decode", "-a",
+        ["prototext", "decode",
          "-t", "google.protobuf.FileDescriptorProto",
          str(pb_path)],
         capture_output=True, text=True,
@@ -248,7 +248,7 @@ def _run_emit_binary_golden(
 
     # Decode emit.pb as annotated prototext and compare against golden.
     r = subprocess.run(
-        ["prototext", "decode", "-a",
+        ["prototext", "decode",
          "-t", "google.protobuf.FileDescriptorProto",
          str(emit_pb)],
         capture_output=True, text=True,

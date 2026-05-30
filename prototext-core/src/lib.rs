@@ -61,7 +61,7 @@ impl std::fmt::Display for CodecError {
             CodecError::NotPrototext => write!(
                 f,
                 "input is not prototext (missing '#@ prototext:' header); \
-                 use 'prototext decode -a' to produce encodable output"
+                 use 'prototext decode' to produce encodable output (annotations on by default)"
             ),
         }
     }

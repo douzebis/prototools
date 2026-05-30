@@ -62,10 +62,10 @@ prototext decode message.binpb
 .nf
 prototext --descriptor-set descriptor.pb decode --type pkg.MyMessage message.binpb
 .fi
-.SS Decode with inline annotations (required for lossless round-trip)
+.SS Decode with inline annotations (on by default; use --no-annotations for clean output)
 .PP
 .nf
-prototext --descriptor-set descriptor.pb decode -a --type pkg.MyMessage message.binpb
+prototext --descriptor-set descriptor.pb decode --type pkg.MyMessage message.binpb
 .fi
 .SS Encode text back to binary
 .PP

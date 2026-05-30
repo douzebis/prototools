@@ -149,7 +149,7 @@ demo/header "5. Non-canonical protobufs"
 # The wire format allows encodings that are valid but non-canonical: repeated    \
 # optional fields, over-long varints, unexpected field ordering.  Standard       \
 # decoders silently normalise or discard them — a potential side channel.        \
-# prototext decode -a exposes every anomaly; prototext encode preserves them.    \
+# prototext decode exposes every anomaly; prototext encode preserves them.       \
 #
 # \
 #                                                                                \
@@ -174,7 +174,7 @@ bat --style=numbers,header-filename -l proto -r 13:25 -H 24 \
 # (The #@ annotations are prototext's wire-encoding hints — field number and type.)
 \
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
+    decode $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed '/^organization: "S3NS"/i organization: "Entrance secret PIN code: 666*"  #@ string = 11' \
   | prototext encode > stash/postal_hidden.pb
 
@@ -209,14 +209,14 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 #                                                                                \
 # A spurious continuation-byte on a varint does not change its decoded value,    \
 # but makes the encoding non-minimal.  Standard decoders strip it silently.      \
-# prototext decode -a flags it and preserves it through encode.                  \
+# prototext decode flags it and preserves it through encode.                     \
 #
 
 # \
 # Craft postal_patched.pb: inject an over-long varint on the revision field.
 \
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     $GOOGLEAPIS_PBS/google/type/PostalAddress.pb \
   | sed 's/#@ int32 = 1$/#@ int32 = 1; val_ohb: 1/' \
   | prototext encode > stash/postal_patched.pb
@@ -243,14 +243,14 @@ protoc \
   | bat --style=numbers,header-filename -l pbtxt
 
 # \
-# prototext -a decodes with full anomaly annotations.
+# prototext decode shows full anomaly annotations by default.
 \
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     stash/postal_patched.pb \
   | bat --style=numbers,header-filename -l pbtxt -H 5
 # \
-# 👆 prototext -a flags it: look for val_ohb on the revision field.              \
+# 👆 prototext flags it: look for val_ohb on the revision field.                 \
 # (val_ohb = over-hung byte — the extra byte that shouldn't be there.)           \
 #
 
@@ -264,7 +264,7 @@ prototext --descriptor-set $GOOGLEAPIS_DB \
 # prototext round-trip: the over-hung byte is preserved exactly.
 \
 prototext --descriptor-set $GOOGLEAPIS_DB \
-    decode -a \
+    decode \
     stash/postal_patched.pb \
   | prototext encode \
   | diff - stash/postal_patched.pb \

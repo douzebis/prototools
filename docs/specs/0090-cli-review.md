@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0090 — prototext CLI review and polish
 
-**Status:** draft
-**Implemented in:** —
+**Status:** implemented
+**Implemented in:** 2026-05-30
 **App:** prototext
 
 ---

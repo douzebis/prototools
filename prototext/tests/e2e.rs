@@ -64,12 +64,12 @@ fn cli_roundtrip(
 
     let mut decode_cmd = Command::new(bin);
     decode_cmd
-        .arg("--descriptor")
+        .arg("--descriptor-set")
         .arg(schema_path)
         .arg("decode")
         .args(["--type", message]);
-    if annotations {
-        decode_cmd.arg("--annotations");
+    if !annotations {
+        decode_cmd.arg("--no-annotations");
     }
     let decode_out = decode_cmd
         .stdin(std::process::Stdio::piped())
@@ -155,7 +155,7 @@ fn fixture_roundtrip_annotated_craft_a() {
 
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
-/// CLI: `prototext decode` (no -a) must exit 0 for every fixture.
+/// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.
 ///
 /// Without annotations the header is suppressed and encode is not possible,
 /// so this test only checks that decode itself succeeds cleanly.
@@ -175,10 +175,11 @@ fn fixture_no_panic_no_annotations() {
         let wire = func();
         let sp = schema_path(&schema_rel);
         let out = Command::new(bin)
-            .arg("--descriptor")
+            .arg("--descriptor-set")
             .arg(&sp)
             .arg("decode")
             .args(["--type", &message])
+            .arg("--no-annotations")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -187,7 +188,7 @@ fn fixture_no_panic_no_annotations() {
             .wait_with_output_and_stdin(&wire);
         assert!(
             out.status.success(),
-            "{name}: prototext decode (no -a) must exit 0:\n{}",
+            "{name}: prototext decode --no-annotations must exit 0:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
         ran += 1;

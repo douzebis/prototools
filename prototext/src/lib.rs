@@ -55,7 +55,29 @@ pub static WKT_INDEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wkt_inde
 ///   zsh:   source <(PROTOTEXT_COMPLETE=zsh prototext)
 ///   fish:  PROTOTEXT_COMPLETE=fish prototext | source
 #[derive(Debug, Parser)]
-#[command(name = "prototext", version, about, long_about = None)]
+#[command(
+    name = "prototext",
+    version,
+    about,
+    long_about = None,
+    after_help = "\
+Examples:
+  # Decode to stdout (schemaless)
+  prototext decode foo.pb
+
+  # Decode with schema; annotations included by default
+  prototext --descriptor-set my.desc decode --type com.example.Foo foo.pb
+
+  # Suppress annotations (protoc-compatible output)
+  prototext --descriptor-set my.desc decode --type com.example.Foo \\
+      --no-annotations foo.pb
+
+  # Identify the schema of an unknown binary
+  prototext --descriptor-set my.desc list-schemas foo.pb
+
+  # Encode prototext back to binary
+  prototext encode foo.txtpb -o foo.pb",
+)]
 pub struct Cli {
     // ── Descriptor ────────────────────────────────────────────────────────────
     /// FileDescriptorSet for type lookup and scoring.
@@ -65,13 +87,14 @@ pub struct Cli {
     /// <stem>/hopcroft.rkyv file exists it is loaded automatically and enables
     /// scoring and auto-inference.
     ///
-    /// Resolution order: (1) this flag, (2) PROTOTEXT_DEFAULT_DESCRIPTOR env
-    /// var, (3) built-in google.protobuf.* fallback.
+    /// Resolution order: (1) this flag, (2) PROTOTEXT_DESCRIPTOR_SET env var
+    /// (PROTOTEXT_DEFAULT_DESCRIPTOR accepted with a deprecation warning),
+    /// (3) built-in google.protobuf.* fallback.
     #[arg(
         long = "descriptor-set",
         alias = "descriptor",
-        value_name = "DESCRIPTOR_FILE",
-        env = "PROTOTEXT_DEFAULT_DESCRIPTOR",
+        value_name = "DESCRIPTOR_SET_FILE",
+        env = "PROTOTEXT_DESCRIPTOR_SET",
         add = ArgValueCompleter::new(complete_descriptor_path),
     )]
     pub descriptor: Option<PathBuf>,
@@ -114,10 +137,6 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
-    /// Treat inference warnings (ambiguous type) as errors: exit 1 instead of 2.
-    #[arg(long = "strict")]
-    pub strict: bool,
-
     // ── Subcommand ────────────────────────────────────────────────────────────
     #[command(subcommand)]
     pub command: Command,
@@ -153,36 +172,35 @@ pub enum Command {
         #[arg(long = "assume-binary")]
         assume_binary: bool,
 
-        /// Emit inline wire-type/field-number comments.
-        /// Required for lossless round-trip encode.
-        #[arg(short = 'a', long)]
-        annotations: bool,
+        /// Suppress inline wire-type/field-number comments.
+        /// Output will not round-trip losslessly without them.
+        #[arg(long = "no-annotations")]
+        no_annotations: bool,
 
         /// Add individual score dimensions (matched, unknown, mismatches,
         /// non_canonical) to the ambiguous-type warning YAML.
         /// Only effective when type inference is ambiguous.
-        #[arg(long = "detailed-score")]
+        #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
 
         /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
         /// penalties. 32-bit overflow always vetoes regardless.
-        #[arg(long = "no-strict-ranges")]
-        no_strict_ranges: bool,
+        #[arg(
+            long = "relax-ranges",
+            alias = "no-strict-ranges",
+            help_heading = "Advanced options"
+        )]
+        relax_ranges: bool,
 
         /// Suppress google.protobuf.Any expansion; render value as raw bytes.
-        #[arg(long = "no-expand-any")]
+        #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
 
-        /// Root directory for output files in batch mode (exclusive with
-        /// --output and --in-place).
-        #[arg(
-            short = 'O',
-            long = "output-root",
-            value_name = "DIR",
-            conflicts_with_all = ["in_place"],
-            add = ArgValueCompleter::new(complete_dir_path),
-        )]
-        output_root: Option<PathBuf>,
+        /// Treat type-inference warnings (ambiguous type) as errors:
+        /// exit 1 instead of exit 2.  Only applicable when auto-inferring type
+        /// (no --type given and DB-backed descriptor present).
+        #[arg(long = "strict", help_heading = "Advanced options")]
+        strict: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.
@@ -199,17 +217,6 @@ pub enum Command {
         /// Files are read fully before writing.
         #[arg(short = 'i', long = "in-place", conflicts_with = "output_root")]
         in_place: bool,
-
-        /// Root directory for output files in batch mode (exclusive with
-        /// --output and --in-place).
-        #[arg(
-            short = 'O',
-            long = "output-root",
-            value_name = "DIR",
-            conflicts_with_all = ["in_place"],
-            add = ArgValueCompleter::new(complete_dir_path),
-        )]
-        output_root: Option<PathBuf>,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.
@@ -230,18 +237,27 @@ pub enum Command {
         #[arg(long = "top", value_name = "N")]
         top: Option<usize>,
 
+        /// Treat PATH arguments as raw binary protobuf; skip #@ prototext
+        /// auto-detection on the input files.
+        #[arg(long = "assume-binary")]
+        assume_binary: bool,
+
         /// Add individual score dimensions (matched, unknown, mismatches,
         /// non_canonical) alongside the consolidated score for each type.
-        #[arg(long = "detailed-score")]
+        #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
 
         /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
         /// penalties. 32-bit overflow always vetoes regardless.
-        #[arg(long = "no-strict-ranges")]
-        no_strict_ranges: bool,
+        #[arg(
+            long = "relax-ranges",
+            alias = "no-strict-ranges",
+            help_heading = "Advanced options"
+        )]
+        relax_ranges: bool,
 
         /// Suppress google.protobuf.Any expansion; score value as plain bytes.
-        #[arg(long = "no-expand-any")]
+        #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
 
         /// Input files, glob patterns, or directories (recursive).
@@ -251,33 +267,6 @@ pub enum Command {
             add = ArgValueCompleter::new(complete_input_paths),
         )]
         paths: Vec<String>,
-    },
-
-    /// Generate a pseudo-random valid protobuf instance for one or more message types.
-    ///
-    /// Output is #@ prototext with type and seed hint comments.
-    /// Multiple TYPEs require --output-root (-O).
-    #[command(name = "instantiate-schema")]
-    InstantiateSchema {
-        /// One or more fully-qualified message type names (e.g. google.protobuf.Timestamp).
-        #[arg(value_name = "TYPE", required = true)]
-        types: Vec<String>,
-
-        /// Integer seed (default 0).
-        #[arg(long, default_value_t = 0)]
-        seed: i64,
-
-        /// Maximum recursion depth for nested messages (default 4).
-        #[arg(long, default_value_t = 4)]
-        max_depth: usize,
-
-        /// Maximum number of elements for repeated fields (default 3).
-        #[arg(long, default_value_t = 3)]
-        max_repeated: usize,
-
-        /// Probability of populating an optional field (default 0.7).
-        #[arg(long, default_value_t = 0.7)]
-        p_optional: f64,
     },
 
     /// Score input(s) against a known schema type and report the match breakdown.
@@ -298,6 +287,15 @@ pub enum Command {
         /// auto-detection on the input files.
         #[arg(long = "assume-binary")]
         assume_binary: bool,
+
+        /// Downgrade out-of-range RANGE (bool/enum) vetoes to non-canonical
+        /// penalties. 32-bit overflow always vetoes regardless.
+        #[arg(
+            long = "relax-ranges",
+            alias = "no-strict-ranges",
+            help_heading = "Advanced options"
+        )]
+        relax_ranges: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

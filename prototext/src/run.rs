@@ -21,7 +21,6 @@ use score_graph_lib::score::{
 
 use crate::inputs::{expand_path, InputFile};
 use crate::lazy_pool::LazyPool;
-use prototext_core::instantiate::{generate_message_bytes, InstantiateOpts};
 
 #[cfg(feature = "wkt-db")]
 use crate::WKT_GRAPH;
@@ -337,19 +336,6 @@ pub fn list_schemas_one(
     scoring_opts: &ScoringOpts,
     out: &mut dyn Write,
 ) -> Result<(), String> {
-    let binary_buf;
-    let pb_bytes = {
-        let opts = RenderOpts {
-            assume_binary: false,
-            include_annotations: false,
-            indent: 1,
-            expand_any: false,
-        };
-        binary_buf = render_as_bytes(pb_bytes, opts)
-            .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
-        binary_buf.as_slice()
-    };
-
     let mut results = score_all(pb_bytes, graph, scoring_opts);
     results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
         (false, true) => std::cmp::Ordering::Less,
@@ -401,6 +387,17 @@ pub fn list_schemas_one(
 // ── Top-level run ─────────────────────────────────────────────────────────────
 
 pub fn run(cli: Cli) -> Result<(), String> {
+    // Deprecation warning for old env var name.
+    if std::env::var_os("PROTOTEXT_DESCRIPTOR_SET").is_none()
+        && std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR").is_some()
+        && !cli.quiet
+    {
+        eprintln!(
+            "warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; \
+             use PROTOTEXT_DESCRIPTOR_SET"
+        );
+    }
+
     // Resolve the descriptor once up front.
     let mut desc_ctx = DescriptorContext::load(cli.descriptor.as_deref())?;
 
@@ -411,17 +408,17 @@ pub fn run(cli: Cli) -> Result<(), String> {
             raw,
             in_place,
             assume_binary,
-            annotations,
+            no_annotations,
             detailed_score,
-            no_strict_ranges,
+            relax_ranges,
             no_expand_any,
-            output_root: cmd_output_root,
+            strict,
             paths,
         } => {
-            let effective_annotations = annotations;
-            let output_root = cli.output_root.or(cmd_output_root);
+            let annotations = !no_annotations;
+            let output_root = cli.output_root.clone();
             let scoring_opts = ScoringOpts {
-                strict_ranges: !no_strict_ranges,
+                strict_ranges: !relax_ranges,
                 expand_any: !no_expand_any,
             };
 
@@ -447,11 +444,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 raw,
                 in_place,
                 assume_binary,
-                effective_annotations,
+                annotations,
                 !no_expand_any,
                 detailed_score,
                 &scoring_opts,
-                cli.strict,
+                strict,
                 &cli.output,
                 output_root.as_ref(),
                 &cli.input_root,
@@ -460,12 +457,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
         }
 
         // ── encode ────────────────────────────────────────────────────────────
-        Command::Encode {
-            in_place,
-            output_root: cmd_output_root,
-            paths,
-        } => {
-            let output_root = cli.output_root.or(cmd_output_root);
+        Command::Encode { in_place, paths } => {
+            let output_root = cli.output_root.clone();
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
             validate_roots_not_same(&cli.input_root, &output_root)?;
@@ -482,8 +475,9 @@ pub fn run(cli: Cli) -> Result<(), String> {
         // ── list-schemas ──────────────────────────────────────────────────────
         Command::ListSchemas {
             top,
+            assume_binary,
             detailed_score,
-            no_strict_ranges,
+            relax_ranges,
             no_expand_any,
             paths,
         } => {
@@ -497,12 +491,13 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 }
             })?;
             let scoring_opts = ScoringOpts {
-                strict_ranges: !no_strict_ranges,
+                strict_ranges: !relax_ranges,
                 expand_any: !no_expand_any,
             };
             run_list_schemas(
                 graph,
                 top,
+                assume_binary,
                 detailed_score,
                 &scoring_opts,
                 &cli.input_root,
@@ -510,47 +505,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
             )
         }
 
-        // ── instantiate-schema ────────────────────────────────────────────────
-        Command::InstantiateSchema {
-            types,
-            seed,
-            max_depth,
-            max_repeated,
-            p_optional,
-        } => {
-            if types.len() > 1 && cli.output_root.is_none() {
-                return Err("multiple types require --output-root (-O)".into());
-            }
-            let opts = InstantiateOpts {
-                seed,
-                max_depth,
-                max_repeated,
-                p_optional,
-                quiet: cli.quiet,
-            };
-            for type_name in &types {
-                let lookup = type_name.trim_start_matches('.');
-                if let Some(lazy) = &mut desc_ctx.lazy {
-                    lazy.get_message(lookup)
-                        .map_err(|e| format!("loading type '{lookup}': {e}"))?;
-                }
-                let out: Option<PathBuf> = if let Some(ref root) = cli.output_root {
-                    let rel = lookup.replace('.', "/");
-                    let mut p = root.join(rel);
-                    p.set_extension("pb");
-                    Some(p)
-                } else {
-                    cli.output.clone()
-                };
-                run_instantiate_schema(desc_ctx.pool().clone(), lookup, &opts, out.as_deref())?;
-            }
-            Ok(())
-        }
-
         // ── score ─────────────────────────────────────────────────────────────
         Command::Score {
             r#type,
             assume_binary,
+            relax_ranges,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -562,7 +521,18 @@ pub fn run(cli: Cli) -> Result<(), String> {
                      or a wkt-db-enabled build"
                 }
             })?;
-            run_score(graph, &r#type, assume_binary, &cli.input_root, &paths)
+            let scoring_opts = ScoringOpts {
+                strict_ranges: !relax_ranges,
+                expand_any: true,
+            };
+            run_score(
+                graph,
+                &r#type,
+                assume_binary,
+                &scoring_opts,
+                &cli.input_root,
+                &paths,
+            )
         }
     }
 }
@@ -899,6 +869,7 @@ fn run_encode(
 fn run_list_schemas(
     graph: &LoadedGraph,
     top: Option<usize>,
+    assume_binary: bool,
     detailed_score: bool,
     scoring_opts: &ScoringOpts,
     input_root: &Option<PathBuf>,
@@ -910,13 +881,25 @@ fn run_list_schemas(
 
     let mut out = io::stdout();
 
+    let read_data = |raw: &[u8]| -> Result<Vec<u8>, String> {
+        let opts = RenderOpts {
+            assume_binary,
+            include_annotations: false,
+            indent: 1,
+            expand_any: false,
+        };
+        render_as_bytes(raw, opts)
+            .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))
+    };
+
     if paths.is_empty() {
         let mut data = Vec::new();
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
+        let binary = read_data(&data)?;
         return list_schemas_one(
-            &data,
+            &binary,
             graph,
             "<stdin>",
             top,
@@ -930,9 +913,10 @@ fn run_list_schemas(
     for f in &all_files {
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
+        let binary = read_data(&data)?;
         let label = f.abs.display().to_string();
         list_schemas_one(
-            &data,
+            &binary,
             graph,
             &label,
             top,
@@ -950,6 +934,7 @@ fn run_score(
     graph: &LoadedGraph,
     type_name: &str,
     assume_binary: bool,
+    scoring_opts: &ScoringOpts,
     input_root: &Option<PathBuf>,
     paths: &[String],
 ) -> Result<(), String> {
@@ -985,7 +970,7 @@ fn run_score(
             },
         )
         .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
-        let results = score_all(&binary, graph, &ScoringOpts::default());
+        let results = score_all(&binary, graph, scoring_opts);
         let result = results
             .iter()
             .find(|r| r.fqdn == type_name || r.fqdn == format!(".{}", type_name))
@@ -1342,50 +1327,4 @@ fn expand_all_paths(paths: &[String], base: &Path) -> Result<Vec<InputFile>, Str
     }
 
     Ok(all_files)
-}
-
-// ── instantiate-schema handler ────────────────────────────────────────────────
-
-fn run_instantiate_schema(
-    pool: prost_reflect::DescriptorPool,
-    type_name: &str,
-    opts: &InstantiateOpts,
-    output: Option<&Path>,
-) -> Result<(), String> {
-    let fqdn = if type_name.starts_with('.') {
-        type_name.to_string()
-    } else {
-        format!(".{}", type_name)
-    };
-    let lookup_name = fqdn.trim_start_matches('.');
-
-    let schema = schema_from_pool(pool, lookup_name).map_err(|e| format!("descriptor: {}", e))?;
-
-    let msg_desc = schema
-        .root_descriptor()
-        .ok_or_else(|| format!("type '{}' not found in descriptor", lookup_name))?;
-
-    let binary = generate_message_bytes(&msg_desc, opts);
-
-    let render_opts = RenderOpts {
-        assume_binary: true,
-        include_annotations: true,
-        indent: 1,
-        expand_any: true,
-    };
-    let text_bytes = render_as_text(&binary, Some(&schema), render_opts)
-        .map_err(|e: CodecError| e.to_string())?;
-
-    let text = String::from_utf8(text_bytes)
-        .map_err(|e| format!("generated text is not valid UTF-8: {}", e))?;
-    let out = insert_hints(&text, &fqdn, opts.seed);
-
-    write_output(out.as_bytes(), output)
-}
-
-fn insert_hints(text: &str, fqdn: &str, seed: i64) -> String {
-    let mut lines = text.splitn(2, '\n');
-    let magic = lines.next().unwrap_or("");
-    let rest = lines.next().unwrap_or("");
-    format!("{}\n# type: {}\n# seed: {}\n{}", magic, fqdn, seed, rest)
 }
