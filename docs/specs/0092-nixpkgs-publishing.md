@@ -103,19 +103,9 @@ Details in the Specification section below.
 ### PR 2 — `prototools: add reproto`
 
 **Scope:** `reproto` (Python CLI) + `prototext_codec` + `scoring_graph`
-PyO3 extensions + `treeSitterTextproto` C extension.
+PyO3 extensions + `tree-sitter-textproto` C extension.
 
-Blockers before this PR:
-- Confirm `lark` is in nixpkgs `python3Packages` (likely yes).
-- Add `treeSitterTextproto` as a nixpkgs package (may be a sub-PR or
-  bundled inline as a `callPackage` expression).
-- Decide build strategy for `prototext_codec` and `scoring_graph_lib`
-  (same `cargo build --lib` pattern as `fdp_scan`, extended to handle the
-  `protoPatchPhase` requirement for `prototext_codec`).
-- Handle the `reprotoSrcFull` codegen step (`patch_reproto.sh` compiles
-  `.proto` → `.pb` fixtures using `pkgs.protobuf`).
-
-After this PR: `pkgs.prototools` becomes a `symlinkJoin` of all three CLIs.
+See spec 0093 for the full design and implementation details.
 
 ---
 
