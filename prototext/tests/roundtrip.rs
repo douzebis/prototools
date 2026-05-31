@@ -1501,6 +1501,235 @@ fn extension_field_roundtrip() {
     );
 }
 
+// ── §10 google.protobuf.Any expansion (spec 0089) ────────────────────────────
+//
+// Schema:
+//   package acme;
+//   import "google/protobuf/any.proto";
+//   message Payload  { optional string label = 1; }
+//   message Container { optional google.protobuf.Any payload = 1; }
+//
+// Wire bytes for Container { payload: Any { type_url: "type.googleapis.com/acme.Payload"
+//                                           value: Payload { label: "hello" } } }:
+//
+//   Payload { label: "hello" }:
+//     tag field 1 LEN = 0x0a, len 5, "hello" = [0x0a, 0x05, 0x68,0x65,0x6c,0x6c,0x6f]
+//
+//   Any { type_url: "type.googleapis.com/acme.Payload", value: <above> }:
+//     field 1 LEN (type_url): 0x0a, len 31, "type.googleapis.com/acme.Payload"
+//     field 2 LEN (value):    0x12, len 7,  <payload bytes>
+//
+//   Container { payload: <any_bytes> }:
+//     field 1 LEN: 0x0a, len <any_len>, <any_bytes>
+
+fn any_schema() -> prototext_core::ParsedSchema {
+    use prost::Message as _;
+    use prost_reflect::DescriptorPool;
+    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema_from_pool;
+
+    // Seed pool with WKTs from descriptor.pb (descriptor.proto only).
+    let descriptor_pb =
+        std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
+            .expect("cannot read descriptor.pb from OUT_DIR");
+    let mut pool =
+        DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+
+    // Add a minimal google/protobuf/any.proto — two fields: type_url and value.
+    let any_msg = DescriptorProto {
+        name: Some("Any".into()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("type_url".into()),
+                number: Some(1),
+                r#type: Some(9), // TYPE_STRING
+                label: Some(1),  // LABEL_OPTIONAL
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("value".into()),
+                number: Some(2),
+                r#type: Some(12), // TYPE_BYTES
+                label: Some(1),   // LABEL_OPTIONAL
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let any_file = FileDescriptorProto {
+        name: Some("google/protobuf/any.proto".into()),
+        syntax: Some("proto3".into()),
+        package: Some("google.protobuf".into()),
+        message_type: vec![any_msg],
+        ..Default::default()
+    };
+    let mut any_file_bytes = Vec::new();
+    any_file.encode(&mut any_file_bytes).unwrap();
+    pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
+        .expect("cannot add google/protobuf/any.proto to pool");
+
+    // acme.Payload: message Payload { optional string label = 1; }
+    let payload_msg = DescriptorProto {
+        name: Some("Payload".into()),
+        field: vec![FieldDescriptorProto {
+            name: Some("label".into()),
+            number: Some(1),
+            r#type: Some(9), // TYPE_STRING
+            label: Some(1),  // LABEL_OPTIONAL
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // acme.Container: message Container { optional google.protobuf.Any payload = 1; }
+    let container_msg = DescriptorProto {
+        name: Some("Container".into()),
+        field: vec![FieldDescriptorProto {
+            name: Some("payload".into()),
+            number: Some(1),
+            r#type: Some(11), // TYPE_MESSAGE
+            label: Some(1),   // LABEL_OPTIONAL
+            type_name: Some(".google.protobuf.Any".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let acme_file = FileDescriptorProto {
+        name: Some("acme.proto".into()),
+        syntax: Some("proto2".into()),
+        package: Some("acme".into()),
+        dependency: vec!["google/protobuf/any.proto".into()],
+        message_type: vec![payload_msg, container_msg],
+        ..Default::default()
+    };
+
+    let mut acme_bytes = Vec::new();
+    acme_file.encode(&mut acme_bytes).unwrap();
+    pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+        .expect("cannot add acme.proto to pool");
+
+    schema_from_pool(pool, "acme.Container").expect("cannot build any_schema")
+}
+
+/// Build the wire bytes for:
+///   Container { payload: Any { type_url: "type.googleapis.com/acme.Payload"
+///                              value: Payload { label: "hello" } } }
+fn any_wire_bytes() -> Vec<u8> {
+    // Payload { label: "hello" } — field 1 LEN
+    let label = b"hello";
+    let mut payload_bytes = vec![0x0a, label.len() as u8];
+    payload_bytes.extend_from_slice(label);
+
+    // type_url string
+    let type_url = b"type.googleapis.com/acme.Payload";
+
+    // Any wire: field 1 (type_url) + field 2 (value)
+    let mut any_bytes = Vec::new();
+    any_bytes.push(0x0a); // field 1, LEN
+    any_bytes.push(type_url.len() as u8);
+    any_bytes.extend_from_slice(type_url);
+    any_bytes.push(0x12); // field 2, LEN
+    any_bytes.push(payload_bytes.len() as u8);
+    any_bytes.extend_from_slice(&payload_bytes);
+
+    // Container { payload: <any_bytes> } — field 1 LEN
+    let mut wire = vec![0x0a, any_bytes.len() as u8];
+    wire.extend_from_slice(&any_bytes);
+    wire
+}
+
+#[test]
+fn any_field_expands_type_url_and_value() {
+    let schema = any_schema();
+    let wire = any_wire_bytes();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("type_url:"),
+        "expected type_url line in Any expansion: {text_str}"
+    );
+    assert!(
+        text_str.contains("type.googleapis.com/acme.Payload"),
+        "expected type_url value in Any expansion: {text_str}"
+    );
+    assert!(
+        text_str.contains("value {"),
+        "expected value block in Any expansion: {text_str}"
+    );
+    assert!(
+        text_str.contains("hello"),
+        "expected Payload.label value in Any expansion: {text_str}"
+    );
+}
+
+#[test]
+fn any_field_no_expand_renders_value_as_bytes() {
+    // With expand_any: false the value field is rendered as raw bytes (not
+    // as an expanded sub-message), and there is no nested `value {` block.
+    let schema = any_schema();
+    let wire = any_wire_bytes();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: false,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    // value is a bytes field — rendered as a quoted string, not a `{` block.
+    assert!(
+        !text_str.contains("value {"),
+        "value should not be an expanded block when expand_any=false: {text_str}"
+    );
+    assert!(
+        text_str.contains("value:"),
+        "value field should still be present as raw bytes: {text_str}"
+    );
+}
+
+#[test]
+fn any_field_roundtrip() {
+    let schema = any_schema();
+    let wire = any_wire_bytes();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    let wire2 = render_as_bytes(
+        &text,
+        RenderOpts {
+            assume_binary: false,
+            include_annotations: false,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(wire2, wire, "Any field must round-trip byte-for-byte");
+}
+
 // ── Selftest: randomised round-trip stress test ───────────────────────────────
 
 /// Xorshift64 — fast, deterministic, period 2^64 - 1.
