@@ -49,13 +49,18 @@ The rest of this tutorial walks you through all four scenarios step by step.
 ## Section 1 — Setup
 
 Clone the repo and enter the Nix development shell.  All tools and dependencies
-are provided automatically.
+— including `prototext`, `reproto`, `protoc`, `bat`, and the rest — are
+provided automatically.
 
 ```
 git clone https://github.com/ThalesGroup/prototools
 cd prototools
-nix-shell
+nix-shell dev-shell.nix
 ```
+
+> **Note:** all commands in this tutorial must be run inside `nix-shell
+> dev-shell.nix`.  Outside that shell, tools such as `bat`, `protoc`, and the
+> prototools binaries themselves may not be available.
 
 Confirm the tools are available:
 
@@ -651,7 +656,8 @@ the same ground as this tutorial — decoding, schema auto-inference, non-canoni
 protobufs, scoring DB construction, decompilation, and seeding/pruning — in a
 step-by-step presenter format driven by `demo/prompt`.
 
-To run it from the repo root:
+To run it from the repo root (must be inside `nix-shell dev-shell.nix` — the
+demo uses `bat`, `protoc`, and other tools provided by the dev shell):
 
 ```bash
 ./demo/prompt --splash prototools demo/01-tutorial.sh
