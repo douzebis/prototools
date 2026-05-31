@@ -255,7 +255,8 @@ let
     rust.rustFmt rust.rustClippy rust.rustTests
     rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
     python.reproto python.protoscan
-    python.reprotoTests python.protoscanTests python.pythonLint python.pythonRuff
+    python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
+    python.pythonLint python.pythonRuff
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -264,7 +265,8 @@ let
     rust.rustFmt rust.rustTests
     rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
     python.reproto python.protoscan
-    python.reprotoTests python.protoscanTests python.pythonLint python.pythonRuff
+    python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
+    python.pythonLint python.pythonRuff
   ];
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
@@ -285,6 +287,8 @@ in
   reproto-bare         = python.reprotoBare;
   reproto-tests        = python.reprotoTests;
   protoscan-tests      = python.protoscanTests;
+  fdp-scan-tests       = python.fdpScanTests;
+  prototext-codec-tests = python.prototextCodecTests;
   python-lint          = python.pythonLint;
   python-ruff          = python.pythonRuff;
   ci                   = ci;

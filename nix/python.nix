@@ -234,6 +234,38 @@ let
     touch $out
   '';
 
+  # Tests for fdp_scan_lib — run against the installed extension (no PYTHONPATH
+  # override needed; the installed package is already on the Python path via
+  # withPackages).
+  fdpScanTests = pkgs.runCommand "fdp-scan-tests" {
+    buildInputs = [
+      (pythonPkgs.python.withPackages (_: [
+        fdpScanLib
+        pythonPkgs.protobuf
+        pythonPkgs.pytest
+        pythonPkgs."pytest-xdist"
+      ]))
+    ];
+  } ''
+    pytest -p no:cacheprovider ${../fdp-scan-pyo3}/tests/ -x
+    touch $out
+  '';
+
+  # Tests for prototext_codec_lib — run against the installed extension.
+  prototextCodecTests = pkgs.runCommand "prototext-codec-tests" {
+    buildInputs = [
+      (pythonPkgs.python.withPackages (_: [
+        prototextCodec
+        pythonPkgs.protobuf
+        pythonPkgs.pytest
+        pythonPkgs."pytest-xdist"
+      ]))
+    ];
+  } ''
+    pytest -p no:cacheprovider ${../prototext-pyo3}/tests/ -x
+    touch $out
+  '';
+
   # ---------------------------------------------------------------------------
   # Python lint — pyright type checking for the reproto Python package.
   #
@@ -525,6 +557,8 @@ in {
     reprotoTests
     protoscan
     protoscanTests
+    fdpScanTests
+    prototextCodecTests
     pythonLint
     pythonRuff
     googleapisPbs

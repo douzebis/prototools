@@ -19,3 +19,6 @@
 /schema-db/data/
 /docs/specs/0043-hopcroft-db-bp-protodb.md
 protoscan/src/protoscan/tests/__pycache__/
+fdp-scan-pyo3/fdp_scan_lib/__pycache__/
+fdp-scan-pyo3/tests/__pycache__/
+prototext-pyo3/tests/__pycache__/

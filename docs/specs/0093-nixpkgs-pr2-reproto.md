@@ -25,6 +25,13 @@ PR 2 adds `reproto` and its three dependencies that are new to nixpkgs:
 | `python3Packages.scoring-graph` | `buildPythonPackage` (cargo build --lib) |
 | `python3Packages.tree-sitter-textproto` | `buildPythonPackage` (C, tree-sitter generate) |
 
+`prototext-codec` is the PyO3 Python binding of the `prototext` Rust library.
+It could have accompanied `prototext` in PR 1, but no PR 1 package consumes
+it at runtime (`prototext` is a Rust binary; `protoscan` is independent).
+`scoring-graph` and `tree-sitter-textproto` are similarly unused until
+`reproto` is present.  All three are deferred to PR 2 alongside their only
+consumer.
+
 All other Python runtime dependencies of `reproto` (`click`, `lark`,
 `google-re2`, `protobuf`, `pyvis`, `pyyaml`, `rapidfuzz`, `rich`,
 `tree-sitter`, `tree-sitter-language-pack`) are already in nixpkgs.
@@ -38,15 +45,32 @@ After PR 2, `pkgs.prototools` becomes a `symlinkJoin` of all three CLIs:
 
 Same constraints as spec 0092 (C1–C5), plus:
 
-### C6 — `.pb` files are pre-committed; no `patch_reproto.sh` in nixpkgs
+### C6 — Bare+full two-derivation approach for `reproto` tests
 
-`patch_reproto.sh` regenerates `resources/google/protobuf/*.pb` and
-`reproto/variants/google-protobuf/**/*.pb` during the `default.nix` build.
-These files are already committed to git (they are tracked and excluded from
-the `reprotoSrc` snapshot only to avoid spurious rebuilds on local edits).
+The 22 `.pb` descriptor files consumed by `reproto` at runtime
+(`resources/google/protobuf/*.pb` and `variants/google-protobuf/**/*.pb`)
+are **not committed to git** — they are generated at build time by
+`patch_reproto.sh` from `pkgs.protobuf` sources.
 
-The nixpkgs `reproto` `buildPythonPackage` uses the committed `.pb` files
-directly — no `protoc` invocation, no `patch_reproto.sh` needed.
+To enable `doCheck = true` without committing binary blobs, the nixpkgs
+build uses a three-derivation chain mirroring `default.nix`:
+
+1. **`reprotoBare`** — a `buildPythonPackage` that installs `reproto`'s pure
+   Python code and `click`/`lark`/... dependencies but omits the PyO3
+   extensions.  Used as the bootstrap interpreter for `patch_reproto.sh`.
+
+2. **`reprotoSrcFull`** — a `runCommand` derivation that seeds `pkgs.protobuf`
+   `.proto` sources into a writable copy of the source tree, then runs
+   `patch_reproto.sh ${reprotoBare}` to produce the 22 `.pb` files.
+
+3. **`reproto`** — the full `buildPythonPackage` with `doCheck = true`,
+   pointing its test run at `${reprotoSrcFull}/src/reproto/tests/`.
+
+This is the same pattern used by the `yb` nixpkgs package, which compiles
+a secondary `ybPivHarnessTests` derivation in `passthru` for tests that
+require additional build artefacts not available in the main build.
+Alternatively, `reprotoSrcFull` and `reprotoBare` may live in `reproto`'s
+`passthru` for symmetry with `yb`.
 
 ### C7 — `.pyi` stubs for `prototext_codec_lib` and `scoring_graph_lib` must be committed
 
@@ -95,9 +119,7 @@ upstream grammar source for `grammar.js` and `src/parser.c`, and copies
 ## Non-goals
 
 - Modifying the existing `default.nix` / `nix/*.nix` build logic.
-- Running the full reproto test suite in the nixpkgs build
-  (the `.pb` codegen step makes `reprotoSrcFull` expensive to replicate;
-  `pythonImportsCheck` is the nixpkgs baseline).
+- Committing the 22 runtime `.pb` descriptor files to git (binary blobs).
 - Publishing to PyPI or crates.io.
 - `googleapisTests` or `customTests`.
 
@@ -363,74 +385,73 @@ Open question: confirm the exact Cargo package name from
 pkgs/development/python-modules/reproto/default.nix
 ```
 
-#### §5.2 — Key design decision: no `patch_reproto.sh`
+#### §5.2 — Three-derivation chain
 
-The `.pb` descriptor files consumed by `reproto` at runtime are already
-committed to the source tree:
+The build uses three derivations (see C6 for rationale):
 
-- `reproto/src/resources/google/protobuf/*.pb` — WKT descriptors
-- `reproto/src/reproto/variants/google-protobuf/**/*.pb` — variant descriptors
-
-These are included by `pyproject.toml` via `[tool.setuptools.package-data]`.
-The nixpkgs build uses them as-is — no `protoc` invocation needed.
-
-`patch_reproto.sh` regenerates them in the `default.nix` build only to
-ensure they are in sync with whatever `pkgs.protobuf` version is in the
-current nixpkgs channel.  For the nixpkgs package itself, the committed
-files are the authoritative source.
-
-#### §5.3 — `reprotoSrcFull` codegen step is not needed
-
-The `reprotoSrcFull` derivation in `default.nix` seeds WKT `.proto` sources
-from `pkgs.protobuf` into the source tree before `patch_reproto.sh` runs.
-Since we skip `patch_reproto.sh`, this seeding step is also unnecessary.
-The nixpkgs `reproto` build uses `sourceRoot` to point directly at the
-`reproto/` subdirectory.
-
-#### §5.4 — derivation sketch
+**`reprotoBare`** — pure-Python install, no PyO3 extensions:
 
 ```nix
-{ lib, buildPythonPackage, fetchFromGitHub, setuptools, wheel,
-  click, google-re2, lark, protobuf, pyvis, pyyaml, rapidfuzz, rich,
-  tree-sitter, tree-sitter-language-pack,
-  tree-sitter-textproto, prototext-codec, scoring-graph,
-  installShellFiles, stdenv, pytestCheckHook }:
+reprotoBare = buildPythonPackage {
+  pname   = "reproto-bare";
+  version = "0.2.0";
+  pyproject = true;
+  inherit src;
+  sourceRoot = "${src.name}/reproto";
+  build-system = [ setuptools wheel ];
+  # Pure runtime deps only — no prototext-codec, scoring-graph,
+  # tree-sitter-textproto.  Used solely to bootstrap patch_reproto.sh.
+  dependencies = [
+    click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
+    tree-sitter tree-sitter-language-pack
+  ];
+  doCheck = false;
+  pythonImportsCheck = [ "reproto" ];
+};
+```
 
-buildPythonPackage {
+**`reprotoSrcFull`** — seeds `.proto` sources and generates the 22 `.pb` files:
+
+```nix
+reprotoSrcFull = runCommand "reproto-src-full" {
+  buildInputs = [ protobuf reprotoBare ];
+} ''
+  cp -r ${src}/reproto $out
+  chmod -R u+w $out
+  # Seed pkgs.protobuf .proto include tree.
+  cp -r ${protobuf}/include/google $out/src/resources/
+  # Run the codegen step that produces the 22 .pb files.
+  bash ${src}/reproto/patch/patch_reproto.sh ${reprotoBare} $out
+'';
+```
+
+**`reproto`** — full package with `doCheck = true`:
+
+```nix
+reproto = buildPythonPackage {
   pname   = "reproto";
   version = "0.2.0";
   pyproject = true;
-
-  src = fetchFromGitHub {
-    owner = "ThalesGroup";
-    repo  = "prototools";
-    tag   = "prototext-v0.2.0";
-    hash  = "sha256-...";
-  };
-
+  inherit src;
   sourceRoot = "${src.name}/reproto";
-
   build-system = [ setuptools wheel ];
-
   dependencies = [
     click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
     tree-sitter tree-sitter-language-pack
     tree-sitter-textproto prototext-codec scoring-graph
   ];
-
-  nativeBuildInputs = [ installShellFiles ];
-
-  doCheck = false;   # full test suite requires reprotoSrcFull codegen step
-
+  nativeBuildInputs = [ installShellFiles protobuf buf ];
+  nativeCheckInputs = [ pytestCheckHook protobuf buf ];
+  # Point pytest at the source fixtures produced by reprotoSrcFull.
+  pytestFlagsArray = [ "${reprotoSrcFull}/src/reproto/tests/" ];
+  doCheck = true;
   postInstall = lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
     installShellCompletion --cmd reproto \
-      --bash ${./reproto/src/reproto/completions.sh}
+      --bash ${src}/reproto/src/reproto/completions.sh
     $out/bin/reproto-gen-man $out/share/man/man1
     $out/bin/reproto-instantiate-schema-gen-man $out/share/man/man1
   '';
-
   pythonImportsCheck = [ "reproto" ];
-
   meta = {
     description = "Reconstruct .proto source files from compiled .pb descriptor sets";
     homepage    = "https://github.com/ThalesGroup/prototools";
@@ -439,20 +460,34 @@ buildPythonPackage {
     mainProgram = "reproto";
     platforms   = lib.platforms.unix;
   };
-}
+};
 ```
+
+#### §5.3 — Derivation placement
+
+Two options for where `reprotoBare` and `reprotoSrcFull` live:
+
+- **Option A** — Top-level `let` bindings in
+  `pkgs/development/python-modules/reproto/default.nix`.  Simple and
+  self-contained; mirrors the `default.nix` structure.
+
+- **Option B** — `reprotoBare` and `reprotoSrcFull` as `passthru` attributes
+  of `reproto`.  Symmetric with `yb`'s `passthru.ybPivHarnessTests`.
+
+**Decision:** Option A — keep all three derivations in the same `default.nix`
+file as `let` bindings.  The `passthru` approach is cleaner for external
+consumers, but `reprotoSrcFull` and `reprotoBare` are internal build
+artefacts with no downstream use.
 
 Notes:
 
-- `doCheck = false`: the reproto test suite requires `reprotoSrcFull`
-  (WKT `.proto` sources from `pkgs.protobuf` compiled into `.pb` fixtures
-  via `patch_reproto.sh`), and `protoc` + `buf` in PATH.  The codegen step
-  is non-trivial to replicate in the nixpkgs sandbox.  `pythonImportsCheck`
-  verifies the package loads and all extension imports resolve.
 - Shell completion: `reproto` provides a hand-written `completions.sh` rather
-  than a Click-generated one.  The nixpkgs build copies it directly.
+  than a Click-generated one.  The nixpkgs build references it via the store
+  path `${src}/reproto/src/reproto/completions.sh`.
 - Man pages: two man pages are generated by installed entry-points
   (`reproto-gen-man` and `reproto-instantiate-schema-gen-man`).
+- `buf` is needed by the test suite (some tests call `buf` to validate
+  generated `.proto` files).
 
 ### §6 — Update `prototools` `symlinkJoin`
 
@@ -511,11 +546,17 @@ REUSE: `reuse annotate` on both files; `reuse lint` must be clean.
 
 ### §9 — PR 2 commit sequence
 
-1. (oss-prototools) Commit `.pyi` stubs for `prototext_codec_lib` and
-   `scoring_graph_lib`; update the release tag.
-2. (nixpkgs) Single commit: `prototools: add reproto` — adds
+1. **(oss-prototools)** Commit `.pyi` stubs for `prototext_codec_lib` and
+   `scoring_graph_lib` (§1); update the release tag.
+
+2. **(nixpkgs)** Single commit: `prototools: add reproto` — adds
    `tree-sitter-textproto`, `prototext-codec`, `scoring-graph`, `reproto`
-   packages; updates `prototools` `symlinkJoin`.
+   packages (with the three-derivation chain); updates `prototools`
+   `symlinkJoin`.
+
+Note: no additional oss-prototools changes are needed for the `.pb` files —
+the bare+full derivation chain regenerates them in the nixpkgs sandbox using
+`pkgs.protobuf`, so no binary blobs need to be committed to git.
 
 ### §10 — PR 2 message draft
 
@@ -544,9 +585,11 @@ pattern used by `fdp-scan` in PR 1.  The `.pyi` type stubs are committed
 to the source repository.
 
 The reproto test suite requires a code-generation step (`patch_reproto.sh`)
-that compiles WKT `.proto` sources using a specific `protoc` version; it is
-not run in the nixpkgs build.  `pythonImportsCheck` confirms all three
-extension modules load correctly.
+that compiles WKT `.proto` sources into runtime `.pb` descriptor files.
+This is handled via a three-derivation chain (`reprotoBare` → `reprotoSrcFull`
+→ `reproto`) mirroring `default.nix` — no binary `.pb` blobs are committed
+to git.  `doCheck = true` in the final `reproto` derivation.  `pythonImportsCheck`
+confirms all three extension modules load correctly.
 ```
 
 ---

@@ -153,8 +153,8 @@ def test_nonexistent_file_error(tmp_path: Path) -> None:
     result = _run([str(tmp_path / "does_not_exist.bin")])
 
     assert result.returncode != 0
-    assert "does_not_exist.bin" in result.stderr or "does_not_exist.bin" in result.output \
-        or "Error" in result.stderr or "Invalid value" in result.stderr
+    assert "does_not_exist.bin" in result.stderr or "Error" in result.stderr \
+        or "Invalid value" in result.stderr
 
 
 # ---------------------------------------------------------------------------
