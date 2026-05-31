@@ -1730,6 +1730,186 @@ fn any_field_roundtrip() {
     assert_eq!(wire2, wire, "Any field must round-trip byte-for-byte");
 }
 
+#[test]
+fn any_field_golden_annotated_output() {
+    // TC-1b: compare against a hard-coded golden #@ string so that regressions
+    // in indentation, annotation format, or field ordering are caught.
+    let schema = any_schema();
+    let wire = any_wire_bytes();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    let expected = concat!(
+        "#@ prototext: protoc\n",
+        "payload {  #@ Any = 1\n",
+        " type_url: \"type.googleapis.com/acme.Payload\"  #@ string = 1\n",
+        " value {  #@ Payload = 2\n",
+        "  label: \"hello\"  #@ string = 1\n",
+        " }\n",
+        "}\n",
+    );
+    assert_eq!(
+        String::from_utf8(text).unwrap(),
+        expected,
+        "Any expansion golden output mismatch",
+    );
+}
+
+#[test]
+fn any_field_unresolvable_type_url_renders_value_as_bytes() {
+    // When type_url names a type not present in the schema pool, the renderer
+    // partially expands: type_url and value are rendered (the schema knows
+    // the Any field structure), but value is a raw bytes literal — not a
+    // nested { } block — because the payload type cannot be resolved.
+    // Build a schema that has Container+Any but NOT acme.Payload.
+    let schema = {
+        use prost::Message as _;
+        use prost_reflect::DescriptorPool;
+        use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+        use prototext_core::schema_from_pool;
+
+        let descriptor_pb =
+            std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
+                .expect("cannot read descriptor.pb from OUT_DIR");
+        let mut pool =
+            DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+
+        let any_msg = DescriptorProto {
+            name: Some("Any".into()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("type_url".into()),
+                    number: Some(1),
+                    r#type: Some(9),
+                    label: Some(1),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("value".into()),
+                    number: Some(2),
+                    r#type: Some(12),
+                    label: Some(1),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let any_file = FileDescriptorProto {
+            name: Some("google/protobuf/any.proto".into()),
+            syntax: Some("proto3".into()),
+            package: Some("google.protobuf".into()),
+            message_type: vec![any_msg],
+            ..Default::default()
+        };
+        let mut any_file_bytes = Vec::new();
+        any_file.encode(&mut any_file_bytes).unwrap();
+        pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
+            .expect("cannot add google/protobuf/any.proto to pool");
+
+        // Container only — acme.Payload is absent from the pool.
+        let container_msg = DescriptorProto {
+            name: Some("Container".into()),
+            field: vec![FieldDescriptorProto {
+                name: Some("payload".into()),
+                number: Some(1),
+                r#type: Some(11),
+                label: Some(1),
+                type_name: Some(".google.protobuf.Any".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let acme_file = FileDescriptorProto {
+            name: Some("acme.proto".into()),
+            syntax: Some("proto2".into()),
+            package: Some("acme".into()),
+            dependency: vec!["google/protobuf/any.proto".into()],
+            message_type: vec![container_msg],
+            ..Default::default()
+        };
+        let mut acme_bytes = Vec::new();
+        acme_file.encode(&mut acme_bytes).unwrap();
+        pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+            .expect("cannot add acme.proto to pool");
+
+        schema_from_pool(pool, "acme.Container").expect("cannot build schema")
+    };
+
+    let wire = any_wire_bytes();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("type_url:"),
+        "type_url field should still be rendered: {text_str}"
+    );
+    assert!(
+        !text_str.contains("value {"),
+        "value should be raw bytes, not a nested block, when type is unresolvable: {text_str}"
+    );
+    assert!(
+        text_str.contains("value:"),
+        "value field should be rendered as raw bytes: {text_str}"
+    );
+}
+
+#[test]
+fn any_field_value_before_type_url_renders_as_raw_len() {
+    // scan_any_fields returns None when field 2 (value) precedes field 1
+    // (type_url) in the wire encoding — the renderer falls back to raw LEN.
+    let schema = any_schema();
+
+    // Craft an Any wire payload with value before type_url.
+    let label = b"hello";
+    let mut payload_bytes = vec![0x0a, label.len() as u8];
+    payload_bytes.extend_from_slice(label);
+    let type_url = b"type.googleapis.com/acme.Payload";
+    // Swap order: field 2 (value) first, then field 1 (type_url).
+    let mut any_bytes = Vec::new();
+    any_bytes.push(0x12); // field 2, LEN (value)
+    any_bytes.push(payload_bytes.len() as u8);
+    any_bytes.extend_from_slice(&payload_bytes);
+    any_bytes.push(0x0a); // field 1, LEN (type_url)
+    any_bytes.push(type_url.len() as u8);
+    any_bytes.extend_from_slice(type_url);
+    let mut wire = vec![0x0a, any_bytes.len() as u8];
+    wire.extend_from_slice(&any_bytes);
+
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        !text_str.contains("value {"),
+        "value block should not appear when value precedes type_url: {text_str}"
+    );
+}
+
 // ── Selftest: randomised round-trip stress test ───────────────────────────────
 
 /// Xorshift64 — fast, deterministic, period 2^64 - 1.
