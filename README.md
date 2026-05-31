@@ -16,6 +16,8 @@ wire-format messages.
 
 ### `prototext`
 
+<img src="docs/logos/prototext.png" alt="prototext logo" width="120" align="right"/>
+
 Lossless, bidirectional converter between binary protobuf wire format and
 human-readable text.  Decodes with or without a schema; encodes annotated
 prototext back to byte-exact binary.  Supports schema inference: given a
@@ -24,6 +26,8 @@ descriptor DB it ranks all candidate types and picks the best match.
 → See [`prototext/README.md`](prototext/README.md)
 
 ### `reproto`
+
+<img src="docs/logos/reproto.png" alt="reproto logo" width="120" align="right"/>
 
 Reconstructs compilable `.proto` source files from binary or text-format
 `FileDescriptorSet` / `FileDescriptorProto` blobs.  Supports proto2, proto3,
