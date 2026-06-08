@@ -1404,7 +1404,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "scoring_graph_extension"
+name = "scoring_graph_lib"
 version = "0.1.0"
 dependencies = [
  "pyo3",

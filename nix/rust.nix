@@ -327,7 +327,7 @@ let
   };
 
   _scoringGraphLibExt = makePyo3Extension {
-    crateName    = "scoring_graph_extension";
+    crateName    = "scoring_graph_lib";
     crateDir     = ../scoring-graph-pyo3;
     pyDir        = ../scoring-graph-pyo3;
     libName      = "scoring_graph_lib";

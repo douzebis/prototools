@@ -4,7 +4,7 @@
 
 # scoring_graph – scoring-graph build PyO3 extension.
 [package]
-name    = "scoring_graph_extension"
+name    = "scoring_graph_lib"
 version = "0.1.0"
 edition = "2021"
 
