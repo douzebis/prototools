@@ -43,7 +43,7 @@ let
 
   # Cargo flags for workspace-wide derivations (fmt, clippy, tests).
   # pyo3 crates are included: PYO3_PYTHON is set in commonArgs so every
-  # sandbox can compile prototext_codec without a separate dep cache.
+  # sandbox can compile prototext_codec_lib without a separate dep cache.
   workspaceArgs = "--no-default-features --workspace";
 
   # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ let
   #
   # commonArgs: base for ALL Crane derivations (Rust + pyo3).
   #   Carries PYO3_PYTHON and RUSTFLAGS globally so that a single depsCache
-  #   covers the whole workspace including prototext_codec.
+  #   covers the whole workspace including prototext_codec_lib.
   #
   # protocArgs: extends commonArgs with pkgs.protobuf + protoPatchPhase.
   #   Used by ALL derivations including depsCache, so the sandbox environment
@@ -234,14 +234,14 @@ let
   #      pyproject source tree and installs the wheel.
   #
   # Parameters:
-  #   crateName    — Cargo package name, e.g. "prototext_codec"
+  #   crateName    — Cargo package name, e.g. "prototext_codec_lib"
   #   crateDir     — Nix path to the crate directory, e.g. ./prototext-pyo3
   #                  (base name used as CARGO_MANIFEST_DIR)
   #   pyDir        — Nix path to Python package source, e.g. ./prototext-pyo3
   #   libName      — cdylib base name (from Cargo [[lib]] name), e.g.
   #                  "prototext_codec_lib" (produces lib<libName>.{so,dylib})
   #   pyiName      — name used by pyo3-stub-gen for the .pyi file (= pyproject
-  #                  [project] name), e.g. "prototext_codec"
+  #                  [project] name), e.g. "prototext_codec" (from pyproject.toml)
   #   postBuildBin — name of the stub-generator binary target, e.g.
   #                  "prototext_post_build" (may differ from crateName)
   #
@@ -304,11 +304,11 @@ let
     in { inherit pkg; artifacts = "${ext}/artifacts"; };
 
   # ---------------------------------------------------------------------------
-  # PyO3 extensions — prototext_codec, fdp_scan, scoring_graph
+  # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, scoring_graph_lib
   # ---------------------------------------------------------------------------
 
   _prototextCodecExt = makePyo3Extension {
-    crateName    = "prototext_codec";
+    crateName    = "prototext_codec_lib";
     crateDir     = ../prototext-pyo3;
     pyDir        = ../prototext-pyo3;
     libName      = "prototext_codec_lib";
@@ -317,7 +317,7 @@ let
   };
 
   _fdpScanLibExt = makePyo3Extension {
-    crateName    = "fdp_scan_extension";
+    crateName    = "fdp_scan_lib";
     crateDir     = ../fdp-scan-pyo3;
     pyDir        = ../fdp-scan-pyo3;
     libName      = "fdp_scan_lib";

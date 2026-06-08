@@ -116,7 +116,7 @@ let
   # RUSTFLAGS for linking against CPython.  Set globally in commonArgs so that
   # all Crane derivations carry the same value — keeping Cargo fingerprints
   # consistent across the single shared depsCache.  Also exported in the
-  # shellHook so that manual `cargo build -p prototext_codec` aligns.
+  # shellHook so that manual `cargo build -p prototext_codec_lib` aligns.
   pyo3Rustflags = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
 
   # ---------------------------------------------------------------------------

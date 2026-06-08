@@ -4,7 +4,7 @@
 
 # fdp_scan – protobuf-scanner Python extension.
 [package]
-name    = "fdp_scan_extension"
+name    = "fdp_scan_lib"
 version = "0.2.0"
 edition = "2021"
 

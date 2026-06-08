@@ -212,7 +212,7 @@ RUFFEOF
         echo "[hook] rust: RUSTFLAGS, rust-toolchain.toml, rustup install"
         # RUSTFLAGS is set globally in commonArgs (Nix build) so that all Crane
         # derivations share a single fingerprint.  Export the same value here
-        # so that manual `cargo build -p prototext_codec` in the shell aligns.
+        # so that manual `cargo build -p prototext_codec_lib` in the shell aligns.
         export RUSTFLAGS="${pyo3Rustflags}"
 
         # Generate rust-toolchain.toml so rust-analyzer uses the same rustc
