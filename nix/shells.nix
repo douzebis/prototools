@@ -272,6 +272,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       _hook_man
       _hook_completions
 
+      unset shellHook
+
       [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e
       [[ "$old_opts" == *"set -o nounset"*  ]] && set -u || set +u
       [[ "$old_opts" == *"set -o pipefail"* ]] && set -o pipefail || set +o pipefail
