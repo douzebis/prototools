@@ -27,6 +27,8 @@ pub(in super::super) struct ScalarCtx<'a> {
     pub(in super::super) nan_bits: Option<u64>,
     /// True when the wire type is known but doesn't match the schema type.
     pub(in super::super) type_mismatch: bool,
+    /// True when a descriptor is active at this nesting level (spec 0097 S5).
+    pub(in super::super) schema_present: bool,
 }
 
 /// Render a non-varint scalar (FIXED64, FIXED32, string, bytes, wire-bytes).
@@ -48,11 +50,12 @@ pub(in super::super) fn render_scalar(
         wire_type_name,
         nan_bits,
         type_mismatch,
+        schema_present,
     } = *ctx;
     let annotations = ANNOTATIONS.with(|c| c.get());
     let unknown = field_schema.is_none();
 
-    if !annotations && (unknown || is_wire) {
+    if !annotations && schema_present && (unknown || is_wire) {
         return;
     }
 

@@ -32,20 +32,65 @@ pub(in super::super) fn render_len_field(
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
     let Some(fs) = field_schema else {
-        // Unknown field: WireBytes — skip when annotations=false (like render_scalar would).
-        if !annotations {
+        // Unknown LEN field: three-step cascade (spec 0097).
+        //
+        // When no descriptor is active, every field is unknown — suppress
+        // nothing regardless of the annotations flag (spec 0097 S5).
+        // When a descriptor is active but this field number is absent, honour
+        // the annotations flag (unknown fields stay hidden without comments).
+        let schema_present = all_schemas.is_some();
+        if !annotations && schema_present {
             return;
         }
-        // v2: numeric key, `bytes` wire type FIRST, no field_decl.
+
+        // Step 1: probe as nested message.  Parse with no schema; rendering
+        // failures inside the nested message do not affect this probe.
+        let empty_schema = crate::schema::ParsedSchema::empty();
+        let (_, next_pos, _, malformities) =
+            crate::decoder::parse_message(data, 0, None, None, &empty_schema, false);
+        if malformities == 0 && next_pos == data.len() {
+            wob_prefix_n(field_number, None, true, out);
+            if annotations {
+                let mut aw = AnnWriter::new();
+                aw.push_wire(out, "message");
+                push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+            }
+            out.push(b'\n');
+            CBL_START.with(|c| c.set(out.len()));
+            {
+                let _guard = enter_level();
+                render_message(data, 0, None, None, all_schemas, out);
+            }
+            write_close_brace(out);
+            return;
+        }
+        // Step 2: try UTF-8 string.
+        if let Ok(s) = std::str::from_utf8(data) {
+            wfl_prefix_n(field_number, None, true, out);
+            out.push(b'"');
+            escape_string_into(s, out);
+            out.push(b'"');
+            if annotations {
+                let mut aw = AnnWriter::new();
+                aw.push_wire(out, "string");
+                push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+            }
+            out.push(b'\n');
+            CBL_START.with(|c| c.set(out.len()));
+            return;
+        }
+        // Step 3: raw bytes.
         wfl_prefix_n(field_number, None, true, out);
         out.push(b'"');
         escape_bytes_into(data, out);
         out.push(b'"');
-        let mut aw = AnnWriter::new();
-        aw.push_wire(out, "bytes");
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+        if annotations {
+            let mut aw = AnnWriter::new();
+            aw.push_wire(out, "bytes");
+            push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
+        }
         out.push(b'\n');
-        CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+        CBL_START.with(|c| c.set(out.len()));
         return;
     };
 

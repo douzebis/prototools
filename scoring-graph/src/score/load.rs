@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use memmap2::Mmap;
-use rkyv::{access, api::access_unchecked};
+use rkyv::{access, api::access_unchecked, util::AlignedVec};
 
 use crate::build_scoring_graph::serial::ArchivedCompiledGraph;
 
@@ -15,7 +15,7 @@ const MAGIC: &[u8; 8] = b"PTSGRAPH";
 
 enum GraphBacking {
     Mmap { _mmap: Mmap },
-    Static, // bytes are 'static — no owned handle needed
+    Aligned, // copy leaked into aligned heap allocation
 }
 
 pub struct LoadedGraph {
@@ -48,17 +48,25 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
 
 impl LoadedGraph {
     /// Construct a `LoadedGraph` from a `'static` byte slice (e.g. from
-    /// `include_bytes!`).  No mmap is created; the slice is used directly.
+    /// `include_bytes!`).  Copies into a leaked `AlignedVec` so that rkyv's
+    /// alignment requirements are satisfied in both debug and release builds.
     pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let root_offset = check_header(bytes, "<embedded>")?;
+        // Copy into an aligned allocation so that rkyv's debug-mode alignment
+        // assert passes.  include_bytes! gives only 1-byte alignment, which
+        // satisfies release builds (access_unchecked skips the check) but
+        // triggers a debug_assert in rkyv 0.8.x.  Leaking the AlignedVec gives
+        // a 'static reference, matching the field type on LoadedGraph.
+        let mut aligned = AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes[root_offset..]);
+        let aligned: &'static [u8] = Box::leak(aligned.into_boxed_slice());
         // Safety: bytes were written by rkyv::to_bytes with the same types and
-        // we validated magic + version above.  include_bytes! gives 1-byte
-        // alignment; access_unchecked skips the alignment check that access
-        // would fail on.  bytes is 'static so the lifetime is valid.
+        // we validated magic + version above.  The buffer is now correctly
+        // aligned, so access_unchecked's preconditions are satisfied.
         let graph: &'static ArchivedCompiledGraph =
-            unsafe { access_unchecked::<ArchivedCompiledGraph>(&bytes[root_offset..]) };
+            unsafe { access_unchecked::<ArchivedCompiledGraph>(aligned) };
         Ok(LoadedGraph {
-            _backing: GraphBacking::Static,
+            _backing: GraphBacking::Aligned,
             graph,
         })
     }

@@ -122,6 +122,7 @@ pub(super) fn render_varint_field(
     val_ohb: Option<u64>,
     kind: VarintKind,
     raw_val: u64,
+    schema_present: bool,
     out: &mut Vec<u8>,
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
@@ -131,8 +132,9 @@ pub(super) fn render_varint_field(
     let is_enum = kind == VarintKind::Enum || kind == VarintKind::TruncEnum;
     let unknown = field_schema.is_none();
 
-    // When annotations=false: skip unknown and raw-wire fields
-    if !annotations && (unknown || is_wire || is_mismatch) {
+    // When annotations=false and a schema is active: skip unknown/wire/mismatch fields.
+    // When no schema is active, never suppress (spec 0097 S5).
+    if !annotations && schema_present && (unknown || is_wire || is_mismatch) {
         return;
     }
 

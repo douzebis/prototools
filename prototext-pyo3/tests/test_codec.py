@@ -47,19 +47,20 @@ def test_format_as_text_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TC-2  format_as_text without annotations returns b""
+# TC-2  format_as_text without schema always renders (spec 0097 goal 5)
 # ---------------------------------------------------------------------------
 
-def test_format_as_text_no_schema_no_annotations_returns_empty() -> None:
-    """format_as_text without a schema or annotations returns b"" for a LEN field.
+def test_format_as_text_no_schema_renders_unknown_fields() -> None:
+    """format_as_text without a schema always renders unknown fields.
 
-    Without a schema the renderer cannot interpret unknown LEN fields (they
-    could be bytes, strings, or nested messages), so it emits nothing rather
-    than guess.  A FileDescriptorProto's name field is LEN-encoded and is
-    unknown without a schema, so the whole output is empty.
+    Spec 0097 goal 5: when no descriptor is active, unknown fields are always
+    rendered regardless of --no-annotations / include_annotations.  The
+    three-step cascade (nested message → UTF-8 string → bytes) is applied.
+    A FileDescriptorProto's name field (field 1, LEN) is valid UTF-8, so it
+    is rendered as a quoted string.
     """
     result = prototext_codec_lib.format_as_text(_make_fdp_bytes())
-    assert result == b""
+    assert result == b'1: "test/schema.proto"\n'
 
 
 # ---------------------------------------------------------------------------

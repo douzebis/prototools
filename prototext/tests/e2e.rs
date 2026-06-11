@@ -153,6 +153,53 @@ fn fixture_roundtrip_annotated_craft_a() {
     assert!(ran > 0, "no fixtures ran");
 }
 
+// ── §3.3 Unknown LEN field decoded as nested message (spec 0097) ─────────────
+
+/// A hand-crafted SwissArmyKnife wire payload that contains a known field
+/// (field 25 / int32Op = 42) followed by an unknown LEN field (field 9001)
+/// whose payload is itself a valid protobuf message.
+///
+/// Spec 0097 S3 requires that the unknown LEN field be rendered as a nested
+/// message (not raw bytes), and that the round-trip is lossless.
+///
+/// Wire layout (16 bytes):
+///   \xc8\x01      — tag: field 25, wire type 0 (varint)
+///   \x2a          — value: 42
+///   \xca\xb2\x04  — tag: field 9001, wire type 2 (LEN)
+///   \x09          — length: 9
+///   \x08\x07      — inner field 1, varint 7
+///   \x12\x05hello — inner field 2, string "hello"
+#[test]
+fn unknown_len_decoded_as_nested_message() {
+    #[rustfmt::skip]
+    let wire: &[u8] = &[
+        0xc8, 0x01,              // tag: field 25, varint
+        0x2a,                    // value: 42
+        0xca, 0xb2, 0x04,        // tag: field 9001, LEN
+        0x09,                    // length: 9
+        0x08, 0x07,              // inner: field 1 varint 7
+        0x12, 0x05,              // inner: field 2 LEN length 5
+        b'h', b'e', b'l', b'l', b'o', // "hello"
+    ];
+
+    let sp = schema_path("fixtures/schemas/knife.pb");
+    let (text, wire2) = cli_roundtrip(wire, &sp, "SwissArmyKnife", true);
+    let text_str = String::from_utf8_lossy(&text);
+
+    // The unknown field must be rendered as a nested message (brace syntax),
+    // not as raw bytes.
+    assert!(
+        text_str.contains("9001 {"),
+        "unknown LEN field must be rendered as nested message, got:\n{text_str}"
+    );
+
+    // Round-trip must be lossless.
+    assert_eq!(
+        wire2, wire,
+        "binary→text→binary round-trip must be bit-exact\n  text:\n{text_str}"
+    );
+}
+
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
 /// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.

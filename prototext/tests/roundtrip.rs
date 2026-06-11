@@ -1999,7 +1999,6 @@ fn selftest_roundtrip() {
 /// `proto2_has_type_mismatch = true` — without it the type conflict is
 /// silently lost and the field is indistinguishable from an unknown field.
 ///
-/// This test currently FAILS, confirming the pre-existing bug.
 #[test]
 fn len_wire_type_on_varint_field_sets_type_mismatch_flag() {
     // Tag: field 25, wire type LEN (2) → (25 << 3) | 2 = 202 → 0xCA 0x01

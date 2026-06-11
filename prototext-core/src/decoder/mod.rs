@@ -32,7 +32,7 @@ pub fn ingest_pb(
     annotations: bool,
 ) -> ProtoTextMessage {
     let root = full_schema.root_descriptor();
-    let (msg, _, _) = parse_message(pb_bytes, 0, None, root.as_ref(), full_schema, annotations);
+    let (msg, _, _, _) = parse_message(pb_bytes, 0, None, root.as_ref(), full_schema, annotations);
     msg
 }
 
@@ -40,9 +40,12 @@ pub fn ingest_pb(
 
 /// Parse one protobuf message starting at `start`.
 ///
-/// Returns `(message, next_pos, group_end_tag)`.
+/// Returns `(message, next_pos, group_end_tag, malformities)`.
 /// `group_end_tag` is `Some(tag)` when the parse terminated on an END_GROUP
 /// wire type — the caller uses this to detect mismatched group numbers.
+/// `malformities` counts structurally invalid fields (invalid tag, truncated
+/// data, etc.).  Non-canonical bytes do not count.  Used by `decode_len_field`
+/// to decide whether a LEN payload is a valid nested message (spec 0097).
 ///
 /// Mirrors `parse_message()` in `decode.py`.
 pub fn parse_message(
@@ -52,14 +55,15 @@ pub fn parse_message(
     schema: Option<&MessageDescriptor>,
     full_schema: &ParsedSchema, // full registry for nested type lookups
     annotations: bool,
-) -> (ProtoTextMessage, usize, Option<WiretagResult>) {
+) -> (ProtoTextMessage, usize, Option<WiretagResult>, u32) {
     let buflen = buf.len();
     let mut pos = start;
     let mut message = ProtoTextMessage::default();
+    let mut malformities: u32 = 0;
 
     loop {
         if pos == buflen {
-            return (message, pos, None);
+            return (message, pos, None, malformities);
         }
 
         let mut field = ProtoTextField::default();
@@ -76,6 +80,7 @@ pub fn parse_message(
             field.field_number = Some(0);
             field.content = ProtoTextContent::InvalidTagType(wtag_gar);
             pos = buflen;
+            malformities += 1;
             message.fields.push(field);
             continue;
         }
@@ -115,6 +120,7 @@ pub fn parse_message(
                 if let Some(varint_gar) = vr.varint_gar {
                     field.content = ProtoTextContent::InvalidVarint(varint_gar);
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }
@@ -142,6 +148,7 @@ pub fn parse_message(
                 if pos + 8 > buflen {
                     field.content = ProtoTextContent::InvalidFixed64(buf[pos..].to_vec());
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }
@@ -175,6 +182,7 @@ pub fn parse_message(
                 if lr.varint_gar.is_some() {
                     field.content = ProtoTextContent::InvalidBytesLength(buf[pos..].to_vec());
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }
@@ -188,6 +196,7 @@ pub fn parse_message(
                     field.missing_bytes_count = Some((length - (buflen - pos)) as u64);
                     field.content = ProtoTextContent::TruncatedBytes(buf[pos..].to_vec());
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }
@@ -217,7 +226,7 @@ pub fn parse_message(
                         }
                     });
 
-                let (nested_msg, new_pos, end_tag) = parse_message(
+                let (nested_msg, new_pos, end_tag, _) = parse_message(
                     buf,
                     pos,
                     Some(field_number),
@@ -229,6 +238,7 @@ pub fn parse_message(
 
                 if end_tag.is_none() {
                     field.open_ended_group = true;
+                    malformities += 1;
                 } else if let Some(ref et) = end_tag {
                     if let Some(ohb) = et.wfield_ohb {
                         field.end_tag_overhang_count = Some(ohb);
@@ -251,11 +261,12 @@ pub fn parse_message(
                     // Unexpected END_GROUP outside a group
                     field.content = ProtoTextContent::InvalidGroupEnd(buf[pos..].to_vec());
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }
                 // Valid END_GROUP: return WITHOUT pushing the tag as a field.
-                return (message, pos, Some(tag));
+                return (message, pos, Some(tag), malformities);
             }
 
             // ── FIXED32 ──────────────────────────────────────────────────────
@@ -263,6 +274,7 @@ pub fn parse_message(
                 if pos + 4 > buflen {
                     field.content = ProtoTextContent::InvalidFixed32(buf[pos..].to_vec());
                     pos = buflen;
+                    malformities += 1;
                     message.fields.push(field);
                     continue;
                 }

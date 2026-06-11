@@ -131,14 +131,14 @@ impl FieldOrExt {
 // it was intended to support has been removed.
 //
 thread_local! {
-    pub(super) static CBL_START:    Cell<usize>     = const { Cell::new(0) };
+    pub(super) static CBL_START:   Cell<usize> = const { Cell::new(0) };
     // Set once per `decode_and_render` call; read by every internal render fn.
-    pub(super) static ANNOTATIONS:  Cell<bool>      = const { Cell::new(false) };
-    pub(super) static INDENT_SIZE:  Cell<usize>     = const { Cell::new(2) };
+    pub(super) static ANNOTATIONS: Cell<bool>  = const { Cell::new(false) };
+    pub(super) static INDENT_SIZE: Cell<usize> = const { Cell::new(2) };
     // Tracks recursion depth; managed via `enter_level()` / `LevelGuard`.
-    pub(super) static LEVEL:        Cell<usize>     = const { Cell::new(0) };
+    pub(super) static LEVEL:       Cell<usize> = const { Cell::new(0) };
     // When true, google.protobuf.Any fields are expanded inline (spec 0089).
-    pub(super) static EXPAND_ANY:   Cell<bool>      = const { Cell::new(true) };
+    pub(super) static EXPAND_ANY:  Cell<bool>  = const { Cell::new(true) };
     // Optional header lines injected after the magic line (e.g. # Type / # Score).
     pub static EXTRA_HEADER: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -327,6 +327,7 @@ pub(super) fn render_message(
                     val_ohb,
                     content_kind,
                     typed_val,
+                    all_schemas.is_some(),
                     out,
                 );
             }
@@ -392,6 +393,7 @@ pub(super) fn render_message(
                         wire_type_name: "fixed64",
                         nan_bits,
                         type_mismatch: is_mismatch,
+                        schema_present: all_schemas.is_some(),
                     },
                     &value_str,
                     is_mismatch,
@@ -542,6 +544,7 @@ pub(super) fn render_message(
                         wire_type_name: "fixed32",
                         nan_bits,
                         type_mismatch: is_mismatch,
+                        schema_present: all_schemas.is_some(),
                     },
                     &value_str,
                     is_mismatch,

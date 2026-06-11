@@ -164,7 +164,7 @@ pub enum Command {
 
         /// Rewrite each input file in place (exclusive with --output-root).
         /// Files are read fully before writing.
-        #[arg(short = 'i', long = "in-place", conflicts_with = "output_root")]
+        #[arg(short = 'i', long = "in-place")]
         in_place: bool,
 
         /// Treat PATH arguments as raw binary protobuf; skip #@ prototext
@@ -215,7 +215,7 @@ pub enum Command {
     Encode {
         /// Rewrite each input file in place (exclusive with --output-root).
         /// Files are read fully before writing.
-        #[arg(short = 'i', long = "in-place", conflicts_with = "output_root")]
+        #[arg(short = 'i', long = "in-place")]
         in_place: bool,
 
         /// Input files, glob patterns, or directories (recursive).

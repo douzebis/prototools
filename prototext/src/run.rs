@@ -423,6 +423,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             };
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
+            validate_not_in_place_and_output_root(in_place, &output_root)?;
             validate_roots_not_same(&cli.input_root, &output_root)?;
 
             let auto_infer = r#type.is_none() && !raw;
@@ -461,6 +462,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             let output_root = cli.output_root.clone();
 
             validate_input_root_absolute(&cli.input_root, &paths)?;
+            validate_not_in_place_and_output_root(in_place, &output_root)?;
             validate_roots_not_same(&cli.input_root, &output_root)?;
 
             run_encode(
@@ -556,6 +558,16 @@ fn validate_input_root_absolute(
     Ok(())
 }
 
+fn validate_not_in_place_and_output_root(
+    in_place: bool,
+    output_root: &Option<PathBuf>,
+) -> Result<(), String> {
+    if in_place && output_root.is_some() {
+        return Err("--in-place and --output-root are mutually exclusive".into());
+    }
+    Ok(())
+}
+
 fn validate_roots_not_same(
     input_root: &Option<PathBuf>,
     output_root: &Option<PathBuf>,
@@ -596,10 +608,7 @@ fn run_decode(
 ) -> Result<(), String> {
     // --raw: bypass all schema / inference logic and render field numbers +
     // wire types directly.  No descriptor set required.
-    // Annotations are always enabled in raw mode: without them, schemaless
-    // fields are skipped by the renderer (they have no field names to display).
     if raw {
-        let annotations = true;
         let base = input_root
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));

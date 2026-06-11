@@ -163,6 +163,20 @@ pub(super) fn decode_len_field(
     field: &mut ProtoTextField,
 ) {
     let Some(fs) = field_schema else {
+        // Unknown field: three-step cascade (spec 0097).
+        // Step 1: probe as nested message.
+        let (nested_msg, next_pos, _, malformities) =
+            super::parse_message(data, 0, None, None, full_schema, annotations);
+        if malformities == 0 && next_pos == data.len() {
+            field.content = ProtoTextContent::MessageVal(Box::new(nested_msg));
+            return;
+        }
+        // Step 2: try UTF-8 string.
+        if let Ok(s) = std::str::from_utf8(data) {
+            field.content = ProtoTextContent::StringVal(s.to_string());
+            return;
+        }
+        // Step 3: raw bytes.
         field.content = ProtoTextContent::WireBytes(data.to_vec());
         return;
     };
@@ -192,7 +206,7 @@ pub(super) fn decode_len_field(
 
     // ── Nested message ────────────────────────────────────────────────────────
     if let Kind::Message(nested_msg_desc) = fs.kind() {
-        let (nested_msg, _, _) = super::parse_message(
+        let (nested_msg, _, _, _) = super::parse_message(
             data,
             0,
             None,
