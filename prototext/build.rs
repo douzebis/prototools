@@ -182,12 +182,18 @@ fn main() {
     #[cfg(feature = "protox")]
     {
         let schemas_dir = format!("{manifest_dir}/fixtures/schemas");
-        compile(
-            &["google/protobuf/descriptor.proto"],
-            &[""],
-            &out_dir,
-            "descriptor.pb",
-        );
+        // Compile descriptor.pb from the full WKT SOURCES list so that the
+        // embedded descriptor pool covers exactly the same types as WKT_GRAPH.
+        // Single source of truth: prototext/wkt/SOURCES (spec 0096).
+        let wkt_sources_path = std::path::Path::new(&manifest_dir).join("wkt/SOURCES");
+        let wkt_sources_text =
+            std::fs::read_to_string(&wkt_sources_path).expect("failed to read wkt/SOURCES");
+        let wkt_proto_files: Vec<&str> = wkt_sources_text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        compile(&wkt_proto_files, &[""], &out_dir, "descriptor.pb");
         compile(&["knife.proto"], &[&schemas_dir], &out_dir, "knife.pb");
         compile(
             &["enum_collision.proto"],

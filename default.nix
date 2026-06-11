@@ -92,7 +92,8 @@ let
 
     protoc \
       --descriptor_set_out=prototext/fixtures/prebuilt/descriptor.pb \
-      google/protobuf/descriptor.proto
+      --include_imports \
+      ${pkgs.lib.concatStringsSep " \\\n      " wktSources}
 
     protoc \
       --descriptor_set_out=prototext/fixtures/prebuilt/knife.pb \
