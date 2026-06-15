@@ -7,7 +7,7 @@
 # Produces $out/ with one .whl per package:
 #   prototext_graph-0.2.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
 #   prototext_codec-0.1.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
-#   fdp_scan-0.1.0-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
+#   fdp_scan-0.2.0-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
 #   prototext_reproto-0.2.0-py3-none-any.whl             (pure Python, dist: prototext-reproto)
 #   protoscan-0.2.0-py3-none-any.whl                    (pure Python)
 #
@@ -182,7 +182,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "fdp-scan";
-    version   = "0.1.0";
+    version   = "0.2.0";
     libName   = "fdp_scan_lib";
     artifacts = fdpScanExtensionArtifacts;
     initPy    = ../fdp-scan-pyo3/fdp_scan_lib/__init__.py;
