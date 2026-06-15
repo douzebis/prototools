@@ -65,8 +65,11 @@ let
   #
   # RECORD format: path,sha256:<base64url>,<size>  (one line per file)
   # The RECORD entry itself has an empty hash and size.
-  makeDistInfoShell = name: version: pyTag: abiTag: plTag: ''
-    DI="${name}-${version}.dist-info"
+  makeDistInfoShell = name: version: pyTag: abiTag: plTag:
+    # PEP 427: dist-info directory and wheel filename use the normalized
+    # (underscored) name; METADATA Name keeps the canonical dashed form.
+    let normName = builtins.replaceStrings ["-"] ["_"] name; in ''
+    DI="${normName}-${version}.dist-info"
     mkdir -p "$DI"
 
     cat > "$DI/WHEEL" <<EOF
@@ -121,7 +124,8 @@ EOF
       ${makeDistInfoShell pkgName version pyVer pyVer platformTag}
 
       mkdir -p "$out"
-      WHL="${pkgName}-${version}-${pyVer}-${pyVer}-${platformTag}.whl"
+      NORM_NAME=$(echo "${pkgName}" | tr '-' '_')
+      WHL="$NORM_NAME-${version}-${pyVer}-${pyVer}-${platformTag}.whl"
       zip -r "$out/$WHL" "${libName}" "$DI"
     '';
 
@@ -148,7 +152,8 @@ EOF
       ${makeDistInfoShell pkgName version "py3" "none" "any"}
 
       mkdir -p "$out"
-      WHL="${pkgName}-${version}-py3-none-any.whl"
+      NORM_NAME=$(echo "${pkgName}" | tr '-' '_')
+      WHL="$NORM_NAME-${version}-py3-none-any.whl"
       zip -r "$out/$WHL" "${pkgDir}" "$DI"
     '';
 
