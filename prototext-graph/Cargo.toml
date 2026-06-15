@@ -7,6 +7,8 @@ name        = "prototext-graph"
 version     = "0.2.0"
 edition     = "2021"
 description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML output"
+license     = "MIT"
+repository  = "https://github.com/ThalesGroup/prototools"
 
 [lib]
 name       = "prototext_graph"

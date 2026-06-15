@@ -96,19 +96,22 @@ jobs:
           # Write the unified publish script
           cat > release/publish.sh <<'PUBLISH_EOF'
           #!/usr/bin/env bash
-          # Usage: CARGO_REGISTRY_TOKEN=... TWINE_PASSWORD=... ./publish.sh
+          # Usage: run from the prototools workspace root.
+          # CARGO_REGISTRY_TOKEN is read from ~/.cargo/credentials.toml automatically.
+          # TWINE_PASSWORD is read from ~/.pypirc automatically.
+          # Optionally override: CARGO_REGISTRY_TOKEN=... TWINE_PASSWORD=... ./release/publish.sh
           set -euo pipefail
           DIR="$(cd "$(dirname "$0")" && pwd)"
 
           echo "=== Publishing to crates.io ==="
-          cargo publish --crate-file "$DIR/prototext-graph-0.2.0.crate"
+          cargo publish -p prototext-graph
           sleep 15
-          cargo publish --crate-file "$DIR/prototext-core-0.2.0.crate"
+          cargo publish -p prototext-core
           sleep 15
-          cargo publish --crate-file "$DIR/prototext-0.2.0.crate"
+          cargo publish -p prototext
 
           echo "=== Publishing to PyPI ==="
-          twine upload --username __token__ "$DIR"/*.whl
+          twine upload "$DIR"/*.whl
           PUBLISH_EOF
           chmod +x release/publish.sh
 
