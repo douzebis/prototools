@@ -14,7 +14,7 @@ use prototext_core::{
     decode_pool, is_prototext_text, render_as_bytes, render_as_text, schema_from_pool, CodecError,
     RenderOpts,
 };
-use score_graph_lib::score::{
+use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
     score_all, ScoringOpts,
 };

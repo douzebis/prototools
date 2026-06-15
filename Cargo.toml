@@ -22,13 +22,13 @@ members = [
     "prototext",
     "prototext-pyo3",
     "fdp-scan-pyo3",
-    "scoring-graph",
-    "scoring-graph-pyo3",
+    "prototext-graph",
+    "prototext-graph-pyo3",
     "workspace-hack",
 ]
 
 [workspace.dependencies]
-prototext-core = { path = "prototext-core", features = ["prost-bug-workaround"] }
+prototext-core = { path = "prototext-core", version = "0.2.0", features = ["prost-bug-workaround"] }
 
 [profile.release]
 codegen-units = 1

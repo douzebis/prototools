@@ -11,8 +11,8 @@ use memmap2::Mmap;
 use prost::Message;
 use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prost_types::{FileDescriptorProto, FileDescriptorSet};
+use prototext_graph::fds_index::ArchivedFdsIndex;
 use rkyv::api::access_unchecked;
-use score_graph_lib::fds_index::ArchivedFdsIndex;
 
 use crate::EMBEDDED_DESCRIPTOR;
 

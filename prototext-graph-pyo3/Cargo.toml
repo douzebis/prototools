@@ -2,23 +2,23 @@
 #
 # SPDX-License-Identifier: MIT
 
-# scoring_graph – scoring-graph build PyO3 extension.
+# prototext_graph_lib – prototext-graph build PyO3 extension.
 [package]
-name    = "scoring_graph_lib"
-version = "0.1.0"
+name    = "prototext_graph_lib"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
-name       = "scoring_graph_lib"
+name       = "prototext_graph_lib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-scoring-graph        = { path = "../scoring-graph" }
+prototext-graph      = { path = "../prototext-graph" }
 pyo3                 = { version = "0.26", features = ["extension-module"] }
 pyo3_stub_gen        = { version = "0.22", package = "pyo3-stub-gen" }
 pyo3_stub_gen_derive = { version = "0.22", package = "pyo3-stub-gen-derive" }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [[bin]]
-name = "scoring_graph_post_build"
+name = "prototext_graph_post_build"
 path = "src/bin/post_build.rs"

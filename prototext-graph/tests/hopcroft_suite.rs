@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use score_graph_lib::build_scoring_graph::{build_compiled, serial::CompiledGraph};
+use prototext_graph::build_scoring_graph::{build_compiled, serial::CompiledGraph};
 use walkdir::WalkDir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

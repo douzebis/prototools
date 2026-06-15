@@ -85,7 +85,7 @@ def build_fds_index(raw_pb_bytes: bytes, fds: FileDescriptorSet) -> bytes:
 
     Computes type_to_file, file_to_span, and dep_graph for every file in
     the FDS (including WKT files), then calls
-    scoring_graph_lib.build_fds_index() to serialize to rkyv with the
+    prototext_graph_lib.build_fds_index() to serialize to rkyv with the
     PTSGRAPH header.
 
     Returns the serialized index.rkyv content as bytes.
@@ -93,10 +93,10 @@ def build_fds_index(raw_pb_bytes: bytes, fds: FileDescriptorSet) -> bytes:
     The FDS is assumed to be self-contained (produced with --include_imports).
     """
     try:
-        from scoring_graph_lib import build_fds_index as _rust_build
+        from prototext_graph_lib import build_fds_index as _rust_build
     except ImportError as e:
         raise RuntimeError(
-            f'build_fds_index requires the scoring_graph_lib extension: {e}'
+            f'build_fds_index requires the prototext_graph_lib extension: {e}'
         ) from e
 
     spans = extract_spans(raw_pb_bytes)

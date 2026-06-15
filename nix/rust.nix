@@ -19,9 +19,9 @@
 #     │                                                                    │
 #     ├──[buildPackage, cargoArtifacts=depsCache]──▶  prototextBare ──▶  prototext
 #     │                                                                    │
-#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextCodec  │
-#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  fdpScanLib       │
-#     └──[makePyo3Extension, cargoArtifacts=rustTests]──▶  scoringGraphLib
+#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextCodec    │
+#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  fdpScanLib         │
+#     └──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextGraphLib
 
 { pkgs
 , crane
@@ -304,7 +304,7 @@ let
     in { inherit pkg; artifacts = "${ext}/artifacts"; };
 
   # ---------------------------------------------------------------------------
-  # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, scoring_graph_lib
+  # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, prototext_graph_lib
   # ---------------------------------------------------------------------------
 
   _prototextCodecExt = makePyo3Extension {
@@ -326,18 +326,18 @@ let
     # no internal workspace deps
   };
 
-  _scoringGraphLibExt = makePyo3Extension {
-    crateName    = "scoring_graph_lib";
-    crateDir     = ../scoring-graph-pyo3;
-    pyDir        = ../scoring-graph-pyo3;
-    libName      = "scoring_graph_lib";
-    pyiName      = "scoring_graph";
-    postBuildBin = "scoring_graph_post_build";
+  _prototextGraphLibExt = makePyo3Extension {
+    crateName    = "prototext_graph_lib";
+    crateDir     = ../prototext-graph-pyo3;
+    pyDir        = ../prototext-graph-pyo3;
+    libName      = "prototext_graph_lib";
+    pyiName      = "prototext_graph";
+    postBuildBin = "prototext_graph_post_build";
   };
 
-  prototextCodec    = _prototextCodecExt.pkg;
-  fdpScanLib        = _fdpScanLibExt.pkg;
-  scoringGraphLib   = _scoringGraphLibExt.pkg;
+  prototextCodec     = _prototextCodecExt.pkg;
+  fdpScanLib         = _fdpScanLibExt.pkg;
+  prototextGraphLib  = _prototextGraphLibExt.pkg;
 
 in {
   inherit
@@ -350,7 +350,8 @@ in {
     prototext
     prototextCodec
     fdpScanLib
-    scoringGraphLib;
-  prototextExtensionArtifacts   = _prototextCodecExt.artifacts;
-  scoringGraphExtensionArtifacts = _scoringGraphLibExt.artifacts;
+    prototextGraphLib;
+  prototextExtensionArtifacts      = _prototextCodecExt.artifacts;
+  fdpScanExtensionArtifacts        = _fdpScanLibExt.artifacts;
+  prototextGraphExtensionArtifacts = _prototextGraphLibExt.artifacts;
 }

@@ -68,12 +68,13 @@ let
         (crane.fileset.commonCargoSources ./.)
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
-        (fixtureFilter ./scoring-graph/tests/fixtures)
+        (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
+        ./README.md
       ])
       (pkgs.lib.fileset.unions [
         (pkgs.lib.fileset.maybeMissing ./target)
-        (pkgs.lib.fileset.maybeMissing ./scoring-graph/target)
+        (pkgs.lib.fileset.maybeMissing ./prototext-graph/target)
       ]);
   };
 
@@ -192,8 +193,21 @@ let
     # rust.prototext (full, lazy): only forced when reprotoTests/googleapisTests/customTests
     # are built, by which time wktRkyv is already available.
     prototext = rust.prototext;
-    inherit (rust) prototextCodec fdpScanLib scoringGraphLib
-                   prototextExtensionArtifacts scoringGraphExtensionArtifacts;
+    inherit (rust) prototextCodec fdpScanLib prototextGraphLib
+                   prototextExtensionArtifacts prototextGraphExtensionArtifacts;
+  };
+
+  cratesIo = import ./nix/crates-io.nix {
+    inherit pkgs crane workspaceSrc protoPatchPhase;
+    inherit (rust) commonArgs;
+  };
+
+  pypi = import ./nix/pypi.nix {
+    inherit pkgs pythonPkgs workspaceSrc;
+    reprotoSrcFull = python.reprotoSrcFull;
+    inherit (rust) prototextExtensionArtifacts
+                   fdpScanExtensionArtifacts
+                   prototextGraphExtensionArtifacts;
   };
 
   # Pre-build the WKT scoring graph using python.reprotoBare.
@@ -254,7 +268,7 @@ let
   # ---------------------------------------------------------------------------
   ci = pkgs.linkFarmFromDrvs "ci" [
     rust.rustFmt rust.rustClippy rust.rustTests
-    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
+    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -264,7 +278,7 @@ let
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
   ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
     rust.rustFmt rust.rustTests
-    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.scoringGraphLib
+    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -304,5 +318,7 @@ in
   dev-shell            = shells.dev-shell;
   protoscan            = python.protoscan;
   fdp-scan-lib         = rust.fdpScanLib;
-  scoring-graph-lib    = rust.scoringGraphLib;
+  prototext-graph-lib  = rust.prototextGraphLib;
+  crates-io            = cratesIo;
+  pypi                 = pypi;
 }

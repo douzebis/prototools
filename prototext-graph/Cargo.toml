@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: MIT
 
 [package]
-name        = "scoring-graph"
-version     = "0.1.0"
+name        = "prototext-graph"
+version     = "0.2.0"
 edition     = "2021"
 description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML output"
 
 [lib]
-name       = "score_graph_lib"
+name       = "prototext_graph"
 crate-type = ["rlib"]
 
 [[bin]]

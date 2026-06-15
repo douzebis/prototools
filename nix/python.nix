@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 # nix/python.nix — Python packages: prototextCodec, fdpScanLib,
-#                  scoringGraphLib, reproto pipeline, protoscan,
+#                  prototextGraphLib, reproto pipeline, protoscan,
 #                  lint and ruff checks, stress tests.
 #
 # Source pipeline:
@@ -25,9 +25,9 @@
 , prototext
 , prototextCodec
 , fdpScanLib
-, scoringGraphLib
-, prototextExtensionArtifacts   # store path: $out/artifacts/ from prototext_codec ext
-, scoringGraphExtensionArtifacts # store path: $out/artifacts/ from scoring_graph ext
+, prototextGraphLib
+, prototextExtensionArtifacts      # store path: $out/artifacts/ from prototext_codec ext
+, prototextGraphExtensionArtifacts # store path: $out/artifacts/ from prototext_graph ext
 , treeSitterTextproto
 }:
 
@@ -96,7 +96,7 @@ let
   reprotoTestDeps = reprotoPropagatedDeps ++ [
     prototextCodec
     fdpScanLib
-    scoringGraphLib
+    prototextGraphLib
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
   ];
@@ -158,7 +158,7 @@ let
     ];
     propagatedBuildInputs = reprotoPropagatedDeps ++ [
       prototextCodec   # reproto.load imports prototext_codec_lib at module load time
-      scoringGraphLib  # reproto --schema-db-out imports scoring_graph_lib
+      prototextGraphLib  # reproto --schema-db-out imports scoring_graph_lib
     ];
 
     doCheck = false;
@@ -290,7 +290,7 @@ let
     # Make the prototext_codec_lib and scoring_graph_lib .pyi stubs visible to
     # pyright.  tree-sitter, tree-sitter-language-pack, and treeSitterTextproto
     # are now in reprotoPropagatedDeps and reach pyright via the Python env.
-    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${scoringGraphExtensionArtifacts}"
+    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${prototextGraphExtensionArtifacts}"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -301,7 +301,7 @@ let
   "extraPaths": [
     "${reprotoSrcFull}/src",
     "${prototextExtensionArtifacts}",
-    "${scoringGraphExtensionArtifacts}"
+    "${prototextGraphExtensionArtifacts}"
   ],
   "exclude": [
     "result*",

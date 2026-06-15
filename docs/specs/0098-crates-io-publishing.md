@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0098 — Package publishing harness (crates.io + PyPI)
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-06-15
 **App:** prototext, prototext-core, scoring-graph, reproto, protoscan
 
 ---
@@ -143,7 +144,7 @@ is not needed.
 ### O7 — PyPI publish order
 
 PyPI has no strict dependency ordering between packages, but the binary
-extension wheels (`scoring_graph_lib`, `prototext_codec_lib`,
+extension wheels (`prototext_graph_lib`, `prototext_codec_lib`,
 `fdp_scan_lib`) must be uploaded before `reproto` and `protoscan` so
 that `pip install reproto` can resolve them.
 
@@ -158,7 +159,7 @@ that `pip install reproto` can resolve them.
 - Update all references in:
   - `Cargo.toml` (workspace members, workspace dep declaration)
   - `prototext/Cargo.toml`
-  - `scoring-graph-pyo3/Cargo.toml`
+  - `scoring-graph-pyo3/Cargo.toml` (the directory rename is handled by S2)
   - `nix/rust.nix`, `default.nix`, `nix/python.nix`, `nix/shells.nix`
 - Rust `use` / `extern crate` identifiers use the crate name with hyphens
   replaced by underscores: `prototext_graph`.  Update all `use` statements
@@ -178,7 +179,7 @@ that `pip install reproto` can resolve them.
   `default.nix`, and `nix/shells.nix`.
 - Update `Cargo.toml` workspace members.
 
-### S4 — Add version to `prototext-graph`
+### S3 — Add version to `prototext-graph`
 
 Add to `prototext-graph/Cargo.toml`:
 
@@ -194,66 +195,42 @@ dependent:
 prototext-graph = { path = "../prototext-graph", version = "0.2.0" }
 ```
 
-`scoring-graph-pyo3` is not published to crates.io, so its dep entry
+`prototext-graph-pyo3` is not published to crates.io, so its dep entry
 stays path-only (name updated to `prototext-graph`, no `version` needed).
 
-### S5 — `crates-io` Nix target
+### S4 — `crates-io` Nix target
 
 Add a `crates-io` derivation (in a new `nix/crates-io.nix` imported from
 `default.nix`).  The derivation:
 
 1. Takes `workspaceSrc` as input (same filtered source as the CI build).
-2. Runs `cargo package -p prototext-graph --no-verify`.
-3. Runs `cargo package -p prototext-core --no-verify`.
-4. Runs `cargo package -p prototext --no-verify`.
-5. Copies the three `.crate` files to `$out/`.
-6. Writes `$out/publish.sh`:
+2. Sets `HOME` to a temporary writable directory within the build sandbox
+   so that `cargo` can write its registry cache and lock files without
+   trying to access the real home directory (which is inaccessible inside
+   the Nix sandbox).
+3. Runs `cargo package -p prototext-graph --no-verify`.
+4. Runs `cargo package -p prototext-core --no-verify`.
+5. Runs `cargo package -p prototext --no-verify`.
+6. Copies the three `.crate` files to `$out/`.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cargo publish --crate-file "$DIR/prototext-graph-0.2.0.crate"
-sleep 15   # crates.io index propagation delay
-cargo publish --crate-file "$DIR/prototext-core-0.2.0.crate"
-sleep 15
-cargo publish --crate-file "$DIR/prototext-0.2.0.crate"
-```
+The `crates-io` derivation does not include a `publish.sh` — the unified
+publish script is assembled by the CI `assemble` job (S6).
 
-Usage:
-
-```bash
-nix-build -A crates-io
-CARGO_REGISTRY_TOKEN=<token> ./result/publish.sh
-```
-
-### S6 — `pypi` Nix target
+### S5 — `pypi` Nix target
 
 Add a `pypi` derivation (per-platform, in `nix/pypi.nix` imported from
-`default.nix`).  The derivation:
+`default.nix`).  The derivation assembles `.whl` files for:
 
-1. Assembles `.whl` files for:
-   - `scoring_graph_lib` (PyO3 binary extension from `scoring-graph-pyo3`)
-   - `prototext_codec_lib` (PyO3 binary extension from `prototext-pyo3`)
-   - `fdp_scan_lib` (PyO3 binary extension from `fdp-scan-pyo3`)
-   - `reproto` (pure Python + declares binary extension deps)
-   - `protoscan` (pure Python + declares binary extension deps)
-2. Writes `$out/publish.sh`:
+- `prototext_graph_lib` (PyO3 binary extension from `prototext-graph-pyo3`)
+- `prototext_codec_lib` (PyO3 binary extension from `prototext-pyo3`)
+- `fdp_scan_lib` (PyO3 binary extension from `fdp-scan-pyo3`)
+- `reproto` (pure Python + declares binary extension deps)
+- `protoscan` (pure Python + declares binary extension deps)
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-twine upload "$DIR"/*.whl
-```
+The `pypi` derivation does not include a `publish.sh` — the unified
+publish script is assembled by the CI `assemble` job (S6).
 
-Usage (after collecting wheels from all 4 platforms into one directory):
-
-```bash
-TWINE_USERNAME=__token__ TWINE_PASSWORD=<token> ./publish.sh
-```
-
-### S7 — CI: build, assemble, and upload a single release artifact
+### S6 — CI: build, assemble, and upload a single release artifact
 
 Extend `.github/workflows/nix.yml` with two additions:
 

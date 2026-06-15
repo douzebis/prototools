@@ -1529,13 +1529,13 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         get_collector().w6('--build-schema-db', 'schema db', 'no scoring graphs generated; skipping')
         return
 
-    # ── 2. Build the baked graph via the scoring_graph_lib PyO3 extension
+    # ── 2. Build the baked graph via the prototext_graph_lib PyO3 extension
 
     try:
-        from scoring_graph_lib import build_graph
+        from prototext_graph_lib import build_graph
     except ImportError as e:
         raise RuntimeError(
-            f'--build-schema-db requires the scoring_graph_lib extension: {e}'
+            f'--build-schema-db requires the prototext_graph_lib extension: {e}'
         ) from e
 
     last_current = 0

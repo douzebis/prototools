@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! PyO3 module definition for `scoring_graph`.
+//! PyO3 module definition for `prototext_graph`.
 //!
 //! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False, emit_initial_yaml: bool = False) -> tuple[bytes, str | None, str | None]`
 //! to Python.
@@ -14,8 +14,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
-use score_graph_lib::build_scoring_graph::build_from_strings;
-use score_graph_lib::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
+use prototext_graph::build_scoring_graph::build_from_strings;
+use prototext_graph::fds_index::{to_bytes as fds_index_to_bytes, FdsIndex};
 
 // ── API functions ─────────────────────────────────────────────────────────────
 
@@ -115,7 +115,7 @@ fn build_fds_index<'py>(
 
 /// Rust extension for building compiled scoring graphs.
 #[pymodule]
-fn scoring_graph_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn prototext_graph_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(build_fds_index, m)?)?;
     Ok(())

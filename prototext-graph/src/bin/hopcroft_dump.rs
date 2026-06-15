@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use walkdir::WalkDir;
 
-use score_graph_lib::build_scoring_graph::build_from_strings;
+use prototext_graph::build_scoring_graph::build_from_strings;
 
 fn main() {
     let fixture_dir: PathBuf = std::env::args_os()

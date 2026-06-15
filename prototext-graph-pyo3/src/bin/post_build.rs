@@ -9,7 +9,7 @@
 //! Run (from the workspace root):
 //!   cargo run --release --package scoring_graph_extension --bin scoring_graph_post_build
 
-use scoring_graph_lib::stub_info;
+use prototext_graph_lib::stub_info;
 
 fn main() -> pyo3_stub_gen::Result<()> {
     stub_info()?.generate()?;

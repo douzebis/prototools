@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Auxiliary pyproject.toml for the scoring_graph Python extension.
+# Auxiliary pyproject.toml for the prototext_graph Python extension.
 # Needed to support Python packaging tools and stub generation.
 
 [build-system]
@@ -10,13 +10,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "scoring_graph"
-version = "0.1.0"
+name = "prototext_graph"
+version = "0.2.0"
 description = "Scoring-graph builder Python extension via PyO3"
 requires-python = ">=3.8"
 
 [tool.hatch.build.targets.wheel]
-packages = ["scoring_graph_lib"]
+packages = ["prototext_graph_lib"]
 
 [tool.pyo3-stub-gen]
-# pyo3-stub-gen writes scoring_graph_lib.pyi next to this file (i.e. scoring-graph-pyo3/).
+# pyo3-stub-gen writes prototext_graph_lib.pyi next to this file (i.e. prototext-graph-pyo3/).

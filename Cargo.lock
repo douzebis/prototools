@@ -972,9 +972,9 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "prototext-core",
+ "prototext-graph",
  "protox",
  "rkyv",
- "scoring-graph",
  "serde",
  "serde_yaml",
  "toml 0.8.23",
@@ -996,10 +996,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "prototext-graph"
+version = "0.2.0"
+dependencies = [
+ "memmap2",
+ "prototext-core",
+ "rkyv",
+ "serde",
+ "serde_yaml",
+ "smallvec",
+ "tempfile",
+ "walkdir",
+ "workspace-hack",
+]
+
+[[package]]
 name = "prototext_codec_lib"
 version = "0.1.0"
 dependencies = [
  "prototext-core",
+ "pyo3",
+ "pyo3-stub-gen",
+ "pyo3-stub-gen-derive",
+ "workspace-hack",
+]
+
+[[package]]
+name = "prototext_graph_lib"
+version = "0.2.0"
+dependencies = [
+ "prototext-graph",
  "pyo3",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
@@ -1386,32 +1412,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "scoring-graph"
-version = "0.1.0"
-dependencies = [
- "memmap2",
- "prototext-core",
- "rkyv",
- "serde",
- "serde_yaml",
- "smallvec",
- "tempfile",
- "walkdir",
- "workspace-hack",
-]
-
-[[package]]
-name = "scoring_graph_lib"
-version = "0.1.0"
-dependencies = [
- "pyo3",
- "pyo3-stub-gen",
- "pyo3-stub-gen-derive",
- "scoring-graph",
- "workspace-hack",
 ]
 
 [[package]]
