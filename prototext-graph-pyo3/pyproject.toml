@@ -10,7 +10,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "prototext_graph"
+name = "prototext-graph"
 version = "0.2.0"
 description = "Scoring-graph builder Python extension via PyO3"
 requires-python = ">=3.8"

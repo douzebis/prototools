@@ -88,6 +88,7 @@
       pythonPkgs.pytest
       pythonPkgs."pytest-xdist"
       pythonPkgs.ruff
+      pythonPkgs.twine
       pkgs.pyright
       # Demo / ASCII-art utilities (not part of the released package)
       figlet

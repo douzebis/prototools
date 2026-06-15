@@ -5,10 +5,10 @@
 # nix/pypi.nix — Assemble per-platform .whl files for PyPI publishing.
 #
 # Produces $out/ with one .whl per package:
-#   prototext_graph-0.2.0-cp313-cp313-<platform>.whl   (binary, PyO3)
-#   prototext_codec-0.1.0-cp313-cp313-<platform>.whl   (binary, PyO3)
-#   fdp_scan-0.1.0-cp313-cp313-<platform>.whl           (binary, PyO3)
-#   reproto-0.2.0-py3-none-any.whl                      (pure Python)
+#   prototext_graph-0.2.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
+#   prototext_codec-0.1.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
+#   fdp_scan-0.1.0-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
+#   prototext_reproto-0.2.0-py3-none-any.whl             (pure Python, dist: prototext-reproto)
 #   protoscan-0.2.0-py3-none-any.whl                    (pure Python)
 #
 # The derivation does not publish — publish.sh is assembled by the CI
@@ -58,31 +58,48 @@ let
   # lower-level zip approach to avoid requiring wheel itself.
   # ---------------------------------------------------------------------------
 
-  # makeDistInfo name version isPure — write the dist-info directory into $PWD.
+  # makeDistInfo name version pyTag abiTag plTag — write the dist-info
+  # directory into $PWD, then generate the RECORD file covering all files
+  # already present in $PWD (must be called after all package files are staged).
   # Returns a shell fragment (used inside buildPhase).
+  #
+  # RECORD format: path,sha256:<base64url>,<size>  (one line per file)
+  # The RECORD entry itself has an empty hash and size.
   makeDistInfoShell = name: version: pyTag: abiTag: plTag: ''
     DI="${name}-${version}.dist-info"
     mkdir -p "$DI"
 
     cat > "$DI/WHEEL" <<EOF
-    Wheel-Version: 1.0
-    Generator: nix-pypi (prototools)
-    Root-Is-Purelib: false
-    Tag: ${pyTag}-${abiTag}-${plTag}
-    EOF
+Wheel-Version: 1.0
+Generator: nix-pypi (prototools)
+Root-Is-Purelib: false
+Tag: ${pyTag}-${abiTag}-${plTag}
+EOF
 
     cat > "$DI/METADATA" <<EOF
-    Metadata-Version: 2.1
-    Name: ${name}
-    Version: ${version}
-    EOF
+Metadata-Version: 2.1
+Name: ${name}
+Version: ${version}
+EOF
+
+    # Generate RECORD: sha256 base64url hash + size for every file, then
+    # a bare entry (no hash/size) for RECORD itself.
+    (
+      find . -type f ! -name RECORD | sort | while read -r f; do
+        f=''${f#./}
+        hash=$(openssl dgst -sha256 -binary "$f" | base64 | tr '+/' '-_' | tr -d '=')
+        size=$(wc -c < "$f")
+        echo "$f,sha256:$hash,$size"
+      done
+      echo "$DI/RECORD,,"
+    ) > "$DI/RECORD"
   '';
 
   # ---------------------------------------------------------------------------
   # Binary PyO3 wheel helper.
   #
   # Takes:
-  #   pkgName    — PyPI distribution name, e.g. "prototext_graph"
+  #   pkgName    — PyPI distribution name, e.g. "prototext-graph" (dashes)
   #   version    — version string
   #   libName    — .so base name, e.g. "prototext_graph_lib"
   #   artifacts  — store path containing <libName>.so and <libName>.pyi
@@ -90,7 +107,7 @@ let
   # ---------------------------------------------------------------------------
   makeBinaryWheel = { pkgName, version, libName, artifacts, initPy }:
     pkgs.runCommand "${pkgName}-whl" {
-      buildInputs = [ pkgs.zip pythonPkgs.python ];
+      buildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
     } ''
       set -euo pipefail
       WORK=$(mktemp -d)
@@ -119,7 +136,7 @@ let
   # ---------------------------------------------------------------------------
   makePureWheel = { pkgName, version, src, pkgDir }:
     pkgs.runCommand "${pkgName}-whl" {
-      buildInputs = [ pkgs.zip pythonPkgs.python ];
+      buildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
     } ''
       set -euo pipefail
       WORK=$(mktemp -d)
@@ -143,7 +160,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   # Copy all wheels from the individual per-package derivations.
   cp ${makeBinaryWheel {
-    pkgName   = "prototext_graph";
+    pkgName   = "prototext-graph";
     version   = "0.2.0";
     libName   = "prototext_graph_lib";
     artifacts = prototextGraphExtensionArtifacts;
@@ -151,7 +168,7 @@ in pkgs.runCommand "prototools-pypi" {
   }}/*.whl "$out/"
 
   cp ${makeBinaryWheel {
-    pkgName   = "prototext_codec";
+    pkgName   = "prototext-codec";
     version   = "0.1.0";
     libName   = "prototext_codec_lib";
     artifacts = prototextExtensionArtifacts;
@@ -159,7 +176,7 @@ in pkgs.runCommand "prototools-pypi" {
   }}/*.whl "$out/"
 
   cp ${makeBinaryWheel {
-    pkgName   = "fdp_scan";
+    pkgName   = "fdp-scan";
     version   = "0.1.0";
     libName   = "fdp_scan_lib";
     artifacts = fdpScanExtensionArtifacts;
@@ -167,7 +184,7 @@ in pkgs.runCommand "prototools-pypi" {
   }}/*.whl "$out/"
 
   cp ${makePureWheel {
-    pkgName = "reproto";
+    pkgName = "prototext-reproto";
     version = "0.2.0";
     src     = reprotoSrcFull;
     pkgDir  = "reproto";

@@ -10,7 +10,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "prototext_codec"
+name = "prototext-codec"
 version = "0.1.0"
 description = "Lossless protobuf decoder (Python extension via PyO3)"
 requires-python = ">=3.8"

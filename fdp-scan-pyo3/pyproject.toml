@@ -10,7 +10,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fdp_scan"
+name = "fdp-scan"
 version = "0.1.0"
 description = "Rust Python extension for scanning binaries for embedded FileDescriptorProto blobs"
 requires-python = ">=3.8"
