@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+
+SPDX-License-Identifier: MIT
+-->
+
 Beyond protoc --decode: Schema Inference, Lossless Decoding, and Descriptor Archaeology
 
 Every gRPC engineer eventually faces a binary .pb blob of unknown type, a compiled descriptor with no .proto source, or an editions descriptor a downstream toolchain cannot consume. Standard tooling stops short: protoc --decode requires the original descriptor and exact type name, silently discards non-canonical bytes, crashes on malformed input.

@@ -3,6 +3,14 @@ SPDX-PackageName = "prototools"
 SPDX-PackageSupplier = "Frederic Ruget <fred@atlant.is>"
 SPDX-PackageDownloadLocation = "https://github.com/ThalesGroup/prototools"
 
+# nixpkgs overlay — separate packaging project, not part of prototools proper.
+[[annotations]]
+path = [
+  "nixpkgs/**",
+]
+SPDX-FileCopyrightText = "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)"
+SPDX-License-Identifier = "MIT"
+
 # Files generated or managed by cargo-hakari (workspace-hack crate).
 [[annotations]]
 path = [
