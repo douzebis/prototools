@@ -34,13 +34,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get install -y mandoc
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Enable Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-flakehub: "disabled"
+      # Note: prototext-gen-man is not built here — doing so requires a full
+      # Nix+Crane build of the prototext crate (~10 min) just for one man page.
+      # The prototext.1 man page is therefore omitted from the website.
+      # See docs/specs/0102-prototext-args-crate.md for the dropped refactor
+      # that would have made this fast.
 
       - name: Install Python dependencies for reproto
         run: pip install --quiet click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
@@ -48,7 +46,7 @@ jobs:
       - name: Generate man pages
         run: |
           mkdir -p man/man1
-          $(nix-build -A prototext --no-out-link)/bin/prototext-gen-man man/man1
+          # prototext-gen-man omitted — see comment above.
           PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man_instantiate man/man1
           PYTHONPATH=protoscan/src python3 -m protoscan.gen_man man/man1
@@ -110,14 +108,8 @@ jobs:
             inject "$f" "website/content/specs/${name}.md"
           done
 
-          # prototext man page → website/content/man-page.md
-          {
-            printf '+++\ntitle = "Man Page"\n+++\n\n'
-            printf '<div class="manpage">\n'
-            mandoc -T html -O fragment man/man1/prototext.1 2>/dev/null \
-              || cat man/man1/prototext.1
-            printf '</div>\n'
-          } > website/content/man-page.md
+          # prototext man page — omitted (prototext.1 not generated here).
+          # See docs/specs/0102-prototext-args-crate.md.
 
           # reproto man page → website/content/reproto-man-page.md
           {

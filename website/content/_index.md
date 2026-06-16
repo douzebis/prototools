@@ -21,7 +21,6 @@ human-readable text.
 ### User documentation
 
 - [README](readme) — Overview, installation, and usage guide
-- [Man page](man-page) — Reference manual
 - [Annotation format](annotation-format) — Wire annotation syntax reference
 
 ### Design documentation
