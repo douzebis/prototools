@@ -12,7 +12,7 @@ use serde::Serialize;
 use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
     clear_any_loader, decode_pool, is_prototext_text, render_as_bytes, render_as_text,
-    schema_from_pool, set_any_loader, CodecError, RenderOpts,
+    schema_from_pool, set_any_loader, AnyLoader, CodecError, RenderOpts,
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
@@ -386,16 +386,22 @@ pub fn list_schemas_one(
 
 // ── Top-level run ─────────────────────────────────────────────────────────────
 
-pub fn run(cli: Cli) -> Result<(), String> {
-    // Deprecation warning for old env var name.
-    if std::env::var_os("PROTOTEXT_DESCRIPTOR_SET").is_none()
-        && std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR").is_some()
-        && !cli.quiet
-    {
-        eprintln!(
-            "warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; \
-             use PROTOTEXT_DESCRIPTOR_SET"
-        );
+pub fn run(mut cli: Cli) -> Result<(), String> {
+    // Deprecation shim for old env var name.
+    if std::env::var_os("PROTOTEXT_DESCRIPTOR_SET").is_none() {
+        if let Some(val) = std::env::var_os("PROTOTEXT_DEFAULT_DESCRIPTOR") {
+            if !cli.quiet {
+                eprintln!(
+                    "warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; \
+                     use PROTOTEXT_DESCRIPTOR_SET"
+                );
+            }
+            // Fall back to the old var when the new one is absent and the
+            // flag was not supplied on the command line.
+            if cli.descriptor.is_none() {
+                cli.descriptor = Some(PathBuf::from(val));
+            }
+        }
     }
 
     // Resolve the descriptor once up front.
@@ -601,7 +607,7 @@ fn install_any_loader(desc_ctx: &mut DescriptorContext) {
     // The loader is cleared by `clear_any_loader()` before the caller that
     // holds `desc_ctx` returns, so the raw pointer is never dangling.
     let ctx_ptr: *mut DescriptorContext = desc_ctx as *mut DescriptorContext;
-    set_any_loader(Box::new(move |fqdn: &str| {
+    let loader: AnyLoader = Box::new(move |fqdn: &str| {
         let ctx = unsafe { &mut *ctx_ptr };
         if let Some(lazy) = ctx.lazy.as_mut() {
             let _ = lazy.get_message(fqdn);
@@ -609,7 +615,8 @@ fn install_any_loader(desc_ctx: &mut DescriptorContext) {
         ctx.pool()
             .get_message_by_name(fqdn)
             .map(std::sync::Arc::new)
-    }));
+    });
+    set_any_loader(loader);
 }
 
 // ── decode handler ────────────────────────────────────────────────────────────
