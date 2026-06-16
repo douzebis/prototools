@@ -113,11 +113,14 @@ jobs:
 
           echo "=== Publishing to crates.io ==="
           # Publish in dependency order: core first, then graph, then the CLI.
+          # --allow-dirty: prototext/fixtures/prebuilt/*.pb are gitignored build
+          # artifacts placed there by the Nix patchPhase; cargo publish requires
+          # them (listed in [package].include) but they are not tracked by git.
           cargo publish -p prototext-core
           sleep 30
           cargo publish -p prototext-graph
           sleep 30
-          cargo publish -p prototext
+          cargo publish -p prototext --allow-dirty
 
           echo "=== Publishing to PyPI ==="
           # --skip-existing lets the script resume safely after a partial run.
