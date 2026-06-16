@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prototext-reproto"
-version = "0.2.0"
+version = "0.2.1"
 description = "Reconstruct .proto source files from compiled .pb descriptor sets"
 authors = [{ name = "Frederic Ruget", email = "fred@atlant.is" }]
 dependencies = [

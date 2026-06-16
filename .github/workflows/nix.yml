@@ -21,11 +21,10 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
-          # macOS runners temporarily disabled until crates.io/PyPI packages are stable
-          # - os: macos-15
-          # - os: macos-15-intel
-          #   skip-clippy: true
-          #   ci-target: ci-no-clippy
+          - os: macos-15
+          - os: macos-15-intel
+            skip-clippy: true
+            ci-target: ci-no-clippy
     steps:
       - uses: actions/checkout@v6
 

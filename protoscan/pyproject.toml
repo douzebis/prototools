@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "protoscan"
-version = "0.2.0"
+version = "0.2.1"
 description = "Scan binary files for embedded FileDescriptorProto blobs"
 dependencies = [
     "click",

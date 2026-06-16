@@ -34,11 +34,13 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get install -y mandoc
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
 
       - name: Install Python dependencies for reproto
         run: pip install --quiet click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
@@ -46,7 +48,7 @@ jobs:
       - name: Generate man pages
         run: |
           mkdir -p man/man1
-          cargo run --release -p prototext --no-default-features --features protox --bin prototext-gen-man -- man/man1
+          $(nix-build -A prototext --no-out-link)/bin/prototext-gen-man man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man_instantiate man/man1
           PYTHONPATH=protoscan/src python3 -m protoscan.gen_man man/man1

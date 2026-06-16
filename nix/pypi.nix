@@ -5,11 +5,11 @@
 # nix/pypi.nix — Assemble per-platform .whl files for PyPI publishing.
 #
 # Produces $out/ with one .whl per package:
-#   prototext_graph-0.2.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
-#   prototext_codec-0.1.0-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
-#   fdp_scan-0.2.0-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
-#   prototext_reproto-0.2.0-py3-none-any.whl             (pure Python, dist: prototext-reproto)
-#   protoscan-0.2.0-py3-none-any.whl                    (pure Python)
+#   prototext_graph-0.2.1-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
+#   prototext_codec-0.2.1-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
+#   fdp_scan-0.2.1-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
+#   prototext_reproto-0.2.1-py3-none-any.whl             (pure Python, dist: prototext-reproto)
+#   protoscan-0.2.1-py3-none-any.whl                    (pure Python)
 #
 # The derivation does not publish — publish.sh is assembled by the CI
 # assemble job (spec 0098 S6).
@@ -166,7 +166,7 @@ in pkgs.runCommand "prototools-pypi" {
   # Copy all wheels from the individual per-package derivations.
   cp ${makeBinaryWheel {
     pkgName   = "prototext-graph";
-    version   = "0.2.0";
+    version   = "0.2.1";
     libName   = "prototext_graph_lib";
     artifacts = prototextGraphExtensionArtifacts;
     initPy    = ../prototext-graph-pyo3/prototext_graph_lib/__init__.py;
@@ -174,7 +174,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "prototext-codec";
-    version   = "0.1.0";
+    version   = "0.2.1";
     libName   = "prototext_codec_lib";
     artifacts = prototextExtensionArtifacts;
     initPy    = ../prototext-pyo3/prototext_codec_lib/__init__.py;
@@ -182,7 +182,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "fdp-scan";
-    version   = "0.2.0";
+    version   = "0.2.1";
     libName   = "fdp_scan_lib";
     artifacts = fdpScanExtensionArtifacts;
     initPy    = ../fdp-scan-pyo3/fdp_scan_lib/__init__.py;
@@ -190,14 +190,14 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makePureWheel {
     pkgName = "prototext-reproto";
-    version = "0.2.0";
+    version = "0.2.1";
     src     = reprotoSrcFull;
     pkgDir  = "reproto";
   }}/*.whl "$out/"
 
   cp ${makePureWheel {
     pkgName = "protoscan";
-    version = "0.2.0";
+    version = "0.2.1";
     src     = ../protoscan;
     pkgDir  = "protoscan";
   }}/*.whl "$out/"
