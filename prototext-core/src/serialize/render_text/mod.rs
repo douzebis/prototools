@@ -123,6 +123,9 @@ impl FieldOrExt {
     }
 }
 
+/// Boxed JIT loader callback for `Any`/`MessageSet` type resolution (spec 0099).
+pub type AnyLoader = Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>;
+
 // ── Render-mode state ─────────────────────────────────────────────────────────
 //
 // `CBL_START` is set to `out.len()` by `write_close_brace` before writing a
@@ -146,9 +149,7 @@ thread_local! {
     // Safety invariant: the raw pointer inside the Box is valid for the duration
     // of the rendering call that set it.  Always cleared before the setting
     // stack frame returns.
-    pub(super) static ANY_LOADER:
-        RefCell<Option<Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>>>
-        = const { RefCell::new(None) };
+    pub(super) static ANY_LOADER: RefCell<Option<AnyLoader>> = const { RefCell::new(None) };
 }
 
 /// Install a JIT loader for `Any` (and future `MessageSet`) type resolution
@@ -157,7 +158,7 @@ thread_local! {
 /// # Safety
 /// The caller guarantees that the closure (and any references it captures)
 /// remains valid until `clear_any_loader` is called.
-pub fn set_any_loader(loader: Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>) {
+pub fn set_any_loader(loader: AnyLoader) {
     ANY_LOADER.with(|l| *l.borrow_mut() = Some(loader));
 }
 
