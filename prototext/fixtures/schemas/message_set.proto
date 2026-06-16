@@ -1,0 +1,40 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Fixture schema for MessageSet expansion tests (spec 0100).
+
+syntax = "proto2";
+
+package test_ms;
+
+// TestMessageSet is a MessageSet: message_set_wire_format = true,
+// no regular fields, one extension range.
+message TestMessageSet {
+  option message_set_wire_format = true;
+  extensions 1 to max;
+}
+
+// ExtPayloadA extends TestMessageSet at field number 100.
+message ExtPayloadA {
+  extend TestMessageSet {
+    optional ExtPayloadA ext_a = 100;
+  }
+  optional string label = 1;
+  optional int32  value = 2;
+}
+
+// ExtPayloadB extends TestMessageSet at field number 200.
+message ExtPayloadB {
+  extend TestMessageSet {
+    optional ExtPayloadB ext_b = 200;
+  }
+  optional bool   flag   = 1;
+  optional uint64 count  = 2;
+}
+
+// Container holds a TestMessageSet as a regular LEN field.
+message Container {
+  optional string      name         = 1;
+  optional TestMessageSet  extensions   = 2;
+}

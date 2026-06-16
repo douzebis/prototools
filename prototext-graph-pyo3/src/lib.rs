@@ -74,7 +74,7 @@ fn build_graph<'py>(
     Ok((PyBytes::new(py, &rkyv_bytes), yaml, initial_yaml))
 }
 
-/// Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 3).
+/// Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 4).
 ///
 /// Parameters
 /// ----------
@@ -84,6 +84,8 @@ fn build_graph<'py>(
 ///     Proto file name → (start, end) byte offsets in the raw .pb file.
 /// dep_graph : dict[str, list[str]]
 ///     Proto file name → list of direct import file names.
+/// ext_to_file : dict[str, str]
+///     "extendee_fqdn/field_number" → proto file name (spec 0100 §4).
 ///
 /// Returns
 /// -------
@@ -101,11 +103,13 @@ fn build_fds_index<'py>(
     type_to_file: HashMap<String, String>,
     file_to_span: HashMap<String, (u64, u64)>,
     dep_graph: HashMap<String, Vec<String>>,
+    ext_to_file: HashMap<String, String>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let index = FdsIndex {
         type_to_file,
         file_to_span,
         dep_graph,
+        ext_to_file,
     };
     let bytes = fds_index_to_bytes(&index).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(PyBytes::new(py, &bytes))

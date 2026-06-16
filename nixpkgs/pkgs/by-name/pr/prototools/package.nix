@@ -118,6 +118,10 @@ let
       --descriptor_set_out=$out/enum_collision.pb \
       --proto_path=${src}/prototext/fixtures/schemas \
       enum_collision.proto
+    protoc \
+      --descriptor_set_out=$out/message_set.pb \
+      --proto_path=${src}/prototext/fixtures/schemas \
+      message_set.proto
   '';
 
   ## ---------------------------------------------------------------------------
@@ -187,9 +191,10 @@ let
     patchPhase = ''
       runHook prePatch
       mkdir -p prototext/fixtures/prebuilt
-      cp ${fixtures}/descriptor.pb    prototext/fixtures/prebuilt/
-      cp ${fixtures}/knife.pb         prototext/fixtures/prebuilt/
+      cp ${fixtures}/descriptor.pb     prototext/fixtures/prebuilt/
+      cp ${fixtures}/knife.pb          prototext/fixtures/prebuilt/
       cp ${fixtures}/enum_collision.pb prototext/fixtures/prebuilt/
+      cp ${fixtures}/message_set.pb    prototext/fixtures/prebuilt/
       runHook postPatch
     '';
 

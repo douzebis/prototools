@@ -17,7 +17,7 @@ use rkyv::api::access_unchecked;
 use crate::EMBEDDED_DESCRIPTOR;
 
 const MAGIC: &[u8; 8] = b"PTSGRAPH";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 // ── LazyPool ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,11 @@ fn check_header(bytes: &[u8], label: &str) -> Result<usize, Box<dyn std::error::
     }
     let version = u32::from_le_bytes(bytes[8..12].try_into()?);
     if version != VERSION {
-        return Err(format!("{label}: unsupported version {version} (expected {VERSION})").into());
+        return Err(format!(
+            "{label}: unsupported version {version} (expected {VERSION}); \
+             please re-run reproto to regenerate the index"
+        )
+        .into());
     }
     let root_offset = u64::from_le_bytes(bytes[16..24].try_into()?) as usize;
     Ok(root_offset)
@@ -235,6 +239,23 @@ impl LazyPool {
         };
         self.ensure_loaded(&file)?;
         Ok(self.pool.get_enum_by_name(fqdn))
+    }
+
+    /// JIT-load the FDP that declares an extension on `extendee_fqdn` at
+    /// `field_number` (spec 0100 §5.1).  After this call,
+    /// `pool.get_message_by_name(extendee_fqdn).get_extension(field_number)`
+    /// will find the extension.  If the key is absent from `ext_to_file`
+    /// the call is a no-op and graceful fallback applies.
+    pub fn get_extension(
+        &mut self,
+        extendee_fqdn: &str,
+        field_number: u32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = format!("{extendee_fqdn}/{field_number}");
+        if let Some(file) = self.index.ext_to_file.get(key.as_str()) {
+            self.ensure_loaded(file.as_str())?;
+        }
+        Ok(())
     }
 
     /// Load every FDP in the index into the pool.

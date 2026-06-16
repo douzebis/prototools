@@ -11,6 +11,7 @@ use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START, EXPAND_ANY};
 use super::annotations::{field_decl, push_tag_modifiers, AnnWriter};
 use super::any_field::render_any_expansion;
+use super::message_set_field::{is_message_set, render_message_set_expansion};
 use super::output::{wfl_prefix_n, wob_prefix_n, write_close_brace, write_dec_u64};
 use super::scalar::render_invalid;
 
@@ -223,6 +224,23 @@ pub(in super::super) fn render_len_field(
                     out,
                 )
             {
+                return;
+            }
+
+            // MessageSet expansion intercept (spec 0100): if the field type
+            // is a MessageSet (structural heuristic), expand groups inline.
+            if EXPAND_ANY.with(|c| c.get()) && is_message_set(&nested_msg_desc) {
+                render_message_set_expansion(
+                    &nested_msg_desc,
+                    field_number,
+                    fs,
+                    all_schemas,
+                    tag_ohb,
+                    tag_oor,
+                    len_ohb,
+                    data,
+                    out,
+                );
                 return;
             }
 

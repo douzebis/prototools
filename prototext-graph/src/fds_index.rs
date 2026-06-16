@@ -14,7 +14,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 
 /// Index over a self-contained FileDescriptorSet for lazy per-type loading.
 ///
-/// All three maps cover every file in the FDS, including WKT files.
+/// All maps cover every file in the FDS, including WKT files.
 #[derive(Debug, Archive, Serialize, Deserialize)]
 pub struct FdsIndex {
     /// Fully-qualified type name (no leading dot) → proto file name.
@@ -32,16 +32,22 @@ pub struct FdsIndex {
     /// so every name in any value list also appears as a key here and has a
     /// span in file_to_span.  The runtime can recurse blindly.
     pub dep_graph: HashMap<String, Vec<String>>,
+
+    /// "extendee_fqdn/field_number" → proto file name.
+    /// Enables O(1) JIT-loading of extension FDPs (spec 0100 §5).
+    /// extendee_fqdn has no leading dot, matching prost-reflect convention.
+    /// Key format matches the sentinel key used by the ANY_LOADER (spec 0100 §5.2).
+    pub ext_to_file: HashMap<String, String>,
 }
 
 // ── File format constants ─────────────────────────────────────────────────────
 
 const MAGIC: &[u8; 8] = b"PTSGRAPH";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
-/// Serialize `index` to in-memory bytes with the PTSGRAPH header (version 3).
+/// Serialize `index` to in-memory bytes with the PTSGRAPH header (version 4).
 pub fn to_bytes(index: &FdsIndex) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let rkyv_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(index)?;
 

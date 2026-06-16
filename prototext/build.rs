@@ -45,10 +45,13 @@ fn copy_prebuilt(out_dir: &str, manifest_dir: &str) {
             .unwrap_or_else(|_| panic!("DESCRIPTOR_PB is set but KNIFE_PB is not"));
         let enum_collision_pb = std::env::var("ENUM_COLLISION_PB")
             .unwrap_or_else(|_| panic!("DESCRIPTOR_PB is set but ENUM_COLLISION_PB is not"));
+        let message_set_pb = std::env::var("MESSAGE_SET_PB")
+            .unwrap_or_else(|_| panic!("DESCRIPTOR_PB is set but MESSAGE_SET_PB is not"));
         for (name, src) in &[
             ("descriptor.pb", descriptor_pb),
             ("knife.pb", knife_pb),
             ("enum_collision.pb", enum_collision_pb),
+            ("message_set.pb", message_set_pb),
         ] {
             let dst = std::path::Path::new(out_dir).join(name);
             std::fs::copy(src, &dst)
@@ -59,7 +62,12 @@ fn copy_prebuilt(out_dir: &str, manifest_dir: &str) {
     // Fallback (crates.io / local dev): copy from fixtures/prebuilt/ which
     // patchPhase or a local protoc run must have populated beforehand.
     let prebuilt = std::path::Path::new(manifest_dir).join("fixtures/prebuilt");
-    for name in &["descriptor.pb", "knife.pb", "enum_collision.pb"] {
+    for name in &[
+        "descriptor.pb",
+        "knife.pb",
+        "enum_collision.pb",
+        "message_set.pb",
+    ] {
         let src = prebuilt.join(name);
         let dst = std::path::Path::new(out_dir).join(name);
         std::fs::copy(&src, &dst).unwrap_or_else(|e| panic!("failed to copy {name}: {e}"));
@@ -201,6 +209,12 @@ fn main() {
             &out_dir,
             "enum_collision.pb",
         );
+        compile(
+            &["message_set.proto"],
+            &[&schemas_dir],
+            &out_dir,
+            "message_set.pb",
+        );
     }
 
     #[cfg(not(feature = "protox"))]
@@ -213,4 +227,5 @@ fn main() {
     println!("cargo:rerun-if-changed=wkt/SOURCES");
     println!("cargo:rerun-if-changed=fixtures/schemas/knife.proto");
     println!("cargo:rerun-if-changed=fixtures/schemas/enum_collision.proto");
+    println!("cargo:rerun-if-changed=fixtures/schemas/message_set.proto");
 }

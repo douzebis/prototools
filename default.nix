@@ -106,6 +106,11 @@ let
       --proto_path=prototext/fixtures/schemas \
       enum_collision.proto
 
+    protoc \
+      --descriptor_set_out=prototext/fixtures/prebuilt/message_set.pb \
+      --proto_path=prototext/fixtures/schemas \
+      message_set.proto
+
     runHook postPatch
   '';
 

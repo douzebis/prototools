@@ -6,6 +6,7 @@
 mod annotations;
 mod any_field;
 mod len_field;
+mod message_set_field;
 mod output;
 mod scalar;
 

@@ -607,14 +607,25 @@ fn install_any_loader(desc_ctx: &mut DescriptorContext) {
     // The loader is cleared by `clear_any_loader()` before the caller that
     // holds `desc_ctx` returns, so the raw pointer is never dangling.
     let ctx_ptr: *mut DescriptorContext = desc_ctx as *mut DescriptorContext;
-    let loader: AnyLoader = Box::new(move |fqdn: &str| {
+    let loader: AnyLoader = Box::new(move |key: &str| {
         let ctx = unsafe { &mut *ctx_ptr };
-        if let Some(lazy) = ctx.lazy.as_mut() {
-            let _ = lazy.get_message(fqdn);
+        // MessageSet extension sentinel: "extendee_fqdn/field_number" (spec 0100 §5.2).
+        // Side-effect only: load the FDP containing the extension, then return None.
+        // The caller (render_message_set_expansion) calls get_extension() directly after.
+        if let Some(slash) = key.rfind('/') {
+            if let Ok(number) = key[slash + 1..].parse::<u32>() {
+                let extendee = &key[..slash];
+                if let Some(lazy) = ctx.lazy.as_mut() {
+                    let _ = lazy.get_extension(extendee, number);
+                }
+                return None;
+            }
         }
-        ctx.pool()
-            .get_message_by_name(fqdn)
-            .map(std::sync::Arc::new)
+        // Normal Any path: key is a FQDN.
+        if let Some(lazy) = ctx.lazy.as_mut() {
+            let _ = lazy.get_message(key);
+        }
+        ctx.pool().get_message_by_name(key).map(std::sync::Arc::new)
     });
     set_any_loader(loader);
 }

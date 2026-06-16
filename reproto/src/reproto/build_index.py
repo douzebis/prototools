@@ -80,11 +80,24 @@ def _collect_types(
         type_to_file[f"{prefix}{enum_type.name}"] = file_name
 
 
+def _collect_extensions(
+    msg: DescriptorProto,
+    file_name: str,
+    ext_to_file: dict[str, str],
+) -> None:
+    """Recursively collect extensions nested inside message types."""
+    for ext in msg.extension:
+        extendee = ext.extendee.lstrip('.')
+        ext_to_file[f"{extendee}/{ext.number}"] = file_name
+    for nested in msg.nested_type:
+        _collect_extensions(nested, file_name, ext_to_file)
+
+
 def build_fds_index(raw_pb_bytes: bytes, fds: FileDescriptorSet) -> bytes:
     """Build and serialize an FdsIndex from the raw .pb bytes and the decoded FDS.
 
-    Computes type_to_file, file_to_span, and dep_graph for every file in
-    the FDS (including WKT files), then calls
+    Computes type_to_file, file_to_span, dep_graph, and ext_to_file for every
+    file in the FDS (including WKT files), then calls
     prototext_graph_lib.build_fds_index() to serialize to rkyv with the
     PTSGRAPH header.
 
@@ -107,6 +120,7 @@ def build_fds_index(raw_pb_bytes: bytes, fds: FileDescriptorSet) -> bytes:
     type_to_file: dict[str, str] = {}
     file_to_span: dict[str, tuple[int, int]] = {}
     dep_graph: dict[str, list[str]] = {}
+    ext_to_file: dict[str, str] = {}
 
     for i, fdp in enumerate(fds.file):
         name = fdp.name
@@ -118,10 +132,20 @@ def build_fds_index(raw_pb_bytes: bytes, fds: FileDescriptorSet) -> bytes:
         prefix = f"{pkg}." if pkg else ""
         _collect_types(prefix, fdp, name, type_to_file)
 
+        # Collect top-level extensions.
+        for ext in fdp.extension:
+            extendee = ext.extendee.lstrip('.')
+            ext_to_file[f"{extendee}/{ext.number}"] = name
+
+        # Collect extensions nested inside message types.
+        for msg in fdp.message_type:
+            _collect_extensions(msg, name, ext_to_file)
+
     return bytes(_rust_build(
         type_to_file=type_to_file,
         file_to_span=file_to_span,
         dep_graph=dep_graph,
+        ext_to_file=ext_to_file,
     ))
 
 
