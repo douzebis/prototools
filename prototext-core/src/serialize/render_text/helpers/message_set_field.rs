@@ -224,21 +224,32 @@ pub(in super::super) fn render_message_set_expansion(
 
         // ── JIT-load extension FDP via ANY_LOADER sentinel ────────────────────
         // Sentinel key: "<extendee_fqdn>/<type_id>" (spec 0100 §5.2).
-        // The loader detects the '/' + u32 pattern, calls get_extension(), returns None.
+        //
+        // The loader JIT-loads the FDP containing the extension into the lazy
+        // pool and returns the extension's payload MessageDescriptor from the
+        // updated pool.  We use that return value directly rather than calling
+        // msg_desc.get_extension() on the stale descriptor: prost-reflect uses
+        // Arc::make_mut when adding FDPs, so lazy.pool may have forked away
+        // from the Arc that msg_desc holds, making get_extension() blind to the
+        // newly-registered extension.
         let sentinel_key = format!("{extendee_fqdn}/{type_id}");
-        ANY_LOADER.with(|l| {
-            let _ = l.borrow_mut().as_mut().and_then(|f| f(&sentinel_key));
-        });
+        let inner_msg_desc_opt: Option<MessageDescriptor> = ANY_LOADER
+            .with(|l| l.borrow_mut().as_mut().and_then(|f| f(&sentinel_key)))
+            .map(|arc| (*arc).clone());
 
-        // ── Resolve extension descriptor ──────────────────────────────────────
-        let ext_desc_opt = msg_desc.get_extension(type_id as u32);
-        let inner_msg_desc_opt: Option<MessageDescriptor> = ext_desc_opt.as_ref().and_then(|ext| {
-            if let Kind::Message(inner) = ext.kind() {
-                Some(inner)
-            } else {
-                None
-            }
-        });
+        // Fallback: if no loader is installed (eager pool path where the full
+        // FDS was decoded upfront), look up via msg_desc directly.
+        let inner_msg_desc_opt: Option<MessageDescriptor> = if inner_msg_desc_opt.is_none() {
+            msg_desc.get_extension(type_id as u32).and_then(|ext| {
+                if let Kind::Message(inner) = ext.kind() {
+                    Some(inner)
+                } else {
+                    None
+                }
+            })
+        } else {
+            inner_msg_desc_opt
+        };
 
         if let Some(inner_msg_desc) = inner_msg_desc_opt {
             // ── Resolved: render with canonical virtual field names ────────────

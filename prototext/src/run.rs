@@ -610,13 +610,38 @@ fn install_any_loader(desc_ctx: &mut DescriptorContext) {
     let loader: AnyLoader = Box::new(move |key: &str| {
         let ctx = unsafe { &mut *ctx_ptr };
         // MessageSet extension sentinel: "extendee_fqdn/field_number" (spec 0100 §5.2).
-        // Side-effect only: load the FDP containing the extension, then return None.
-        // The caller (render_message_set_expansion) calls get_extension() directly after.
+        // JIT-load the FDP that declares the extension, then return the extension's
+        // payload message type from the updated lazy.pool.
+        //
+        // We cannot rely on msg_desc.get_extension() in the caller because
+        // prost-reflect uses Arc::make_mut when adding FDPs, which forks the pool
+        // Arc whenever a clone exists (e.g. in ParsedSchema).  After the fork,
+        // the caller's MessageDescriptor still references the old Arc without the
+        // new extension.  Returning the descriptor from lazy.pool (the updated Arc)
+        // is the only way to hand a live descriptor back to the caller.
         if let Some(slash) = key.rfind('/') {
             if let Ok(number) = key[slash + 1..].parse::<u32>() {
                 let extendee = &key[..slash];
                 if let Some(lazy) = ctx.lazy.as_mut() {
                     let _ = lazy.get_extension(extendee, number);
+                    // Re-fetch the MessageDescriptor from the updated pool and
+                    // return the extension's payload message type.
+                    if let Some(extendee_desc) = lazy.pool.get_message_by_name(extendee) {
+                        if let Some(ext) = extendee_desc.get_extension(number) {
+                            if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                                return Some(std::sync::Arc::new(inner));
+                            }
+                        }
+                    }
+                } else {
+                    // Eager pool path: pool is already up-to-date; look up directly.
+                    if let Some(extendee_desc) = ctx.pool().get_message_by_name(extendee) {
+                        if let Some(ext) = extendee_desc.get_extension(number) {
+                            if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                                return Some(std::sync::Arc::new(inner));
+                            }
+                        }
+                    }
                 }
                 return None;
             }

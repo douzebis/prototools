@@ -378,7 +378,8 @@ no-op and graceful fallback applies.
 #### §5.2 — `install_any_loader` in `run.rs`
 
 The `ANY_LOADER` closure is extended to detect the sentinel key pattern
-`"<extendee_fqdn>/<field_number>"` and dispatch to `get_extension`:
+`"<extendee_fqdn>/<field_number>"`, JIT-load the extension FDP, and return
+the extension's payload `MessageDescriptor` from the updated `lazy.pool`:
 
 ```rust
 let loader: AnyLoader = Box::new(move |key: &str| {
@@ -389,9 +390,21 @@ let loader: AnyLoader = Box::new(move |key: &str| {
             let extendee = &key[..slash];
             if let Some(lazy) = ctx.lazy.as_mut() {
                 let _ = lazy.get_extension(extendee, number);
+                // Re-fetch from the updated lazy.pool and return the
+                // extension's payload type.  We cannot call
+                // msg_desc.get_extension() in the caller: prost-reflect uses
+                // Arc::make_mut when adding FDPs, which forks the pool Arc
+                // whenever another clone exists (e.g. in ParsedSchema).
+                // After the fork the caller's MessageDescriptor references
+                // the old Arc without the new extension.
+                if let Some(ed) = lazy.pool.get_message_by_name(extendee) {
+                    if let Some(ext) = ed.get_extension(number) {
+                        if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                            return Some(std::sync::Arc::new(inner));
+                        }
+                    }
+                }
             }
-            // Return None: the caller (render_message_set_expansion) will
-            // call msg_desc.get_extension() directly after this returns.
             return None;
         }
     }
@@ -405,10 +418,10 @@ let loader: AnyLoader = Box::new(move |key: &str| {
 });
 ```
 
-The loader always returns `None` for the sentinel pattern — its only job
-is the side-effect of calling `ensure_loaded`.  The caller
-(`render_message_set_expansion`) then calls `nested_msg_desc.get_extension()`
-directly on the now-populated pool.
+The loader returns the extension's payload `MessageDescriptor` (not `None`)
+for the sentinel pattern.  The caller (`render_message_set_expansion`) uses
+this return value directly — calling `msg_desc.get_extension()` on the stale
+descriptor would miss the newly-registered extension due to pool forking.
 
 ### §6 — No CLI flag needed
 
