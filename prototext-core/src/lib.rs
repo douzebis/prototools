@@ -10,7 +10,7 @@ pub mod schema;
 pub mod serialize;
 
 pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
-pub use serialize::render_text::is_prototext_text;
+pub use serialize::render_text::{clear_any_loader, is_prototext_text, set_any_loader};
 
 // ── Public API types ──────────────────────────────────────────────────────────
 

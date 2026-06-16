@@ -141,6 +141,29 @@ thread_local! {
     pub(super) static EXPAND_ANY:  Cell<bool>  = const { Cell::new(true) };
     // Optional header lines injected after the magic line (e.g. # Type / # Score).
     pub static EXTRA_HEADER: RefCell<String> = const { RefCell::new(String::new()) };
+    // JIT loader for Any/MessageSet type resolution (spec 0099).
+    // Set by `set_any_loader` before rendering; cleared by `clear_any_loader` after.
+    // Safety invariant: the raw pointer inside the Box is valid for the duration
+    // of the rendering call that set it.  Always cleared before the setting
+    // stack frame returns.
+    pub(super) static ANY_LOADER:
+        RefCell<Option<Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>>>
+        = const { RefCell::new(None) };
+}
+
+/// Install a JIT loader for `Any` (and future `MessageSet`) type resolution
+/// (spec 0099).  Must be paired with `clear_any_loader` after rendering.
+///
+/// # Safety
+/// The caller guarantees that the closure (and any references it captures)
+/// remains valid until `clear_any_loader` is called.
+pub fn set_any_loader(loader: Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>) {
+    ANY_LOADER.with(|l| *l.borrow_mut() = Some(loader));
+}
+
+/// Clear the JIT loader installed by `set_any_loader`.
+pub fn clear_any_loader() {
+    ANY_LOADER.with(|l| *l.borrow_mut() = None);
 }
 
 /// RAII guard for `LEVEL`: increments on construction, decrements on drop.

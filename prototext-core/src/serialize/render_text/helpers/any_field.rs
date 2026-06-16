@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use prost_reflect::MessageDescriptor;
 
-use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START, EXPAND_ANY};
+use super::super::{
+    enter_level, render_message, FieldOrExt, ANNOTATIONS, ANY_LOADER, CBL_START, EXPAND_ANY,
+};
 use super::annotations::{push_tag_modifiers, AnnWriter};
 use super::output::{push_indent, wob_prefix_n, write_close_brace};
 
@@ -211,8 +213,12 @@ pub(in super::super) fn render_any_expansion(
         fields.type_url
     };
 
-    let resolved_desc: Option<Arc<MessageDescriptor>> =
-        all_schemas.and_then(|m| m.get(fqdn)).cloned();
+    // Fast path: type already in the snapshot map.
+    // Slow path: JIT-load via ANY_LOADER (spec 0099), then retry the map.
+    let resolved_desc: Option<Arc<MessageDescriptor>> = all_schemas
+        .and_then(|m| m.get(fqdn))
+        .cloned()
+        .or_else(|| ANY_LOADER.with(|l| l.borrow_mut().as_mut().and_then(|f| f(fqdn))));
     let resolved_desc = match resolved_desc {
         Some(d) => d,
         None => return false,

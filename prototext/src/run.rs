@@ -11,8 +11,8 @@ use serde::Serialize;
 
 use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
-    decode_pool, is_prototext_text, render_as_bytes, render_as_text, schema_from_pool, CodecError,
-    RenderOpts,
+    clear_any_loader, decode_pool, is_prototext_text, render_as_bytes, render_as_text,
+    schema_from_pool, set_any_loader, CodecError, RenderOpts,
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
@@ -587,6 +587,31 @@ fn validate_roots_not_same(
     Ok(())
 }
 
+// ── Any JIT loader ────────────────────────────────────────────────────────────
+
+/// Install a JIT loader for `google.protobuf.Any` type resolution (spec 0099).
+///
+/// On the lazy-pool path, `lazy.get_message(fqdn)` loads the FDP on demand.
+/// On the eager-pool path, the type is either already in the pool or absent.
+/// In both cases the loader then returns the descriptor from the shared pool.
+///
+/// The caller must call `clear_any_loader()` after rendering completes.
+fn install_any_loader(desc_ctx: &mut DescriptorContext) {
+    // SAFETY: `desc_ctx` outlives every rendering call that uses this loader.
+    // The loader is cleared by `clear_any_loader()` before the caller that
+    // holds `desc_ctx` returns, so the raw pointer is never dangling.
+    let ctx_ptr: *mut DescriptorContext = desc_ctx as *mut DescriptorContext;
+    set_any_loader(Box::new(move |fqdn: &str| {
+        let ctx = unsafe { &mut *ctx_ptr };
+        if let Some(lazy) = ctx.lazy.as_mut() {
+            let _ = lazy.get_message(fqdn);
+        }
+        ctx.pool()
+            .get_message_by_name(fqdn)
+            .map(std::sync::Arc::new)
+    }));
+}
+
 // ── decode handler ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -705,6 +730,7 @@ fn run_decode(
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
+                    install_any_loader(desc_ctx);
                     let out = process(
                         &data,
                         true,
@@ -713,6 +739,7 @@ fn run_decode(
                         annotations,
                         expand_any,
                     );
+                    clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
                     return Ok(());
@@ -720,6 +747,7 @@ fn run_decode(
             }
         }
 
+        install_any_loader(desc_ctx);
         let out = process(
             &data,
             true,
@@ -727,8 +755,9 @@ fn run_decode(
             schema.as_ref(),
             annotations,
             expand_any,
-        )?;
-        write_output(&out, output.as_deref())?;
+        );
+        clear_any_loader();
+        write_output(&out?, output.as_deref())?;
         return Ok(());
     }
 
@@ -758,6 +787,7 @@ fn run_decode(
                     let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
+                    install_any_loader(desc_ctx);
                     let out = process(
                         &data,
                         true,
@@ -766,6 +796,7 @@ fn run_decode(
                         annotations,
                         expand_any,
                     );
+                    clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
                     return Ok(());
@@ -773,6 +804,7 @@ fn run_decode(
             }
         }
 
+        install_any_loader(desc_ctx);
         let out = process(
             &data,
             true,
@@ -780,8 +812,9 @@ fn run_decode(
             schema.as_ref(),
             annotations,
             expand_any,
-        )?;
-        write_output(&out, output.as_deref())?;
+        );
+        clear_any_loader();
+        write_output(&out?, output.as_deref())?;
         return Ok(());
     }
 
@@ -1194,6 +1227,7 @@ fn run_batch_infer(
             }
         };
         EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
+        install_any_loader(desc_ctx);
         let raw_out = process(
             data,
             true,
@@ -1202,6 +1236,7 @@ fn run_batch_infer(
             annotations,
             expand_any,
         );
+        clear_any_loader();
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());
         let raw_out = match raw_out {
             Ok(o) => o,
