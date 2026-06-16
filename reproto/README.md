@@ -35,16 +35,22 @@ Key features:
 
 ## Installation
 
-### NixOS / nix-shell
+### pip
 
-reproto depends on `prototext_codec`, a compiled Rust extension that is
-built as part of the prototools Nix derivation.
+```shell
+pip install prototext-reproto
+```
+
+Installs `reproto`, `reproto-gen-man`, `reproto-instantiate-schema`, and
+`reproto-instantiate-schema-gen-man` executables.
+
+### NixOS / nix-shell
 
 **User shell** — `reproto` and `reproto-instantiate-schema` on `PATH`, man
 page and completions activated:
 
 ```shell
-git clone https://github.com/douzebis/prototools
+git clone https://github.com/ThalesGroup/prototools
 cd prototools
 nix-shell          # enters shell.nix → user-shell
 ```

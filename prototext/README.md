@@ -24,7 +24,7 @@ human-readable text.  Three promises:
 Build and install from the repo:
 
 ```shell
-git clone https://github.com/douzebis/prototools
+git clone https://github.com/ThalesGroup/prototools
 cd prototools
 nix-build            # result/bin/prototext
 ```
@@ -183,4 +183,4 @@ prototext --descriptor-set $GOOGLEAPIS_DB list-schemas unknown.pb
 ```
 
 For full usage see `man prototext` or the
-[online docs](https://douzebis.github.io/prototools).
+[online docs](https://thalesgroup.github.io/prototools).

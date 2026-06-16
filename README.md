@@ -58,6 +58,32 @@ protoscan --proto_out extracted/ some_binary
 reproto --use-variant descriptor -O src/ -I extracted/ extracted/*.pb
 ```
 
+## Installation
+
+### Rust CLI (`prototext`)
+
+```shell
+cargo install prototext
+```
+
+### Python tools (`reproto`, `protoscan`, …)
+
+```shell
+pip install prototext-reproto   # reproto, reproto-instantiate-schema
+pip install protoscan           # protoscan
+pip install prototext-codec     # Python extension (lossless codec)
+pip install prototext-graph     # Python extension (scoring graph)
+pip install fdp-scan            # Python extension (descriptor scanner)
+```
+
+### NixOS / nix-shell
+
+```shell
+git clone https://github.com/ThalesGroup/prototools
+cd prototools
+nix-shell          # user shell — all tools on PATH
+```
+
 ## License
 
 MIT — see [`LICENSES/MIT.txt`](LICENSES/MIT.txt).
