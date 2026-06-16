@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0022 — Optional `protox` dependency via Cargo feature flag
 
-**Status:** implemented
+**Status:** superseded by spec 0101
 **App:** prototext
 **Implemented in:** 2026-05-01
 

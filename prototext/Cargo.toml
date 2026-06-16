@@ -13,6 +13,18 @@ repository  = "https://github.com/ThalesGroup/prototools"
 readme      = "../README.md"
 keywords    = ["protobuf", "proto", "textproto", "cli"]
 categories  = ["command-line-utilities", "encoding"]
+include     = [
+  "src/**",
+  "tests/**",
+  "fixtures/schemas/**",
+  "fixtures/prebuilt/descriptor.pb",
+  "fixtures/prebuilt/knife.pb",
+  "fixtures/prebuilt/enum_collision.pb",
+  "fixtures/prebuilt/message_set.pb",
+  "wkt/**",
+  "build.rs",
+  "Cargo.toml",
+]
 
 [package.metadata.docs.rs]
 targets = []
@@ -43,14 +55,12 @@ walkdir         = "2"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [features]
-default      = ["protox", "wkt-db"]
-protox       = ["dep:protox"]
+default      = ["wkt-db"]
 wkt-db       = []
 prebuilt-wkt = []   # copy wkt/prebuilt/*.rkyv committed to git (nixpkgs build)
 
 [build-dependencies]
-prost  = "0.14"
-protox = { version = "0.9", optional = true }
+prost = "0.14"
 
 [[test]]
 name    = "protocraft"
