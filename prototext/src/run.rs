@@ -277,21 +277,9 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
 pub fn process(
     data: &[u8],
     decode: bool,
-    assume_binary: bool,
     schema: Option<&prototext_core::ParsedSchema>,
-    annotations: bool,
-    expand_any: bool,
-    hide_unknown_fields: bool,
-    expand_message_set: bool,
+    opts: RenderOpts,
 ) -> Result<Vec<u8>, String> {
-    let opts = RenderOpts {
-        assume_binary,
-        include_annotations: annotations,
-        indent: 1,
-        expand_any,
-        hide_unknown_fields,
-        expand_message_set,
-    };
     if decode {
         render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
     } else {
@@ -700,12 +688,13 @@ fn run_decode(
             let out = process(
                 &data,
                 true,
-                assume_binary,
                 None,
-                annotations,
-                false,
-                false,
-                true,
+                RenderOpts {
+                    assume_binary,
+                    include_annotations: annotations,
+                    indent: 1,
+                    ..RenderOpts::default()
+                },
             )?;
             write_output(&out, output.as_deref())?;
         } else {
@@ -717,12 +706,13 @@ fn run_decode(
                 let out = process(
                     &data,
                     true,
-                    assume_binary,
                     None,
-                    annotations,
-                    false,
-                    false,
-                    true,
+                    RenderOpts {
+                        assume_binary,
+                        include_annotations: annotations,
+                        indent: 1,
+                        ..RenderOpts::default()
+                    },
                 )?;
                 write_output(&out, output.as_deref())?;
             } else {
@@ -734,12 +724,13 @@ fn run_decode(
                 run_batch(
                     all_files,
                     true,
-                    assume_binary,
                     None,
-                    annotations,
-                    false,
-                    false,
-                    true,
+                    RenderOpts {
+                        assume_binary,
+                        include_annotations: annotations,
+                        indent: 1,
+                        ..RenderOpts::default()
+                    },
                     in_place,
                     output_root,
                 )?;
@@ -749,6 +740,16 @@ fn run_decode(
     }
 
     let auto_infer = type_name.is_none();
+
+    // Render options for all schema-based decode calls in this function.
+    let decode_opts = RenderOpts {
+        assume_binary,
+        include_annotations: annotations,
+        indent: 1,
+        expand_any,
+        hide_unknown_fields,
+        expand_message_set,
+    };
 
     // Build schema if a type was given explicitly.
     let schema: Option<prototext_core::ParsedSchema> = if let Some(t) = type_name {
@@ -800,16 +801,7 @@ fn run_decode(
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
                     install_any_loader(desc_ctx);
-                    let out = process(
-                        &data,
-                        true,
-                        assume_binary,
-                        Some(&infer_schema),
-                        annotations,
-                        expand_any,
-                        hide_unknown_fields,
-                        expand_message_set,
-                    );
+                    let out = process(&data, true, Some(&infer_schema), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
@@ -819,16 +811,7 @@ fn run_decode(
         }
 
         install_any_loader(desc_ctx);
-        let out = process(
-            &data,
-            true,
-            assume_binary,
-            schema.as_ref(),
-            annotations,
-            expand_any,
-            hide_unknown_fields,
-            expand_message_set,
-        );
+        let out = process(&data, true, schema.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
         return Ok(());
@@ -861,16 +844,7 @@ fn run_decode(
                         .map_err(|e| format!("descriptor: {}", e))?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
                     install_any_loader(desc_ctx);
-                    let out = process(
-                        &data,
-                        true,
-                        assume_binary,
-                        Some(&infer_schema),
-                        annotations,
-                        expand_any,
-                        hide_unknown_fields,
-                        expand_message_set,
-                    );
+                    let out = process(&data, true, Some(&infer_schema), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
@@ -880,16 +854,7 @@ fn run_decode(
         }
 
         install_any_loader(desc_ctx);
-        let out = process(
-            &data,
-            true,
-            assume_binary,
-            schema.as_ref(),
-            annotations,
-            expand_any,
-            hide_unknown_fields,
-            expand_message_set,
-        );
+        let out = process(&data, true, schema.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
         return Ok(());
@@ -903,14 +868,12 @@ fn run_decode(
     if auto_infer {
         return run_batch_infer(
             all_files,
-            assume_binary,
-            annotations,
-            expand_any,
-            hide_unknown_fields,
-            expand_message_set,
-            detailed_score,
-            scoring_opts,
-            strict,
+            decode_opts,
+            &BatchInferOpts {
+                scoring_opts,
+                detailed_score,
+                strict,
+            },
             in_place,
             output_root,
             desc_ctx,
@@ -920,12 +883,8 @@ fn run_decode(
     run_batch(
         all_files,
         true,
-        assume_binary,
         schema.as_ref(),
-        annotations,
-        expand_any,
-        hide_unknown_fields,
-        expand_message_set,
+        decode_opts,
         in_place,
         output_root,
     )
@@ -955,7 +914,7 @@ fn run_encode(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let out = process(&data, false, false, None, false, false, false, true)?;
+        let out = process(&data, false, None, RenderOpts::default())?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -966,7 +925,7 @@ fn run_encode(
         let f = &all_files[0];
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-        let out = process(&data, false, false, None, false, false, false, true)?;
+        let out = process(&data, false, None, RenderOpts::default())?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -978,12 +937,8 @@ fn run_encode(
     run_batch(
         all_files,
         false,
-        false,
         None,
-        false,
-        false,
-        false,
-        true,
+        RenderOpts::default(),
         in_place,
         output_root,
     )
@@ -1237,17 +1192,16 @@ impl InferFailureReporter {
 
 // ── batch auto-infer ──────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
+struct BatchInferOpts<'a> {
+    scoring_opts: &'a ScoringOpts,
+    detailed_score: bool,
+    strict: bool,
+}
+
 fn run_batch_infer(
     all_files: Vec<InputFile>,
-    assume_binary: bool,
-    annotations: bool,
-    expand_any: bool,
-    hide_unknown_fields: bool,
-    expand_message_set: bool,
-    detailed_score: bool,
-    scoring_opts: &ScoringOpts,
-    strict: bool,
+    opts: RenderOpts,
+    infer: &BatchInferOpts<'_>,
     in_place: bool,
     output_root: Option<&PathBuf>,
     desc_ctx: &mut DescriptorContext,
@@ -1285,10 +1239,10 @@ fn run_batch_infer(
                 continue;
             }
         };
-        match infer_type(&data, graph, scoring_opts) {
+        match infer_type(&data, graph, infer.scoring_opts) {
             Err(e) => reporter.report_error(&f.abs.display().to_string(), &e),
             Ok(InferOutcome::Ambiguous(tied)) => {
-                reporter.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score)
+                reporter.report_ambiguous(&f.abs.display().to_string(), &tied, infer.detailed_score)
             }
             Ok(InferOutcome::Unique(inferred)) => successes.push((f, data, inferred)),
         }
@@ -1315,16 +1269,7 @@ fn run_batch_infer(
         };
         EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
         install_any_loader(desc_ctx);
-        let raw_out = process(
-            data,
-            true,
-            assume_binary,
-            Some(&schema),
-            annotations,
-            expand_any,
-            hide_unknown_fields,
-            expand_message_set,
-        );
+        let raw_out = process(data, true, Some(&schema), opts.clone());
         clear_any_loader();
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());
         let raw_out = match raw_out {
@@ -1345,7 +1290,7 @@ fn run_batch_infer(
     let code = if had_hard_error {
         1
     } else {
-        reporter.exit_code(strict)
+        reporter.exit_code(infer.strict)
     };
     if code != 0 {
         std::process::exit(code);
@@ -1355,16 +1300,11 @@ fn run_batch_infer(
 
 // ── batch helper ──────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn run_batch(
     all_files: Vec<InputFile>,
     decode: bool,
-    assume_binary: bool,
     schema: Option<&prototext_core::ParsedSchema>,
-    annotations: bool,
-    expand_any: bool,
-    hide_unknown_fields: bool,
-    expand_message_set: bool,
+    opts: RenderOpts,
     in_place: bool,
     output_root: Option<&PathBuf>,
 ) -> Result<(), String> {
@@ -1414,16 +1354,7 @@ fn run_batch(
         };
 
         let dest = output_path_for(&f, in_place, output_root);
-        match process(
-            &data,
-            decode,
-            assume_binary,
-            schema,
-            annotations,
-            expand_any,
-            hide_unknown_fields,
-            expand_message_set,
-        ) {
+        match process(&data, decode, schema, opts.clone()) {
             Ok(out) => {
                 if let Err(e) = write_output(&out, Some(&dest)) {
                     eprintln!("error: {}", e);
