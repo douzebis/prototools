@@ -77,6 +77,23 @@ prototext encode message.pb > message.binpb
 .nf
 protoc --encode=pkg.MyMessage descriptor.proto < input.txt | prototext --descriptor-set descriptor.pb decode --type pkg.MyMessage
 .fi
+.SS Decode without annotations but still show unknown fields (default since spec 0103)
+.PP
+.nf
+prototext --descriptor-set my.desc decode --type pkg.MyMessage --no-annotations message.binpb
+.fi
+.SS Suppress unknown fields for protoc-compatible output
+.PP
+.nf
+prototext --descriptor-set my.desc decode --type pkg.MyMessage \\
+    --no-annotations --hide-unknown-fields message.binpb
+.fi
+.SS Suppress MessageSet expansion only (Any fields still expand)
+.PP
+.nf
+prototext --descriptor-set my.desc decode --type pkg.MyMessage \\
+    --no-expand-message-set message.binpb
+.fi
 .SS Enable bash completion
 .PP
 .nf

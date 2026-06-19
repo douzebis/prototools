@@ -135,6 +135,7 @@ fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, String> {
             include_annotations: false,
             indent: 1,
             expand_any: false,
+            ..RenderOpts::default()
         };
         render_as_bytes(&bytes, opts).map_err(|e: CodecError| {
             format!("decoding prototext descriptor '{}': {}", path.display(), e)
@@ -182,6 +183,7 @@ pub fn infer_type(
             include_annotations: false,
             indent: 1,
             expand_any: false,
+            ..RenderOpts::default()
         };
         binary_buf = render_as_bytes(pb_bytes, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
@@ -279,12 +281,16 @@ pub fn process(
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
     expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
 ) -> Result<Vec<u8>, String> {
     let opts = RenderOpts {
         assume_binary,
         include_annotations: annotations,
         indent: 1,
         expand_any,
+        hide_unknown_fields,
+        expand_message_set,
     };
     if decode {
         render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
@@ -418,6 +424,8 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             detailed_score,
             relax_ranges,
             no_expand_any,
+            no_expand_message_set,
+            hide_unknown_fields,
             strict,
             paths,
         } => {
@@ -453,6 +461,8 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
                 assume_binary,
                 annotations,
                 !no_expand_any,
+                hide_unknown_fields,
+                !no_expand_message_set,
                 detailed_score,
                 &scoring_opts,
                 strict,
@@ -660,6 +670,8 @@ fn run_decode(
     assume_binary: bool,
     annotations: bool,
     expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
     detailed_score: bool,
     scoring_opts: &ScoringOpts,
     strict: bool,
@@ -685,7 +697,16 @@ fn run_decode(
             io::stdin()
                 .read_to_end(&mut data)
                 .map_err(|e| format!("reading stdin: {}", e))?;
-            let out = process(&data, true, assume_binary, None, annotations, false)?;
+            let out = process(
+                &data,
+                true,
+                assume_binary,
+                None,
+                annotations,
+                false,
+                false,
+                true,
+            )?;
             write_output(&out, output.as_deref())?;
         } else {
             let all_files = expand_all_paths(paths, &base)?;
@@ -693,7 +714,16 @@ fn run_decode(
                 let f = &all_files[0];
                 let data = std::fs::read(&f.abs)
                     .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-                let out = process(&data, true, assume_binary, None, annotations, false)?;
+                let out = process(
+                    &data,
+                    true,
+                    assume_binary,
+                    None,
+                    annotations,
+                    false,
+                    false,
+                    true,
+                )?;
                 write_output(&out, output.as_deref())?;
             } else {
                 if !in_place && output_root.is_none() {
@@ -708,6 +738,8 @@ fn run_decode(
                     None,
                     annotations,
                     false,
+                    false,
+                    true,
                     in_place,
                     output_root,
                 )?;
@@ -775,6 +807,8 @@ fn run_decode(
                         Some(&infer_schema),
                         annotations,
                         expand_any,
+                        hide_unknown_fields,
+                        expand_message_set,
                     );
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
@@ -792,6 +826,8 @@ fn run_decode(
             schema.as_ref(),
             annotations,
             expand_any,
+            hide_unknown_fields,
+            expand_message_set,
         );
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
@@ -832,6 +868,8 @@ fn run_decode(
                         Some(&infer_schema),
                         annotations,
                         expand_any,
+                        hide_unknown_fields,
+                        expand_message_set,
                     );
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
@@ -849,6 +887,8 @@ fn run_decode(
             schema.as_ref(),
             annotations,
             expand_any,
+            hide_unknown_fields,
+            expand_message_set,
         );
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
@@ -866,6 +906,8 @@ fn run_decode(
             assume_binary,
             annotations,
             expand_any,
+            hide_unknown_fields,
+            expand_message_set,
             detailed_score,
             scoring_opts,
             strict,
@@ -882,6 +924,8 @@ fn run_decode(
         schema.as_ref(),
         annotations,
         expand_any,
+        hide_unknown_fields,
+        expand_message_set,
         in_place,
         output_root,
     )
@@ -911,7 +955,7 @@ fn run_encode(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let out = process(&data, false, false, None, false, false)?;
+        let out = process(&data, false, false, None, false, false, false, true)?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -922,7 +966,7 @@ fn run_encode(
         let f = &all_files[0];
         let data =
             std::fs::read(&f.abs).map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
-        let out = process(&data, false, false, None, false, false)?;
+        let out = process(&data, false, false, None, false, false, false, true)?;
         write_output(&out, output.as_deref())?;
         return Ok(());
     }
@@ -938,6 +982,8 @@ fn run_encode(
         None,
         false,
         false,
+        false,
+        true,
         in_place,
         output_root,
     )
@@ -966,6 +1012,7 @@ fn run_list_schemas(
             include_annotations: false,
             indent: 1,
             expand_any: false,
+            ..RenderOpts::default()
         };
         render_as_bytes(raw, opts)
             .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))
@@ -1046,6 +1093,7 @@ fn run_score(
                 include_annotations: false,
                 indent: 1,
                 expand_any: false,
+                ..RenderOpts::default()
             },
         )
         .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
@@ -1195,6 +1243,8 @@ fn run_batch_infer(
     assume_binary: bool,
     annotations: bool,
     expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
     detailed_score: bool,
     scoring_opts: &ScoringOpts,
     strict: bool,
@@ -1272,6 +1322,8 @@ fn run_batch_infer(
             Some(&schema),
             annotations,
             expand_any,
+            hide_unknown_fields,
+            expand_message_set,
         );
         clear_any_loader();
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());
@@ -1311,6 +1363,8 @@ fn run_batch(
     schema: Option<&prototext_core::ParsedSchema>,
     annotations: bool,
     expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
     in_place: bool,
     output_root: Option<&PathBuf>,
 ) -> Result<(), String> {
@@ -1367,6 +1421,8 @@ fn run_batch(
             schema,
             annotations,
             expand_any,
+            hide_unknown_fields,
+            expand_message_set,
         ) {
             Ok(out) => {
                 if let Err(e) = write_output(&out, Some(&dest)) {

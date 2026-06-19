@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::FieldOrExt;
-use super::super::{ANNOTATIONS, CBL_START};
+use super::super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 use super::annotations::{push_tag_modifiers, AnnWriter};
 use super::output::{wfl_prefix, wfl_prefix_n, write_nan_hex};
 
@@ -55,7 +55,8 @@ pub(in super::super) fn render_scalar(
     let annotations = ANNOTATIONS.with(|c| c.get());
     let unknown = field_schema.is_none();
 
-    if !annotations && schema_present && (unknown || is_wire) {
+    let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
+    if hide_unknown && schema_present && (unknown || is_wire) {
         return;
     }
 

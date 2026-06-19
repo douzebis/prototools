@@ -142,6 +142,10 @@ thread_local! {
     pub(super) static LEVEL:       Cell<usize> = const { Cell::new(0) };
     // When true, google.protobuf.Any fields are expanded inline (spec 0089).
     pub(super) static EXPAND_ANY:  Cell<bool>  = const { Cell::new(true) };
+    // When true, fields absent from the schema are suppressed (spec 0103).
+    pub(super) static HIDE_UNKNOWN: Cell<bool> = const { Cell::new(false) };
+    // When true, MessageSet groups are expanded inline (spec 0103).
+    pub(super) static EXPAND_MESSAGE_SET: Cell<bool> = const { Cell::new(true) };
     // Optional header lines injected after the magic line (e.g. # Type / # Score).
     pub static EXTRA_HEADER: RefCell<String> = const { RefCell::new(String::new()) };
     // JIT loader for Any/MessageSet type resolution (spec 0099).
@@ -203,6 +207,8 @@ pub fn decode_and_render(
     annotations: bool,
     indent_size: usize,
     expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
 ) -> Vec<u8> {
     let capacity = buf.len() * 8;
     let mut out = Vec::with_capacity(capacity);
@@ -227,6 +233,8 @@ pub fn decode_and_render(
     INDENT_SIZE.with(|c| c.set(indent_size));
     LEVEL.with(|c| c.set(0));
     EXPAND_ANY.with(|c| c.set(expand_any));
+    HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
+    EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
 
     // Build a flat name→MessageDescriptor map for nested-type lookups.
     // Keyed by bare FQN (no leading dot), matching prost-reflect's convention.

@@ -18,7 +18,7 @@ use crate::serialize::common::{
 };
 
 use super::helpers::{wfl_prefix_n, AnnWriter};
-use super::{ANNOTATIONS, CBL_START};
+use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 
 /// Classify a varint value against the schema's expected type.
 #[derive(Clone, Copy, PartialEq)]
@@ -132,9 +132,10 @@ pub(super) fn render_varint_field(
     let is_enum = kind == VarintKind::Enum || kind == VarintKind::TruncEnum;
     let unknown = field_schema.is_none();
 
-    // When annotations=false and a schema is active: skip unknown/wire/mismatch fields.
+    // When hide_unknown_fields is set and a schema is active: skip unknown/wire/mismatch fields.
     // When no schema is active, never suppress (spec 0097 S5).
-    if !annotations && schema_present && (unknown || is_wire || is_mismatch) {
+    let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
+    if hide_unknown && schema_present && (unknown || is_wire || is_mismatch) {
         return;
     }
 

@@ -196,6 +196,17 @@ pub enum Command {
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
 
+        /// Suppress inline expansion of MessageSet groups.
+        /// Independent of --no-expand-any.
+        #[arg(long = "no-expand-message-set", help_heading = "Advanced options")]
+        no_expand_message_set: bool,
+
+        /// Suppress fields absent from the schema (unknown fields, wire-type
+        /// mismatches). Has no effect in --raw mode.
+        /// With --no-annotations, restores protoc-compatible output.
+        #[arg(long = "hide-unknown-fields")]
+        hide_unknown_fields: bool,
+
         /// Treat type-inference warnings (ambiguous type) as errors:
         /// exit 1 instead of exit 2.  Only applicable when auto-inferring type
         /// (no --type given and DB-backed descriptor present).

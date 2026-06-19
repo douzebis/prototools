@@ -132,6 +132,8 @@ impl SchemaHandle {
             include_annotations,
             indent,
             true,
+            false,
+            true,
         )
     }
 }
@@ -225,7 +227,15 @@ fn format_as_text<'py>(
     }
 
     let parsed_schema = schema.map(|sh| sh.inner.as_ref());
-    let rendered = decode_and_render(raw, parsed_schema, include_annotations, indent_size, true);
+    let rendered = decode_and_render(
+        raw,
+        parsed_schema,
+        include_annotations,
+        indent_size,
+        true,
+        false,
+        true,
+    );
     Ok(PyBytes::new(py, &rendered))
 }
 

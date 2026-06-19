@@ -28,6 +28,13 @@ pub struct RenderOpts {
     /// When `true` (default), expand `google.protobuf.Any` fields inline
     /// using the type resolved from `type_url` (spec 0089).
     pub expand_any: bool,
+    /// When `true`, suppress fields absent from the schema (unknown fields,
+    /// wire-type mismatches).  No effect when no schema is active (raw mode).
+    /// Default: `false` (show unknown fields).  (spec 0103)
+    pub hide_unknown_fields: bool,
+    /// When `true` (default), expand MessageSet groups inline.
+    /// Independent of `expand_any`.  (spec 0103)
+    pub expand_message_set: bool,
 }
 
 impl Default for RenderOpts {
@@ -37,6 +44,8 @@ impl Default for RenderOpts {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         }
     }
 }
@@ -96,6 +105,8 @@ pub fn render_as_text(
         opts.include_annotations,
         opts.indent,
         opts.expand_any,
+        opts.hide_unknown_fields,
+        opts.expand_message_set,
     ))
 }
 

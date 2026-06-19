@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
-use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START, EXPAND_ANY};
+use super::super::{
+    enter_level, render_message, FieldOrExt, ANNOTATIONS, CBL_START, EXPAND_ANY,
+    EXPAND_MESSAGE_SET, HIDE_UNKNOWN,
+};
 use super::annotations::{field_decl, push_tag_modifiers, AnnWriter};
 use super::any_field::render_any_expansion;
 use super::message_set_field::{is_message_set, render_message_set_expansion};
@@ -36,11 +39,12 @@ pub(in super::super) fn render_len_field(
         // Unknown LEN field: three-step cascade (spec 0097).
         //
         // When no descriptor is active, every field is unknown — suppress
-        // nothing regardless of the annotations flag (spec 0097 S5).
+        // nothing regardless of hide_unknown_fields (spec 0097 S5).
         // When a descriptor is active but this field number is absent, honour
-        // the annotations flag (unknown fields stay hidden without comments).
+        // hide_unknown_fields (spec 0103).
         let schema_present = all_schemas.is_some();
-        if !annotations && schema_present {
+        let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
+        if hide_unknown && schema_present {
             return;
         }
 
@@ -229,7 +233,7 @@ pub(in super::super) fn render_len_field(
 
             // MessageSet expansion intercept (spec 0100): if the field type
             // is a MessageSet (structural heuristic), expand groups inline.
-            if EXPAND_ANY.with(|c| c.get()) && is_message_set(&nested_msg_desc) {
+            if EXPAND_MESSAGE_SET.with(|c| c.get()) && is_message_set(&nested_msg_desc) {
                 render_message_set_expansion(
                     &nested_msg_desc,
                     field_number,
@@ -268,8 +272,10 @@ pub(in super::super) fn render_len_field(
 
     // ── Wire-type mismatch (schema says non-LEN type but wire says LEN) ───────
     // v2: numeric key, `bytes` wire type FIRST, TYPE_MISMATCH modifier, no field_decl;
-    // skip when annotations=false.
-    if !annotations {
+    // skip when hide_unknown_fields is set (spec 0103) or annotations are off
+    // (mismatch rendering requires annotations to be meaningful).
+    let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
+    if hide_unknown || !annotations {
         return;
     }
     wfl_prefix_n(field_number, field_schema, true, out);

@@ -61,6 +61,8 @@ fn enum_known_value_renders_symbolic_name() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -88,6 +90,8 @@ fn enum_unknown_value_renders_numeric_with_enum_unknown() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -117,6 +121,8 @@ fn packed_enum_renders_symbolic_names() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -157,6 +163,8 @@ fn enum_annotation_roundtrips_wire() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -167,6 +175,8 @@ fn enum_annotation_roundtrips_wire() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -174,9 +184,11 @@ fn enum_annotation_roundtrips_wire() {
 }
 
 #[test]
-fn no_annotations_omits_unknown_fields() {
-    // Unknown field (no schema): wire type varint, field 99.
-    let wire = vec![0xb8, 0x06, 0x01]; // field 99, varint, value 1
+fn no_annotations_shows_unknown_fields_by_default() {
+    // Unknown field (field 103 absent from EnumCollision schema): wire type varint, value 1.
+    // Tag encoding: (103 << 3) | 0 = 824 = 0xb8 0x06 (varint). Value: 0x01.
+    // With --no-annotations alone, unknown fields are now shown as bare field numbers (spec 0103).
+    let wire = vec![0xb8, 0x06, 0x01]; // field 103, varint, value 1
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
@@ -186,13 +198,42 @@ fn no_annotations_omits_unknown_fields() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
-        !text_str.contains("99"),
-        "unknown field should be omitted without annotations: {text_str}"
+        text_str.contains("103"),
+        "unknown field should appear as bare field number without annotations: {text_str}"
+    );
+}
+
+#[test]
+fn hide_unknown_fields_omits_unknown_fields() {
+    // Unknown field (field 103 absent from EnumCollision schema): wire type varint, value 1.
+    // Tag encoding: (103 << 3) | 0 = 824 = 0xb8 0x06 (varint). Value: 0x01.
+    // With hide_unknown_fields=true, unknown fields are suppressed regardless of annotations.
+    let wire = vec![0xb8, 0x06, 0x01]; // field 103, varint, value 1
+    let schema = enum_schema();
+    let text = render_as_text(
+        &wire,
+        Some(&schema),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: false,
+            indent: 1,
+            expand_any: true,
+            hide_unknown_fields: true,
+            expand_message_set: true,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        !text_str.contains("103"),
+        "unknown field should be suppressed with hide_unknown_fields: {text_str}"
     );
 }
 
@@ -210,6 +251,8 @@ fn enum_named_float_roundtrip_is_varint() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -220,6 +263,8 @@ fn enum_named_float_roundtrip_is_varint() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -300,6 +345,8 @@ fn float_canonical_nan_renders_bare_nan() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -330,6 +377,8 @@ fn float_noncanonical_nan_renders_with_modifier() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -353,6 +402,8 @@ fn float_noncanonical_nan_renders_with_modifier() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -380,6 +431,8 @@ fn float_noncanonical_nan_roundtrips() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -390,6 +443,8 @@ fn float_noncanonical_nan_roundtrips() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -413,6 +468,8 @@ fn double_canonical_nan_renders_bare_nan() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -443,6 +500,8 @@ fn double_noncanonical_nan_renders_with_modifier() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -466,6 +525,8 @@ fn double_noncanonical_nan_renders_with_modifier() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -493,6 +554,8 @@ fn double_noncanonical_nan_roundtrips() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -503,6 +566,8 @@ fn double_noncanonical_nan_roundtrips() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -571,6 +636,8 @@ fn message_set_resolved_expansion_renders_canonical_names() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -614,6 +681,8 @@ fn message_set_group_annotation_syntax() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -640,6 +709,8 @@ fn message_set_unknown_type_id_falls_back_schemaless() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -663,6 +734,8 @@ fn message_set_roundtrip() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -673,6 +746,8 @@ fn message_set_roundtrip() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -699,6 +774,8 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -720,6 +797,8 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -746,6 +825,8 @@ fn float_packed_noncanonical_nan_roundtrips() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -756,6 +837,8 @@ fn float_packed_noncanonical_nan_roundtrips() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -779,6 +862,8 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -800,6 +885,8 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -826,6 +913,8 @@ fn double_packed_noncanonical_nan_roundtrips() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -836,6 +925,8 @@ fn double_packed_noncanonical_nan_roundtrips() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -863,6 +954,8 @@ fn float_packed_all_nan_variants_roundtrip() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -873,6 +966,8 @@ fn float_packed_all_nan_variants_roundtrip() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -900,6 +995,8 @@ fn double_packed_all_nan_variants_roundtrip() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -910,6 +1007,8 @@ fn double_packed_all_nan_variants_roundtrip() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -940,6 +1039,8 @@ fn float_subnormals_roundtrip() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -950,6 +1051,8 @@ fn float_subnormals_roundtrip() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -980,6 +1083,8 @@ fn double_subnormals_roundtrip() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -990,6 +1095,8 @@ fn double_subnormals_roundtrip() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -1135,6 +1242,8 @@ fn packed_int32_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1154,6 +1263,8 @@ fn packed_int32_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1184,6 +1295,8 @@ fn packed_float_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1203,6 +1316,8 @@ fn packed_float_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1232,6 +1347,8 @@ fn packed_double_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1251,6 +1368,8 @@ fn packed_double_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1282,6 +1401,8 @@ fn canonical_float_nan_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1301,6 +1422,8 @@ fn canonical_float_nan_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1331,6 +1454,8 @@ fn noncanonical_float_nan_matches_protoc_output() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -1350,6 +1475,8 @@ fn noncanonical_float_nan_matches_protoc_output() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -1379,6 +1506,8 @@ fn canonical_double_nan_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1398,6 +1527,8 @@ fn canonical_double_nan_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1427,6 +1558,8 @@ fn noncanonical_double_nan_matches_protoc_output() {
                 include_annotations: true,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -1446,6 +1579,8 @@ fn noncanonical_double_nan_matches_protoc_output() {
                 include_annotations: false,
                 indent: 1,
                 expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
             },
         )
         .unwrap();
@@ -1477,6 +1612,8 @@ fn packed_float_nan_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1496,6 +1633,8 @@ fn packed_float_nan_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1524,6 +1663,8 @@ fn packed_double_nan_matches_protoc_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1543,6 +1684,8 @@ fn packed_double_nan_matches_protoc_output() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1615,6 +1758,8 @@ fn extension_field_renders_with_bracketed_fqn() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1652,6 +1797,8 @@ fn extension_field_roundtrip() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1664,6 +1811,8 @@ fn extension_field_roundtrip() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1826,6 +1975,8 @@ fn any_field_expands_type_url_and_value() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1862,6 +2013,8 @@ fn any_field_no_expand_renders_value_as_bytes() {
             include_annotations: true,
             indent: 1,
             expand_any: false,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1889,6 +2042,8 @@ fn any_field_roundtrip() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1899,6 +2054,8 @@ fn any_field_roundtrip() {
             include_annotations: false,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -1919,6 +2076,8 @@ fn any_field_golden_annotated_output() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -2027,6 +2186,8 @@ fn any_field_unresolvable_type_url_renders_value_as_bytes() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -2075,6 +2236,8 @@ fn any_field_value_before_type_url_renders_as_raw_len() {
             include_annotations: true,
             indent: 1,
             expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
         },
     )
     .unwrap();
@@ -2124,12 +2287,16 @@ fn selftest_roundtrip() {
         include_annotations: true,
         indent: 1,
         expand_any: true,
+        hide_unknown_fields: false,
+        expand_message_set: true,
     };
     let opts_dec = RenderOpts {
         assume_binary: false,
         include_annotations: false,
         indent: 1,
         expand_any: true,
+        hide_unknown_fields: false,
+        expand_message_set: true,
     };
 
     let mut rng = seed;
