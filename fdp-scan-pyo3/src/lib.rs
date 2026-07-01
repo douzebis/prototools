@@ -60,6 +60,29 @@ pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
 /// Used to reject implausibly long strings during scanning.
 const MAX_PROTO_NAME_LEN: usize = 200;
 
+/// Returns true if `name` looks like a plausible canonical `.proto`
+/// import path: ends in `.proto`, is not absolute, and every
+/// `/`-separated component is non-empty, is not `.`/`..`, and contains
+/// no control characters.
+///
+/// This is deliberately *not* a POSIX path-legality check — POSIX
+/// forbids only `NUL` and `/` in a filename, and control characters
+/// (e.g. a literal newline) are technically legal there.  This checks
+/// plausibility as a genuine, protoc-managed import path instead:
+/// no real `.proto` import name is absolute, contains `.`/`..`
+/// components, or embeds control characters, even though the
+/// filesystem would tolerate all of these.
+fn is_plausible_path(name: &str) -> bool {
+    name.ends_with(".proto")
+        && !name.starts_with('/')
+        && name.split('/').all(|component| {
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && !component.chars().any(|c| c.is_control())
+        })
+}
+
 fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
     let mut result = Vec::new();
     let data_len = data.len();
@@ -83,7 +106,7 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
                 }
 
                 if let Ok(name_str) = std::str::from_utf8(&data[name_start..name_end]) {
-                    if name_str.len() <= MAX_PROTO_NAME_LEN && name_str.ends_with(".proto") {
+                    if name_str.len() <= MAX_PROTO_NAME_LEN && is_plausible_path(name_str) {
                         if let Some(fdp_end) = walk_protobuf_fields(data, offset) {
                             result.push((offset, fdp_end));
                             offset = fdp_end;
@@ -118,7 +141,7 @@ fn looks_like_fdp_start(data: &[u8], pos: usize) -> bool {
         return false;
     }
     std::str::from_utf8(&data[name_start..name_end])
-        .map(|s| s.ends_with(".proto"))
+        .map(is_plausible_path)
         .unwrap_or(false)
 }
 
@@ -245,6 +268,68 @@ mod tests {
             ranges.is_empty(),
             "truncated FDP should not be returned, got {ranges:?}"
         );
+    }
+
+    #[test]
+    fn test_garbage_name_ending_in_proto_rejected() {
+        // Real-world false positive: an HTML/Go-template fragment whose
+        // trailing bytes happen to end in ".proto".  The outer (garbage,
+        // leading-`/`) span must never be accepted as a genuine FDP name
+        // (spec 0105).
+        //
+        // Note: this exact garbage string embeds a `\n` immediately
+        // followed by bytes that coincidentally decode as a valid varint
+        // length matching a genuinely plausible trailing substring
+        // (`google/api/expr/v1alpha1/value.proto`, 36 bytes).  So
+        // `scan_bytes()` does *not* return an empty list here — it
+        // correctly rejects the outer garbage span and finds this
+        // coincidental but genuinely clean embedded name instead, which
+        // is safe to accept (no leading `/`, no control characters).
+        let garbage = "/p>\n{{- end}}\n{{end}}\n\n$google/api/expr/v1alpha1/value.proto";
+        let fdp = make_fdp(garbage);
+
+        let ranges = scan_bytes(&fdp);
+
+        assert!(
+            !ranges.contains(&(0, fdp.len())),
+            "full garbage span should never be accepted as a candidate, got {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn test_simple_garbage_name_rejected() {
+        // Simpler garbage string with no embedded coincidental valid
+        // substring: scan_bytes() should return no candidates at all.
+        let garbage = "/p>\n{{- end}}\n{{end}}\n\nnot/a/real/path.proto";
+        let fdp = make_fdp(garbage);
+
+        let ranges = scan_bytes(&fdp);
+
+        assert!(
+            ranges.is_empty(),
+            "garbage name ending in .proto should not be accepted, got {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn test_plausible_path_accepted() {
+        // Sanity check: a genuine canonical import path is still accepted,
+        // including non-ASCII names.
+        assert!(is_plausible_path("google/protobuf/descriptor.proto"));
+        assert!(is_plausible_path("foo/bar_baz-qux.proto"));
+        assert!(is_plausible_path("simple.proto"));
+        assert!(is_plausible_path("café.proto"));
+    }
+
+    #[test]
+    fn test_non_plausible_path_rejected() {
+        assert!(!is_plausible_path("/absolute/path.proto"));
+        assert!(!is_plausible_path("foo//bar.proto"));
+        assert!(!is_plausible_path("./foo.proto"));
+        assert!(!is_plausible_path("../foo.proto"));
+        assert!(!is_plausible_path("foo/../bar.proto"));
+        assert!(!is_plausible_path("not_a_proto_file"));
+        assert!(!is_plausible_path("foo\nbar.proto"));
     }
 
     #[test]
