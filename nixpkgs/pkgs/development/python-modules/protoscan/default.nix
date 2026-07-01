@@ -9,15 +9,25 @@
 ## =============================================================================
 
 {
-  lib,
-  stdenv,
   buildPythonPackage, ## standard nixpkgs builder for Python packages
+  lib,
   prototools,         ## the top-level prototools package — provides src, version
-  setuptools,         ## Python build backend
+  stdenv,
+
+  ## nixpkgs convention: group arguments by role, alphabetical within each group.
+
+  # build-system
+  setuptools,         ## Python build backend (PEP 517)
+
+  # dependencies
   click,              ## Python CLI framework (runtime dependency)
-  protobuf,           ## Python protobuf library (google.protobuf) — runtime dep
   fdp-scan,           ## sibling Python package (also from this PR) — runtime dep
+  protobuf,           ## Python protobuf library (google.protobuf) — runtime dep
+
+  # nativeBuildInputs
   installShellFiles,  ## setup hook for installing shell completions
+
+  # tests
   pytestCheckHook,    ## setup hook that runs pytest during the check phase
 }:
 
@@ -58,8 +68,8 @@ buildPythonPackage {
   ## environment (via propagatedBuildInputs under the hood).
   dependencies = [
     click
-    protobuf
     fdp-scan
+    protobuf
   ];
 
   ## nativeBuildInputs: build-time tools (not propagated, not linked).

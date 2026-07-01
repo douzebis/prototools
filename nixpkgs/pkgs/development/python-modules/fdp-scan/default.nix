@@ -2,33 +2,44 @@
 ## pkgs/development/python-modules/fdp-scan/default.nix
 ##
 ## fdp-scan is a PyO3 Rust extension: the core logic is written in Rust and
-## exposed to Python as a native shared library (.so). There is no standard
-## Python build system involved — we drive cargo directly and install the
-## resulting .so by hand.
+## exposed to Python as a native shared library (.so).
 ##
-## The importable module is `fdp_scan_lib` (note: underscore, not hyphen).
-## The distribution name (pname) is "fdp-scan" (hyphen), following PyPA
-## convention where distribution names use hyphens.
+## The upstream fdp-scan-pyo3/pyproject.toml declares hatchling as its build
+## backend.  Hatchling cannot compile Rust itself, so the pattern is:
+##   1. Compile the .so with cargo in preBuild.
+##   2. Drop the .so into fdp_scan_lib/ alongside the committed __init__.py
+##      and .pyi stub — hatchling then packages whatever is in that directory.
+##   3. buildPythonPackage with pyproject = true lets hatchling drive the
+##      install, generating .dist-info automatically.
+##
+## This is the same two-step trick used by the upstream Crane pipeline in
+## nix/rust.nix (makePyo3Extension): compile first, then let hatchling wrap.
+##
+## The importable module is `fdp_scan_lib` (underscore).
+## The distribution name (pname) is "fdp-scan" (hyphen).
 ## =============================================================================
 
 {
-  lib,
-  stdenv,
   buildPythonPackage, ## Python package builder — used here mainly for its
                       ## phase infrastructure and hook integration
-  writeText,          ## creates a text file as a Nix store path at eval time
-  prototools,         ## top-level prototools package — provides src, version
-  rustPlatform,       ## Rust build helpers
-  cargo,              ## Rust build tool
-  rustc,              ## Rust compiler
-  python,             ## Python interpreter — needed for PyO3 linking
-  pytestCheckHook,    ## runs pytest during the check phase
-  protobuf,           ## Python google.protobuf library — needed by the test suite
+  cargo,        ## Rust build tool
+  ## hatchling: the build backend declared in fdp-scan-pyo3/pyproject.toml.
+  ## It packages the fdp_scan_lib/ directory into a wheel and generates
+  ## .dist-info automatically — no manual installPhase or METADATA writing needed.
+  hatchling,
+  lib,
+  protobuf,     ## Python google.protobuf library — needed by the test suite
+  prototools,   ## top-level prototools package — provides src, version
+  python,       ## Python interpreter — needed for PyO3 linking
+  pytestCheckHook,
+  rustPlatform, ## Rust build helpers (fetchCargoVendor, cargoSetupHook)
+  rustc,        ## Rust compiler
+  stdenv,
 }:
 
 ## The `finalAttrs` pattern:
 ##
-##   buildPythonPackage (finalAttrs: { pname = "…"; … cargoDeps = … ${finalAttrs.pname} … })
+##   buildPythonPackage (finalAttrs: { pname = "…"; cargoDeps = … ${finalAttrs.pname} … })
 ##
 ## `finalAttrs` is a special argument provided by buildPythonPackage (via
 ## lib.makeOverridable under the hood) that gives the attrset access to its
@@ -41,180 +52,128 @@
 ##     because `rec` captured the original `pname` at definition time.
 ##   - With `finalAttrs`, self-references always see the post-override values,
 ##     making the package correctly overridable.
-##
-## pyproject = false: there is no pyproject.toml for this Rust extension,
-## so we disable PEP 517 build and write buildPhase/installPhase manually.
 buildPythonPackage (finalAttrs: {
   pname = "fdp-scan";
 
   ## `inherit (prototools) version` pulls `version` from the prototools
   ## passthru attrset, equivalent to `version = prototools.version`.
-  ## This ensures all packages in the monorepo share a single version string.
   inherit (prototools) version;
 
-  pyproject = false; # manual build/install phases
+  ## pyproject = true: use the PEP 517 build path — buildPythonPackage calls
+  ## `python -m build --wheel` (via pypa/build), which invokes the hatchling
+  ## backend declared in pyproject.toml.  Contrast with pyproject = false
+  ## (the old approach), which disabled this and required manual buildPhase
+  ## and installPhase.
+  pyproject = true;
 
   ## __structuredAttrs = true: nixpkgs policy for all new packages.
   ## Switches the build environment from space-separated strings to proper
   ## bash arrays for list-valued variables (nativeBuildInputs, etc.).
-  ## This is more correct and avoids quoting bugs when paths contain spaces.
   __structuredAttrs = true;
 
-  ## Inherit the source from prototools.  The entire prototools monorepo is
-  ## one source tree; all sub-packages share the same fetchFromGitHub result.
-  ## `inherit (prototools) src` is equivalent to `src = prototools.src`.
+  ## The entire prototools monorepo is one source tree fetched once by the
+  ## top-level prototools package.nix and shared via passthru.
   inherit (prototools) src;
 
-  ## ---------------------------------------------------------------------------
-  ## cargoDeps
+  ## sourceRoot: after unpacking, the build changes into this subdirectory.
+  ## All subsequent phases (configure, build, install, check) run from there.
+  ## hatchling sees pyproject.toml and fdp_scan_lib/ directly.
+  ## ${prototools.src.name} evaluates to the unpacked archive directory name
+  ## (e.g. "prototools-prototext-v0.2.0").
+  sourceRoot = "${prototools.src.name}/fdp-scan-pyo3";
+
+  ## Cargo.lock lives at the workspace root, one level above sourceRoot.
   ##
-  ## fetchCargoVendor downloads and vendors all Cargo dependencies declared in
-  ## Cargo.lock. The `hash` covers the entire vendored tree. The build will then
-  ## run with --offline --frozen so no network access is needed.
+  ## cargoRoot = "..": tells cargoSetupPostPatchHook (part of cargoSetupHook)
+  ## to look for Cargo.lock at $(pwd)/../Cargo.lock — i.e. the workspace root
+  ## — rather than in $(pwd) (which is fdp-scan-pyo3/ after the cd).
   ##
-  ## `inherit (finalAttrs) pname version src`: passes the *final* (post-override)
-  ## values into fetchCargoVendor.  We use finalAttrs rather than bare names
-  ## because without `rec`, those names are not in scope inside the attrset.
-  ## (The old `rec` approach would fail to propagate overrides correctly —
-  ## see the finalAttrs explanation above.)
+  ## fetchCargoVendor receives no sourceRoot or cargoRoot, so it also scans
+  ## from the workspace root and finds the same Cargo.lock.  cargoSetupHook
+  ## validates that the two are identical, ensuring the vendor tree is current.
   ##
   ## workspace-hack is a cargo-hakari crate that deduplicates dependency
   ## feature unification across all crates, speeding up from-scratch builds.
   ## It appears in the vendor tree but has no effect on built artefacts.
-  ## ---------------------------------------------------------------------------
+  cargoRoot = "..";
   cargoDeps = rustPlatform.fetchCargoVendor {
     inherit (finalAttrs) pname version src;
-    hash = "sha256-7zgovPU/MiKwyRdDpL5SyFlsLHmB6mSgDbt32D9ClGU=";
+    hash = "sha256-c4HxWaAaMygeUbJL9xlt80H486NTcVWHP3NeWDqXGVc=";
   };
 
-  ## ---------------------------------------------------------------------------
-  ## nativeBuildInputs vs buildInputs
+  build-system = [ hatchling ];
+
+  ## nativeBuildInputs vs buildInputs:
+  ## nativeBuildInputs: tools that run on the *build machine* (not linked into output).
+  ## buildInputs: libraries *linked into* the output (must match target arch).
   ##
-  ## nativeBuildInputs: tools that run on the *build machine* (the machine
-  ## running nix-build). In a cross-compilation scenario, these are the host
-  ## architecture tools.
-  ##
-  ## buildInputs: libraries that are *linked into* the output and must match
-  ## the *target* architecture.
-  ##
-  ## For PyO3:
-  ## - python in nativeBuildInputs: Rust build scripts (build.rs) call
-  ##   `python` to locate PyO3 headers. Must be a build-machine binary.
-  ## - python in buildInputs: the .so must link against libpython at runtime.
+  ## python appears in both:
+  ## - nativeBuildInputs: Rust build scripts (build.rs) call `python` to
+  ##   locate PyO3 headers. Must be a build-machine binary.
+  ## - buildInputs: the .so must link against libpython at runtime.
   ##   Must match the target architecture.
-  ## - cargo, rustc, cargoSetupHook: build-time tools only.
-  ## ---------------------------------------------------------------------------
   nativeBuildInputs = [
     cargo
     rustc
-    rustPlatform.cargoSetupHook # sets up the vendored deps so cargo --offline works
+    ## cargoSetupHook: unpacks cargoDeps into the build tree and configures
+    ## Cargo to use the vendored deps (.cargo/config.toml).
+    ## It runs during postUnpack (before cd into sourceRoot), writing
+    ## .cargo/config.toml at the unpack root.  Cargo finds it by walking up
+    ## the directory tree from fdp-scan-pyo3/, so --offline vendor resolution
+    ## still works correctly.
+    rustPlatform.cargoSetupHook
     python # needed at build time for PYO3_PYTHON (Rust build scripts)
   ];
 
   buildInputs = [ python ]; # needed for linking against libpython
 
-  ## PYO3_PYTHON: tells PyO3's build.rs which Python interpreter to use when
-  ## generating bindings. python.interpreter is the store path of the python
-  ## binary (e.g. /nix/store/…-python3-3.13.x/bin/python3).
+  ## PYO3_PYTHON: tells PyO3's build.rs which Python interpreter to use.
+  ## python.interpreter is the store path of the `python3` binary
+  ## (e.g. /nix/store/…-python3-3.13.x/bin/python3).
   env.PYO3_PYTHON = python.interpreter;
 
-  ## ---------------------------------------------------------------------------
-  ## buildPhase
+  ## preBuild runs from inside fdp-scan-pyo3/ (the sourceRoot), before
+  ## hatchling's build step (pypaBuildPhase).
   ##
-  ## We only need to build the shared library, not any binaries, hence --lib.
-  ## -p fdp_scan_lib: build only the fdp_scan_lib crate within the workspace.
-  ## --offline --frozen: use the vendored deps set up by cargoSetupHook.
-  ## ---------------------------------------------------------------------------
-  buildPhase = ''
-    runHook preBuild
-    cargo build --release --lib -p fdp_scan_lib \
-      --offline \
-      --frozen
-    runHook postBuild
-  '';
-
-  ## ---------------------------------------------------------------------------
-  ## installPhase
+  ## CARGO_TARGET_DIR="$PWD/target": without this, cargo would write its
+  ## output to the default location relative to the workspace root —
+  ## ../target/ from our working directory — which is read-only in the
+  ## Nix sandbox.  Redirecting to $PWD/target keeps everything inside the
+  ## writable fdp-scan-pyo3/ build directory.
   ##
-  ## pyproject = false means there is no pip install — we copy files manually.
-  ##
-  ## python.sitePackages: the canonical site-packages path relative to $out,
-  ## e.g. "lib/python3.13/site-packages". Using this attribute (rather than
-  ## hardcoding the path) ensures correctness across Python versions.
-  ##
-  ## stdenv.hostPlatform.extensions.sharedLibrary: ".so" on Linux, ".dylib"
-  ## on macOS. Cargo produces libfdp_scan_lib.so (or .dylib), so we use this
-  ## to construct the source path portably.
-  ##
-  ## The destination filename is always fdp_scan_lib.so (plain .so, no ABI
-  ## tags) because Python's import system finds the module by name within the
-  ## package directory — ABI tags are only needed for top-level extension
-  ## modules installed directly into site-packages.
-  ##
-  ## writeText NAME CONTENT: a Nix built-in that creates a store path containing
-  ## a single file with the given content at eval time (not build time).
-  ## ${writeText ...} interpolates its store path into the shell script.
-  ## Nix's indented string literals ('' ... '') strip the common leading
-  ## whitespace, so the METADATA file will have headers at column 0.
-  ##
-  ## The .dist-info directory name follows PEP 427 normalization:
-  ## hyphens in the distribution name become underscores.
-  ## "fdp-scan" → "fdp_scan-0.2.0.dist-info"
-  ##
-  ## Note: ${finalAttrs.version} and ${finalAttrs.pname} here are Nix
-  ## interpolations (evaluated at graph-construction time by the Nix evaluator),
-  ## not shell variable expansions.  They expand to the string values of those
-  ## attributes before the shell script is even written to the build sandbox.
-  ## ---------------------------------------------------------------------------
-  installPhase = ''
-    runHook preInstall
-    site="$out/${python.sitePackages}"
-    mkdir -p "$site/fdp_scan_lib"
-
-    cp "target/release/libfdp_scan_lib${stdenv.hostPlatform.extensions.sharedLibrary}" \
-       "$site/fdp_scan_lib/fdp_scan_lib.so"
-    # .pyi type stub (generated by pyo3-stub-gen, committed to the repo).
-    cp fdp-scan-pyo3/fdp_scan_lib/fdp_scan_lib.pyi \
-       "$site/fdp_scan_lib/"
-    cp fdp-scan-pyo3/fdp_scan_lib/__init__.py \
-       "$site/fdp_scan_lib/"
-
-    # Install minimal .dist-info so importlib.metadata can find the package.
-    distinfo="$site/fdp_scan-${finalAttrs.version}.dist-info"
-    mkdir -p "$distinfo"
-    cp ${writeText "fdp-scan-METADATA" ''
-      Metadata-Version: 2.1
-      Name: ${finalAttrs.pname}
-      Version: ${finalAttrs.version}
-    ''} "$distinfo/METADATA"
-    runHook postInstall
+  ## After cargo finishes, we copy the compiled .so into fdp_scan_lib/.
+  ## The destination is always named fdp_scan_lib.so (Python extension module
+  ## convention: no "lib" prefix, always .so even on macOS for modules inside
+  ## a package directory).
+  ## The committed __init__.py and fdp_scan_lib.pyi are already in place.
+  ## Hatchling picks up the entire fdp_scan_lib/ directory (as declared in
+  ## [tool.hatch.build.targets.wheel] packages = ["fdp_scan_lib"]) and
+  ## packages it into a wheel, generating .dist-info automatically.
+  preBuild = ''
+    CARGO_TARGET_DIR="$PWD/target" \
+      cargo build --release --lib -p fdp_scan_lib --offline --frozen
+    cp target/release/libfdp_scan_lib${stdenv.hostPlatform.extensions.sharedLibrary} \
+       fdp_scan_lib/fdp_scan_lib.so
   '';
 
   ## nativeCheckInputs: only available during the check phase, not propagated.
-  ## pytestCheckHook: with pyproject = false and buildPythonPackage, tests run
-  ## in installCheckPhase (after install), so the .so is already in site-packages.
   ## protobuf: the Python google.protobuf library is imported by the test suite.
   nativeCheckInputs = [
     pytestCheckHook
     protobuf
   ];
 
-  enabledTestPaths = [ "fdp-scan-pyo3/tests/" ];
+  ## enabledTestPaths: relative to sourceRoot (fdp-scan-pyo3/).
+  enabledTestPaths = [ "tests/" ];
 
-  ## pythonImportsCheck: verifies that `import fdp_scan_lib` succeeds after install.
+  ## pythonImportsCheck: verifies `import fdp_scan_lib` succeeds after install.
   pythonImportsCheck = [ "fdp_scan_lib" ];
 
   meta = {
     description = "Rust extension for scanning binaries for embedded protobuf FileDescriptorProto blobs";
     homepage = "https://github.com/ThalesGroup/prototools";
     license = lib.licenses.mit;
-    ## `with lib.maintainers; [ douzebis ]` is shorthand for
-    ## `[ lib.maintainers.douzebis ]`.  The `with ATTRSET; EXPR` construct
-    ## brings all attributes of ATTRSET into scope for EXPR, avoiding
-    ## repetitive `lib.maintainers.` prefixes when listing multiple maintainers.
     maintainers = with lib.maintainers; [ douzebis ];
-    ## platforms is intentionally omitted — buildPythonPackage sets a sensible
-    ## default.  There is nothing platform-specific enough here to restrict it.
   };
 })
 ## Note the closing `})`:

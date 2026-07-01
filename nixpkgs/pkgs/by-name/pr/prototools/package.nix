@@ -18,17 +18,17 @@
 ## against the package set. This is "dependency injection via callPackage".
 ## -----------------------------------------------------------------------------
 {
-  lib,             ## nixpkgs standard library (lib.optionalString, lib.licenses, ...)
-  rustPlatform,    ## helpers for building Rust packages (buildRustPackage, fetchCargoVendor, ...)
-  installShellFiles, ## setup hook that installs shell completions
-  versionCheckHook,  ## setup hook that runs "$bin --version" and checks the output
-  stdenv,          ## standard build environment (compiler, libc, ...)
   fetchFromGitHub, ## fetcher for GitHub source archives
-  runCommand,      ## builds a simple derivation by running a shell script
-  protobuf,        ## the protobuf C++ library *and* the protoc compiler
+  installShellFiles, ## setup hook that installs shell completions
+  lib,             ## nixpkgs standard library (lib.optionalString, lib.licenses, ...)
   nix-update-script, ## script used by nix-update to bump version/hash automatically
-  symlinkJoin,     ## merges multiple store paths by symlinking their contents
+  protobuf,        ## the protobuf C++ library *and* the protoc compiler
   python3Packages, ## the Python 3 package set (gives access to python3Packages.protoscan)
+  runCommand,      ## builds a simple derivation by running a shell script
+  rustPlatform,    ## helpers for building Rust packages (buildRustPackage, fetchCargoVendor, ...)
+  stdenv,          ## standard build environment (compiler, libc, ...)
+  symlinkJoin,     ## merges multiple store paths by symlinking their contents
+  versionCheckHook,  ## setup hook that runs "$bin --version" and checks the output
 }:
 
 ## -----------------------------------------------------------------------------
@@ -40,7 +40,7 @@
 ## `symlinkJoin`.
 ## -----------------------------------------------------------------------------
 let
-  version = "0.2.0";
+  version = "0.2.1";
 
   ## ---------------------------------------------------------------------------
   ## SOURCE FETCH
@@ -59,7 +59,7 @@ let
     owner = "ThalesGroup";
     repo = "prototools";
     tag = "prototext-v${version}"; ## Nix string interpolation: embeds `version`
-    hash = "sha256-MItheisua8Zzx3HJkMGq2y4CB8b+OufM9V5xXHkZfOc=";
+    hash = "sha256-svaczYXGQSMfKyEf30xRJl+UroXDFuJ9yL/AH5UBhU4=";
   };
 
   ## ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ let
     ## cargoHash: SRI hash of the *vendored* Cargo dependencies. nixpkgs fetches
     ## all dependencies declared in Cargo.lock, vendors them into the store, and
     ## verifies this hash. The build then runs fully offline (--offline --frozen).
-    cargoHash = "sha256-7zgovPU/MiKwyRdDpL5SyFlsLHmB6mSgDbt32D9ClGU=";
+    cargoHash = "sha256-c4HxWaAaMygeUbJL9xlt80H486NTcVWHP3NeWDqXGVc=";
 
     ## In a Cargo workspace, these flags restrict the build/test to the specific
     ## crate we care about, avoiding building unrelated workspace members.
