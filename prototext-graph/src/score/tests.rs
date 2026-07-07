@@ -1037,3 +1037,159 @@ fn tc77_12_bool_vs_int32_discrimination() {
     assert!(bool_s.vetoed, "Bool: 802 outside [0,1] should veto");
     assert!(!int32_s.vetoed, "Int32: 802 is a valid positive int32");
 }
+
+// ── Any expansion (spec 0107) ──────────────────────────────────────────────
+
+/// Schema fixture for the `Any`-expansion regression tests:
+///
+/// ```text
+/// message Wrapper       { optional google.protobuf.Any field1 = 1; }
+/// message TargetVarint  { optional uint32 field1 = 1; }   // real field 1 = VARINT
+/// message TargetString  { optional string field1 = 1; }   // real field 1 = LEN
+/// ```
+///
+/// `google.protobuf.Any` itself must be declared with its own two real
+/// fields (`type_url` string=1, `value` bytes=2), matching how a real
+/// schema corpus represents it (`any.proto` is an ordinary, if
+/// well-known, message). Without this, the raw `ANY_NODE_ID` node has zero
+/// outgoing edges, `is_message` evaluates false for it, and the
+/// Any-expansion code path in `score_message_multi` never fires at all —
+/// silently making any regression test here a no-op.
+fn make_merged_any() -> Merged {
+    let mut states = std::collections::HashMap::new();
+    states.insert(
+        "google.protobuf.Any".to_string(),
+        vec![
+            ScoringField {
+                number: 1,
+                kind: ScoringKind::LenString,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            },
+            ScoringField {
+                number: 2,
+                kind: ScoringKind::LenBytes,
+                child: None,
+                range: None,
+                label: FieldLabel::Optional,
+            },
+        ],
+    );
+    states.insert(
+        "Wrapper".to_string(),
+        vec![ScoringField {
+            number: 1,
+            kind: ScoringKind::Node,
+            child: Some("google.protobuf.Any".to_string()),
+            range: None,
+            label: FieldLabel::Optional,
+        }],
+    );
+    states.insert(
+        "TargetVarint".to_string(),
+        vec![ScoringField {
+            number: 1,
+            kind: ScoringKind::Uint32,
+            child: None,
+            range: None,
+            label: FieldLabel::Optional,
+        }],
+    );
+    states.insert(
+        "TargetString".to_string(),
+        vec![ScoringField {
+            number: 1,
+            kind: ScoringKind::LenString,
+            child: None,
+            range: None,
+            label: FieldLabel::Optional,
+        }],
+    );
+
+    Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots: vec![
+            "Wrapper".to_string(),
+            "TargetVarint".to_string(),
+            "TargetString".to_string(),
+        ],
+    }
+}
+
+fn build_graph_any() -> score_load::LoadedGraph {
+    let merged = make_merged_any();
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test_any.bin");
+    serial::write(&compiled, &path).expect("write graph");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load graph")
+}
+
+/// Encode an `Any { type_url, value }` body.
+fn any_bytes(type_url: &str, value: &[u8]) -> Vec<u8> {
+    let mut b = field_len(1, type_url.as_bytes());
+    b.extend(field_len(2, value));
+    b
+}
+
+/// TC-S1: `Any` wrapping a type whose real field 1 is VARINT must not veto
+/// (reproduces the hard-veto manifestation of the spec 0107 bug: pre-fix,
+/// the misread `type_url` LEN tag collides with the expected VARINT wire
+/// type and vetoes).
+#[test]
+fn any_expansion_recurses_into_value_only_varint() {
+    let g = build_graph_any();
+
+    let value = field_varint(1, 42); // TargetVarint { field1: 42 }
+    let any = any_bytes("type.googleapis.com/TargetVarint", &value);
+    let pb = field_len(1, &any); // Wrapper { field1: Any }
+
+    let s = score_entry(&pb, &g, "Wrapper");
+    assert!(!s.vetoed, "Any wrapping TargetVarint must not veto");
+    assert_eq!(s.mismatches, 0);
+}
+
+/// TC-S2: `Any` wrapping a type whose real field 1 is LEN (string) must
+/// score the wrapped field as a real match, not swallow it as an unknown
+/// blob (reproduces the silent-corruption manifestation of the spec 0107
+/// bug).
+#[test]
+fn any_expansion_recurses_into_value_only_string() {
+    let g = build_graph_any();
+
+    let value = field_len(1, b"hello"); // TargetString { field1: "hello" }
+    let any = any_bytes("type.googleapis.com/TargetString", &value);
+    let pb = field_len(1, &any); // Wrapper { field1: Any }
+
+    let s = score_entry(&pb, &g, "Wrapper");
+    // matches == 2: 1 for Wrapper.field1 itself (a valid Any-typed LEN
+    // field), + 1 for the recursed TargetString.field1 real match.
+    assert_eq!(
+        s.matches, 2,
+        "TargetString.field1 must score as a real recursed match"
+    );
+    assert_eq!(
+        s.unknowns, 0,
+        "the value payload must not be swallowed as an unknown field"
+    );
+}
+
+/// TC-S3: `Any` with an empty `value` must not panic or veto when
+/// recursing (regression guard for the `extract_any_value` → empty-slice
+/// fallback).
+#[test]
+fn any_expansion_empty_value() {
+    let g = build_graph_any();
+
+    let any = any_bytes("type.googleapis.com/TargetVarint", &[]);
+    let pb = field_len(1, &any); // Wrapper { field1: Any }
+
+    let s = score_entry(&pb, &g, "Wrapper");
+    assert!(!s.vetoed, "Any with empty value must not veto");
+}

@@ -200,8 +200,28 @@ RUFFEOF
         # Cargo's own incremental logic handles finer-grained staleness within
         # the working tree; this guard avoids the ~23s invocation overhead on
         # warm nix-shell entries when nothing has changed.
-        if [[ ! -f "$PWD/target/release/prototext" ]] || \
-           [[ "$PWD/prototext/src" -nt "$PWD/target/release/prototext" ]]; then
+        #
+        # Watches prototext/src plus its path dependencies (prototext-core,
+        # prototext-graph) and their Cargo.toml/Cargo.lock, since editing a
+        # dependency crate must also trigger a rebuild. Uses `find -newer`
+        # (not `-nt` on the directory itself) so content edits to existing
+        # files are detected, not just files being added/removed.
+        local bin="$PWD/target/release/prototext"
+        local watch=(prototext/src prototext-core/src prototext-graph/src
+                     prototext/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
+                     Cargo.lock)
+        local stale=0
+        if [[ ! -f "$bin" ]]; then
+          stale=1
+        else
+          for p in "''${watch[@]}"; do
+            if [[ -e "$p" && -n "$(find "$p" -newer "$bin" -print -quit 2>/dev/null)" ]]; then
+              stale=1
+              break
+            fi
+          done
+        fi
+        if [[ "$stale" -eq 1 ]]; then
           echo "[hook] cargo: cargo build --release -p prototext"
           cargo build --release --locked -p prototext
         else

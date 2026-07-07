@@ -622,6 +622,67 @@ fn extract_type_url(any_bytes: &[u8]) -> Option<&str> {
     None
 }
 
+/// Scan `any_bytes` for field 2 (WT_LEN, wire type 2) and return its raw
+/// byte slice (the `value` sub-field), or `None` if absent or the buffer is
+/// malformed. Mirrors `extract_type_url` but scans for field 2 and returns
+/// the raw bytes rather than interpreting them as UTF-8.
+fn extract_any_value(any_bytes: &[u8]) -> Option<&[u8]> {
+    let mut pos = 0;
+    let buflen = any_bytes.len();
+    while pos < buflen {
+        let tag = parse_wiretag(any_bytes, pos);
+        if tag.garbage.is_some() {
+            return None;
+        }
+        let field_number = tag.field_number;
+        let wire_type = tag.wire_type;
+        pos = tag.next_pos;
+        match wire_type {
+            WT_VARINT => {
+                let vr = parse_varint(any_bytes, pos);
+                if vr.garbage.is_some() {
+                    return None;
+                }
+                pos = vr.next_pos;
+            }
+            WT_I64 => {
+                if pos + 8 > buflen {
+                    return None;
+                }
+                pos += 8;
+            }
+            WT_LEN => {
+                let lr = parse_varint(any_bytes, pos);
+                if lr.garbage.is_some() {
+                    return None;
+                }
+                pos = lr.next_pos;
+                let len = lr.value as usize;
+                if pos + len > buflen {
+                    return None;
+                }
+                let payload = &any_bytes[pos..pos + len];
+                pos += len;
+                if field_number == 2 {
+                    // Field 2 = value (bytes).
+                    return Some(payload);
+                }
+            }
+            WT_START_GROUP => {
+                pos = parse_group_blind(any_bytes, pos, field_number)?;
+            }
+            WT_I32 => {
+                if pos + 4 > buflen {
+                    return None;
+                }
+                pos += 4;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn score_message_multi(
     buf: &[u8],
     start: usize,
@@ -976,9 +1037,12 @@ fn score_message_multi(
                             Some(root_state) => {
                                 // Recurse into the wrapped type: replace state_id 0
                                 // with the resolved root entry state; keep entry indices.
+                                // Recurse into the `value` sub-field's bytes only —
+                                // not the whole Any body (spec 0107).
+                                let value_payload = extract_any_value(payload).unwrap_or(&[]);
                                 let any_active =
                                     group_by_state(any_pairs.iter().map(|&(_, e)| (root_state, e)));
-                                score_message_multi(payload, 0, any_active, None, ws);
+                                score_message_multi(value_payload, 0, any_active, None, ws);
                             }
                             None => {
                                 // Unknown type_url or not a root: score value as plain
