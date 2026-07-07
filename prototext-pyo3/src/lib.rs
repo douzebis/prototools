@@ -17,7 +17,9 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction};
 
 use schema::{parse_schema, ParsedSchema};
 use serialize::encode_text::encode_text_to_binary;
-use serialize::render_text::{decode_and_render, is_prototext_text};
+use serialize::render_text::{
+    clear_any_loader, decode_and_render, is_prototext_text, set_any_loader,
+};
 
 // ── SchemaHandle ──────────────────────────────────────────────────────────────
 
@@ -126,15 +128,25 @@ impl SchemaHandle {
         if !assume_binary && is_prototext_text(data) {
             return data.to_vec();
         }
-        decode_and_render(
+        let root_desc = self.inner.root_descriptor();
+        // Install a JIT loader (spec 0099/0106 S2) so Any/MessageSet types
+        // discovered during rendering resolve against the full schema pool,
+        // not just the root message's directly-reachable types.
+        set_any_loader(Box::new({
+            let schema = Arc::clone(&self.inner);
+            move |fqdn: &str| schema.get_descriptor(fqdn).map(Arc::new)
+        }));
+        let out = decode_and_render(
             data,
-            Some(self.inner.as_ref()),
+            root_desc.as_ref(),
             include_annotations,
             indent,
             true,
             false,
             true,
-        )
+        );
+        clear_any_loader();
+        out
     }
 }
 
@@ -226,16 +238,28 @@ fn format_as_text<'py>(
         return Ok(data);
     }
 
-    let parsed_schema = schema.map(|sh| sh.inner.as_ref());
+    let root_desc = schema.and_then(|sh| sh.inner.root_descriptor());
+    if let Some(sh) = schema {
+        // Install a JIT loader (spec 0099/0106 S2) so Any/MessageSet types
+        // discovered during rendering resolve against the full schema pool,
+        // not just the root message's directly-reachable types.
+        set_any_loader(Box::new({
+            let schema = Arc::clone(&sh.inner);
+            move |fqdn: &str| schema.get_descriptor(fqdn).map(Arc::new)
+        }));
+    }
     let rendered = decode_and_render(
         raw,
-        parsed_schema,
+        root_desc.as_ref(),
         include_annotations,
         indent_size,
         true,
         false,
         true,
     );
+    if schema.is_some() {
+        clear_any_loader();
+    }
     Ok(PyBytes::new(py, &rendered))
 }
 

@@ -4,7 +4,6 @@
 
 //! Any-field expansion for `google.protobuf.Any` (spec 0089).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use prost_reflect::MessageDescriptor;
@@ -190,7 +189,7 @@ fn skip_group(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<usize> 
 pub(in super::super) fn render_any_expansion(
     field_number: u64,
     fs: &FieldOrExt,
-    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
+    schema_present: bool,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -213,12 +212,11 @@ pub(in super::super) fn render_any_expansion(
         fields.type_url
     };
 
-    // Fast path: type already in the snapshot map.
-    // Slow path: JIT-load via ANY_LOADER (spec 0099), then retry the map.
-    let resolved_desc: Option<Arc<MessageDescriptor>> = all_schemas
-        .and_then(|m| m.get(fqdn))
-        .cloned()
-        .or_else(|| ANY_LOADER.with(|l| l.borrow_mut().as_mut().and_then(|f| f(fqdn))));
+    // JIT-load via ANY_LOADER (spec 0099); re-derives fresh from the
+    // canonical pool on every call, never caches a value across calls
+    // (spec 0106 S2 — the `all_schemas` snapshot fast path is gone).
+    let resolved_desc: Option<Arc<MessageDescriptor>> =
+        ANY_LOADER.with(|l| l.borrow_mut().as_mut().and_then(|f| f(fqdn)));
     let resolved_desc = match resolved_desc {
         Some(d) => d,
         None => return false,
@@ -272,7 +270,7 @@ pub(in super::super) fn render_any_expansion(
             0,
             None,
             Some(&*resolved_desc),
-            all_schemas,
+            schema_present,
             out,
         );
         drop(inner_guard); // decrement LEVEL before write_close_brace for value

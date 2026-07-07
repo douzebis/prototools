@@ -28,7 +28,7 @@ members = [
 ]
 
 [workspace.dependencies]
-prototext-core = { path = "prototext-core", version = "0.2.1", features = ["prost-bug-workaround"] }
+prototext-core = { path = "prototext-core", version = "0.3.0", features = ["prost-bug-workaround"] }
 
 [profile.release]
 codegen-units = 1

@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use prost::Message as ProstMessage;
-use prototext_core::{parse_schema, render_as_bytes, render_as_text, RenderOpts};
+use prototext_core::{
+    clear_any_loader, parse_schema, render_as_bytes, render_as_text, set_any_loader, RenderOpts,
+};
 
 // ── Fixture helpers ───────────────────────────────────────────────────────────
 
@@ -45,6 +47,22 @@ fn enum_schema() -> prototext_core::ParsedSchema {
     load_schema("fixtures/schemas/enum_collision.pb", "EnumCollision")
 }
 
+/// Install an `ANY_LOADER` backed by `schema`'s pool for the duration of
+/// `f`, mirroring what real callers (`prototext-pyo3`, the `prototext` CLI)
+/// must now do: since `render_as_text`/`decode_and_render` only take an
+/// already-resolved root descriptor (spec 0106 S4), `google.protobuf.Any`
+/// expansion depends solely on `ANY_LOADER` (spec 0106 S2) — there is no
+/// longer an implicit full-pool fast path.
+fn with_any_loader<T>(schema: &prototext_core::ParsedSchema, f: impl FnOnce() -> T) -> T {
+    let pool = schema.pool().clone();
+    set_any_loader(Box::new(move |fqdn: &str| {
+        pool.get_message_by_name(fqdn).map(std::sync::Arc::new)
+    }));
+    let result = f();
+    clear_any_loader();
+    result
+}
+
 // ── §7 Enum rendering tests ───────────────────────────────────────────────────
 
 #[test]
@@ -55,7 +73,7 @@ fn enum_known_value_renders_symbolic_name() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -84,7 +102,7 @@ fn enum_unknown_value_renders_numeric_with_enum_unknown() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -115,7 +133,7 @@ fn packed_enum_renders_symbolic_names() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -157,7 +175,7 @@ fn enum_annotation_roundtrips_wire() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -192,7 +210,7 @@ fn no_annotations_shows_unknown_fields_by_default() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -219,7 +237,7 @@ fn hide_unknown_fields_omits_unknown_fields() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -245,7 +263,7 @@ fn enum_named_float_roundtrip_is_varint() {
     let schema = enum_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -339,7 +357,7 @@ fn float_canonical_nan_renders_bare_nan() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -371,7 +389,7 @@ fn float_noncanonical_nan_renders_with_modifier() {
         // annotations=false: bare `nan` only
         let text_no_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: false,
@@ -396,7 +414,7 @@ fn float_noncanonical_nan_renders_with_modifier() {
         // annotations=true: nan_bits modifier in annotation
         let text_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -425,7 +443,7 @@ fn float_noncanonical_nan_roundtrips() {
         let schema = knife_schema();
         let text = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -462,7 +480,7 @@ fn double_canonical_nan_renders_bare_nan() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -494,7 +512,7 @@ fn double_noncanonical_nan_renders_with_modifier() {
         // annotations=false: bare `nan` only
         let text_no_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: false,
@@ -519,7 +537,7 @@ fn double_noncanonical_nan_renders_with_modifier() {
         // annotations=true: nan_bits modifier in annotation
         let text_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -548,7 +566,7 @@ fn double_noncanonical_nan_roundtrips() {
         let schema = knife_schema();
         let text = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -630,7 +648,7 @@ fn message_set_resolved_expansion_renders_canonical_names() {
     let schema = message_set_schema("Container");
     let text = render_as_text(
         CONTAINER_WIRE,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -675,7 +693,7 @@ fn message_set_group_annotation_syntax() {
     let schema = message_set_schema("Container");
     let text = render_as_text(
         CONTAINER_WIRE,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -703,7 +721,7 @@ fn message_set_unknown_type_id_falls_back_schemaless() {
     let schema = message_set_schema("Container");
     let text = render_as_text(
         CONTAINER_MIXED_WIRE,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -728,7 +746,7 @@ fn message_set_roundtrip() {
     let schema = message_set_schema("Container");
     let text = render_as_text(
         CONTAINER_WIRE,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -768,7 +786,7 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
     // annotations=false: all NaN values render as bare `nan` (no per-element annotation).
     let text_no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -791,7 +809,7 @@ fn float_packed_noncanonical_nan_renders_with_modifier() {
     // annotations=true: nan_bits modifier on non-canonical element lines.
     let text_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -819,7 +837,7 @@ fn float_packed_noncanonical_nan_roundtrips() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -856,7 +874,7 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
     // annotations=false: all NaN values render as bare `nan`.
     let text_no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -879,7 +897,7 @@ fn double_packed_noncanonical_nan_renders_with_modifier() {
     // annotations=true: nan_bits modifier on non-canonical element lines.
     let text_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -907,7 +925,7 @@ fn double_packed_noncanonical_nan_roundtrips() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -948,7 +966,7 @@ fn float_packed_all_nan_variants_roundtrip() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -989,7 +1007,7 @@ fn double_packed_all_nan_variants_roundtrip() {
     let schema = knife_schema();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1033,7 +1051,7 @@ fn float_subnormals_roundtrip() {
         let schema = knife_schema();
         let text = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -1077,7 +1095,7 @@ fn double_subnormals_roundtrip() {
         let schema = knife_schema();
         let text = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -1236,7 +1254,7 @@ fn packed_int32_matches_protoc_output() {
     // A) strip annotations from annotated output
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1257,7 +1275,7 @@ fn packed_int32_matches_protoc_output() {
     // B) no-annotations output directly
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1289,7 +1307,7 @@ fn packed_float_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1310,7 +1328,7 @@ fn packed_float_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1341,7 +1359,7 @@ fn packed_double_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1362,7 +1380,7 @@ fn packed_double_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1395,7 +1413,7 @@ fn canonical_float_nan_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1416,7 +1434,7 @@ fn canonical_float_nan_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1448,7 +1466,7 @@ fn noncanonical_float_nan_matches_protoc_output() {
         // A) strip annotations
         let with_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -1469,7 +1487,7 @@ fn noncanonical_float_nan_matches_protoc_output() {
         // B) no-annotations
         let no_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: false,
@@ -1500,7 +1518,7 @@ fn canonical_double_nan_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1521,7 +1539,7 @@ fn canonical_double_nan_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1552,7 +1570,7 @@ fn noncanonical_double_nan_matches_protoc_output() {
         // A) strip annotations
         let with_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: true,
@@ -1573,7 +1591,7 @@ fn noncanonical_double_nan_matches_protoc_output() {
         // B) no-annotations
         let no_ann = render_as_text(
             &wire,
-            Some(&schema),
+            schema.root_descriptor().as_ref(),
             RenderOpts {
                 assume_binary: true,
                 include_annotations: false,
@@ -1606,7 +1624,7 @@ fn packed_float_nan_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1627,7 +1645,7 @@ fn packed_float_nan_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1657,7 +1675,7 @@ fn packed_double_nan_matches_protoc_output() {
     // A) strip annotations
     let with_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1678,7 +1696,7 @@ fn packed_double_nan_matches_protoc_output() {
     // B) no-annotations
     let no_ann = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: false,
@@ -1752,7 +1770,7 @@ fn extension_field_renders_with_bracketed_fqn() {
     let wire = vec![0xC0u8, 0x3E, 0x2A];
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1791,7 +1809,7 @@ fn extension_field_roundtrip() {
     // Render to annotated text.
     let text = render_as_text(
         &wire_orig,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1963,13 +1981,182 @@ fn any_wire_bytes() -> Vec<u8> {
     wire
 }
 
+// ── §Spec 0106 TC-1: JIT-loaded type's nested field stays symbolic ────────────
+//
+// Reproduces the staleness bug spec 0106 fixes: an `Any` field's payload
+// type (`acme.Payload`) is not in the pool at render start and is only
+// added on demand via `ANY_LOADER`, mirroring `LazyPool::ensure_loaded`
+// loading a whole file (Payload *and* its sibling `Sibling` type) the
+// first time `acme.Payload` is requested. Before the fix, `len_field.rs`
+// re-looked up `Payload.sib`'s nested descriptor in a `all_schemas`
+// snapshot taken at the very start of rendering — before the JIT load —
+// so the lookup always missed and `sib` fell back to raw/heuristic
+// rendering. S1 fixes this by reusing the already-resolved descriptor
+// from `fs.kind()` directly, with no re-lookup at all.
+
+/// A `Container`-only schema: `acme.Payload`/`acme.Sibling` are deliberately
+/// absent, so `Any` expansion can only find them via the `ANY_LOADER`
+/// installed by the test (see `any_field_jit_loaded_type_nested_field...`
+/// below), never via a pre-populated pool.
+fn container_only_schema() -> prototext_core::ParsedSchema {
+    use prost::Message as _;
+    use prost_reflect::DescriptorPool;
+    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema_from_pool;
+
+    let descriptor_pb =
+        std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
+            .expect("cannot read descriptor.pb from OUT_DIR");
+    let mut pool =
+        DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+
+    let any_msg = DescriptorProto {
+        name: Some("Any".into()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("type_url".into()),
+                number: Some(1),
+                r#type: Some(9), // TYPE_STRING
+                label: Some(1),  // LABEL_OPTIONAL
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("value".into()),
+                number: Some(2),
+                r#type: Some(12), // TYPE_BYTES
+                label: Some(1),   // LABEL_OPTIONAL
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let any_file = FileDescriptorProto {
+        name: Some("google/protobuf/any.proto".into()),
+        syntax: Some("proto3".into()),
+        package: Some("google.protobuf".into()),
+        message_type: vec![any_msg],
+        ..Default::default()
+    };
+    let mut any_file_bytes = Vec::new();
+    any_file.encode(&mut any_file_bytes).unwrap();
+    pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
+        .expect("cannot add google/protobuf/any.proto to pool");
+
+    let container_msg = DescriptorProto {
+        name: Some("Container".into()),
+        field: vec![FieldDescriptorProto {
+            name: Some("payload".into()),
+            number: Some(1),
+            r#type: Some(11), // TYPE_MESSAGE
+            label: Some(1),   // LABEL_OPTIONAL
+            type_name: Some(".google.protobuf.Any".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let acme_file = FileDescriptorProto {
+        name: Some("acme.proto".into()),
+        syntax: Some("proto2".into()),
+        package: Some("acme".into()),
+        dependency: vec!["google/protobuf/any.proto".into()],
+        message_type: vec![container_msg],
+        ..Default::default()
+    };
+    let mut acme_bytes = Vec::new();
+    acme_file.encode(&mut acme_bytes).unwrap();
+    pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+        .expect("cannot add acme.proto to pool");
+
+    schema_from_pool(pool, "acme.Container").expect("cannot build container_only_schema")
+}
+
+/// Encoded `FileDescriptorProto` for `acme/payload.proto`, containing both
+/// `message Payload { optional Sibling sib = 1; }` and
+/// `message Sibling { optional string label = 1; }` in the *same* file —
+/// mirroring `LazyPool::ensure_loaded`, which loads a type's whole
+/// declaring file (and therefore its siblings) atomically on first request.
+fn payload_with_sibling_file_bytes() -> Vec<u8> {
+    use prost::Message as _;
+    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+
+    let sibling_msg = DescriptorProto {
+        name: Some("Sibling".into()),
+        field: vec![FieldDescriptorProto {
+            name: Some("label".into()),
+            number: Some(1),
+            r#type: Some(9), // TYPE_STRING
+            label: Some(1),  // LABEL_OPTIONAL
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let payload_msg = DescriptorProto {
+        name: Some("Payload".into()),
+        field: vec![FieldDescriptorProto {
+            name: Some("sib".into()),
+            number: Some(1),
+            r#type: Some(11), // TYPE_MESSAGE
+            label: Some(1),   // LABEL_OPTIONAL
+            type_name: Some(".acme.Sibling".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let payload_file = FileDescriptorProto {
+        name: Some("acme/payload.proto".into()),
+        syntax: Some("proto2".into()),
+        package: Some("acme".into()),
+        message_type: vec![payload_msg, sibling_msg],
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    payload_file.encode(&mut bytes).unwrap();
+    bytes
+}
+
+/// Wire bytes for:
+///   Container { payload: Any { type_url: "type.googleapis.com/acme.Payload"
+///                              value: Payload { sib: Sibling { label: "hi" } } } }
+fn any_jit_nested_wire_bytes() -> Vec<u8> {
+    let sibling_bytes = [0x0a, 0x02, b'h', b'i']; // Sibling.label = "hi"
+    let mut payload_bytes = vec![0x0a, sibling_bytes.len() as u8]; // Payload.sib
+    payload_bytes.extend_from_slice(&sibling_bytes);
+
+    let type_url = b"type.googleapis.com/acme.Payload";
+    let mut any_bytes = vec![0x0a, type_url.len() as u8];
+    any_bytes.extend_from_slice(type_url);
+    any_bytes.push(0x12);
+    any_bytes.push(payload_bytes.len() as u8);
+    any_bytes.extend_from_slice(&payload_bytes);
+
+    let mut wire = vec![0x0a, any_bytes.len() as u8];
+    wire.extend_from_slice(&any_bytes);
+    wire
+}
+
 #[test]
-fn any_field_expands_type_url_and_value() {
-    let schema = any_schema();
-    let wire = any_wire_bytes();
+fn any_field_jit_loaded_type_nested_field_renders_symbolically() {
+    let schema = container_only_schema();
+    let wire = any_jit_nested_wire_bytes();
+
+    // Simulate LazyPool::ensure_loaded: the first (and only) time
+    // "acme.Payload" is requested, decode+add its whole declaring file
+    // (Payload *and* Sibling) into a pool that starts as a clone of the
+    // Container-only pool — nothing beyond Container/Any is present when
+    // `decode_and_render` takes its `schema_present` snapshot.
+    let mut pool = schema.pool().clone();
+    let mut loaded = false;
+    set_any_loader(Box::new(move |fqdn: &str| {
+        if fqdn == "acme.Payload" && !loaded {
+            pool.decode_file_descriptor_proto(payload_with_sibling_file_bytes().as_slice())
+                .ok()?;
+            loaded = true;
+        }
+        pool.get_message_by_name(fqdn).map(std::sync::Arc::new)
+    }));
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -1979,6 +2166,39 @@ fn any_field_expands_type_url_and_value() {
             expand_message_set: true,
         },
     )
+    .unwrap();
+    clear_any_loader();
+
+    let text_str = String::from_utf8(text).unwrap();
+    assert!(
+        text_str.contains("sib {"),
+        "expected Payload.sib to render as a symbolic nested block, not raw/heuristic \
+         output: {text_str}"
+    );
+    assert!(
+        text_str.contains("label:") && text_str.contains("\"hi\""),
+        "expected Sibling.label to render symbolically inside sib {{ }}: {text_str}"
+    );
+}
+
+#[test]
+fn any_field_expands_type_url_and_value() {
+    let schema = any_schema();
+    let wire = any_wire_bytes();
+    let text = with_any_loader(&schema, || {
+        render_as_text(
+            &wire,
+            schema.root_descriptor().as_ref(),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+                expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
+            },
+        )
+    })
     .unwrap();
     let text_str = String::from_utf8(text).unwrap();
     assert!(
@@ -2007,7 +2227,7 @@ fn any_field_no_expand_renders_value_as_bytes() {
     let wire = any_wire_bytes();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -2034,18 +2254,20 @@ fn any_field_no_expand_renders_value_as_bytes() {
 fn any_field_roundtrip() {
     let schema = any_schema();
     let wire = any_wire_bytes();
-    let text = render_as_text(
-        &wire,
-        Some(&schema),
-        RenderOpts {
-            assume_binary: true,
-            include_annotations: true,
-            indent: 1,
-            expand_any: true,
-            hide_unknown_fields: false,
-            expand_message_set: true,
-        },
-    )
+    let text = with_any_loader(&schema, || {
+        render_as_text(
+            &wire,
+            schema.root_descriptor().as_ref(),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+                expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
+            },
+        )
+    })
     .unwrap();
     let wire2 = render_as_bytes(
         &text,
@@ -2068,18 +2290,20 @@ fn any_field_golden_annotated_output() {
     // in indentation, annotation format, or field ordering are caught.
     let schema = any_schema();
     let wire = any_wire_bytes();
-    let text = render_as_text(
-        &wire,
-        Some(&schema),
-        RenderOpts {
-            assume_binary: true,
-            include_annotations: true,
-            indent: 1,
-            expand_any: true,
-            hide_unknown_fields: false,
-            expand_message_set: true,
-        },
-    )
+    let text = with_any_loader(&schema, || {
+        render_as_text(
+            &wire,
+            schema.root_descriptor().as_ref(),
+            RenderOpts {
+                assume_binary: true,
+                include_annotations: true,
+                indent: 1,
+                expand_any: true,
+                hide_unknown_fields: false,
+                expand_message_set: true,
+            },
+        )
+    })
     .unwrap();
     let expected = concat!(
         "#@ prototext: protoc\n",
@@ -2180,7 +2404,7 @@ fn any_field_unresolvable_type_url_renders_value_as_bytes() {
     let wire = any_wire_bytes();
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -2230,7 +2454,7 @@ fn any_field_value_before_type_url_renders_as_raw_len() {
 
     let text = render_as_text(
         &wire,
-        Some(&schema),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,
@@ -2299,12 +2523,13 @@ fn selftest_roundtrip() {
         expand_message_set: true,
     };
 
+    let root_desc = schema.root_descriptor();
     let mut rng = seed;
     let mut failures = 0;
 
     for i in 0..n {
         let wire = random_bytes(&mut rng);
-        let text = render_as_text(&wire, Some(&schema), opts_enc.clone())
+        let text = render_as_text(&wire, root_desc.as_ref(), opts_enc.clone())
             .expect("render_as_text panicked");
         let wire2 = render_as_bytes(&text, opts_dec.clone()).expect("render_as_bytes panicked");
 

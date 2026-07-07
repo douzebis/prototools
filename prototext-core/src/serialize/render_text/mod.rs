@@ -8,7 +8,6 @@ mod packed;
 mod varint;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
@@ -20,7 +19,6 @@ use crate::helpers::{
     parse_varint, parse_wiretag, WiretagResult, WT_END_GROUP, WT_I32, WT_I64, WT_LEN,
     WT_START_GROUP, WT_VARINT,
 };
-use crate::schema::ParsedSchema;
 use crate::serialize::common::{
     format_double_protoc, format_fixed32_protoc, format_fixed64_protoc, format_float_protoc,
     format_sfixed32_protoc, format_sfixed64_protoc, format_wire_fixed32_protoc,
@@ -200,10 +198,15 @@ pub fn is_prototext_text(data: &[u8]) -> bool {
 /// the header is omitted (encode is not possible without field annotations
 /// regardless).
 ///
+/// `root_desc` is the already-resolved root message descriptor, if any (the
+/// caller is responsible for resolving it from whatever pool it has — see
+/// spec 0106 S4). `None` means no schema is active (`--raw`/no-descriptor
+/// mode).
+///
 /// Parameters mirror `format_as_text` in `lib.rs`.
 pub fn decode_and_render(
     buf: &[u8],
-    schema: Option<&ParsedSchema>,
+    root_desc: Option<&MessageDescriptor>,
     annotations: bool,
     indent_size: usize,
     expand_any: bool,
@@ -236,15 +239,9 @@ pub fn decode_and_render(
     HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
     EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
 
-    // Build a flat name→MessageDescriptor map for nested-type lookups.
-    // Keyed by bare FQN (no leading dot), matching prost-reflect's convention.
-    let all_descriptors: Option<HashMap<String, Arc<MessageDescriptor>>> =
-        schema.map(build_descriptor_map);
-    let all_schemas = all_descriptors.as_ref();
+    let schema_present = root_desc.is_some();
 
-    let root_desc: Option<MessageDescriptor> = schema.and_then(|s| s.root_descriptor());
-
-    render_message(buf, 0, None, root_desc.as_ref(), all_schemas, &mut out);
+    render_message(buf, 0, None, root_desc, schema_present, &mut out);
 
     // Development instrumentation — truncate event
     #[cfg(debug_assertions)]
@@ -264,15 +261,6 @@ pub fn decode_and_render(
     out
 }
 
-/// Build a `HashMap<bare_fqn, Arc<MessageDescriptor>>` from a `ParsedSchema`.
-fn build_descriptor_map(schema: &ParsedSchema) -> HashMap<String, Arc<MessageDescriptor>> {
-    schema
-        .pool()
-        .all_messages()
-        .map(|msg| (msg.full_name().to_string(), Arc::new(msg)))
-        .collect()
-}
-
 // ── Core recursive render-while-decode ───────────────────────────────────────
 
 /// Parse and render one protobuf message into `out`.
@@ -286,7 +274,7 @@ pub(super) fn render_message(
     start: usize,
     my_group: Option<u64>,
     schema: Option<&MessageDescriptor>,
-    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
+    schema_present: bool,
     out: &mut Vec<u8>,
 ) -> (usize, Option<WiretagResult>) {
     let buflen = buf.len();
@@ -359,7 +347,7 @@ pub(super) fn render_message(
                     val_ohb,
                     content_kind,
                     typed_val,
-                    all_schemas.is_some(),
+                    schema_present,
                     out,
                 );
             }
@@ -425,7 +413,7 @@ pub(super) fn render_message(
                         wire_type_name: "fixed64",
                         nan_bits,
                         type_mismatch: is_mismatch,
-                        schema_present: all_schemas.is_some(),
+                        schema_present,
                     },
                     &value_str,
                     is_mismatch,
@@ -472,7 +460,7 @@ pub(super) fn render_message(
                 render_len_field(
                     field_number,
                     field_schema.as_ref(),
-                    all_schemas,
+                    schema_present,
                     tag_ohb,
                     tag_oor,
                     len_ohb,
@@ -488,7 +476,7 @@ pub(super) fn render_message(
                     &mut pos,
                     field_number,
                     field_schema.as_ref(),
-                    all_schemas,
+                    schema_present,
                     tag_ohb,
                     tag_oor,
                     out,
@@ -576,7 +564,7 @@ pub(super) fn render_message(
                         wire_type_name: "fixed32",
                         nan_bits,
                         type_mismatch: is_mismatch,
-                        schema_present: all_schemas.is_some(),
+                        schema_present,
                     },
                     &value_str,
                     is_mismatch,

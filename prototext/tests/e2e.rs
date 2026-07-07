@@ -200,6 +200,37 @@ fn unknown_len_decoded_as_nested_message() {
     );
 }
 
+// ── Spec 0106 TC-7: --type typo suggests the closest match ───────────────────
+
+/// `decode --type <typo>` against a schema containing a near-but-not-exact
+/// match must report a closest-match-by-edit-distance suggestion, not a
+/// full dump of every message name in the pool.
+#[test]
+fn decode_type_typo_suggests_closest_match() {
+    let bin = env!("CARGO_BIN_EXE_prototext");
+    let sp = schema_path("fixtures/schemas/knife.pb");
+    let out = Command::new(bin)
+        .arg("--descriptor-set")
+        .arg(&sp)
+        .arg("decode")
+        .args(["--type", "SwissArmyKnif"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn prototext")
+        .wait_with_output_and_stdin(&[]);
+    assert!(
+        !out.status.success(),
+        "decode with a nonexistent --type must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("did you mean 'SwissArmyKnife'?"),
+        "expected closest-match suggestion, got: {stderr}"
+    );
+}
+
 // ── §3.2 No crash without annotations (all fixtures) ─────────────────────────
 
 /// CLI: `prototext decode --no-annotations` must exit 0 for every fixture.

@@ -3,9 +3,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use prost_reflect::{Cardinality, Kind, MessageDescriptor};
 
 use super::super::{
@@ -27,7 +24,7 @@ use super::super::packed::render_packed;
 pub(in super::super) fn render_len_field(
     field_number: u64,
     field_schema: Option<&FieldOrExt>,
-    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
+    schema_present: bool,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -42,7 +39,6 @@ pub(in super::super) fn render_len_field(
         // nothing regardless of hide_unknown_fields (spec 0097 S5).
         // When a descriptor is active but this field number is absent, honour
         // hide_unknown_fields (spec 0103).
-        let schema_present = all_schemas.is_some();
         let hide_unknown = HIDE_UNKNOWN.with(|c| c.get());
         if hide_unknown && schema_present {
             return;
@@ -64,7 +60,7 @@ pub(in super::super) fn render_len_field(
             CBL_START.with(|c| c.set(out.len()));
             {
                 let _guard = enter_level();
-                render_message(data, 0, None, None, all_schemas, out);
+                render_message(data, 0, None, None, schema_present, out);
             }
             write_close_brace(out);
             return;
@@ -220,7 +216,7 @@ pub(in super::super) fn render_len_field(
                 && render_any_expansion(
                     field_number,
                     fs,
-                    all_schemas,
+                    schema_present,
                     tag_ohb,
                     tag_oor,
                     len_ohb,
@@ -238,7 +234,7 @@ pub(in super::super) fn render_len_field(
                     &nested_msg_desc,
                     field_number,
                     fs,
-                    all_schemas,
+                    schema_present,
                     tag_ohb,
                     tag_oor,
                     len_ohb,
@@ -248,9 +244,7 @@ pub(in super::super) fn render_len_field(
                 return;
             }
 
-            let nested_schema: Option<&MessageDescriptor> = all_schemas
-                .and_then(|m| m.get(nested_msg_desc.full_name()))
-                .map(|v| &**v);
+            let nested_schema: Option<&MessageDescriptor> = Some(&nested_msg_desc);
 
             wob_prefix_n(field_number, Some(fs), false, out);
             if annotations {
@@ -263,7 +257,7 @@ pub(in super::super) fn render_len_field(
             CBL_START.with(|c| c.set(out.len())); // open-brace line: set past-end to inhibit folding
             {
                 let _guard = enter_level();
-                render_message(data, 0, None, nested_schema, all_schemas, out);
+                render_message(data, 0, None, nested_schema, schema_present, out);
             }
             write_close_brace(out);
             return;
@@ -299,7 +293,7 @@ pub(in super::super) fn render_group_field(
     pos: &mut usize,
     field_number: u64,
     field_schema: Option<&FieldOrExt>,
-    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
+    schema_present: bool,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     out: &mut Vec<u8>,
@@ -309,21 +303,20 @@ pub(in super::super) fn render_group_field(
     // (GROUP wire but schema declares a non-GROUP type).
     // A mismatch is treated as unknown: field number as name, no field_decl.
     let is_mismatch = field_schema.is_some_and(|fs| !fs.is_group());
-    let nested_schema_opt: Option<&MessageDescriptor> = if let Some(fs) = field_schema {
+    // `msg_desc` from `fs.kind()` is already live and correct — no lookup
+    // needed (spec 0106 S1).
+    let nested_msg_desc: Option<MessageDescriptor> = field_schema.and_then(|fs| {
         if fs.is_group() {
             if let Kind::Message(msg_desc) = fs.kind() {
-                all_schemas
-                    .and_then(|m| m.get(msg_desc.full_name()))
-                    .map(|v| &**v)
+                Some(msg_desc)
             } else {
                 None
             }
         } else {
             None
         }
-    } else {
-        None
-    };
+    });
+    let nested_schema_opt: Option<&MessageDescriptor> = nested_msg_desc.as_ref();
 
     // ── Greedy: write opening brace line immediately ──────────────────────────
     // v2 annotation structure: `group; field_decl [; modifier]*`
@@ -367,7 +360,7 @@ pub(in super::super) fn render_group_field(
             start,
             Some(field_number),
             nested_schema_opt,
-            all_schemas,
+            schema_present,
             out,
         )
     };

@@ -4,9 +4,6 @@
 
 //! MessageSet expansion for `message_set_wire_format` messages (spec 0100).
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use prost_reflect::{Kind, MessageDescriptor};
 
 use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, ANY_LOADER, CBL_START};
@@ -184,7 +181,7 @@ pub(in super::super) fn render_message_set_expansion(
     msg_desc: &MessageDescriptor,
     field_number: u64,
     fs: &FieldOrExt,
-    all_schemas: Option<&HashMap<String, Arc<MessageDescriptor>>>,
+    schema_present: bool,
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
@@ -210,7 +207,16 @@ pub(in super::super) fn render_message_set_expansion(
         Some(items) => items,
         None => {
             // Malformed: render raw via schemaless LENDEL cascade.
-            super::len_field::render_len_field(1, None, all_schemas, None, false, None, data, out);
+            super::len_field::render_len_field(
+                1,
+                None,
+                schema_present,
+                None,
+                false,
+                None,
+                data,
+                out,
+            );
             drop(_outer);
             write_close_brace(out);
             return;
@@ -296,7 +302,14 @@ pub(in super::super) fn render_message_set_expansion(
                 {
                     let _msg = enter_level();
                     let msg_bytes = item.message.unwrap_or(&[]);
-                    render_message(msg_bytes, 0, None, Some(&inner_msg_desc), all_schemas, out);
+                    render_message(
+                        msg_bytes,
+                        0,
+                        None,
+                        Some(&inner_msg_desc),
+                        schema_present,
+                        out,
+                    );
                 }
                 write_close_brace(out); // closes message
             }
@@ -309,7 +322,7 @@ pub(in super::super) fn render_message_set_expansion(
             super::len_field::render_len_field(
                 1,
                 None,
-                all_schemas,
+                schema_present,
                 None,
                 false,
                 None,

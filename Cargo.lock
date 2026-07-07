@@ -976,6 +976,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_yaml",
+ "strsim",
  "toml 0.8.23",
  "walkdir",
  "workspace-hack",
@@ -983,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "prototext-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "memchr",
  "prost",

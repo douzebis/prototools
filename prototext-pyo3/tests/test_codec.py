@@ -10,7 +10,12 @@ the test suite has no dependency on protoc and no committed binary files.
 
 from __future__ import annotations
 
-from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
+from google.protobuf.any_pb2 import Any
+from google.protobuf.descriptor_pb2 import (
+    FieldDescriptorProto,
+    FileDescriptorProto,
+    FileDescriptorSet,
+)
 
 import prototext_codec_lib
 
@@ -34,6 +39,56 @@ def _fdp_schema_bytes() -> bytes:
     fds = FileDescriptorSet()
     FileDescriptorProto.DESCRIPTOR.file.CopyToProto(fds.file.add())
     return fds.SerializeToString()
+
+
+def _any_schema_bytes() -> bytes:
+    """FileDescriptorSet for `acme.Container { google.protobuf.Any payload = 1; }`
+    plus `acme.Payload { string label = 1; }`, both self-contained.
+    """
+    fds = FileDescriptorSet()
+    Any.DESCRIPTOR.file.CopyToProto(fds.file.add())
+
+    payload_file = fds.file.add()
+    payload_file.name = "acme/payload.proto"
+    payload_file.package = "acme"
+    payload_file.syntax = "proto3"
+    payload_msg = payload_file.message_type.add()
+    payload_msg.name = "Payload"
+    label_field = payload_msg.field.add()
+    label_field.name = "label"
+    label_field.number = 1
+    label_field.type = FieldDescriptorProto.TYPE_STRING
+    label_field.label = FieldDescriptorProto.LABEL_OPTIONAL
+
+    container_file = fds.file.add()
+    container_file.name = "acme/container.proto"
+    container_file.package = "acme"
+    container_file.syntax = "proto3"
+    container_file.dependency.append("google/protobuf/any.proto")
+    container_msg = container_file.message_type.add()
+    container_msg.name = "Container"
+    payload_field = container_msg.field.add()
+    payload_field.name = "payload"
+    payload_field.number = 1
+    payload_field.type = FieldDescriptorProto.TYPE_MESSAGE
+    payload_field.type_name = ".google.protobuf.Any"
+    payload_field.label = FieldDescriptorProto.LABEL_OPTIONAL
+
+    return fds.SerializeToString()
+
+
+def _any_wire_bytes() -> bytes:
+    """Wire bytes for `Container{payload: Any{type_url: ".../acme.Payload",
+    value: Payload{label: "hello"}}}`, hand-encoded (no dependency on the
+    generated Python message classes for these ad-hoc types).
+    """
+    payload_bytes = b"\x0a\x05hello"  # Payload.label = "hello" (field 1, LEN)
+    type_url = b"type.googleapis.com/acme.Payload"
+    any_bytes = (
+        b"\x0a" + bytes([len(type_url)]) + type_url  # Any.type_url (field 1, LEN)
+        + b"\x12" + bytes([len(payload_bytes)]) + payload_bytes  # Any.value (field 2, LEN)
+    )
+    return b"\x0a" + bytes([len(any_bytes)]) + any_bytes  # Container.payload (field 1, LEN)
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +211,28 @@ def test_format_as_text_with_schema_annotations() -> None:
     assert b"name" in result, (
         f"expected 'name' annotation in output, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# TC-9  google.protobuf.Any expansion (spec 0106 S2 regression guard)
+# ---------------------------------------------------------------------------
+#
+# prototext-pyo3 never calls set_any_loader itself from Python — S2 removed
+# the `all_schemas` fast path that used to make Any expansion work here for
+# free. Without prototext-pyo3 installing its own ANY_LOADER (spec 0106 S2)
+# around render_as_text/format_as_text, this would silently regress to raw
+# bytes instead of a symbolic `value { ... }` block, even though the
+# Payload type is present in the registered schema's pool.
+
+def test_format_as_text_expands_any_field() -> None:
+    """format_as_text expands a google.protobuf.Any field's value symbolically."""
+    handle = prototext_codec_lib.register_schema(_any_schema_bytes(), "acme.Container")
+    result = prototext_codec_lib.format_as_text(
+        _any_wire_bytes(), schema=handle, assume_binary=True, include_annotations=True
+    )
+    text = result.decode("utf-8")
+    assert "type.googleapis.com/acme.Payload" in text, (
+        f"expected type_url in Any expansion: {text}"
+    )
+    assert "value {" in text, f"expected expanded value block in Any expansion: {text}"
+    assert "hello" in text, f"expected Payload.label value in Any expansion: {text}"

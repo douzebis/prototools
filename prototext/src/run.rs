@@ -12,7 +12,7 @@ use serde::Serialize;
 use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
     clear_any_loader, decode_pool, is_prototext_text, render_as_bytes, render_as_text,
-    schema_from_pool, set_any_loader, AnyLoader, CodecError, RenderOpts,
+    set_any_loader, AnyLoader, CodecError, RenderOpts,
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
@@ -277,11 +277,11 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
 pub fn process(
     data: &[u8],
     decode: bool,
-    schema: Option<&prototext_core::ParsedSchema>,
+    root_desc: Option<&prost_reflect::MessageDescriptor>,
     opts: RenderOpts,
 ) -> Result<Vec<u8>, String> {
     if decode {
-        render_as_text(data, schema, opts).map_err(|e: CodecError| e.to_string())
+        render_as_text(data, root_desc, opts).map_err(|e: CodecError| e.to_string())
     } else {
         // encode path: require the `#@ prototext:` header
         if !is_prototext_text(data) {
@@ -591,6 +591,34 @@ fn validate_roots_not_same(
     Ok(())
 }
 
+// ── Root type resolution ──────────────────────────────────────────────────────
+
+/// Resolve `lookup` to a `MessageDescriptor` directly from `desc_ctx`'s pool
+/// (spec 0106 S4).  The caller is responsible for having already loaded the
+/// type on the lazy path (`lazy.get_message(lookup)`) before calling this.
+///
+/// On a miss, the error names the closest match in the pool by edit
+/// distance rather than dumping every message name (as
+/// `schema_from_pool`/`parse_schema` in `prototext-core` do).
+fn resolve_root_desc(
+    desc_ctx: &DescriptorContext,
+    lookup: &str,
+) -> Result<prost_reflect::MessageDescriptor, String> {
+    desc_ctx.pool().get_message_by_name(lookup).ok_or_else(|| {
+        let closest = desc_ctx
+            .pool()
+            .all_messages()
+            .min_by_key(|m| strsim::levenshtein(m.full_name(), lookup));
+        match closest {
+            Some(m) => format!(
+                "type '{lookup}' not found (did you mean '{}'?)",
+                m.full_name()
+            ),
+            None => format!("type '{lookup}' not found"),
+        }
+    })
+}
+
 // ── Any JIT loader ────────────────────────────────────────────────────────────
 
 /// Install a JIT loader for `google.protobuf.Any` type resolution (spec 0099).
@@ -751,17 +779,14 @@ fn run_decode(
         expand_message_set,
     };
 
-    // Build schema if a type was given explicitly.
-    let schema: Option<prototext_core::ParsedSchema> = if let Some(t) = type_name {
+    // Resolve the root descriptor if a type was given explicitly.
+    let root_desc: Option<prost_reflect::MessageDescriptor> = if let Some(t) = type_name {
         let lookup = t.trim_start_matches('.');
         if let Some(lazy) = &mut desc_ctx.lazy {
             lazy.get_message(lookup)
                 .map_err(|e| format!("loading type '{lookup}': {e}"))?;
         }
-        Some(
-            schema_from_pool(desc_ctx.pool().clone(), lookup)
-                .map_err(|e| format!("descriptor: {}", e))?,
-        )
+        Some(resolve_root_desc(desc_ctx, lookup)?)
     } else {
         None
     };
@@ -797,11 +822,10 @@ fn run_decode(
                         lazy.get_message(lookup)
                             .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
                     }
-                    let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
-                        .map_err(|e| format!("descriptor: {}", e))?;
+                    let infer_desc = resolve_root_desc(desc_ctx, lookup)?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
                     install_any_loader(desc_ctx);
-                    let out = process(&data, true, Some(&infer_schema), decode_opts.clone());
+                    let out = process(&data, true, Some(&infer_desc), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
@@ -811,7 +835,7 @@ fn run_decode(
         }
 
         install_any_loader(desc_ctx);
-        let out = process(&data, true, schema.as_ref(), decode_opts.clone());
+        let out = process(&data, true, root_desc.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
         return Ok(());
@@ -840,11 +864,10 @@ fn run_decode(
                         lazy.get_message(lookup)
                             .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
                     }
-                    let infer_schema = schema_from_pool(desc_ctx.pool().clone(), lookup)
-                        .map_err(|e| format!("descriptor: {}", e))?;
+                    let infer_desc = resolve_root_desc(desc_ctx, lookup)?;
                     EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(&inferred));
                     install_any_loader(desc_ctx);
-                    let out = process(&data, true, Some(&infer_schema), decode_opts.clone());
+                    let out = process(&data, true, Some(&infer_desc), decode_opts.clone());
                     clear_any_loader();
                     EXTRA_HEADER.with(|h| h.borrow_mut().clear());
                     write_output(&out?, output.as_deref())?;
@@ -854,7 +877,7 @@ fn run_decode(
         }
 
         install_any_loader(desc_ctx);
-        let out = process(&data, true, schema.as_ref(), decode_opts.clone());
+        let out = process(&data, true, root_desc.as_ref(), decode_opts.clone());
         clear_any_loader();
         write_output(&out?, output.as_deref())?;
         return Ok(());
@@ -883,7 +906,7 @@ fn run_decode(
     run_batch(
         all_files,
         true,
-        schema.as_ref(),
+        root_desc.as_ref(),
         decode_opts,
         in_place,
         output_root,
@@ -1252,15 +1275,14 @@ fn run_batch_infer(
     let mut had_hard_error = false;
     for (f, data, inferred) in &successes {
         let lookup = inferred.fqdn.trim_start_matches('.');
-        let schema = match (|| {
+        let root_desc = match (|| {
             if let Some(lazy) = &mut desc_ctx.lazy {
                 lazy.get_message(lookup)
                     .map_err(|e| format!("loading inferred type '{lookup}': {e}"))?;
             }
-            schema_from_pool(desc_ctx.pool().clone(), lookup)
-                .map_err(|e| format!("descriptor: {}", e))
+            resolve_root_desc(desc_ctx, lookup)
         })() {
-            Ok(s) => s,
+            Ok(d) => d,
             Err(e) => {
                 eprintln!("error: '{}': {}", f.abs.display(), e);
                 had_hard_error = true;
@@ -1269,7 +1291,7 @@ fn run_batch_infer(
         };
         EXTRA_HEADER.with(|h| *h.borrow_mut() = inferred_header(inferred));
         install_any_loader(desc_ctx);
-        let raw_out = process(data, true, Some(&schema), opts.clone());
+        let raw_out = process(data, true, Some(&root_desc), opts.clone());
         clear_any_loader();
         EXTRA_HEADER.with(|h| h.borrow_mut().clear());
         let raw_out = match raw_out {
@@ -1303,7 +1325,7 @@ fn run_batch_infer(
 fn run_batch(
     all_files: Vec<InputFile>,
     decode: bool,
-    schema: Option<&prototext_core::ParsedSchema>,
+    root_desc: Option<&prost_reflect::MessageDescriptor>,
     opts: RenderOpts,
     in_place: bool,
     output_root: Option<&PathBuf>,
@@ -1354,7 +1376,7 @@ fn run_batch(
         };
 
         let dest = output_path_for(&f, in_place, output_root);
-        match process(&data, decode, schema, opts.clone()) {
+        match process(&data, decode, root_desc, opts.clone()) {
             Ok(out) => {
                 if let Err(e) = write_output(&out, Some(&dest)) {
                     eprintln!("error: {}", e);
