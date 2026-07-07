@@ -516,6 +516,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             r#type,
             assume_binary,
             relax_ranges,
+            no_expand_any,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -529,7 +530,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 strict_ranges: !relax_ranges,
-                expand_any: true,
+                expand_any: !no_expand_any,
             };
             run_score(
                 graph,

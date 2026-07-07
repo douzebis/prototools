@@ -308,6 +308,10 @@ pub enum Command {
         )]
         relax_ranges: bool,
 
+        /// Suppress google.protobuf.Any expansion; score value as plain bytes.
+        #[arg(long = "no-expand-any", help_heading = "Advanced options")]
+        no_expand_any: bool,
+
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.
         #[arg(
