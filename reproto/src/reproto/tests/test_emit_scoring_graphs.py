@@ -251,6 +251,78 @@ def test_TC5_group_child_fqdn(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# TC-MS: MessageSet structural recognition (spec 0108, Tier 0)
+# ---------------------------------------------------------------------------
+
+def test_TC_MS1_message_set_synthesizes_item_edge(tmp_path: Path) -> None:
+    """A message_set_wire_format=true type gets a synthetic field 1 -> Item."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "message_set_proto2.proto")
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "message_set_proto2.yaml")
+    messages = data["messages"]
+
+    ms_fields = messages["mockup.MessageSetMessage"]["fields"]
+    assert len(ms_fields) == 1
+    field1 = ms_fields[0]
+    assert field1["number"] == 1
+    assert field1["type"] == "message"
+    assert field1["child"] == "mockup.MessageSetMessage.Item"
+    assert field1["label"] == "repeated"
+
+
+def test_TC_MS2_item_node_shape(tmp_path: Path) -> None:
+    """The synthesized Item node is a GROUP with type_id (int32=2) and message (bytes=3)."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "message_set_proto2.proto")
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "message_set_proto2.yaml")
+    messages = data["messages"]
+
+    assert "mockup.MessageSetMessage.Item" in messages
+    item = messages["mockup.MessageSetMessage.Item"]
+    assert item["kind"] == "GROUP"
+    item_fields = {f["number"]: f for f in item["fields"]}
+    assert item_fields[2]["type"] == "int32"
+    assert item_fields[3]["type"] == "bytes"
+    assert "child" not in item_fields[2]
+    assert "child" not in item_fields[3]
+
+
+def test_TC_MS3_non_message_set_unaffected(tmp_path: Path) -> None:
+    """A plain message (message_set_wire_format unset) is emitted normally."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "message_set_proto2.proto")
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "message_set_proto2.yaml")
+    messages = data["messages"]
+
+    payload_fields = messages["mockup.Payload"]["fields"]
+    assert len(payload_fields) == 1
+    assert payload_fields[0]["number"] == 1
+    assert payload_fields[0]["type"] == "string"
+    assert "mockup.Payload.Item" not in messages
+
+
+# ---------------------------------------------------------------------------
 # TC-6: Canonized output paths via variant import rewrites (spec 0086)
 # ---------------------------------------------------------------------------
 

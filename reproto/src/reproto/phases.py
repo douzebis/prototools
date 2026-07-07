@@ -1483,6 +1483,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             if label != 'optional':
                 entry['label'] = label
             fields_out.append(entry)
+        _synthesize_message_set_item(desc, messages, fields_out)
         node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
         messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
         for nested in desc.nested_types:
@@ -1708,6 +1709,32 @@ def _collect_group_fqdns(fd: Any) -> 'set[str]':
     return group_fqdns
 
 
+def _synthesize_message_set_item(desc: Any, messages: dict, fields_out: list) -> None:
+    """Synthesize the protocol-fixed `Item` group for a MessageSet type (spec 0108).
+
+    A message with `message_set_wire_format=true` has no declared fields
+    (descriptor.proto invariant): its wire payload is `repeated group Item = 1
+    { optional int32 type_id = 2; optional bytes message = 3; }`.  Declaring
+    `Item` as an ordinary GROUP node with ordinary fields gives real match
+    credit for `type_id`/`message` instead of falling to blind-group-skip
+    unknowns, and lets custom-named MessageSet types be recognized
+    structurally (no FQDN heuristic needed).
+    """
+    if not desc.GetOptions().message_set_wire_format or fields_out:
+        return
+    item_fqdn = f'{desc.full_name}.Item'
+    messages[item_fqdn] = {
+        'kind': 'GROUP',
+        'fields': [
+            {'number': 2, 'type': 'int32'},
+            {'number': 3, 'type': 'bytes'},
+        ],
+    }
+    fields_out.append({
+        'number': 1, 'type': 'message', 'child': item_fqdn, 'label': 'repeated',
+    })
+
+
 def _field_label(field: Any) -> str:
     """Return 'required', 'repeated', or 'optional' for a FieldDescriptor (spec 0045)."""
     from google.protobuf.descriptor import FieldDescriptor as FD
@@ -1786,6 +1813,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
             if label != 'optional':
                 entry['label'] = label
             fields_out.append(entry)
+        _synthesize_message_set_item(desc, messages, fields_out)
         node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
         messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
         for nested in desc.nested_types:
