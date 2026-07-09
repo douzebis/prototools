@@ -5,6 +5,7 @@
 
 mod helpers;
 mod packed;
+mod sink;
 mod varint;
 
 use std::cell::{Cell, RefCell};
@@ -13,23 +14,14 @@ use std::sync::Arc;
 use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
 
 use crate::helpers::{
-    decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
-};
-use crate::helpers::{
     parse_varint, parse_wiretag, WiretagResult, WT_END_GROUP, WT_I32, WT_I64, WT_LEN,
     WT_START_GROUP, WT_VARINT,
 };
-use crate::serialize::common::{
-    format_double_protoc, format_fixed32_protoc, format_fixed64_protoc, format_float_protoc,
-    format_sfixed32_protoc, format_sfixed64_protoc, format_wire_fixed32_protoc,
-    format_wire_fixed64_protoc,
-};
 
-use helpers::{
-    render_group_field, render_invalid, render_invalid_tag_type, render_len_field, render_scalar,
-    render_truncated_bytes, ScalarCtx,
-};
-use varint::{decode_varint_typed, render_varint_field, VarintKind};
+use helpers::{render_group_field, render_len_field};
+use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSink};
+
+pub use sink::NodeSpan;
 
 // Magic prefix that identifies a textual prototext payload.
 const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
@@ -179,14 +171,34 @@ impl Drop for LevelGuard {
     }
 }
 
-pub(super) fn enter_level() -> LevelGuard {
-    LEVEL.with(|l| l.set(l.get() + 1));
-    LevelGuard
+/// Enter one recursion level, tracked via the shared thread-local `LEVEL`
+/// counter — but only when `sink.tracks_level()` says this sink actually
+/// depends on it (see that method's doc comment). Returns `None` for sinks
+/// like `ProbeSink` that must not mutate shared render-mode state.
+fn enter_level<S: Sink>(sink: &S) -> Option<LevelGuard> {
+    if sink.tracks_level() {
+        LEVEL.with(|l| l.set(l.get() + 1));
+        Some(LevelGuard)
+    } else {
+        None
+    }
 }
 
 /// Return `true` when `data` is already rendered prototext text (fast-path).
 pub fn is_prototext_text(data: &[u8]) -> bool {
     data.starts_with(PROTOTEXT_MAGIC)
+}
+
+/// Probe `data` as a schemaless message via `ProbeSink` (spec 0110 §2),
+/// without producing any output. Returns `(next_pos, malformity_count)`.
+///
+/// Exposed crate-wide so the (pre-retirement — spec 0110 Step 6)
+/// `decoder` module's own unknown-LEN-field cascade can share this probe
+/// instead of its old `decoder::parse_message`-based one.
+pub(crate) fn probe_message(data: &[u8]) -> (usize, u64) {
+    let mut probe = sink::ProbeSink::default();
+    let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
+    (next_pos, probe.malformity_count())
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -212,36 +224,42 @@ pub fn decode_and_render(
     expand_any: bool,
     hide_unknown_fields: bool,
     expand_message_set: bool,
+    initial_level: usize,
+    emit_header: bool,
 ) -> Vec<u8> {
     let capacity = buf.len() * 8;
-    let mut out = Vec::with_capacity(capacity);
+    let mut sink = TextSink::new(capacity);
 
-    // Header — only emitted when annotations are on; without field-level
-    // annotations prototext encode cannot reconstruct the binary anyway, so
-    // the header would be misleading.
-    if annotations {
-        out.extend_from_slice(b"#@ prototext: protoc\n");
+    // Header — only emitted when annotations are on and the caller wants
+    // one; without field-level annotations prototext encode cannot
+    // reconstruct the binary anyway, so the header would be misleading.
+    // `emit_header: false` is used for sub-renders destined to be spliced
+    // into an existing document's text, which must not repeat the header.
+    if annotations && emit_header {
+        sink.write_header(b"#@ prototext: protoc\n");
     }
     EXTRA_HEADER.with(|h| {
         let h = h.borrow();
         if !h.is_empty() {
-            out.extend_from_slice(h.as_bytes());
+            sink.write_header(h.as_bytes());
         }
     });
     // Initialise render-mode state.
     // CBL_START past the end so the first write_close_brace always takes
     // the fresh-write path.
-    CBL_START.with(|c| c.set(out.len()));
+    CBL_START.with(|c| c.set(sink.out.len()));
     ANNOTATIONS.with(|c| c.set(annotations));
     INDENT_SIZE.with(|c| c.set(indent_size));
-    LEVEL.with(|c| c.set(0));
+    LEVEL.with(|c| c.set(initial_level));
     EXPAND_ANY.with(|c| c.set(expand_any));
     HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
     EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
 
     let schema_present = root_desc.is_some();
 
-    render_message(buf, 0, None, root_desc, schema_present, &mut out);
+    render_message(buf, 0, None, root_desc, schema_present, &mut sink);
+
+    let out = sink.into_inner();
 
     // Development instrumentation — truncate event
     #[cfg(debug_assertions)]
@@ -261,21 +279,65 @@ pub fn decode_and_render(
     out
 }
 
+/// Sibling to `decode_and_render`, sharing the exact same parameter list,
+/// but internally rendering through an `IndexingTextSink` instead of a bare
+/// `TextSink`, and returning both the rendered text and its `NodeSpan`
+/// index alongside it (spec 0110 §3). `decode_and_render` itself stays
+/// `TextSink`-only: its production callers have no use for the index and
+/// shouldn't pay `IndexingTextSink`'s small extra bookkeeping cost.
+pub fn decode_and_render_indexed(
+    buf: &[u8],
+    root_desc: Option<&MessageDescriptor>,
+    annotations: bool,
+    indent_size: usize,
+    expand_any: bool,
+    hide_unknown_fields: bool,
+    expand_message_set: bool,
+    initial_level: usize,
+    emit_header: bool,
+) -> (Vec<u8>, Vec<NodeSpan>) {
+    let capacity = buf.len() * 8;
+    let mut sink = IndexingTextSink::new(capacity);
+
+    if annotations && emit_header {
+        sink.write_header(b"#@ prototext: protoc\n");
+    }
+    EXTRA_HEADER.with(|h| {
+        let h = h.borrow();
+        if !h.is_empty() {
+            sink.write_header(h.as_bytes());
+        }
+    });
+    CBL_START.with(|c| c.set(sink.out_len()));
+    ANNOTATIONS.with(|c| c.set(annotations));
+    INDENT_SIZE.with(|c| c.set(indent_size));
+    LEVEL.with(|c| c.set(initial_level));
+    EXPAND_ANY.with(|c| c.set(expand_any));
+    HIDE_UNKNOWN.with(|c| c.set(hide_unknown_fields));
+    EXPAND_MESSAGE_SET.with(|c| c.set(expand_message_set));
+
+    let schema_present = root_desc.is_some();
+
+    render_message(buf, 0, None, root_desc, schema_present, &mut sink);
+
+    sink.into_parts()
+}
+
 // ── Core recursive render-while-decode ───────────────────────────────────────
 
-/// Parse and render one protobuf message into `out`.
+/// Parse and render one protobuf message into `sink`.
 ///
 /// Returns `(next_pos, group_end_tag)`:
 /// - `next_pos`: byte position after this message (for the caller to
 ///   continue its own parse loop, or for GROUP end detection).
 /// - `group_end_tag`: `Some(tag)` when parsing terminated on a `WT_END_GROUP`.
-pub(super) fn render_message(
+fn render_message<S: Sink>(
     buf: &[u8],
     start: usize,
     my_group: Option<u64>,
     schema: Option<&MessageDescriptor>,
     schema_present: bool,
-    out: &mut Vec<u8>,
+    sink: &mut S,
 ) -> (usize, Option<WiretagResult>) {
     let buflen = buf.len();
     let mut pos = start;
@@ -287,11 +349,17 @@ pub(super) fn render_message(
 
         // ── Parse wire tag ────────────────────────────────────────────────────
 
+        let field_start = pos;
         let tag = parse_wiretag(buf, pos);
 
         if let Some(ref wtag_gar) = tag.wtag_gar {
             // Invalid wire tag: consume rest of buffer as INVALID_TAG_TYPE
-            render_invalid_tag_type(wtag_gar, out);
+            sink.malformed(
+                0,
+                TagFacts::default(),
+                MalformedKind::InvalidTagType,
+                wtag_gar,
+            );
             return (buflen, None);
         }
 
@@ -318,14 +386,15 @@ pub(super) fn render_message(
             WT_VARINT => {
                 let vr = parse_varint(buf, pos);
                 if let Some(ref varint_gar) = vr.varint_gar {
-                    render_invalid(
+                    sink.malformed(
                         field_number,
-                        field_schema.as_ref(),
-                        tag_ohb,
-                        tag_oor,
-                        "INVALID_VARINT",
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
+                        MalformedKind::InvalidVarint,
                         varint_gar,
-                        out,
                     );
                     return (buflen, None);
                 }
@@ -333,22 +402,20 @@ pub(super) fn render_message(
                 let val_ohb = vr.varint_ohb;
                 let val = vr.varint.unwrap();
 
-                let (content_kind, typed_val) = if let Some(ref fs) = field_schema {
-                    decode_varint_typed(val, fs)
-                } else {
-                    (VarintKind::Wire, val)
-                };
-
-                render_varint_field(
+                sink.scalar_field(
                     field_number,
                     field_schema.as_ref(),
-                    tag_ohb,
-                    tag_oor,
-                    val_ohb,
-                    content_kind,
-                    typed_val,
+                    TagFacts {
+                        tag_ohb,
+                        tag_oor,
+                        len_ohb: None,
+                    },
+                    ScalarValue::Varint {
+                        raw_val: val,
+                        val_ohb,
+                    },
+                    field_start..pos,
                     schema_present,
-                    out,
                 );
             }
 
@@ -356,68 +423,33 @@ pub(super) fn render_message(
             WT_I64 => {
                 if pos + 8 > buflen {
                     let raw = &buf[pos..];
-                    render_invalid(
+                    sink.malformed(
                         field_number,
-                        field_schema.as_ref(),
-                        tag_ohb,
-                        tag_oor,
-                        "INVALID_FIXED64",
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
+                        MalformedKind::InvalidFixed64,
                         raw,
-                        out,
                     );
                     return (buflen, None);
                 }
-                let data = &buf[pos..pos + 8];
+                let mut data = [0u8; 8];
+                data.copy_from_slice(&buf[pos..pos + 8]);
                 pos += 8;
 
-                let is_mismatch;
-                let mut nan_bits: Option<u64> = None;
-                let value_str = if let Some(ref fs) = field_schema {
-                    match fs.kind() {
-                        Kind::Double => {
-                            is_mismatch = false;
-                            let v = decode_double(data);
-                            if v.is_nan() {
-                                let bits = v.to_bits();
-                                if bits != f64::NAN.to_bits() {
-                                    nan_bits = Some(bits);
-                                }
-                            }
-                            format_double_protoc(v)
-                        }
-                        Kind::Fixed64 => {
-                            is_mismatch = false;
-                            format_fixed64_protoc(decode_fixed64(data))
-                        }
-                        Kind::Sfixed64 => {
-                            is_mismatch = false;
-                            format_sfixed64_protoc(decode_sfixed64(data))
-                        }
-                        _ => {
-                            is_mismatch = true;
-                            format_wire_fixed64_protoc(decode_fixed64(data))
-                        } // mismatch → hex
-                    }
-                } else {
-                    is_mismatch = false;
-                    format_wire_fixed64_protoc(decode_fixed64(data)) // unknown → hex
-                };
-
-                render_scalar(
-                    &ScalarCtx {
-                        field_number,
-                        field_schema: field_schema.as_ref(),
+                sink.scalar_field(
+                    field_number,
+                    field_schema.as_ref(),
+                    TagFacts {
                         tag_ohb,
                         tag_oor,
                         len_ohb: None,
-                        wire_type_name: "fixed64",
-                        nan_bits,
-                        type_mismatch: is_mismatch,
-                        schema_present,
                     },
-                    &value_str,
-                    is_mismatch,
-                    out,
+                    ScalarValue::Fixed64(data),
+                    field_start..pos,
+                    schema_present,
                 );
             }
 
@@ -425,14 +457,15 @@ pub(super) fn render_message(
             WT_LEN => {
                 let lr = parse_varint(buf, pos);
                 if let Some(ref varint_gar) = lr.varint_gar {
-                    render_invalid(
+                    sink.malformed(
                         field_number,
-                        field_schema.as_ref(),
-                        tag_ohb,
-                        tag_oor,
-                        "INVALID_LEN",
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
+                        MalformedKind::InvalidLen,
                         varint_gar,
-                        out,
                     );
                     return (buflen, None);
                 }
@@ -443,14 +476,15 @@ pub(super) fn render_message(
                 if pos + length > buflen {
                     let missing = (length - (buflen - pos)) as u64;
                     let raw = &buf[pos..];
-                    render_truncated_bytes(
+                    sink.malformed(
                         field_number,
-                        tag_ohb,
-                        tag_oor,
-                        len_ohb,
-                        missing,
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb,
+                        },
+                        MalformedKind::TruncatedBytes { missing },
                         raw,
-                        out,
                     );
                     return (buflen, None);
                 }
@@ -461,11 +495,14 @@ pub(super) fn render_message(
                     field_number,
                     field_schema.as_ref(),
                     schema_present,
-                    tag_ohb,
-                    tag_oor,
-                    len_ohb,
+                    TagFacts {
+                        tag_ohb,
+                        tag_oor,
+                        len_ohb,
+                    },
+                    field_start..pos,
                     data,
-                    out,
+                    sink,
                 );
             }
 
@@ -477,9 +514,13 @@ pub(super) fn render_message(
                     field_number,
                     field_schema.as_ref(),
                     schema_present,
-                    tag_ohb,
-                    tag_oor,
-                    out,
+                    TagFacts {
+                        tag_ohb,
+                        tag_oor,
+                        len_ohb: None,
+                    },
+                    field_start,
+                    sink,
                 );
             }
 
@@ -488,14 +529,15 @@ pub(super) fn render_message(
                 if my_group.is_none() {
                     // Unexpected END_GROUP outside a group
                     let raw = &buf[pos..];
-                    render_invalid(
+                    sink.malformed(
                         field_number,
-                        field_schema.as_ref(),
-                        tag_ohb,
-                        tag_oor,
-                        "INVALID_GROUP_END",
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
+                        MalformedKind::InvalidGroupEnd,
                         raw,
-                        out,
                     );
                     return (buflen, None);
                 }
@@ -507,72 +549,110 @@ pub(super) fn render_message(
             WT_I32 => {
                 if pos + 4 > buflen {
                     let raw = &buf[pos..];
-                    render_invalid(
+                    sink.malformed(
                         field_number,
-                        field_schema.as_ref(),
-                        tag_ohb,
-                        tag_oor,
-                        "INVALID_FIXED32",
+                        TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
+                        MalformedKind::InvalidFixed32,
                         raw,
-                        out,
                     );
                     return (buflen, None);
                 }
-                let data = &buf[pos..pos + 4];
+                let mut data = [0u8; 4];
+                data.copy_from_slice(&buf[pos..pos + 4]);
                 pos += 4;
 
-                let is_mismatch;
-                let mut nan_bits: Option<u64> = None;
-                let value_str = if let Some(ref fs) = field_schema {
-                    match fs.kind() {
-                        Kind::Float => {
-                            is_mismatch = false;
-                            let v = decode_float(data);
-                            if v.is_nan() {
-                                let bits = v.to_bits();
-                                if bits != f32::NAN.to_bits() {
-                                    nan_bits = Some(bits as u64);
-                                }
-                            }
-                            format_float_protoc(v)
-                        }
-                        Kind::Fixed32 => {
-                            is_mismatch = false;
-                            format_fixed32_protoc(decode_fixed32(data))
-                        }
-                        Kind::Sfixed32 => {
-                            is_mismatch = false;
-                            format_sfixed32_protoc(decode_sfixed32(data))
-                        }
-                        _ => {
-                            is_mismatch = true;
-                            format_wire_fixed32_protoc(decode_fixed32(data))
-                        } // mismatch → hex (D2)
-                    }
-                } else {
-                    is_mismatch = false;
-                    format_wire_fixed32_protoc(decode_fixed32(data)) // unknown → hex
-                };
-
-                render_scalar(
-                    &ScalarCtx {
-                        field_number,
-                        field_schema: field_schema.as_ref(),
+                sink.scalar_field(
+                    field_number,
+                    field_schema.as_ref(),
+                    TagFacts {
                         tag_ohb,
                         tag_oor,
                         len_ohb: None,
-                        wire_type_name: "fixed32",
-                        nan_bits,
-                        type_mismatch: is_mismatch,
-                        schema_present,
                     },
-                    &value_str,
-                    is_mismatch,
-                    out,
+                    ScalarValue::Fixed32(data),
+                    field_start..pos,
+                    schema_present,
                 );
             }
 
             _ => unreachable!("wire type > 5 caught by parse_wiretag"),
         }
+    }
+}
+
+// ── Tests: `decode_and_render`'s `initial_level`/`emit_header` params ─────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // field 1 (varint) = 42: tag 0x08, value 0x2A.
+    const VARINT_FIELD: [u8; 2] = [0x08, 0x2A];
+
+    #[test]
+    fn initial_level_indents_output() {
+        let out = decode_and_render(&VARINT_FIELD, None, false, 2, false, false, false, 3, false);
+        let text = String::from_utf8(out).unwrap();
+        let first_line = text.lines().next().unwrap();
+        let indent = first_line.len() - first_line.trim_start().len();
+        assert_eq!(indent, 2 * 3); // indent_size * initial_level
+    }
+
+    #[test]
+    fn initial_level_zero_matches_default() {
+        let out = decode_and_render(&VARINT_FIELD, None, false, 2, false, false, false, 0, false);
+        let text = String::from_utf8(out).unwrap();
+        let first_line = text.lines().next().unwrap();
+        assert_eq!(first_line, "1: 42");
+    }
+
+    #[test]
+    fn emit_header_true_writes_header() {
+        let out = decode_and_render(&VARINT_FIELD, None, true, 2, false, false, false, 0, true);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("#@ prototext: protoc\n"));
+    }
+
+    #[test]
+    fn emit_header_false_suppresses_header() {
+        let out = decode_and_render(&VARINT_FIELD, None, true, 2, false, false, false, 0, false);
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.starts_with("#@ prototext: protoc\n"));
+    }
+
+    // ── `ProbeSink` (spec 0110 Step 4 / Open Issue #1) ─────────────────────
+
+    #[test]
+    fn probe_sink_recognizes_valid_nested_message() {
+        // field 1 (unknown, LEN) whose payload is itself a well-formed
+        // message: field 1 (varint) = 42.
+        let buf = [0x0A, 0x02, 0x08, 0x2A];
+        let out = decode_and_render(&buf, None, false, 2, false, false, false, 0, false);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "1 {\n  1: 42\n}\n");
+    }
+
+    #[test]
+    fn probe_sink_rolls_up_nested_group_malformity() {
+        // field 1 (unknown, LEN) whose payload is: a GROUP (field 5) opened,
+        // containing a field 1 varint with a truncated (garbage) varint byte
+        // (0x80, continuation bit set, no terminating byte).  The nested
+        // group's own malformity must roll up into the outer probe's count
+        // (spec 0110 Open Issue #1), causing Step 1 (nested-message probe) to
+        // fail and fall through to the raw-bytes fallback — rather than being
+        // incorrectly accepted as a valid nested message.
+        let payload = [0x2B, 0x08, 0x80];
+        let mut buf = vec![0x0A, payload.len() as u8];
+        buf.extend_from_slice(&payload);
+        let out = decode_and_render(&buf, None, false, 2, false, false, false, 0, false);
+        let text = String::from_utf8(out).unwrap();
+        // Fallback rendering (invalid-UTF-8 payload -> escaped bytes leaf),
+        // not a nested `1 { ... }` block.
+        assert!(!text.starts_with("1 {"), "got: {text}");
+        assert!(text.starts_with("1: \""), "got: {text}");
     }
 }

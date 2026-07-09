@@ -164,10 +164,13 @@ pub(super) fn decode_len_field(
 ) {
     let Some(fs) = field_schema else {
         // Unknown field: three-step cascade (spec 0097).
-        // Step 1: probe as nested message.
-        let (nested_msg, next_pos, _, malformities) =
-            super::parse_message(data, 0, None, None, full_schema, annotations);
+        // Step 1: probe as nested message via `ProbeSink` (spec 0110 §2/Step 4).
+        // Only build the actual tree (a second, separate parse) once the probe
+        // confirms validity.
+        let (next_pos, malformities) = crate::serialize::render_text::probe_message(data);
         if malformities == 0 && next_pos == data.len() {
+            let (nested_msg, _, _, _) =
+                super::parse_message(data, 0, None, None, full_schema, annotations);
             field.content = ProtoTextContent::MessageVal(Box::new(nested_msg));
             return;
         }

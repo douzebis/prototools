@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::sink::TextSink;
 use super::super::FieldOrExt;
 use super::super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 use super::annotations::{push_tag_modifiers, AnnWriter};
@@ -39,7 +40,7 @@ pub(in super::super) fn render_scalar(
     ctx: &ScalarCtx<'_>,
     value_str: &str,
     is_wire: bool, // true for WireBytes/WireFixed* or wire-type mismatch
-    out: &mut Vec<u8>,
+    sink: &mut TextSink,
 ) {
     let ScalarCtx {
         field_number,
@@ -60,6 +61,7 @@ pub(in super::super) fn render_scalar(
         return;
     }
 
+    let out = &mut sink.out;
     // v2 key rule: numeric for unknown/wire, named for known fields.
     let use_numeric_key = unknown || is_wire;
     wfl_prefix_n(field_number, field_schema, use_numeric_key, out);
@@ -85,8 +87,8 @@ pub(in super::super) fn render_scalar(
             }
         }
     }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }
 
 /// Render INVALID_VARINT / INVALID_FIXED64 / INVALID_FIXED32 / INVALID_LEN /
@@ -100,9 +102,10 @@ pub(in super::super) fn render_invalid(
     tag_oor: bool,
     inv_name: &str,
     raw: &[u8],
-    out: &mut Vec<u8>,
+    sink: &mut TextSink,
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
+    let out = &mut sink.out;
     // v2: always numeric key for invalid fields (no field name, no field_decl).
     wfl_prefix_n(field_number, None, true, out);
     out.push(b'"');
@@ -114,13 +117,14 @@ pub(in super::super) fn render_invalid(
         push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None);
         // v2: NO field_decl for invalid fields.
     }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }
 
 /// Special case: InvalidTagType has no valid field number.
-pub(in super::super) fn render_invalid_tag_type(raw: &[u8], out: &mut Vec<u8>) {
+pub(in super::super) fn render_invalid_tag_type(raw: &[u8], sink: &mut TextSink) {
     let annotations = ANNOTATIONS.with(|c| c.get());
+    let out = &mut sink.out;
     wfl_prefix("0", out);
     out.push(b'"');
     escape_bytes_into(raw, out);
@@ -129,8 +133,8 @@ pub(in super::super) fn render_invalid_tag_type(raw: &[u8], out: &mut Vec<u8>) {
         let mut aw = AnnWriter::new();
         aw.push(out, b"INVALID_TAG_TYPE"); // v2: no trailing `;`
     }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }
 
 /// Render a TRUNCATED_BYTES field.
@@ -143,9 +147,10 @@ pub(in super::super) fn render_truncated_bytes(
     len_ohb: Option<u64>,
     missing: u64,
     raw: &[u8],
-    out: &mut Vec<u8>,
+    sink: &mut TextSink,
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
+    let out = &mut sink.out;
     // v2: always numeric key for invalid fields.
     wfl_prefix_n(field_number, None, true, out);
     out.push(b'"');
@@ -158,6 +163,6 @@ pub(in super::super) fn render_truncated_bytes(
         aw.push_u64_mod(out, b"MISSING: ", missing); // invalid modifier, ALL CAPS
                                                      // v2: NO field_decl for invalid fields.
     }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }

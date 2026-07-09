@@ -18,6 +18,7 @@ use crate::serialize::common::{
 };
 
 use super::helpers::{wfl_prefix_n, AnnWriter};
+use super::sink::TextSink;
 use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 
 /// Classify a varint value against the schema's expected type.
@@ -123,7 +124,7 @@ pub(super) fn render_varint_field(
     kind: VarintKind,
     raw_val: u64,
     schema_present: bool,
-    out: &mut Vec<u8>,
+    sink: &mut TextSink,
 ) {
     let annotations = ANNOTATIONS.with(|c| c.get());
     let is_mismatch = kind == VarintKind::Mismatch;
@@ -164,6 +165,7 @@ pub(super) fn render_varint_field(
     //   - unknown (no schema), is_wire, or is_mismatch: field NUMBER
     //   - normal known field: field NAME
     let use_numeric_key = is_wire || unknown || is_mismatch;
+    let out = &mut sink.out;
     wfl_prefix_n(field_number, field_schema, use_numeric_key, out);
     out.extend_from_slice(value_str.as_bytes());
 
@@ -205,6 +207,6 @@ pub(super) fn render_varint_field(
             }
         }
     }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len())); // content line: set past-end to inhibit folding
+    sink.newline();
+    CBL_START.with(|c| c.set(sink.out.len())); // content line: set past-end to inhibit folding
 }

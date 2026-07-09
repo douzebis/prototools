@@ -3,6 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::sink::TextSink;
 use super::super::{CBL_START, INDENT_SIZE, LEVEL};
 
 // ── Low-level output helpers ──────────────────────────────────────────────────
@@ -113,9 +114,9 @@ pub(in super::super) fn wob_prefix_n(
 
 /// Write `{indent}}\n`.
 #[inline]
-pub(in super::super) fn write_close_brace(out: &mut Vec<u8>) {
-    CBL_START.with(|c| c.set(out.len()));
-    push_indent(out);
-    out.push(b'}');
-    out.push(b'\n');
+pub(in super::super) fn write_close_brace(sink: &mut TextSink) {
+    CBL_START.with(|c| c.set(sink.out.len()));
+    push_indent(&mut sink.out);
+    sink.out.push(b'}');
+    sink.newline();
 }

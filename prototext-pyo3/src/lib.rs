@@ -144,6 +144,8 @@ impl SchemaHandle {
             true,
             false,
             true,
+            0,
+            include_annotations,
         );
         clear_any_loader();
         out
@@ -256,6 +258,8 @@ fn format_as_text<'py>(
         true,
         false,
         true,
+        0,
+        include_annotations,
     );
     if schema.is_some() {
         clear_any_loader();

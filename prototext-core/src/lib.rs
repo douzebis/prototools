@@ -112,6 +112,8 @@ pub fn render_as_text(
         opts.expand_any,
         opts.hide_unknown_fields,
         opts.expand_message_set,
+        0,
+        opts.include_annotations,
     ))
 }
 

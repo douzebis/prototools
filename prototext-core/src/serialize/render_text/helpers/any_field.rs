@@ -4,15 +4,13 @@
 
 //! Any-field expansion for `google.protobuf.Any` (spec 0089).
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use prost_reflect::MessageDescriptor;
 
-use super::super::{
-    enter_level, render_message, FieldOrExt, ANNOTATIONS, ANY_LOADER, CBL_START, EXPAND_ANY,
-};
-use super::annotations::{push_tag_modifiers, AnnWriter};
-use super::output::{push_indent, wob_prefix_n, write_close_brace};
+use super::super::sink::{NestedKind, Sink, TagFacts};
+use super::super::{enter_level, render_message, FieldOrExt, ANY_LOADER, EXPAND_ANY};
 
 use crate::helpers::{
     parse_varint, parse_wiretag, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
@@ -177,24 +175,22 @@ fn skip_group(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<usize> 
 
 /// Try to render a `google.protobuf.Any` field with expansion.
 ///
-/// Called in place of the normal `wob_prefix_n + render_message + write_close_brace`
-/// sequence in `render_len_field` when:
+/// Called in place of the normal nested-message dispatch in `render_len_field`
+/// when:
 /// - `EXPAND_ANY` is true, and
 /// - the field's schema type is `google.protobuf.Any`.
 ///
 /// Returns `true` when expansion was performed (caller must return immediately).
 /// Returns `false` when expansion is not possible (caller falls through to
 /// normal rendering).
-#[allow(clippy::too_many_arguments)]
-pub(in super::super) fn render_any_expansion(
+pub(in super::super) fn render_any_expansion<S: Sink>(
     field_number: u64,
     fs: &FieldOrExt,
     schema_present: bool,
-    tag_ohb: Option<u64>,
-    tag_oor: bool,
-    len_ohb: Option<u64>,
+    tag: TagFacts,
+    raw_range: Range<usize>,
     data: &[u8],
-    out: &mut Vec<u8>,
+    sink: &mut S,
 ) -> bool {
     if !EXPAND_ANY.with(|c| c.get()) {
         return false;
@@ -222,68 +218,76 @@ pub(in super::super) fn render_any_expansion(
         None => return false,
     };
 
-    let annotations = ANNOTATIONS.with(|c| c.get());
+    // ── Outer Any field opener ────────────────────────────────────────────────
+    let outer_mark = sink.begin_nested(
+        field_number,
+        Some(fs),
+        tag,
+        NestedKind::Message,
+        raw_range.start,
+        raw_range.end - data.len(),
+    );
+    let outer_guard = enter_level(sink);
 
-    // ── Step 5: write the Any field opener ────────────────────────────────────
-    wob_prefix_n(field_number, Some(fs), false, out);
-    if annotations {
-        let mut aw = AnnWriter::new();
-        aw.push_field_decl(out, field_number, Some(fs), None, None);
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
-    }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len()));
+    // ── type_url line (virtual: not backed by a real FieldOrExt) ─────────────
+    let mut tv = Vec::new();
+    tv.push(b'"');
+    escape_string_into(fields.type_url, &mut tv);
+    tv.push(b'"');
+    let tv = String::from_utf8(tv).expect("escape_string_into produces valid UTF-8");
+    sink.virtual_scalar("type_url", Some("string = 1"), &tv, raw_range.clone());
 
-    // ── Step 6: enter indentation level ──────────────────────────────────────
-    let outer_guard = enter_level();
+    // ── value { opener (virtual) ──────────────────────────────────────────────
+    let value_bytes: &[u8] = fields.value.unwrap_or(&[]);
+    // Local offset of `value_bytes` within `data` (the Any's own payload,
+    // itself already the active coordinate frame after `outer_mark` was
+    // opened above) — both are genuine sub-slices of the same underlying
+    // buffer, so pointer subtraction gives the exact offset (spec 0110 §3).
+    // `fields.value: None` falls back to a dangling empty slice above, which
+    // isn't a sub-slice of `data` — guard against that case explicitly.
+    let value_payload_start = fields
+        .value
+        .map(|v| v.as_ptr() as usize - data.as_ptr() as usize)
+        .unwrap_or(0);
+    let value_ann = format!("{} = 2", resolved_desc.name());
+    let value_mark = sink.begin_virtual_nested(
+        "value",
+        Some(&value_ann),
+        Some(resolved_desc.full_name()),
+        raw_range.start,
+        value_payload_start,
+    );
 
-    // ── Step 7: write type_url line ───────────────────────────────────────────
-    push_indent(out);
-    out.extend_from_slice(b"type_url: \"");
-    escape_string_into(fields.type_url, out);
-    out.push(b'"');
-    if annotations {
-        let mut aw = AnnWriter::new();
-        aw.push(out, b"string = 1");
-    }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len()));
-
-    // ── Step 8: write value { opener ──────────────────────────────────────────
-    push_indent(out);
-    out.extend_from_slice(b"value {");
-    if annotations {
-        let mut aw = AnnWriter::new();
-        aw.sep(out);
-        out.extend_from_slice(resolved_desc.name().as_bytes());
-        out.extend_from_slice(b" = 2");
-    }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len()));
-
-    // ── Steps 9–10: recurse into value bytes ──────────────────────────────────
+    // ── recurse into value bytes ──────────────────────────────────────────────
     {
-        let inner_guard = enter_level();
-        let value_bytes: &[u8] = fields.value.unwrap_or(&[]);
+        let inner_guard = enter_level(sink);
         render_message(
             value_bytes,
             0,
             None,
             Some(&*resolved_desc),
             schema_present,
-            out,
+            sink,
         );
-        drop(inner_guard); // decrement LEVEL before write_close_brace for value
+        drop(inner_guard); // decrement LEVEL before closing "value"
     }
 
-    // ── Step 11: close value block ────────────────────────────────────────────
-    write_close_brace(out);
+    // ── close value block ─────────────────────────────────────────────────────
+    // Same coordinate frame as `value_mark` was opened in (the Any's own
+    // payload `data`, active since `outer_mark`'s push above): use the exact
+    // `value_bytes` sub-slice bounds, not the outer field's `raw_range`
+    // (spec 0110 §3).
+    sink.end_nested(
+        value_mark,
+        value_payload_start..value_payload_start + value_bytes.len(),
+        None,
+    );
 
-    // ── Step 12: close Any block ──────────────────────────────────────────────
+    // ── close Any block ───────────────────────────────────────────────────────
     // Drop outer_guard to decrement LEVEL back to the Any field's level before
-    // writing the closing brace.
+    // closing.
     drop(outer_guard);
-    write_close_brace(out);
+    sink.end_nested(outer_mark, raw_range, None);
 
     true
 }

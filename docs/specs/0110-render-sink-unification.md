@@ -191,10 +191,24 @@ Two invariants make this concrete and unambiguous, both confirmed against the
 actual codebase rather than assumed:
 
 - **Nesting.** A child's `raw_range` and `text_range` both nest strictly inside its
-  parent's. For `raw_range`: children are always parsed from a sub-slice of the
-  parent's own bytes (a LEN field's `data`, or the portion of `buf` strictly
-  between a group's start and end tags) — recursion only ever narrows the byte
-  window. For `text_range`: the parent writes its opening line *before* recursing
+  parent's, and both are absolute/flat — a single coordinate space spanning the
+  whole document, not local to each node's immediate parent. For `raw_range`:
+  children are always *parsed* from a sub-slice of the parent's own bytes (a LEN
+  field's `data`, or the portion of `buf` strictly between a group's start and
+  end tags) — recursion only ever narrows the byte window `render_message` itself
+  sees. But `IndexingTextSink` does not store that local window directly: `Sink`'s
+  `begin_nested`/`begin_virtual_nested` also carry a `payload_start` — the local
+  offset, in the *same* frame as the node's own `raw_start`, at which its
+  recursively-rendered content begins (`0` for `NestedKind::Group`, whose
+  children stay in the *same* buffer as the group's own tag — no length prefix,
+  hence no new frame; the LEN-delimited payload start otherwise). `IndexingTextSink`
+  accumulates these into a `raw_base` — the absolute offset local `0` currently
+  maps to — carried per open node in `IndexMark` and pushed/popped exactly like
+  `LEVEL`, so every `NodeSpan::raw_range` it stores is already translated to
+  absolute coordinates before a consumer ever sees it. `TextSink`/`ProbeSink`
+  ignore `payload_start` entirely — the translation work is paid for once, inside
+  `IndexingTextSink`'s own (non-hot-path) bookkeeping, not by every downstream
+  consumer of `Vec<NodeSpan>`. For `text_range`: the parent writes its opening line *before* recursing
   and its closing line *after* (`render_group_field`'s "greedy write, splice
   post-hoc" pattern; `render_len_field`'s `wob_prefix_n` before /
   `write_close_brace` after), so every line of every descendant's text
@@ -297,15 +311,19 @@ recursive `render_message` call. Left as-is, migrating `render_message` to
 `NodeSpan` at all, only its recursively-rendered children would.
 
 Goal 2 closes this gap by threading `sink: &mut S` into both expansion
-functions and replacing each hand-written line with the same `scalar_field`/
-`begin_nested`/`end_nested` calls `render_message`'s ordinary dispatch already
-uses, with `raw_range` computed directly from the scan's already-known
-sub-slice offsets (no new byte-scanning, no signature change to
-`begin_nested`/`end_nested` — the `Mark`-returning shape already accommodates
-this). Under `TextSink`, this is a pure refactor with no output change,
-since `scalar_field`/`begin_nested`/`end_nested` compile down to the exact
-same `push_indent`/`extend_from_slice` sequence they replace. Under
-`IndexingTextSink`, the wrapper node now gets a real `NodeSpan`, with
+functions and replacing each hand-written line with `virtual_scalar`/
+`begin_virtual_nested`/`end_nested` calls — dedicated methods (§1) rather
+than `scalar_field`/`begin_nested`, since these wrapper lines are not backed
+by any real `FieldOrExt` schema descriptor (`type_url`, `type_id`, `value {`,
+`Item {`, `message {` are hand-authored literal strings, not a declared
+field's schema-driven rendering) and so cannot flow through
+`scalar_field`/`begin_nested`'s schema-driven signature. `raw_range` is
+computed directly from the scan's already-known sub-slice offsets (no new
+byte-scanning). Under `TextSink`, this is a pure refactor with no output
+change, since `virtual_scalar`/`begin_virtual_nested`/`end_nested` compile
+down to the exact same `push_indent`/`extend_from_slice` sequence they
+replace. Under `IndexingTextSink`, the wrapper node now gets a real
+`NodeSpan`, with
 `type_fqdn` set to the *resolved* type (from `type_url`, or from the
 `(extendee_fqdn, type_id)` extension lookup) — which is generally different
 from the field's own declared type, and is exactly the information spec
@@ -324,19 +342,48 @@ implementation, but the shape/responsibilities below are intended to hold:
 ```rust
 pub(crate) trait Sink {
     /// Per-implementation "in-progress nested node" marker, returned by
-    /// `begin_nested` and passed back to `end_nested`. `TextSink` uses this to
-    /// remember the byte position of its greedily-written opening line (for
-    /// splice-based backtracking); `ProbeSink` uses `()`; `IndexingTextSink`
-    /// uses it to remember which index-entry slot to backfill.
+    /// `begin_nested`/`begin_virtual_nested` and passed back to `end_nested`.
+    /// `TextSink` uses this to remember the byte position of its
+    /// greedily-written opening line, plus whatever post-hoc splice content
+    /// (field_decl, mismatch modifier) it will need once the group's close
+    /// facts are known — exactly the local variables `render_group_field`
+    /// already computes today, just relocated onto this struct. `ProbeSink`
+    /// uses `()`. `IndexingTextSink` uses it to remember which index-entry
+    /// slot to backfill.
     type Mark;
 
-    /// A scalar (non-recursive) field has been fully decoded/classified.
-    /// `raw_range` is the field's value bytes in the source buffer (excluding
-    /// the wire tag).
-    fn scalar_field(&mut self, field_number: u64, raw_range: Range<usize>);
+    /// A scalar (non-recursive), schema-backed field has been fully parsed
+    /// off the wire. `value` carries the wire-kind-specific raw payload —
+    /// enough for `TextSink`'s own implementation to reproduce today's exact
+    /// typed formatting (decode, escape, annotate; `is_mismatch`/`unknown`/
+    /// NaN-bits/enum-name are all recomputed from `field_schema` + `value`
+    /// inside that implementation, not passed in separately). `ProbeSink`'s
+    /// implementation never inspects `value` at all: reaching this call
+    /// already means the field parsed validly off the wire, which is
+    /// everything a shallow probe needs to know.
+    #[allow(clippy::too_many_arguments)]
+    fn scalar_field(
+        &mut self,
+        field_number: u64,
+        field_schema: Option<&FieldOrExt>,
+        tag: TagFacts,
+        value: ScalarValue<'_>,
+        raw_range: Range<usize>,
+        schema_present: bool,
+    );
 
-    /// A nested message or group is about to be parsed.
-    fn begin_nested(&mut self, field_number: u64, raw_start: usize) -> Self::Mark;
+    /// A nested message or group is about to be parsed. `kind` distinguishes
+    /// a LEN-delimited nested message from a GROUP wire record — `TextSink`
+    /// needs this to pick the right opening-line convention (`wob_prefix_n`
+    /// vs. `render_group_field`'s greedy-write-then-splice path).
+    fn begin_nested(
+        &mut self,
+        field_number: u64,
+        field_schema: Option<&FieldOrExt>,
+        tag: TagFacts,
+        kind: NestedKind,
+        raw_start: usize,
+    ) -> Self::Mark;
 
     /// The nested message/group finished. `raw_range` is its full byte span in
     /// the source buffer. `close_facts` is `Some` only for groups (facts only
@@ -350,9 +397,126 @@ pub(crate) trait Sink {
         close_facts: Option<GroupCloseFacts>,
     );
 
-    /// A structurally invalid field was encountered at the current level
-    /// (invalid tag, truncated varint/fixed/length, mismatched group end).
-    fn malformed(&mut self);
+    /// A synthetic "virtual field" scalar line — used only by the Any/
+    /// MessageSet expansion wrappers (Design rationale) for lines
+    /// (`type_url: "..."`, `type_id: N`) that are not backed by any real
+    /// schema field descriptor, so `scalar_field`'s `field_schema`-driven
+    /// formatting doesn't apply. `name`/`annotation` are already fully
+    /// formatted by the caller (`any_field.rs`/`message_set_field.rs` keep
+    /// authoring these exact literal strings, unchanged from today).
+    fn virtual_scalar(
+        &mut self,
+        name: &str,
+        annotation: Option<&str>,
+        value_str: &str,
+        raw_range: Range<usize>,
+    );
+
+    /// A synthetic "virtual field" nested-node opener — used only by the
+    /// Any/MessageSet wrappers (`value {`, `Item {`, `message {`). Always
+    /// paired with `end_nested(mark, raw_range, None)` — a virtual nested
+    /// node is never a group, so `close_facts` is always `None`.
+    fn begin_virtual_nested(
+        &mut self,
+        name: &str,
+        annotation: Option<&str>,
+        raw_start: usize,
+    ) -> Self::Mark;
+
+    /// A structurally invalid field was encountered at the current level.
+    /// `field_number` is `0` for `MalformedKind::InvalidTagType` (the one
+    /// case where no field number could even be parsed — mirrors today's
+    /// `render_invalid_tag_type`/`wfl_prefix("0", out)`).
+    fn malformed(&mut self, field_number: u64, tag: TagFacts, kind: MalformedKind, raw: &[u8]);
+
+    /// Whether `render_len_field` should treat every LEN-delimited field as
+    /// opaque bytes — skipping its unknown-field cascade (nested-message
+    /// probe, packed detection, Any/MessageSet expansion) entirely — rather
+    /// than recursing into it (§2). `ProbeSink` overrides this to `true`: a
+    /// probe only ever needs mandatory recursion into GROUPs (which have no
+    /// length prefix, so their extent is unknowable without parsing through
+    /// them); a LEN field's own length prefix, already bounds-checked by
+    /// `render_message` before dispatch, is sufficient on its own. Default
+    /// `false` for every other `Sink`. Discovered during implementation: §2's
+    /// original "shallow, no recursive classification" prose for `ProbeSink`
+    /// conflicted with `render_len_field`'s literal shared-cascade structure
+    /// (which, under `schema: None`, always performs a recursive Step-1
+    /// nested-message probe regardless of which `Sink` is active) — this hook
+    /// is the resolution, confirmed with the spec's author.
+    fn treat_len_as_opaque(&self) -> bool {
+        false
+    }
+
+    /// Whether this sink's own rendering depends on `LEVEL`, the shared
+    /// thread-local recursion-depth counter used for indentation (`enter_level`
+    /// consults this before touching `LEVEL` at all). `ProbeSink` overrides
+    /// this to `false`: it never indents anything (all its methods are
+    /// no-ops), so it must not mutate `LEVEL` on behalf of the in-progress
+    /// outer render (typically a `TextSink` pass) that invoked it as a
+    /// read-only structural probe. Default `true` for every other `Sink`.
+    /// Discovered during implementation: `ProbeSink` is meant to be a
+    /// read-only helper and must not touch any shared render-mode state
+    /// belonging to the render pass that invoked it, even transiently.
+    fn tracks_level(&self) -> bool {
+        true
+    }
+}
+
+/// Tag-level anomaly facts shared by nearly every dispatch site — mirrors the
+/// `tag_ohb`/`tag_oor`/`len_ohb` triple already threaded through nearly every
+/// `render_*` function today. `len_ohb` is only ever populated for LEN-wire
+/// fields (`None` for VARINT/FIXED32/FIXED64 — the same always-`None` pattern
+/// already present in today's `ScalarCtx`).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TagFacts {
+    pub tag_ohb: Option<u64>,
+    pub tag_oor: bool,
+    pub len_ohb: Option<u64>,
+}
+
+/// Wire-kind-specific raw payload for a scalar field. Each variant carries
+/// exactly what today's corresponding `render_*` function already takes as
+/// input, before any schema-typed decoding — that decoding stays inside
+/// `TextSink`'s own `scalar_field` implementation, never in the shared
+/// dispatch loop.
+pub(crate) enum ScalarValue<'a> {
+    /// VARINT wire type. `raw_val` is `parse_varint`'s own decoded output;
+    /// `val_ohb` is the value varint's own overhang count.
+    Varint { raw_val: u64, val_ohb: Option<u64> },
+    /// FIXED64 wire type: the raw 8 bytes.
+    Fixed64([u8; 8]),
+    /// FIXED32 wire type: the raw 4 bytes.
+    Fixed32([u8; 4]),
+    /// LEN wire type, non-packed: string, bytes, or wire-type-mismatch bytes
+    /// leaf (`TextSink` recomputes which, from `field_schema`/`kind`, exactly
+    /// as today's `render_len_field` already does).
+    Bytes(&'a [u8]),
+    /// LEN wire type, packed-repeated: the whole wire record. `TextSink`
+    /// decodes and emits one line per element (today's `render_packed`);
+    /// `IndexingTextSink` still records exactly one `NodeSpan` per call — its
+    /// `raw_range` covers the whole record, its `text_range` the full run of
+    /// emitted element lines (§3).
+    Packed(&'a [u8]),
+}
+
+/// Distinguishes a LEN-delimited nested message from a GROUP wire record at
+/// `begin_nested` — see that method's doc comment.
+pub(crate) enum NestedKind {
+    Message,
+    Group,
+}
+
+/// Discriminates the specific structurally-invalid case `malformed` reports,
+/// collapsing today's five separate `render_invalid*`/`render_truncated_bytes`
+/// call shapes into one event with one payload shape.
+pub(crate) enum MalformedKind {
+    InvalidTagType,
+    InvalidVarint,
+    InvalidFixed64,
+    InvalidFixed32,
+    InvalidLen,
+    TruncatedBytes { missing: u64 },
+    InvalidGroupEnd,
 }
 
 /// Facts about a group's own closing tag, only knowable *after* recursing
@@ -360,13 +524,23 @@ pub(crate) trait Sink {
 /// buffer) — never applicable to a LEN-delimited nested message, which has
 /// no separate close tag at all. Mirrors, field for field, what
 /// `decoder::parse_message`'s `WT_START_GROUP` arm already computes today
-/// (`decoder/mod.rs`; `docs/design.md`).
+/// (`decoder/mod.rs`; `docs/design.md`) — minus `open_ended_group`, which is
+/// redundant here: `end_nested`'s `close_facts: Option<GroupCloseFacts>`
+/// already encodes "open-ended" via its `None` variant, so a second boolean
+/// saying the same thing would be dead weight (confirmed during
+/// implementation — `cargo build`'s `dead_code` lint flagged the field as
+/// never read, since the only construction site always passed `false`).
 pub(crate) struct GroupCloseFacts {
-    /// EOF was reached before a matching `END_GROUP` tag was found.
-    pub open_ended_group: bool,
     /// The `END_GROUP` tag's own varint was over-encoded (more bytes than
     /// the minimal encoding), and by how many.
     pub end_tag_overhang_count: Option<u64>,
+    /// The `END_GROUP` tag's own field number was itself out-of-range
+    /// (mirrors `wfield_oor` on the open tag) — reported as `ETAG_OOR`.
+    /// Discovered during implementation: needed alongside
+    /// `end_tag_overhang_count`/`mismatched_group_end` to reproduce today's
+    /// `render_group_field` output byte-for-byte (a fourth close-tag fact,
+    /// missing from this struct's original draft).
+    pub end_tag_is_out_of_range: bool,
     /// The `END_GROUP` tag's field number didn't match the `START_GROUP`'s —
     /// structurally inconsistent, but non-fatal (parsing continues); carries
     /// the actual (mismatched) field number found.
@@ -384,6 +558,15 @@ which `Sink` is in use. Anything a specific `Sink` implementation accumulates
 for its own purposes (`TextSink::line_count()`, `ProbeSink::malformity_count()`,
 §2) is read directly off that `Sink` after the call returns, not threaded
 through `render_message`'s generic return type.
+
+Because every level of recursion is threaded the *same* `&mut S` — never a
+fresh sink per level, never a return-value hand-off — a nested group's
+malformities are rolled into the caller's total automatically, by
+construction: there is no separate "roll up the count" step to add or forget.
+This structurally forecloses the exact bug `decoder::parse_message`'s
+`WT_START_GROUP` arm has today (Background; discarding the nested call's
+malformity count by binding it to `_`) — under the `Sink` model there is no
+return value to discard in the first place.
 
 `TextSink` additionally needs raw byte-append, splice-before-position, and a
 `newline()` method (§ Design rationale — the sole writer of `\n` into `out`,
@@ -433,7 +616,10 @@ shape, read off the sink instead of a return value (§1).
 ```rust
 pub struct NodeSpan {
     pub field_number: u64,
-    pub raw_range: Range<usize>,   // byte range in the source protobuf
+    pub raw_range: Range<usize>,   // byte range in the source protobuf, absolute
+                                    // w.r.t. the original top-level `buf` — not
+                                    // local to this node's immediate parent
+                                    // (Design rationale, "Nesting")
     pub text_range: Range<usize>,  // line-number range in the rendered text
     pub level: usize,              // indentation depth (matches render_text::LEVEL)
     pub type_fqdn: Option<String>, // FQDN of the type this node was rendered as,
@@ -500,8 +686,11 @@ exist yet):
 
 - **Nesting invariant**: a fixture with at least 3 levels of nesting (message
   containing message containing message, plus a sibling scalar at each level)
-  — assert every child `NodeSpan`'s `raw_range` and `text_range` are strictly
-  contained within its parent's, in emission order.
+  — assert every child `NodeSpan`'s `text_range` *and* `raw_range` are each
+  strictly contained within its parent's, via a single flat containment check
+  against each `Vec<NodeSpan>` entry directly (both are absolute/flat coordinate
+  spaces spanning the whole document — Design rationale, "Nesting" — no
+  recursive re-slicing needed for either).
 - **Line-number survival across the group-splice path**: a fixture with an
   open-ended or mismatched-end group (guaranteed to trigger
   `render_group_field`'s post-hoc splice, Design rationale) — assert every
@@ -516,9 +705,11 @@ exist yet):
   `message_set_field.rs`'s `Item {}`/`message {}` wrapper nodes, reusing spec
   0108's `message_set_proto2.proto` fixture.
 - **Scalar leaf nodes**: assert `type_fqdn` is `None`.
-- **`raw_range` fidelity**: extract a node's `raw_range` sub-slice from the
-  source buffer directly and confirm it independently re-decodes correctly
-  under that node's own (declared or resolved) type.
+- **`raw_range` fidelity**: for a nested node (not just a top-level one —
+  `raw_range` is absolute for every node, not only top-level ones), extract
+  its `raw_range` sub-slice directly from the original top-level `buf` and
+  confirm it independently re-decodes correctly under that node's own
+  (declared or resolved) type.
 
 ### §4 — `decode_and_render` initial-level / header-suppression parameters
 
@@ -602,13 +793,17 @@ touched (§ Files changed) and the module retirement involved (§5).
    (`prototext-pyo3/tests/test_codec.py`) still passes after its call sites
    are updated; `prototext`'s own CLI-level tests (`prototext/tests/`) still
    pass after `render_as_text`'s call site is updated.
-4. **`ProbeSink`** (Goal 3), wired into `len_field.rs:51` and
-   `decoder/packed.rs`'s mirrored probe site (§2).
+4. ~~**`ProbeSink`** (Goal 3), wired into `len_field.rs:51` and
+   `decoder/packed.rs`'s mirrored probe site (§2).~~ **Done.**
    **Gate**: spec-0097's existing cascade fixtures pass unchanged; new tests
    for Open Issue #1's group-malformity rollup — both that the rollup doesn't
    regress currently-passing cascades, and that cases previously accepted
    despite an internally malformed nested group now correctly fall through to
-   string/bytes.
+   string/bytes. — met: `probe_sink_recognizes_valid_nested_message` and
+   `probe_sink_rolls_up_nested_group_malformity` (`render_text/mod.rs`
+   `#[cfg(test)] mod tests`); full suite 101 → 103, zero regressions;
+   `reuse lint` clean. Also added `Sink::treat_len_as_opaque`/`tracks_level`
+   (§1) beyond the trait's originally-settled 6 methods — see Open Issue #2.
 5. **`IndexingTextSink`/`NodeSpan`** (Goal 3, §3).
    **Gate**: the §3 "Tests" list — nesting invariant, line-number survival
    across the group-splice path, Any/MessageSet wrapper-node spans, scalar
@@ -620,23 +815,48 @@ touched (§ Files changed) and the module retirement involved (§5).
 7. **Zero-cost benchmark checkpoint** (Open Issue #3) — run once steps 1–6 are
    otherwise complete; does not gate any individual step, but must pass before
    this spec's `Status` moves to `implemented`.
+8. **`clippy::too_many_arguments` cleanup** — deferred until after steps 5/6
+   land (so the bundling struct shape only needs designing once, accounting
+   for whatever `IndexingTextSink` needs too), then done in one pass across
+   all flagged functions together: `render_group_field`, `render_len_field`,
+   `render_any_expansion`, `render_message_set_expansion` (bundle
+   `field_number`/`field_schema`/`tag`/`raw_range` into a context struct,
+   mirroring the existing `ScalarCtx` pattern), and `decode_and_render`
+   (accept an options struct instead of loose scalar parameters — mirroring
+   `RenderOpts`, `lib.rs`). Must pass before this spec's `Status` moves to
+   `implemented`.
 
 ---
 
 ## Open Issues and Challenges
 
-1. **`ProbeSink` group-malformity rollup is a behavior change**, not a pure
+1. ~~**`ProbeSink` group-malformity rollup is a behavior change**, not a pure
    refactor (§2) — needs explicit test coverage confirming spec 0097's existing
    cascade fixtures aren't affected by the stricter (rolled-up) malformity count,
    and confirming cases that previously rendered as a message (accepted despite
-   an internally malformed group) now correctly fall through to string/bytes.
-2. **Exact `Sink` trait shape — event granularity only.** The trait-vs-no-trait
-   question for `TextSink`'s raw-write primitives is settled (§1: private
-   inherent methods, no trait). What remains open is whether
-   `scalar_field`/`begin_nested`/`end_nested`/`malformed` is the right event
-   cut for every dispatch site once implementation starts, including the
-   Any/MessageSet wrapper-node calls added by the Design rationale's
-   Any/MessageSet subsection.
+   an internally malformed group) now correctly fall through to string/bytes.~~
+   **Resolved**: the rollup is a *structural* guarantee, not something a `Sink`
+   implementation must remember to do — because every recursion level is
+   threaded the same `&mut S` (§1, "`render_message<S: Sink>`" prose), a
+   nested group's malformities land in the caller's total automatically, with
+   no return-value hand-off step to get wrong. This forecloses the exact bug
+   `decoder::parse_message`'s `WT_START_GROUP` arm has today. Test coverage
+   confirming the resulting counts match expectations:
+   `probe_sink_rolls_up_nested_group_malformity` (`render_text/mod.rs`).
+2. ~~**Exact `Sink` trait shape — event granularity only.**~~ **Resolved, then
+   grew by two during implementation**: §1 originally settled the trait at 6
+   methods — `scalar_field`, `begin_nested`, `end_nested`, `malformed`, plus
+   `virtual_scalar`/`begin_virtual_nested` for the Any/MessageSet wrapper-node
+   calls (Design rationale's Any/MessageSet subsection). Implementing `ProbeSink`
+   (step 4) surfaced two more, both default-`false`/`true` hooks needed to keep
+   `ProbeSink` a genuinely passive, read-only probe: `treat_len_as_opaque`
+   (resolves the §2 shallow-LEN-handling ambiguity — confirmed with the spec's
+   author) and `tracks_level` (stops `ProbeSink`'s mandatory group recursion
+   from mutating the shared thread-local `LEVEL` counter that the in-progress
+   outer `TextSink` render, which invoked the probe, still depends on for its
+   own indentation). Richer per-method payload types (`TagFacts`, `ScalarValue`,
+   `NestedKind`, `MalformedKind`) keep this event cut manageable without a
+   combinatorial explosion of methods — see §1 for the full shape.
 3. **Zero-cost verification**: this spec's premise (monomorphization + inlining
    makes the `Sink` abstraction's genericity free) needs confirming, not just
    assuming from the generic Rust idiom — with priority weighted by which

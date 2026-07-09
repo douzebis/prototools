@@ -19,6 +19,7 @@ use crate::serialize::common::{
 };
 
 use super::helpers::{push_indent, wfl_prefix_n, AnnWriter};
+use super::sink::TextSink;
 use super::{ANNOTATIONS, CBL_START};
 
 /// Write `bits` as zero-padded lowercase hex into `out` without heap allocation.
@@ -287,7 +288,7 @@ pub(super) fn render_packed(
     tag_oor: bool,
     len_ohb: Option<u64>,
     data: &[u8],
-    out: &mut Vec<u8>,
+    sink: &mut TextSink,
 ) {
     use super::helpers::render_invalid;
 
@@ -304,7 +305,7 @@ pub(super) fn render_packed(
                 tag_oor,
                 "INVALID_PACKED_RECORDS",
                 data,
-                out,
+                sink,
             );
             return;
         }
@@ -316,6 +317,7 @@ pub(super) fn render_packed(
     // No elements: emit a comment-only annotation line.
     if pack_size == 0 {
         if annotations {
+            let out = &mut sink.out;
             push_indent(out);
             let mut aw = AnnWriter::new_no_leading_spaces();
             aw.push_field_decl(out, field_number, Some(foe), None, None);
@@ -330,14 +332,15 @@ pub(super) fn render_packed(
                 aw.push_u64_mod(out, b"len_ohb: ", v);
             }
         }
-        out.push(b'\n');
-        CBL_START.with(|c| c.set(out.len()));
+        sink.newline();
+        CBL_START.with(|c| c.set(sink.out.len()));
         return;
     }
 
     // ── Per-element lines ──────────────────────────────────────────────────────
     for (i, elem) in elems.iter().enumerate() {
         let is_first = i == 0;
+        let out = &mut sink.out;
         wfl_prefix_n(field_number, Some(foe), false, out);
         out.extend_from_slice(elem.value_str.as_bytes());
         if annotations {
@@ -355,7 +358,7 @@ pub(super) fn render_packed(
                 out,
             );
         }
-        out.push(b'\n');
-        CBL_START.with(|c| c.set(out.len()));
+        sink.newline();
+        CBL_START.with(|c| c.set(sink.out.len()));
     }
 }

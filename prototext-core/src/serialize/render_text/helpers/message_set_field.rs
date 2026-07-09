@@ -4,11 +4,12 @@
 
 //! MessageSet expansion for `message_set_wire_format` messages (spec 0100).
 
+use std::ops::Range;
+
 use prost_reflect::{Kind, MessageDescriptor};
 
-use super::super::{enter_level, render_message, FieldOrExt, ANNOTATIONS, ANY_LOADER, CBL_START};
-use super::annotations::{push_tag_modifiers, AnnWriter};
-use super::output::{push_indent, wob_prefix_n, write_close_brace, write_dec_u64};
+use super::super::sink::{NestedKind, Sink, TagFacts};
+use super::super::{enter_level, render_message, FieldOrExt, ANY_LOADER};
 
 use crate::helpers::{
     parse_varint, parse_wiretag, WT_END_GROUP, WT_LEN, WT_START_GROUP, WT_VARINT,
@@ -176,31 +177,27 @@ fn skip_field(buf: &[u8], mut pos: usize, wire_type: u32) -> Option<usize> {
 /// - Renders field 1 (group), field 2 (type_id varint), field 3 (message LEN)
 ///   as schemaless child lines.
 /// - Falls back to schemaless LENDEL cascade for unresolved items.
-#[allow(clippy::too_many_arguments)]
-pub(in super::super) fn render_message_set_expansion(
+pub(in super::super) fn render_message_set_expansion<S: Sink>(
     msg_desc: &MessageDescriptor,
     field_number: u64,
     fs: &FieldOrExt,
     schema_present: bool,
-    tag_ohb: Option<u64>,
-    tag_oor: bool,
-    len_ohb: Option<u64>,
+    tag: TagFacts,
+    raw_range: Range<usize>,
     data: &[u8],
-    out: &mut Vec<u8>,
+    sink: &mut S,
 ) {
-    let annotations = ANNOTATIONS.with(|c| c.get());
-
     // ── Outer block opener ────────────────────────────────────────────────────
-    wob_prefix_n(field_number, Some(fs), false, out);
-    if annotations {
-        let mut aw = AnnWriter::new();
-        aw.push_field_decl(out, field_number, Some(fs), None, None);
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, len_ohb);
-    }
-    out.push(b'\n');
-    CBL_START.with(|c| c.set(out.len()));
+    let outer_mark = sink.begin_nested(
+        field_number,
+        Some(fs),
+        tag,
+        NestedKind::Message,
+        raw_range.start,
+        raw_range.end - data.len(),
+    );
 
-    let _outer = enter_level();
+    let _outer = enter_level(sink);
 
     // ── Parse groups ──────────────────────────────────────────────────────────
     let items = match scan_message_set(data) {
@@ -211,14 +208,13 @@ pub(in super::super) fn render_message_set_expansion(
                 1,
                 None,
                 schema_present,
-                None,
-                false,
-                None,
+                TagFacts::default(),
+                raw_range.clone(),
                 data,
-                out,
+                sink,
             );
             drop(_outer);
-            write_close_brace(out);
+            sink.end_nested(outer_mark, raw_range, None);
             return;
         }
     };
@@ -260,60 +256,74 @@ pub(in super::super) fn render_message_set_expansion(
         if let Some(inner_msg_desc) = inner_msg_desc_opt {
             // ── Resolved: render with canonical virtual field names ────────────
             // Item {  #@ group; Item = 1
-            push_indent(out);
-            out.extend_from_slice(b"Item {");
-            if annotations {
-                let mut aw = AnnWriter::new();
-                aw.push_wire(out, "group");
-                // field_decl: "Item = 1" — field number from = 1, wire type from "group"
-                aw.sep(out);
-                out.extend_from_slice(b"Item = 1");
-            }
-            out.push(b'\n');
-            CBL_START.with(|c| c.set(out.len()));
-
+            // `Item` doesn't itself recurse into a new sub-slice — its
+            // children (type_id, message) stay in the same coordinate
+            // frame as the MessageSet's own payload (`data`), hence `0`.
+            let item_mark = sink.begin_virtual_nested(
+                "Item",
+                Some("group; Item = 1"),
+                None,
+                raw_range.start,
+                0,
+            );
             {
-                let _group = enter_level();
+                let _group = enter_level(sink);
 
                 // type_id: <value>  #@ int32 = 2
-                push_indent(out);
-                out.extend_from_slice(b"type_id: ");
-                write_dec_u64(type_id, out);
-                if annotations {
-                    let mut aw = AnnWriter::new();
-                    aw.sep(out);
-                    out.extend_from_slice(b"int32 = 2");
-                }
-                out.push(b'\n');
-                CBL_START.with(|c| c.set(out.len()));
+                sink.virtual_scalar(
+                    "type_id",
+                    Some("int32 = 2"),
+                    &type_id.to_string(),
+                    raw_range.clone(),
+                );
 
                 // message {  #@ InnerTypeName = 3
-                push_indent(out);
-                out.extend_from_slice(b"message {");
-                if annotations {
-                    let mut aw = AnnWriter::new();
-                    aw.sep(out);
-                    out.extend_from_slice(inner_msg_desc.name().as_bytes());
-                    out.extend_from_slice(b" = 3");
-                }
-                out.push(b'\n');
-                CBL_START.with(|c| c.set(out.len()));
-
+                let msg_bytes = item.message.unwrap_or(&[]);
+                // Local offset of `msg_bytes` within `data` (the MessageSet's
+                // own payload, itself already the active coordinate frame
+                // after `outer_mark` was opened above) — both are genuine
+                // sub-slices of the same underlying buffer, so pointer
+                // subtraction gives the exact offset (spec 0110 §3).
+                // `item.message: None` falls back to a dangling empty slice,
+                // which isn't a sub-slice of `data` — guard against that.
+                let msg_payload_start = item
+                    .message
+                    .map(|m| m.as_ptr() as usize - data.as_ptr() as usize)
+                    .unwrap_or(0);
+                let msg_ann = format!("{} = 3", inner_msg_desc.name());
+                let msg_mark = sink.begin_virtual_nested(
+                    "message",
+                    Some(&msg_ann),
+                    Some(inner_msg_desc.full_name()),
+                    raw_range.start,
+                    msg_payload_start,
+                );
                 {
-                    let _msg = enter_level();
-                    let msg_bytes = item.message.unwrap_or(&[]);
+                    let _msg = enter_level(sink);
                     render_message(
                         msg_bytes,
                         0,
                         None,
                         Some(&inner_msg_desc),
                         schema_present,
-                        out,
+                        sink,
                     );
                 }
-                write_close_brace(out); // closes message
+                // Same coordinate frame as `msg_mark` was opened in (the
+                // MessageSet's own payload `data`): use the exact `msg_bytes`
+                // sub-slice bounds, not the outer field's `raw_range`
+                // (spec 0110 §3).
+                sink.end_nested(
+                    msg_mark,
+                    msg_payload_start..msg_payload_start + msg_bytes.len(),
+                    None,
+                ); // closes message
             }
-            write_close_brace(out); // closes Item group
+            // `Item`'s own frame is `data` itself (payload_start was `0`
+            // above), and `scan_message_set` doesn't track each item's own
+            // precise group byte-range — use the full extent of `data` as a
+            // coarse but correctly in-bounds/nested range (spec 0110 §3).
+            sink.end_nested(item_mark, 0..data.len(), None); // closes Item group
         } else {
             // ── Unresolved: schemaless LENDEL cascade for the group payload ───
             // Render the group's `message` bytes (field 3 payload) as a
@@ -323,15 +333,14 @@ pub(in super::super) fn render_message_set_expansion(
                 1,
                 None,
                 schema_present,
-                None,
-                false,
-                None,
+                TagFacts::default(),
+                raw_range.clone(),
                 msg_bytes,
-                out,
+                sink,
             );
         }
     }
 
     drop(_outer);
-    write_close_brace(out);
+    sink.end_nested(outer_mark, raw_range, None);
 }
