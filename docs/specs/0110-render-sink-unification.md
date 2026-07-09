@@ -828,7 +828,7 @@ touched (§ Files changed) and the module retirement involved (§5).
 7. **Zero-cost benchmark checkpoint** (Open Issue #3) — run once steps 1–6 are
    otherwise complete; does not gate any individual step, but must pass before
    this spec's `Status` moves to `implemented`.
-8. **`clippy::too_many_arguments` cleanup** — deferred until after steps 5/6
+8. ~~**`clippy::too_many_arguments` cleanup** — deferred until after steps 5/6
    land (so the bundling struct shape only needs designing once, accounting
    for whatever `IndexingTextSink` needs too), then done in one pass across
    all flagged functions together: `render_group_field`, `render_len_field`,
@@ -837,7 +837,22 @@ touched (§ Files changed) and the module retirement involved (§5).
    mirroring the existing `ScalarCtx` pattern), and `decode_and_render`
    (accept an options struct instead of loose scalar parameters — mirroring
    `RenderOpts`, `lib.rs`). Must pass before this spec's `Status` moves to
-   `implemented`.
+   `implemented`.~~ **Done.**
+   **Gate**: `cargo clippy --release --all-targets` shows zero warnings; full
+   workspace suite zero-diff; `reuse lint` clean. — met: added
+   `FieldCtx<'a>` (`field_number`/`field_schema`/`tag`, `len_field.rs`) used
+   by `render_len_field`, `render_group_field`, `render_any_expansion`, and
+   `render_message_set_expansion` — `raw_range`/`raw_start` deliberately
+   stayed a separate per-call parameter rather than joining the struct,
+   since `render_group_field` only has `raw_start: usize` at entry (its end
+   isn't known until parsing completes), making a uniform `Range<usize>`
+   field awkward across all 4 call sites. Added `DecodeRenderOpts`
+   (`annotations`/`indent_size`/`expand_any`/`hide_unknown_fields`/
+   `expand_message_set`/`initial_level`/`emit_header`, with a `Default` impl
+   mirroring `RenderOpts`) used by `decode_and_render` and
+   `decode_and_render_indexed`, reducing both from 9 params to 3. All call
+   sites updated (`lib.rs`, `prototext-pyo3/src/lib.rs`,
+   `prototext/tests/node_span.rs`, `render_text/mod.rs`'s own tests).
 
 ---
 

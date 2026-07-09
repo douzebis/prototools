@@ -9,7 +9,8 @@ use std::ops::Range;
 use prost_reflect::{Kind, MessageDescriptor};
 
 use super::super::sink::{NestedKind, Sink, TagFacts};
-use super::super::{enter_level, render_message, FieldOrExt, ANY_LOADER};
+use super::super::{enter_level, render_message, ANY_LOADER};
+use super::len_field::FieldCtx;
 
 use crate::helpers::{
     parse_varint, parse_wiretag, WT_END_GROUP, WT_LEN, WT_START_GROUP, WT_VARINT,
@@ -179,18 +180,21 @@ fn skip_field(buf: &[u8], mut pos: usize, wire_type: u32) -> Option<usize> {
 /// - Falls back to schemaless LENDEL cascade for unresolved items.
 pub(in super::super) fn render_message_set_expansion<S: Sink>(
     msg_desc: &MessageDescriptor,
-    field_number: u64,
-    fs: &FieldOrExt,
+    ctx: FieldCtx<'_>,
     schema_present: bool,
-    tag: TagFacts,
     raw_range: Range<usize>,
     data: &[u8],
     sink: &mut S,
 ) {
+    let FieldCtx {
+        field_number,
+        field_schema,
+        tag,
+    } = ctx;
     // ── Outer block opener ────────────────────────────────────────────────────
     let outer_mark = sink.begin_nested(
         field_number,
-        Some(fs),
+        field_schema,
         tag,
         NestedKind::Message,
         raw_range.start,
@@ -205,10 +209,12 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
         None => {
             // Malformed: render raw via schemaless LENDEL cascade.
             super::len_field::render_len_field(
-                1,
-                None,
+                FieldCtx {
+                    field_number: 1,
+                    field_schema: None,
+                    tag: TagFacts::default(),
+                },
                 schema_present,
-                TagFacts::default(),
                 raw_range.clone(),
                 data,
                 sink,
@@ -330,10 +336,12 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
             // schemaless LEN field at number 1.
             let msg_bytes = item.message.unwrap_or(&[]);
             super::len_field::render_len_field(
-                1,
-                None,
+                FieldCtx {
+                    field_number: 1,
+                    field_schema: None,
+                    tag: TagFacts::default(),
+                },
                 schema_present,
-                TagFacts::default(),
                 raw_range.clone(),
                 msg_bytes,
                 sink,

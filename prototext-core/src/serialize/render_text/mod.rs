@@ -18,7 +18,7 @@ use crate::helpers::{
     WT_START_GROUP, WT_VARINT,
 };
 
-use helpers::{render_group_field, render_len_field};
+use helpers::{render_group_field, render_len_field, FieldCtx};
 use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSink};
 
 pub use sink::NodeSpan;
@@ -191,30 +191,69 @@ pub fn is_prototext_text(data: &[u8]) -> bool {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Options for `decode_and_render`/`decode_and_render_indexed` (spec 0110
+/// §8). Mirrors `RenderOpts` (`lib.rs`) plus two render-internal knobs
+/// (`initial_level`, `emit_header`) not exposed by the public `RenderOpts`
+/// API.
+pub struct DecodeRenderOpts {
+    /// Emit inline `#@ ...` annotations (wire type, field decl, modifiers).
+    pub annotations: bool,
+    /// Indentation step in spaces.
+    pub indent_size: usize,
+    /// Expand `google.protobuf.Any` fields inline (spec 0089).
+    pub expand_any: bool,
+    /// Suppress fields absent from the schema (spec 0103).
+    pub hide_unknown_fields: bool,
+    /// Expand MessageSet groups inline (spec 0103).
+    pub expand_message_set: bool,
+    /// Starting indentation depth, for sub-renders spliced into an existing
+    /// document at a non-zero nesting level.
+    pub initial_level: usize,
+    /// Emit the `#@ prototext: protoc\n` header. `false` for sub-renders
+    /// destined to be spliced into an existing document's text, which must
+    /// not repeat the header.
+    pub emit_header: bool,
+}
+
+impl Default for DecodeRenderOpts {
+    fn default() -> Self {
+        DecodeRenderOpts {
+            annotations: false,
+            indent_size: 1,
+            expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
+            initial_level: 0,
+            emit_header: false,
+        }
+    }
+}
+
 /// Decode raw protobuf binary and render as protoc-style text in one pass.
 ///
-/// Writes field lines into a pre-allocated `Vec<u8>`.  When `annotations` is
-/// true, a `#@ prototext: protoc\n` header is prepended; without annotations
-/// the header is omitted (encode is not possible without field annotations
-/// regardless).
+/// Writes field lines into a pre-allocated `Vec<u8>`.  When `opts.annotations`
+/// is true, a `#@ prototext: protoc\n` header is prepended; without
+/// annotations the header is omitted (encode is not possible without field
+/// annotations regardless).
 ///
 /// `root_desc` is the already-resolved root message descriptor, if any (the
 /// caller is responsible for resolving it from whatever pool it has — see
 /// spec 0106 S4). `None` means no schema is active (`--raw`/no-descriptor
 /// mode).
-///
-/// Parameters mirror `format_as_text` in `lib.rs`.
 pub fn decode_and_render(
     buf: &[u8],
     root_desc: Option<&MessageDescriptor>,
-    annotations: bool,
-    indent_size: usize,
-    expand_any: bool,
-    hide_unknown_fields: bool,
-    expand_message_set: bool,
-    initial_level: usize,
-    emit_header: bool,
+    opts: DecodeRenderOpts,
 ) -> Vec<u8> {
+    let DecodeRenderOpts {
+        annotations,
+        indent_size,
+        expand_any,
+        hide_unknown_fields,
+        expand_message_set,
+        initial_level,
+        emit_header,
+    } = opts;
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
 
@@ -276,14 +315,17 @@ pub fn decode_and_render(
 pub fn decode_and_render_indexed(
     buf: &[u8],
     root_desc: Option<&MessageDescriptor>,
-    annotations: bool,
-    indent_size: usize,
-    expand_any: bool,
-    hide_unknown_fields: bool,
-    expand_message_set: bool,
-    initial_level: usize,
-    emit_header: bool,
+    opts: DecodeRenderOpts,
 ) -> (Vec<u8>, Vec<NodeSpan>) {
+    let DecodeRenderOpts {
+        annotations,
+        indent_size,
+        expand_any,
+        hide_unknown_fields,
+        expand_message_set,
+        initial_level,
+        emit_header,
+    } = opts;
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity);
 
@@ -480,14 +522,16 @@ fn render_message<S: Sink>(
                 pos += length;
 
                 render_len_field(
-                    field_number,
-                    field_schema.as_ref(),
-                    schema_present,
-                    TagFacts {
-                        tag_ohb,
-                        tag_oor,
-                        len_ohb,
+                    FieldCtx {
+                        field_number,
+                        field_schema: field_schema.as_ref(),
+                        tag: TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb,
+                        },
                     },
+                    schema_present,
                     field_start..pos,
                     data,
                     sink,
@@ -499,14 +543,16 @@ fn render_message<S: Sink>(
                 render_group_field(
                     buf,
                     &mut pos,
-                    field_number,
-                    field_schema.as_ref(),
-                    schema_present,
-                    TagFacts {
-                        tag_ohb,
-                        tag_oor,
-                        len_ohb: None,
+                    FieldCtx {
+                        field_number,
+                        field_schema: field_schema.as_ref(),
+                        tag: TagFacts {
+                            tag_ohb,
+                            tag_oor,
+                            len_ohb: None,
+                        },
                     },
+                    schema_present,
                     field_start,
                     sink,
                 );
@@ -583,7 +629,15 @@ mod tests {
 
     #[test]
     fn initial_level_indents_output() {
-        let out = decode_and_render(&VARINT_FIELD, None, false, 2, false, false, false, 3, false);
+        let out = decode_and_render(
+            &VARINT_FIELD,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                initial_level: 3,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         let first_line = text.lines().next().unwrap();
         let indent = first_line.len() - first_line.trim_start().len();
@@ -592,7 +646,14 @@ mod tests {
 
     #[test]
     fn initial_level_zero_matches_default() {
-        let out = decode_and_render(&VARINT_FIELD, None, false, 2, false, false, false, 0, false);
+        let out = decode_and_render(
+            &VARINT_FIELD,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         let first_line = text.lines().next().unwrap();
         assert_eq!(first_line, "1: 42");
@@ -600,14 +661,31 @@ mod tests {
 
     #[test]
     fn emit_header_true_writes_header() {
-        let out = decode_and_render(&VARINT_FIELD, None, true, 2, false, false, false, 0, true);
+        let out = decode_and_render(
+            &VARINT_FIELD,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                emit_header: true,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("#@ prototext: protoc\n"));
     }
 
     #[test]
     fn emit_header_false_suppresses_header() {
-        let out = decode_and_render(&VARINT_FIELD, None, true, 2, false, false, false, 0, false);
+        let out = decode_and_render(
+            &VARINT_FIELD,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         assert!(!text.starts_with("#@ prototext: protoc\n"));
     }
@@ -619,7 +697,14 @@ mod tests {
         // field 1 (unknown, LEN) whose payload is itself a well-formed
         // message: field 1 (varint) = 42.
         let buf = [0x0A, 0x02, 0x08, 0x2A];
-        let out = decode_and_render(&buf, None, false, 2, false, false, false, 0, false);
+        let out = decode_and_render(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text, "1 {\n  1: 42\n}\n");
     }
@@ -636,7 +721,14 @@ mod tests {
         let payload = [0x2B, 0x08, 0x80];
         let mut buf = vec![0x0A, payload.len() as u8];
         buf.extend_from_slice(&payload);
-        let out = decode_and_render(&buf, None, false, 2, false, false, false, 0, false);
+        let out = decode_and_render(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
         let text = String::from_utf8(out).unwrap();
         // Fallback rendering (invalid-UTF-8 payload -> escaped bytes leaf),
         // not a nested `1 { ... }` block.

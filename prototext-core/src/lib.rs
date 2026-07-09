@@ -106,13 +106,15 @@ pub fn render_as_text(
     Ok(serialize::render_text::decode_and_render(
         wire,
         root_desc,
-        opts.include_annotations,
-        opts.indent,
-        opts.expand_any,
-        opts.hide_unknown_fields,
-        opts.expand_message_set,
-        0,
-        opts.include_annotations,
+        serialize::render_text::DecodeRenderOpts {
+            annotations: opts.include_annotations,
+            indent_size: opts.indent,
+            expand_any: opts.expand_any,
+            hide_unknown_fields: opts.hide_unknown_fields,
+            expand_message_set: opts.expand_message_set,
+            initial_level: 0,
+            emit_header: opts.include_annotations,
+        },
     ))
 }
 

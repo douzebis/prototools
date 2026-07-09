@@ -14,16 +14,29 @@ use super::super::{
 use super::any_field::render_any_expansion;
 use super::message_set_field::{is_message_set, render_message_set_expansion};
 
+/// Per-field identity shared by `render_len_field`, `render_group_field`,
+/// `render_any_expansion`, and `render_message_set_expansion` — bundled to
+/// avoid `clippy::too_many_arguments`, mirroring the `ScalarCtx` pattern
+/// (`scalar.rs`, spec 0110 §8).
+pub(in super::super) struct FieldCtx<'a> {
+    pub(in super::super) field_number: u64,
+    pub(in super::super) field_schema: Option<&'a FieldOrExt>,
+    pub(in super::super) tag: TagFacts,
+}
+
 /// Render a length-delimited field (string, bytes, message, packed, wire-bytes).
 pub(in super::super) fn render_len_field<S: Sink>(
-    field_number: u64,
-    field_schema: Option<&FieldOrExt>,
+    ctx: FieldCtx<'_>,
     schema_present: bool,
-    tag: TagFacts,
     raw_range: Range<usize>,
     data: &[u8],
     sink: &mut S,
 ) {
+    let FieldCtx {
+        field_number,
+        field_schema,
+        tag,
+    } = ctx;
     if sink.treat_len_as_opaque() {
         sink.scalar_field(
             field_number,
@@ -159,10 +172,12 @@ pub(in super::super) fn render_len_field<S: Sink>(
             if EXPAND_ANY.with(|c| c.get())
                 && nested_msg_desc.full_name() == "google.protobuf.Any"
                 && render_any_expansion(
-                    field_number,
-                    fs,
+                    FieldCtx {
+                        field_number,
+                        field_schema: Some(fs),
+                        tag,
+                    },
                     schema_present,
-                    tag,
                     raw_range.clone(),
                     data,
                     sink,
@@ -176,10 +191,12 @@ pub(in super::super) fn render_len_field<S: Sink>(
             if EXPAND_MESSAGE_SET.with(|c| c.get()) && is_message_set(&nested_msg_desc) {
                 render_message_set_expansion(
                     &nested_msg_desc,
-                    field_number,
-                    fs,
+                    FieldCtx {
+                        field_number,
+                        field_schema: Some(fs),
+                        tag,
+                    },
                     schema_present,
-                    tag,
                     raw_range,
                     data,
                     sink,
@@ -223,13 +240,16 @@ pub(in super::super) fn render_len_field<S: Sink>(
 pub(in super::super) fn render_group_field<S: Sink>(
     buf: &[u8],
     pos: &mut usize,
-    field_number: u64,
-    field_schema: Option<&FieldOrExt>,
+    ctx: FieldCtx<'_>,
     schema_present: bool,
-    tag: TagFacts,
     raw_start: usize,
     sink: &mut S,
 ) {
+    let FieldCtx {
+        field_number,
+        field_schema,
+        tag,
+    } = ctx;
     // Determine nested schema.  `msg_desc` from `fs.kind()` is already live
     // and correct — no lookup needed (spec 0106 S1).  Mismatch/unknown-field
     // annotation details (field_decl, TYPE_MISMATCH, tag/close-tag modifiers)

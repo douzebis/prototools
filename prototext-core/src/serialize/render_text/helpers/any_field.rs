@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 use prost_reflect::MessageDescriptor;
 
-use super::super::sink::{NestedKind, Sink, TagFacts};
-use super::super::{enter_level, render_message, FieldOrExt, ANY_LOADER, EXPAND_ANY};
+use super::super::sink::{NestedKind, Sink};
+use super::super::{enter_level, render_message, ANY_LOADER, EXPAND_ANY};
+use super::len_field::FieldCtx;
 
 use crate::helpers::{
     parse_varint, parse_wiretag, WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
@@ -184,14 +185,17 @@ fn skip_group(buf: &[u8], mut pos: usize, expected_field: u64) -> Option<usize> 
 /// Returns `false` when expansion is not possible (caller falls through to
 /// normal rendering).
 pub(in super::super) fn render_any_expansion<S: Sink>(
-    field_number: u64,
-    fs: &FieldOrExt,
+    ctx: FieldCtx<'_>,
     schema_present: bool,
-    tag: TagFacts,
     raw_range: Range<usize>,
     data: &[u8],
     sink: &mut S,
 ) -> bool {
+    let FieldCtx {
+        field_number,
+        field_schema,
+        tag,
+    } = ctx;
     if !EXPAND_ANY.with(|c| c.get()) {
         return false;
     }
@@ -221,7 +225,7 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
     // ── Outer Any field opener ────────────────────────────────────────────────
     let outer_mark = sink.begin_nested(
         field_number,
-        Some(fs),
+        field_schema,
         tag,
         NestedKind::Message,
         raw_range.start,

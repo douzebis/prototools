@@ -11,7 +11,9 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use prototext_core::serialize::render_text::{decode_and_render_indexed, NodeSpan};
+use prototext_core::serialize::render_text::{
+    decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
+};
 use prototext_core::{clear_any_loader, parse_schema, schema_from_pool, set_any_loader};
 
 // ── Fixture helpers (duplicated per prototext/tests/*.rs convention — no
@@ -248,13 +250,11 @@ fn nesting_invariant_text_and_raw_ranges_are_contained() {
     let (text, spans) = decode_and_render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
-        true,
-        1,
-        true,
-        false,
-        true,
-        0,
-        true,
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
     );
     let _ = String::from_utf8(text).expect("valid UTF-8 output");
 
@@ -350,13 +350,11 @@ fn line_number_survival_across_group_splice() {
     let (text, spans) = decode_and_render_indexed(
         wire,
         schema.root_descriptor().as_ref(),
-        true,
-        1,
-        true,
-        false,
-        true,
-        0,
-        true,
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
     );
     let text = String::from_utf8(text).expect("valid UTF-8 output");
 
@@ -401,13 +399,11 @@ fn any_expansion_value_wrapper_gets_resolved_type() {
         decode_and_render_indexed(
             &wire,
             schema.root_descriptor().as_ref(),
-            true,
-            1,
-            true,
-            false,
-            true,
-            0,
-            true,
+            DecodeRenderOpts {
+                annotations: true,
+                emit_header: true,
+                ..Default::default()
+            },
         )
     });
     let _ = String::from_utf8(text).expect("valid UTF-8 output");
@@ -449,13 +445,11 @@ fn message_set_expansion_wrapper_nodes_get_resolved_type() {
     let (text, spans) = decode_and_render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
-        true,
-        1,
-        true,
-        false,
-        true,
-        0,
-        true,
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
     );
     let _ = String::from_utf8(text).expect("valid UTF-8 output");
 
@@ -513,13 +507,11 @@ fn scalar_leaf_nodes_have_no_type_fqdn() {
     let (_text, spans) = decode_and_render_indexed(
         CONTAINER_WIRE,
         schema.root_descriptor().as_ref(),
-        true,
-        1,
-        true,
-        false,
-        true,
-        0,
-        true,
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
     );
 
     // `name` (top-level scalar) and every scalar 3 levels deep (label,
@@ -554,13 +546,11 @@ fn raw_range_fidelity_reslices_and_redecodes() {
         decode_and_render_indexed(
             &wire,
             schema.root_descriptor().as_ref(),
-            true,
-            1,
-            true,
-            false,
-            true,
-            0,
-            true,
+            DecodeRenderOpts {
+                annotations: true,
+                emit_header: true,
+                ..Default::default()
+            },
         )
     });
 

@@ -18,7 +18,7 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction};
 use schema::{parse_schema, ParsedSchema};
 use serialize::encode_text::encode_text_to_binary;
 use serialize::render_text::{
-    clear_any_loader, decode_and_render, is_prototext_text, set_any_loader,
+    clear_any_loader, decode_and_render, is_prototext_text, set_any_loader, DecodeRenderOpts,
 };
 
 // ── SchemaHandle ──────────────────────────────────────────────────────────────
@@ -139,13 +139,12 @@ impl SchemaHandle {
         let out = decode_and_render(
             data,
             root_desc.as_ref(),
-            include_annotations,
-            indent,
-            true,
-            false,
-            true,
-            0,
-            include_annotations,
+            DecodeRenderOpts {
+                annotations: include_annotations,
+                indent_size: indent,
+                emit_header: include_annotations,
+                ..Default::default()
+            },
         );
         clear_any_loader();
         out
@@ -253,13 +252,12 @@ fn format_as_text<'py>(
     let rendered = decode_and_render(
         raw,
         root_desc.as_ref(),
-        include_annotations,
-        indent_size,
-        true,
-        false,
-        true,
-        0,
-        include_annotations,
+        DecodeRenderOpts {
+            annotations: include_annotations,
+            indent_size,
+            emit_header: include_annotations,
+            ..Default::default()
+        },
     );
     if schema.is_some() {
         clear_any_loader();
