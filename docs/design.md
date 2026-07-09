@@ -21,11 +21,6 @@ prototext-core/          — core library (no CLI dependency)
   src/
     lib.rs               — public API: render_as_text, render_as_bytes, parse_schema
     schema.rs            — ParsedSchema: prost-reflect wrapper
-    decoder/
-      mod.rs             — ingest_pb: entry point; parse_message: recursive parser
-      types.rs           — ProtoTextMessage, ProtoTextField, ProtoTextContent
-      codec.rs           — typed varint decoding; annotation formatting
-      packed.rs          — packed repeated field decoding
     serialize/
       common/            — value formatting, escaping, numeric codecs
       render_text/       — binary → annotated text (single-pass)
@@ -49,88 +44,6 @@ prototext/               — CLI binary and test infrastructure
     roundtrip.rs         — unit roundtrip tests
     protocraft.rs        — harness=false binary: emit fixture bytes to stdout
 ```
-
----
-
-## Intermediate representation
-
-All binary decode paths produce a `ProtoTextMessage` — a tree of `ProtoTextField`
-nodes that capture every bit of wire-level information needed for exact
-re-encoding.
-
-```
-ProtoTextMessage
-  fields: Vec<ProtoTextField>
-
-ProtoTextField
-  field_number:            Option<u64>
-  content:                 ProtoTextContent      ← the value
-  annotations:             Vec<String>           ← schema hints
-  tag_overhang_count:      Option<u64>           ← non-canonical tag varint
-  tag_is_out_of_range:     bool
-  value_overhang_count:    Option<u64>           ← non-canonical value varint
-  length_overhang_count:   Option<u64>           ← non-canonical length varint
-  missing_bytes_count:     Option<u64>           ← truncated payload
-  mismatched_group_end:    Option<u64>           ← END_GROUP field ≠ START_GROUP
-  open_ended_group:        bool                  ← no matching END_GROUP
-  end_tag_overhang_count:  Option<u64>
-  end_tag_is_out_of_range: bool
-  proto2_has_type_mismatch: bool
-  records_overhung_count:  Vec<u64>              ← per-element packed overhangs
-```
-
-`ProtoTextContent` is a 50-variant enum covering:
-
-- **Wire-level** (untyped): `WireVarint`, `WireFixed64`, `WireBytes`,
-  `WireGroup`, `WireFixed32`
-- **Invalid encodings**: `InvalidTagType`, `InvalidVarint`, `TruncatedBytes`,
-  `InvalidPackedRecords`, …
-- **Proto2-typed**: `Int32`, `Int64`, `Uint64`, `Double`, `Float`, `Bool`,
-  `StringVal`, `BytesVal`, `Enum`, `MessageVal`, `Group`, `Sint32`, `Sint64`,
-  `Sfixed32`, `Sfixed64`, `PFixed32`, `PFixed64`
-- **Packed repeated**: `Int32s`, `Int64s`, `Doubles`, `Floats`, `Bools`, …
-
-The wire-level variants are used when no schema is present or when the wire type
-disagrees with the schema.  The proto2-typed variants are used when the schema
-provides a confirmed type.  Both carry the same anomaly metadata.
-
----
-
-## Decode path: binary → IR
-
-**Entry**: `decoder::ingest_pb(bytes, schema, annotations) → ProtoTextMessage`
-
-`parse_message` is a recursive descent loop:
-
-1. **`parse_wiretag`** — decode the tag varint; extract field number and wire
-   type; detect overhanging bytes and out-of-range field numbers.
-2. **Wire-type dispatch**:
-   - `WT_VARINT (0)` — `parse_varint` → `decode_varint_by_kind`; range-checks
-     for `int32` / `bool` / `uint32` / `enum`; sets `proto2_has_type_mismatch`
-     if the value is out of the declared range.
-   - `WT_FIXED64 (1)` — consume 8 bytes; decode as `double` / `fixed64` /
-     `sfixed64` per schema.
-   - `WT_LEN (2)` — `parse_varint` (length); then:
-     - Packed repeated → `decode_packed_varints` or `decode_fixed_vec`
-     - UTF-8 string → `StringVal` (or `InvalidString` on failure)
-     - Bytes → `BytesVal`
-     - Nested message → recursive `parse_message`
-     - Type mismatch → `WireBytes`
-   - `WT_START_GROUP (3)` — recursive `parse_message(my_group=Some(fnum))`;
-     exits on matching `WT_END_GROUP`.
-   - `WT_END_GROUP (4)` — return to parent.
-   - `WT_FIXED32 (5)` — consume 4 bytes; decode as `float` / `fixed32` /
-     `sfixed32`.
-
-**Anomaly capture**:
-- Overhanging varints: `parse_varint` counts trailing `0x80` bytes before the
-  `0x00` terminator; stored as `*_overhang_count`.
-- Truncation: `length > remaining` → `TruncatedBytes` + `missing_bytes_count`.
-- Open groups: EOF inside a group → `open_ended_group = true`.
-- Mismatched groups: END_GROUP field ≠ START_GROUP field →
-  `mismatched_group_end = Some(actual_end_fnum)`.
-- Invalid packed arrays: payload size not a multiple of element size →
-  `InvalidPackedRecords`.
 
 ---
 
@@ -374,12 +287,13 @@ cargo test --test protocraft -- hidden | protoc --decode=SchemaHidden fixtures/s
 
 ### Why single-pass render?
 
-`decode_and_render` writes text directly while parsing binary — it does not
-build a `ProtoTextMessage` tree.  This halves the number of heap allocations
-for the text output path and avoids a second traversal.  The IR is still
-built by `ingest_pb` for the binary round-trip path (`render_as_bytes`), where
-it is required: the binary encoder needs the full child size before writing the
-parent length prefix.
+`decode_and_render` writes text directly while parsing binary through a `Sink`
+trait — it never materialises an intermediate tree. This halves the number of
+heap allocations for the text output path and avoids a second traversal.
+`render_as_bytes` does not decode binary at all: it either passes raw binary
+input through unchanged, or (when the input already carries the `#@
+prototext:` text header) runs it through `encode_text::encode_text_to_binary`,
+whose placeholder strategy is described below.
 
 ### Why the placeholder strategy for encode?
 

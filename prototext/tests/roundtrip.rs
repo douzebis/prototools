@@ -2556,16 +2556,15 @@ fn selftest_roundtrip() {
 
 // ── §bug: LEN wire type on a varint-declared field ────────────────────────────
 
-/// Regression test for the missing `proto2_has_type_mismatch` flag in
-/// `decode_len_field`'s wire-type-mismatch fallback path.
+/// Regression test for the `TYPE_MISMATCH` annotation on the wire-type-
+/// mismatch fallback path in `render_len_field`.
 ///
 /// `SwissArmyKnife.int32Op` (field 25) is declared as `int32` (wire type 0,
 /// varint).  When the wire message carries field 25 with wire type 2
-/// (length-delimited), the decoder reaches the fallback branch in
-/// `decode_len_field` and emits `WireBytes`.  That branch must also set
-/// `proto2_has_type_mismatch = true` — without it the type conflict is
-/// silently lost and the field is indistinguishable from an unknown field.
-///
+/// (length-delimited), the renderer reaches the fallback branch that emits
+/// the raw bytes as a `bytes` wire value.  That branch must also emit the
+/// `TYPE_MISMATCH` annotation — without it the type conflict is silently
+/// lost and the field is indistinguishable from an unknown field.
 #[test]
 fn len_wire_type_on_varint_field_sets_type_mismatch_flag() {
     // Tag: field 25, wire type LEN (2) → (25 << 3) | 2 = 202 → 0xCA 0x01
@@ -2573,26 +2572,27 @@ fn len_wire_type_on_varint_field_sets_type_mismatch_flag() {
     // Payload: arbitrary bytes 0x01 0x02 0x03
     let wire: Vec<u8> = vec![0xCA, 0x01, 0x03, 0x01, 0x02, 0x03];
     let schema = knife_schema();
-    let msg = prototext_core::decoder::ingest_pb(&wire, &schema, false);
+    let text = render_as_text(
+        &wire,
+        schema.root_descriptor().as_ref(),
+        RenderOpts {
+            assume_binary: true,
+            include_annotations: true,
+            indent: 1,
+            expand_any: true,
+            hide_unknown_fields: false,
+            expand_message_set: true,
+        },
+    )
+    .unwrap();
+    let text_str = String::from_utf8(text).unwrap();
 
-    assert_eq!(msg.fields.len(), 1, "expected exactly one field");
-    let field = &msg.fields[0];
-
-    assert_eq!(
-        field.field_number,
-        Some(25),
-        "field number must be 25 (int32Op)"
+    assert!(
+        text_str.contains("25:"),
+        "expected field number 25 in: {text_str}"
     );
     assert!(
-        matches!(
-            field.content,
-            prototext_core::decoder::ProtoTextContent::WireBytes(_)
-        ),
-        "content must be WireBytes (LEN fallback), got: {:?}",
-        field.content
-    );
-    assert!(
-        field.proto2_has_type_mismatch,
-        "proto2_has_type_mismatch must be true for LEN wire type on int32 field"
+        text_str.contains("TYPE_MISMATCH"),
+        "expected TYPE_MISMATCH annotation for LEN wire type on int32 field, got: {text_str}"
     );
 }

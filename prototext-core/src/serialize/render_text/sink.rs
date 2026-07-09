@@ -830,11 +830,10 @@ impl Sink for TextSink {
 // ── `ProbeSink`: lean structural-validity probe ─────────────────────────────
 
 /// Read-only structural probe: walks a wire record via `render_message`,
-/// counting malformities, without producing any output. Used in place of
-/// the old `crate::decoder::parse_message`-based probe (spec 0097's
-/// unknown-LEN-field cascade Step 1, and its `decoder::packed` mirror) to
-/// check "does this payload parse as a well-formed message?" without paying
-/// for tree construction (spec 0110 §2).
+/// counting malformities, without producing any output. Used to check "does
+/// this payload parse as a well-formed message?" (spec 0097's unknown-LEN-
+/// field cascade Step 1) without paying for tree construction (spec 0110
+/// §2).
 ///
 /// Always assumes its argument is a message being probed for plausibility.
 /// LEN-delimited fields are treated as opaque bytes and never recursed into
@@ -845,8 +844,7 @@ impl Sink for TextSink {
 /// found by parsing through them), and any malformities found inside a
 /// nested group roll up into this same counter automatically, since the
 /// same `&mut ProbeSink` is threaded through every recursion level
-/// (spec 0110 Open Issue #1 — a deliberate behavior change from today's
-/// `decoder::parse_message`, which discards nested group malformity counts).
+/// (spec 0110 Open Issue #1).
 ///
 /// Never mutates any shared render-mode thread-local state (`tracks_level`
 /// returns `false`): it is a read-only helper that may be invoked from the

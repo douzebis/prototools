@@ -5,10 +5,8 @@
 
 pub mod escape;
 pub mod floats;
-pub mod format;
 pub mod scalars;
 
 pub use escape::*;
 pub use floats::*;
-pub use format::*;
 pub use scalars::*;

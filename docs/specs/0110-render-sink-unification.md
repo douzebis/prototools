@@ -808,10 +808,23 @@ touched (§ Files changed) and the module retirement involved (§5).
    **Gate**: the §3 "Tests" list — nesting invariant, line-number survival
    across the group-splice path, Any/MessageSet wrapper-node spans, scalar
    `type_fqdn: None`, `raw_range` fidelity.
-6. **`decoder` module retirement** (Goal 5, §5).
+6. ~~**`decoder` module retirement** (Goal 5, §5).~~ **Done.**
    **Gate**: zero remaining references to
    `decoder::parse_message`/`ingest_pb`/`ProtoTextMessage`/etc. anywhere in
-   the crate; the replaced `roundtrip.rs` test passes; `reuse lint` clean.
+   the crate; the replaced `roundtrip.rs` test passes; `reuse lint` clean. —
+   met: removed `prototext-core/src/decoder/` (`mod.rs`, `codec.rs`,
+   `types.rs`, `packed.rs`) and the now-fully-dead
+   `serialize/common/format.rs` (its only consumer was `decoder`'s IR
+   types); removed `pub mod decoder;` from `lib.rs` and the dead
+   `probe_message` wrapper (only caller was `decoder/packed.rs`, since
+   `len_field.rs` already calls `ProbeSink` directly);
+   `len_wire_type_on_varint_field_sets_type_mismatch_flag` replaced with an
+   equivalent `render_as_text`-based assertion on the `TYPE_MISMATCH`
+   annotation; corrected `docs/design.md` (removed the obsolete
+   Intermediate-representation/Decode-path sections, the stale
+   `render_as_bytes`/`ingest_pb` claim, and the `decoder/` crate-layout
+   entry). Full workspace suite zero-diff; clippy shows only the 4
+   pre-existing (Step 8) `too_many_arguments` warnings; `reuse lint` clean.
 7. **Zero-cost benchmark checkpoint** (Open Issue #3) — run once steps 1–6 are
    otherwise complete; does not gate any individual step, but must pass before
    this spec's `Status` moves to `implemented`.

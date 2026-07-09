@@ -3,7 +3,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-pub mod decoder;
 pub mod helpers;
 pub mod instantiate;
 pub mod schema;

@@ -189,18 +189,6 @@ pub fn is_prototext_text(data: &[u8]) -> bool {
     data.starts_with(PROTOTEXT_MAGIC)
 }
 
-/// Probe `data` as a schemaless message via `ProbeSink` (spec 0110 §2),
-/// without producing any output. Returns `(next_pos, malformity_count)`.
-///
-/// Exposed crate-wide so the (pre-retirement — spec 0110 Step 6)
-/// `decoder` module's own unknown-LEN-field cascade can share this probe
-/// instead of its old `decoder::parse_message`-based one.
-pub(crate) fn probe_message(data: &[u8]) -> (usize, u64) {
-    let mut probe = sink::ProbeSink::default();
-    let (next_pos, _) = render_message(data, 0, None, None, false, &mut probe);
-    (next_pos, probe.malformity_count())
-}
-
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Decode raw protobuf binary and render as protoc-style text in one pass.
