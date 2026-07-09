@@ -36,3 +36,8 @@ workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 prost-types = "0.14"
+criterion   = "0.5"
+
+[[bench]]
+name    = "codec"
+harness = false

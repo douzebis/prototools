@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0110 — `render_message`/`parse_message` unification via a `Sink` abstraction
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-07-09
 **Refs:** `docs/specs/0097-raw-recursive-lendel.md`, `docs/design.md`,
 `docs/PROST-ISSUES.md`, `docs/protoc-decode-compatibility.md`,
 `docs/specs/0111-protolens-v1-decode-navigate-extract.md`
@@ -825,9 +826,28 @@ touched (§ Files changed) and the module retirement involved (§5).
    `render_as_bytes`/`ingest_pb` claim, and the `decoder/` crate-layout
    entry). Full workspace suite zero-diff; clippy shows only the 4
    pre-existing (Step 8) `too_many_arguments` warnings; `reuse lint` clean.
-7. **Zero-cost benchmark checkpoint** (Open Issue #3) — run once steps 1–6 are
+7. ~~**Zero-cost benchmark checkpoint** (Open Issue #3) — run once steps 1–6 are
    otherwise complete; does not gate any individual step, but must pass before
-   this spec's `Status` moves to `implemented`.
+   this spec's `Status` moves to `implemented`.~~ **Done.**
+   **Gate**: no wall-clock or structural regression evidence. — met: no
+   Criterion bench harness existed anywhere in this repo (the one that
+   produced `docs/performance.md`'s numbers lived only in a sibling private
+   repo); ported it to `prototext-core/benches/codec.rs` with a new committed
+   fixture (`prototext-core/fixtures/descriptor.pb` +
+   `descriptor_protoc.txt`). Compared a `b517191` (pre-refactor) worktree
+   against `main` (post-refactor) for a like-for-like, within-repo A2
+   measurement — the pre-refactor value (415–417 µs) fell inside the
+   post-refactor binary's own run-to-run noise band (287–449 µs across 3
+   runs; this sandbox is a noisy single virtualised core, see
+   `docs/performance.md`'s environment note). Structurally, `grep -rn "dyn
+   Sink"` across `prototext-core/src` returns no matches — `Sink` is
+   consumed exclusively via `<S: Sink>` static generics, monomorphized and
+   inlined the same as the pre-refactor direct calls, so there is no vtable
+   indirection for the refactor to have introduced. Full writeup:
+   `docs/performance.md` §"Spec 0110 — Sink-based render refactor (zero-cost
+   checkpoint)". `ProbeSink`-vs-`decoder::parse_message` comparison from
+   Open Issue #3's original plan is moot — `decoder::parse_message` no
+   longer exists (deleted in Step 6).
 8. ~~**`clippy::too_many_arguments` cleanup** — deferred until after steps 5/6
    land (so the bundling struct shape only needs designing once, accounting
    for whatever `IndexingTextSink` needs too), then done in one pass across
@@ -885,7 +905,7 @@ touched (§ Files changed) and the module retirement involved (§5).
    own indentation). Richer per-method payload types (`TagFacts`, `ScalarValue`,
    `NestedKind`, `MalformedKind`) keep this event cut manageable without a
    combinatorial explosion of methods — see §1 for the full shape.
-3. **Zero-cost verification**: this spec's premise (monomorphization + inlining
+3. ~~**Zero-cost verification**: this spec's premise (monomorphization + inlining
    makes the `Sink` abstraction's genericity free) needs confirming, not just
    assuming from the generic Rust idiom — with priority weighted by which
    `Sink` sits on a hot path. `TextSink` is the actual hot path (`prototext
@@ -900,7 +920,14 @@ touched (§ Files changed) and the module retirement involved (§5).
    `len_field.rs:51` call site and compare against today's `decoder::parse_message`
    cost there; fall back to an `objdump` spot-check (per `docs/bench-process.md`)
    for stray `call` instructions into `TextSink`-only code (e.g. the
-   splice-based backtracking path) if either number regresses unexpectedly.
+   splice-based backtracking path) if either number regresses unexpectedly.~~
+   **Resolved** (Step 7): no wall-clock regression evidence (pre-refactor A2
+   falls inside the post-refactor binary's own measurement noise) and no
+   structural regression evidence (`Sink` has zero `dyn` call sites — see
+   Step 7's gate note and `docs/performance.md`). The `ProbeSink`-vs-
+   `decoder::parse_message` comparison in the original plan is moot:
+   `decoder::parse_message` was deleted in Step 6, so there is no longer a
+   pre-refactor baseline to compare `ProbeSink` against.
 4. ~~**`decode_and_render`'s new parameters**~~ — **Resolved**: additive
    signature change (§4), not a parallel entry point. Existing callers
    (`prototext` CLI, `prototext-pyo3`) pass `initial_level: 0, emit_header:

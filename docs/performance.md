@@ -195,6 +195,60 @@ escape scanning).
 
 ---
 
+### Spec 0110 — Sink-based render refactor (zero-cost checkpoint)
+
+Spec 0110 replaced `decode_and_render`'s hand-written recursive renderer with a
+`Sink` trait (`TextSink`, `ProbeSink`, `IndexingTextSink`) so that indexing and
+plain rendering share one code path. Open Issue #3 asked whether this
+introduced measurable overhead.
+
+**Fixture change**: the Criterion bench harness that produced every number
+above was never committed to this repo (it lived in a sibling, private repo).
+It has now been ported to `prototext-core/benches/codec.rs`, with a new
+committed fixture (`prototext-core/fixtures/descriptor.pb` — an 18.75 KB
+self-describing `google.protobuf.FileDescriptorSet`, `--include_imports`,
+2,946+ fields) replacing the sibling repo's internal-only fixture. Absolute
+numbers below are **not directly comparable** to the P1–P15 history above
+(different fixture, different machine).
+
+**Methodology**: since Steps 1–6 were already merged to `main` when the bench
+was ported, there is no in-repo "before" state to diff against. A git
+worktree was checked out at `b517191` (the commit immediately preceding the
+Sink refactor) and the identical bench + fixture were run there for a
+like-for-like, within-repo comparison.
+
+**Environment note**: this sandbox is a single virtualised core (see the
+top-of-file environment note) and proved far noisier than the original P1–P15
+measurements — repeated runs of the *unchanged* post-refactor binary varied by
+30–45% (A2: 287 µs / 420 µs / 449 µs across three consecutive runs, no code
+change). The pre-refactor binary was comparatively stable across two runs
+(A2: 415–417 µs), but two data points aren't enough to rule out the same
+noise affecting it too.
+
+| Benchmark | Pre-refactor (`b517191`) | Post-refactor (`main`, 3 runs) |
+|---|---|---|
+| A2 decode_and_render (schema + annotations) | 415–417 µs · ~43 MiB/s | 287 / 420 / 449 µs · 40–63 MiB/s |
+
+The pre-refactor value falls squarely inside the post-refactor binary's own
+run-to-run range, so wall-clock timing is inconclusive at this noise floor.
+
+**Structural check**: `Sink` is consumed exclusively via static generics
+(`fn render_message<S: Sink>(...)`, `render_len_field<S: Sink>`, etc.) —
+`grep -rn "dyn Sink"` across `prototext-core/src` returns no matches. Each
+call site is monomorphized per concrete `Sink` impl (`TextSink`, `ProbeSink`,
+`IndexingTextSink`), so the compiler inlines through the trait exactly as it
+would through the pre-refactor direct calls — there is no vtable indirection
+for the refactor to have introduced.
+
+**Conclusion**: no regression evidence, neither statistical (baseline sits
+inside the post-refactor noise band) nor structural (no dynamic dispatch was
+introduced). Open Issue #3 is resolved without needing the `objdump`
+fallback or a `ProbeSink` micro-bench (moot since `decoder::parse_message`
+was deleted in Step 6 — there's no separate "index-only" path left to compare
+against `TextSink`).
+
+---
+
 ## Cumulative journey
 
 ### Path A2 (binary → annotated text, 17 KB input)
