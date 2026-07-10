@@ -77,23 +77,111 @@ doing, avoids both problems.
 
 ---
 
-## Specification (sketch — to be firmed up before implementation)
+## Feasibility investigation (2026-07-10)
 
-`reproto`'s text-building model (`reproto/src/reproto/text.py`) already
-represents output as a sequence of `Block`/`BlockLine` objects, flushed to
-a final string by `Block.flush()`, which iterates lines in order and
-tracks nothing beyond current indentation. The natural extension:
+Findings from reading `reproto`'s actual rendering code
+(`re_file.py`, `re_descriptor.py`, `re_field.py`, `text.py`,
+`context.py`), confirming the sketch above and resolving several Open
+Issues below with evidence rather than guesswork:
 
-- While flushing (or in an instrumented variant of `flush()`), track the
-  1-based output line number reached after each `BlockLine` is written.
-- Each `Block`/`BlockLine` sequence that represents one declaration's
-  emitted text (e.g. the lines making up a `message Foo { ... }` block) is
-  already associated, at construction time, with the node that produced
-  it. Correlate that node's `_calculate_source_code_info_path()` (already
-  implemented, `source_info.py`) with the `[start_line, end_line]` (or
-  `[start_line, start_col, end_line, end_col]`, pending Open Issue 1 below)
-  range the flush pass recorded for its lines, and emit one
-  `SourceCodeInfo.Location` per declaration.
+1. **`BlockLine`-to-final-line mapping is 1:1, no flush()-time
+   instrumentation needed.** `MAX_LINE_LENGTH`-driven wrapping (e.g. long
+   method signatures in `re_method.py`, long option lists in
+   `simple_types.py`) happens *at construction time* — a wrapped
+   declaration becomes multiple `BlockLine`s up front, not one `BlockLine`
+   later split by `flush()`. `Block.flush()` itself does no
+   splitting/merging; it only conditionally *drops* `COMMENT`/`ORPHAN`
+   lines (`ctx.redact_comments`/`ctx.redact_orphans`, both default
+   `False`). So — as long as redaction is off — `len(out.lines)` at any
+   point during the `render()` tree walk already equals the final
+   (1-based) flushed line number of whatever gets appended next. This
+   **simplifies the design**: spans can be computed directly during the
+   existing top-down `render()` walk (record `len(out.lines)` before and
+   after each child's `out.extend(child_block)` call), with no need to
+   instrument `Block.flush()` separately as originally sketched.
+2. **There is direct architectural precedent for this pattern.**
+   `re_file.py`'s `render()` already threads an optional side-channel
+   (`ctx.out_desc: DescOut | None`, spec 0076) through the whole render
+   tree, populated in parallel with the text `Block` without changing any
+   `render()` method's signature or return type. A `ctx.out_sci:
+   SourceCodeInfoOut | None` slot, appending one `Location` per node as
+   each `render()` call returns, is a straightforward extension of an
+   already-proven mechanism — not a new architectural pattern.
+3. **Redaction is the one real correctness hazard**, confirming and
+   sharpening Open Issue (below, "Redaction interaction"): if
+   `--redact-comments`/`--redact-orphans` are combined with synthesis, the
+   line-count-during-construction no longer matches the flushed output
+   (dropped lines shift everything after them). Synthesis must either be
+   rejected when combined with those flags, or computed post-flush instead
+   of during the walk in that specific combination.
+4. **Output re-ordering is a non-issue, not a risk.** `re_descriptor.py`'s
+   `render()` docstring documents that `reproto` emits elements in a
+   *static, protoc-descriptor order* (all fields grouped, then nested
+   messages, then nested enums, ...), not necessarily the original
+   `.proto` source order. This does not threaten the design: the
+   synthesized `SourceCodeInfo` describes spans in `reproto`'s *own*
+   emitted text, not a claim about the original source file's order — so
+   internal self-consistency (which is guaranteed by construction) is all
+   that's required, not fidelity to some other ordering.
+5. **`_calculate_source_code_info_path()` currently only covers message
+   declarations** (`source_info.py`: path segments `[4, idx]` for
+   top-level `message_type`, `[3, idx]` for `nested_type`). Full Goal-4
+   coverage (fields, enums, enum values, oneofs, services, methods,
+   extensions) needs this extended with the corresponding
+   `FileDescriptorProto`/`DescriptorProto`/`EnumDescriptorProto`/
+   `ServiceDescriptorProto` field numbers (`field=2`, `enum_type=4/5`,
+   `service=6`, `extension=6/7`, `oneof_decl=8`, `method=2`, ...) — a
+   larger, mechanical but nontrivial extension of existing code, not
+   something to gloss over as "already solved" (correcting the Background
+   section's slightly optimistic framing).
+6. **`SourceCodeInfo` carries no file identity — and that's fine, because
+   `FileDescriptorProto.name` already is a relative import path.**
+   Checked the actual protobuf schema:
+   `SourceCodeInfo` only has `repeated Location location`, and `Location`
+   only has `path`, `span`, `leading_comments`, `trailing_comments`,
+   `leading_detached_comments` — no file-path field anywhere. This is by
+   design: `SourceCodeInfo` only ever exists as the `source_code_info`
+   field *of* a specific `FileDescriptorProto`, so "which file" is
+   established purely by containment. The relevant identity,
+   `FileDescriptorProto.name`, is confirmed (by `reproto`'s own code) to
+   already be the canonical, *relative* import-style path — never an
+   absolute filesystem path:
+   ```python
+   # reproto/src/reproto/phases.py:1377-1378
+   canonical_name = canonize_dependency(ctx, re_fdp.name)
+   res_path = out_repo / Path(canonical_name)
+   ```
+   `reproto` writes each decompiled file to `<-O root>/<canonical relative
+   name>` (e.g. `out_repo/google/protobuf/descriptor.proto`). So the
+   "relative path + resolve the root just in time" model `protolens` wants
+   is already exactly how the system works, today, with zero design change
+   needed here: `protolens` has `FileDescriptorProto.name` from its own
+   `--descriptor-set` corpus, and can independently choose, at runtime,
+   whatever root directory the matching decompiled `.proto` tree lives
+   under (typically wherever `reproto -O` wrote it) — the join is a plain
+   path concatenation, entirely decoupled from the `SourceCodeInfo`
+   mechanism itself.
+
+## Specification (sketch — updated per feasibility investigation above)
+
+- Add a `ctx.out_sci: SourceCodeInfoOut | None` side-channel, mirroring
+  `ctx.out_desc`/`DescOut` (spec 0076) exactly: an optional mutable slot
+  passed through the existing `render()` call tree, appended to (not
+  restructuring any `render()` signature) when non-`None`.
+- At each `render()` call site that currently does
+  `out.extend(child_block)` for a node with a computable
+  `_calculate_source_code_info_path()`, if `ctx.out_sci` is set: record
+  `start_line = len(out.lines)` before the extend, `end_line =
+  len(out.lines) - 1` after, and append a `SourceCodeInfo.Location(path=...,
+  span=[start_line, end_line])` (extending to 4-element column spans is a
+  later refinement — Open Issue 1).
+- Guard against the redaction hazard (finding 3, above): reject the
+  combination of synthesis with `--redact-comments`/`--redact-orphans` (or
+  fall back to a slower post-flush line-counting pass in that case — TBD,
+  see Open Issues).
+- Extend `_calculate_source_code_info_path()` (or add sibling helpers) to
+  cover the full node taxonomy needed for Goal 4 coverage, not just
+  message declarations (finding 5, above).
 - Assemble the resulting `Location` list into a `SourceCodeInfo` and attach
   it either (a) to a full `FileDescriptorProto` mirroring what `protoc
   --include_source_info` would produce, written as a sidecar `.desc` file,
@@ -132,10 +220,32 @@ tracks nothing beyond current indentation. The natural extension:
    Phase 5 pane actually needs first. Leaning towards starting with the
    subset `protolens` needs (types, fields) and expanding later if useful
    elsewhere, but not decided.
-5. **Performance**: whether tracking line/column state through `flush()`
-   for every decompile run (even when synthesis isn't requested) has a
-   measurable cost — should be zero-cost when the feature isn't invoked;
-   not yet measured since no implementation exists.
+5. **Performance**: resolved by the feasibility investigation for the
+   common case — span tracking piggybacks on the existing `render()` walk
+   (`len(out.lines)` snapshots), no separate pass or `flush()`
+   instrumentation, so it should be close to zero-cost when
+   `ctx.out_sci is None` (the default) and cheap when enabled. Not yet
+   measured since no implementation exists, but no structural reason to
+   expect a meaningful cost.
+6. **Redaction interaction**: `--redact-comments`/`--redact-orphans`
+   invalidate the "line count during construction equals final flushed
+   line count" assumption the design relies on (finding 3, above) — needs
+   a decision: reject the flag combination, or fall back to a slower
+   post-flush counting pass when redaction is active.
+7. **`_calculate_source_code_info_path()` coverage gap**: today only
+   handles message declarations (finding 5, above); extending it to
+   fields/enums/enum-values/oneofs/services/methods/extensions is real,
+   non-trivial work, not a given — scope this explicitly against Open
+   Issue 4 ("which nodes get a `Location`") rather than assuming it's
+   free.
+8. **File-path resolution for `protolens`'s consuming side** — resolved,
+   no action needed here (finding 6, above): `SourceCodeInfo` never
+   encodes a file path; `FileDescriptorProto.name` already is the
+   relative, canonical import path, and `reproto` already lays out
+   decompiled files on disk under that same relative path beneath
+   whatever `-O` root the caller chooses. `protolens` (spec 0111 Phase 5)
+   can join `name` with any root it picks at runtime — no coupling to this
+   spec's synthesis work, and no open question left on this point.
 
 ---
 
@@ -143,6 +253,7 @@ tracks nothing beyond current indentation. The natural extension:
 
 | File | Change |
 |---|---|
-| `reproto/src/reproto/text.py` | `Block.flush()` (or a new instrumented variant): track output line (and possibly column) reached per `BlockLine` |
-| `reproto/src/reproto/source_info.py` | New: emit `SourceCodeInfo.Location` entries from tracked spans + existing `_calculate_source_code_info_path()` |
-| `reproto/src/reproto/cli.py` | New flag to opt into synthesis + sidecar output (exact name/shape TBD) |
+| `reproto/src/reproto/context.py` | New `SourceCodeInfoOut` dataclass + `ctx.out_sci` slot, mirroring `DescOut`/`ctx.out_desc` (spec 0076) |
+| `reproto/src/reproto/re_file.py`, `re_descriptor.py`, `re_field.py`, `re_enum.py`, `re_service.py` | At each `render()` call site building a child's `Block`: snapshot `len(out.lines)` before/after, append a `Location` to `ctx.out_sci` when set |
+| `reproto/src/reproto/source_info.py` | Extend `_calculate_source_code_info_path()` (or add siblings) to cover the full node taxonomy needed for Goal 4 (Open Issue 7) |
+| `reproto/src/reproto/cli.py` | New flag to opt into synthesis + sidecar output (exact name/shape TBD); reject combination with `--redact-comments`/`--redact-orphans` per Open Issue 6, or implement the fallback |
