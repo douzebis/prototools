@@ -28,6 +28,13 @@ its byte range in the rendered text, and its indentation level) and on
 `decode_and_render`'s new `initial_level`/`emit_header` parameters. Spec 0110
 is a hard prerequisite: this spec cannot start implementation until it lands.
 
+Beyond the v1 slice this spec commits to implementing, it also captures a
+more concrete design sketch for what spec 0109 left open — type overriding,
+rendering/styling, and type-definition assistance — so v1's architecture
+doesn't paint us into a corner (see "Beyond v1" and "Phasing" below). Spec
+0109 itself is left untouched for now; it will be revisited once v1 has
+shipped and the sketch below has been validated against real use.
+
 ---
 
 ## Goals
@@ -35,15 +42,29 @@ is a hard prerequisite: this spec cannot start implementation until it lands.
 1. New Rust binary crate `protolens`, workspace member, depending on
    `prototext-core` in-process (no subprocess/FFI), per spec 0109's
    high-level design.
-2. **Decode**: given a byte blob and a root `MessageDescriptor` (specified by
-   the user at startup — v1 requires an explicit `--type`, no automatic
-   best-guess ranking), render it via `IndexingTextSink`, producing both the
-   rendered text and its offset index.
-3. **Navigate**: `ratatui` + `crossterm` TUI. Arrow/`hjkl` cursor movement
-   between index entries' start lines. Fold/unfold a subtree using its
-   index-derived `[start_line, end_line]` span (folding collapses the range
-   to a single summary line; per spec 0109, fold state is pure UI state, not
-   undoable).
+2. **Decode**: given a byte blob, determine its root `MessageDescriptor` and
+   render it via `IndexingTextSink`, producing both the rendered text and
+   its offset index.
+   - **Root-type determination, by default**: v1 reuses `prototext-core`
+     tooling's own determination logic — the same `prototext-graph::score`
+     engine that backs the `prototext` CLI's `list-schemas` command
+     (`score_all(pb, graph, opts) -> Vec<EntryScore>`, corpus-wide
+     plausibility ranking against a `--descriptor-set`'s compiled
+     `hopcroft.rkyv` index). `protolens` links `prototext-graph` in-process
+     (already listed in §1's crate dependencies) — no subprocess, no
+     forking the `prototext` binary. If scoring yields a confident top
+     candidate, that's the root type; if it can't determine one (no
+     `--descriptor-set` given, or no candidate scores well), v1 requires
+     the user to pass `--type` explicitly and errors out otherwise.
+   - **Explicit `--type` always wins**: if the user passes `--type <FQDN>`,
+     it's used verbatim, bypassing determination entirely.
+3. **Navigate**: `ratatui` + `crossterm` TUI (rationale for this choice vs.
+   alternatives: Annex A). Arrow/`hjkl` cursor movement between index
+   entries' start lines. Fold/unfold a subtree using its index-derived
+   `[start_line, end_line]` span (folding collapses the range to a single
+   summary line; per spec 0109, fold state is pure UI state, not undoable).
+   Full key-binding proposal, including sibling-skip movement, parent
+   navigation, and a navigation-history ("jumplist") design: Annex B.
 4. **Extract**: for the node under the cursor, use its `raw_range` to obtain
    the corresponding byte sub-slice of the source blob, and expose it (write
    to a file, or print to a status/output area) — enough for the user to
@@ -53,11 +74,12 @@ is a hard prerequisite: this spec cannot start implementation until it lands.
 
 ## Non-goals
 
-- Type override UI, candidate-ranking (`score_all` integration), unlimited
-  undo, save-project/export-`.desc` — all remain future work per spec 0109's
-  fuller design (its goals 3–7 are unimplemented after this spec).
-- Automatic best-guess root-type selection (`list-schemas`-style ranking) at
-  startup.
+- Per-node type override UI, candidate-ranking *for override purposes*,
+  unlimited undo, save-project/export-`.desc` — all remain future work per
+  spec 0109's fuller design (its goals 3–7 are unimplemented after this
+  spec). (Root-type determination via `score_all` is, however, part of v1 —
+  see Goal 2; what's deferred is *overriding* individual nodes' types
+  after the initial decode.)
 - In-place splice-and-replace of a node's rendering after a manual re-decode
   — even though spec 0110's initial-level parameter and `IndexingTextSink`'s
   index shape are deliberately designed to support this later, v1 stops at
@@ -66,6 +88,10 @@ is a hard prerequisite: this spec cannot start implementation until it lands.
   introduces interactive override.
 - Any change to `prototext-core`/`render_text` — spec 0110 is a fixed
   prerequisite, not something this spec revises.
+
+See "Beyond v1" below for the design sketch these non-goals defer to —
+captured now to avoid architectural dead ends, not committed for v1
+implementation.
 
 ---
 
@@ -79,9 +105,11 @@ New workspace member, binary crate:
 protolens/
   Cargo.toml           — depends on prototext-core, prototext-graph, ratatui, crossterm
   src/
-    main.rs             — CLI entry: blob path, --type <FQDN>, descriptor-set path(s)
-    decode.rs            — thin wrapper: load blob + schema, call decode_and_render
-                            with an IndexingTextSink, hand back (text, Vec<NodeSpan>)
+    main.rs             — CLI entry: blob path, --descriptor-set, --type <FQDN> (§3)
+    decode.rs            — load blob + descriptor-set; if --type absent, call
+                            prototext-graph::score_all to determine the root
+                            type; call decode_and_render with an
+                            IndexingTextSink, hand back (text, Vec<NodeSpan>)
     tui.rs                — ratatui app: render text pane, cursor/fold state, key handling
     extract.rs             — "extract" action: NodeSpan.raw_range -> byte slice -> file/stdout
 ```
@@ -91,30 +119,346 @@ with the spec that introduces interactive override (per Non-goals).
 
 ### §2 — v1 TUI interaction
 
-- Arrow keys / `hjkl`: move cursor between `NodeSpan` start lines (sibling/
-  parent/child navigation derived from index containment, per spec 0110 §3).
-- `+`/`-` (or `zo`/`zc`-style): fold/unfold the node under the cursor, using
-  its `text_range`-derived `[start_line, end_line]` — pure UI state, not part
-  of the index/undo model (matches spec 0109 §"Navigation").
+- Cursor movement, fold/unfold, parent/sibling navigation, and navigation
+  history: exact key bindings proposed in Annex B; semantics summarized
+  here:
+  - **Document-order move** (next/previous `NodeSpan` by `raw_range` start):
+    default up/down.
+  - **Sibling-skip move** (next/previous sibling, skipping the current
+    node's children): distinct binding from document-order move.
+  - **Parent move**: jump to the cursor's containing `NodeSpan`.
+  - **Fold/unfold**: collapses/expands a subtree using its
+    `text_range`-derived `[start_line, end_line]` — pure UI state, not part
+    of the index/undo model (matches spec 0109 §"Navigation").
+  - **Navigation history**: a jumplist (not a data-undo stack) recording
+    "big" cursor jumps (parent/sibling-skip, not every single-line move) so
+    the user can pop back to where they came from — see Annex B for the
+    design rationale.
 - An extract key/command (exact binding TBD during implementation, e.g. `x`
-  or `:extract <path>`): writes the byte slice at the cursor node's
-  `raw_range` to a user-specified file, or prints it (hex or base64, TBD) to
-  a status area.
+  or `:extract <path>`): writes the node under the cursor to a
+  user-specified file (or a status area for short spans) in one of two
+  formats — see Open Issue 2 (now resolved): plain binary, or `#@ prototext`
+  text.
+
+### §3 — CLI flags and `--help` text
+
+v1's flags mirror `prototext`'s own, since `protolens` reuses the same
+determination/decode machinery:
+
+- `--descriptor-set <path>` (repeatable): schema corpus for root-type
+  determination and for resolving any type the user references. Matches
+  `prototext`'s own flag of the same name; requires the corpus's sibling
+  `hopcroft.rkyv` for determination to run (same requirement as `prototext
+  list-schemas`).
+- `--type <FQDN>`: explicit root type. Optional — if omitted, v1 attempts
+  determination via `--descriptor-set` (Goal 2); if that fails (no
+  `--descriptor-set`, or no confident candidate), `protolens` exits with an
+  error asking for `--type` explicitly.
+- `<blob>`: positional path to the binary protobuf to decode.
+
+Sketch of the `--help` text v1 should ship, for illustration (exact wording
+TBD at implementation time):
+
+```
+protolens — decode, navigate, and extract raw bytes from a binary protobuf
+
+USAGE:
+    protolens [--descriptor-set <path>]... [--type <FQDN>] <blob>
+
+OPTIONS:
+    --descriptor-set <path>   FileDescriptorSet for root-type determination
+                               and type resolution (repeatable)
+    --type <FQDN>             Root message type; if omitted, determined
+                               automatically from --descriptor-set
+    -h, --help                Print help
+```
+
+**Ideas for subsequent versions** (not part of v1's `--help`, noted here so
+the CLI surface doesn't need a breaking redesign later — see Phasing):
+
+- A project-file flag (`--project <path>`) once save/export lands (Phase 7).
+- An override flag/subcommand to seed non-default type overrides from the
+  command line, without going through the TUI picker (Phase 3+).
+- A `--no-expand-any`-style flag mirroring `prototext`'s own, once Any/
+  MessageSet default-overriding candidate scoring needs the same escape
+  hatch `score_all`'s `ScoringOpts` already exposes.
+
+---
+
+## Beyond v1 — design notes for later phases
+
+Not part of v1's Goals/Specification above — captured here so later phases
+build on a coherent architecture instead of retrofitting one. Nothing in
+this section is committed for implementation by this spec.
+
+### Type overriding (data model)
+
+- **Overriding record**: `(range, type_fqdn, descriptor_set)`. Overriding
+  only ever targets a LENDEL at wire level — the only wire type with an
+  ambiguous, overridable interpretation. `range` is the raw byte range in
+  the source blob (matches `NodeSpan::raw_range`, spec 0110 §3);
+  `descriptor_set` identifies where `type_fqdn` is resolved from (so an
+  override can pull a type from a different loaded corpus than the one used
+  for the initial guess).
+- **Collection, indexed two ways**: by `range` (pre-ordered — used during
+  the render pass: "does this LENDEL have an overriding?"), and by
+  `type_fqdn` (pre-ordered — a UI convenience: "show every range this type
+  currently applies to").
+- **At most one active overriding per range**: several overridings can exist
+  for the same range (alternative hypotheses the user tried), but only one
+  is `active` at a time. Rendering only ever consults the active one, if
+  any.
+- **Default overridings**, seeded when a blob is opened:
+  - One at the root (the whole-blob range), for whatever type v1's
+    determination step landed on (`score_all` result, or the explicit
+    `--type` override — see Goal 2).
+  - One per `Any`/`MessageSet` wrapper node, wherever `type_url`-based
+    auto-expansion (spec 0089/0100) already picks a type today. **No
+    special-casing needed**: this is the same mechanism as the root
+    default — the type comes from the payload (`type_url`) instead of a
+    user choice, but it's stored and overridable identically to any other
+    range. Overriding one of these ranges just means forcing an explicit
+    `type_fqdn` for that payload instead of trusting `type_url`.
+- **Rendering as recursive substitution**: starting from the root, for
+  every LENDEL in `IndexingTextSink`'s top-level structure, look up an
+  active overriding exactly matching that range and substitute its type if
+  present, then recurse into the substituted (or default) rendering's own
+  LENDEL children. This converges to the full displayable tree.
+- **Undo, deferred**: the active/inactive toggle is itself a lightweight
+  approximation of undo — reverting one range's decision is "reactivate
+  whichever overriding was active before." Not equivalent to spec 0109 Goal
+  5's full multi-step, cross-range undo/redo (persistent-tree /
+  path-copying), but may be sufficient for several phases before that's
+  needed — see Phasing.
+- **Open**: incremental re-interpretation (re-render only the subtree(s)
+  actually affected by an active-overriding change, not the whole document)
+  needs its own detailed design once this lands — flagged, not solved here.
+
+### Rendering and styling
+
+- **Copy with relative indentation**: the on-screen tree is indented per
+  nesting depth. Copying a selected subtree to compose a standalone
+  `#@ prototext` snippet in an external editor shouldn't carry that
+  subtree's absolute indentation along — it's irrelevant noise relative to
+  a hand-composed file. On copy (not on render), compute the minimum
+  leading-whitespace width across the selected lines and strip exactly that
+  many columns from every line — the least-indented selected line lands at
+  column 0, deeper lines keep their relative indentation to each other
+  (same transform as Python's `textwrap.dedent()`). The on-screen view
+  itself is untouched; only the clipboard content is dedented.
+- **Syntax coloring, short term (textual)**: checked against spec 0110's
+  actual `NodeSpan` shape — `text_range` is a **line-number range**, not a
+  sub-line/column/token span. `IndexingTextSink` does not currently carry
+  the per-token granularity a structural colorer would need, so coloring
+  driven directly from the index isn't available in v1's index shape as-is
+  (corrects the earlier draft's assumption here). Short-term plan instead:
+  run a generic, off-the-shelf syntax-highlighting library over each line
+  of `TextSink`'s rendered text (protobuf-text-like grammar: `#`-comments,
+  `field_name: value` / `field_name { ... }` — close enough to an existing
+  grammar, e.g. YAML- or JSON-ish highlighters, that a generic library
+  should handle it acceptably without a bespoke lexer) and feed the colored
+  result into `ratatui` instead of the plain text. This is a textual,
+  re-lexing approach — no `NodeSpan` changes required.
+- **Syntax coloring, longer term (structural, deferred)**: if the
+  textual approach proves insufficient (e.g. it can't reliably distinguish
+  overridden nodes or malformed values from well-typed ones), extend
+  `IndexingTextSink`/`NodeSpan` with sub-line (column) spans per token —
+  it already knows exactly where each token sits when it writes it, this
+  just isn't surfaced in the index today. Deferred: not needed unless the
+  short-term approach turns out to be inadequate. Extends Open Issue #3
+  below (`NodeSpan` shape).
+- **Opportunity, once structural coloring exists — malformity/invalid-
+  serialization styling**: give a distinct style to nodes/fields the render
+  pass already flags as malformed or type-mismatched (`ProbeSink`'s
+  existing malformity tracking, `TYPE_MISMATCH` annotations, spec
+  0097/0110) — surfacing "this doesn't parse as its current type" visually,
+  not just in the annotation text. Reuse the same styling channel for "an
+  active overriding impacts this node." Depends on the structural coloring
+  path above landing first (or on a textual heuristic keyed off the
+  existing `TYPE_MISMATCH` annotation text, if that proves good enough
+  sooner).
+
+### Type definition assistance
+
+- **Separate pane, current node's type**: show the `.proto` (or compiled
+  textproto) definition of the currently-selected/candidate FQDN, to help
+  the user judge candidates or an already-chosen type.
+- **Locating a declaration inside a decompiled `.proto` file, and
+  navigating imports**: `SourceCodeInfo` on the `FileDescriptorProto` would
+  give exact declaration spans, including for imported types, "for free."
+  Today's pipeline gets *stripped* `FileDescriptorProto`s and decompiles
+  them via `reproto` — recompiling with `protoc --include_source_info` to
+  obtain `SourceCodeInfo` would be a heavier, separate step (a tolerable
+  one-time cost, but with a nonzero, if unlikely, risk of the recompiled
+  descriptor diverging from the originally captured bytes). **Preferred
+  alternative**: have `reproto` synthesize `SourceCodeInfo.Location` entries
+  itself while decompiling, since it already knows exactly where each
+  type/field it emits lands in the `.proto` text it's writing — no `protoc`
+  recompilation involved at all. This is a `reproto`-side feature, not a
+  `protolens`-side one; needs its own design pass in `reproto`'s spec
+  lineage, not decided here.
+- **Deep dives**: for anything beyond the summary pane, shell out to
+  `$EDITOR` at the located `file:line`, suspending the TUI and resuming on
+  return — the standard pattern (`git commit`, `fzf`, etc.). No
+  embedded-vim-as-library approach: rejected, no mature Rust crate for this.
+- **Future, separate project**: a dedicated `.proto` navigator
+  (reverse-engineering/auditing-oriented — cross-references,
+  go-to-definition, import graphs) is an interesting idea on its own,
+  decoupled from `protolens`. If built as a library, `protolens` could
+  integrate it later for this pane instead of a bespoke minimal viewer.
+  Noted as a related future project, not part of this spec's scope.
+
+---
+
+## Phasing
+
+v1 (this spec's actual Goals/Specification, above) is the only phase
+committed to implementation now. The rest is a sequencing sketch — to avoid
+dead ends, not a schedule.
+
+| Phase | Scope | Depends on |
+|---|---|---|
+| **v1** (this spec) | Decode/navigate/extract raw bytes (Goals 1–4) | spec 0110 |
+| **Phase 2** | Overriding data model (range + FQDN + descriptor-set, active/inactive); default overridings at root + `Any`/`MessageSet` ranges; full-tree re-render on change. No picker UI, no candidate ranking, no undo beyond active/inactive toggling. | v1's `IndexingTextSink`/`NodeSpan` index |
+| **Phase 3** | Override picker UI + `score_all` candidate ranking (spec 0109 Goals 3–4). Exact-position only; field-number-pool bulk override still deferred. | Phase 2's overriding model |
+| **Phase 4** | Rendering polish: textual syntax coloring (generic library over rendered lines), copy-with-dedent. | v1's `TextSink` output |
+| **Phase 4b** (deferred, conditional) | Structural syntax coloring (incl. malformity/invalid-serialization highlighting), if the textual approach (Phase 4) proves insufficient. | Phase 2 (styling hook) + `NodeSpan` column-span extension |
+| **Phase 5** | Type definition assistance pane: `reproto`-side `SourceCodeInfo` synthesis, in-pane viewer, import navigation, `$EDITOR` fallback. | Phase 3 (most useful alongside the candidate picker) + a `reproto`-side spec |
+| **Phase 6** (future, likely separate project) | Standalone `.proto` navigator library, later integrated into protolens's Phase 5 pane. | — |
+| **Phase 7** (revisit spec 0109) | Field-number-pool bulk override, true multi-step undo/redo, save-project, export `.desc`. | Phases 2–3; spec 0109 itself revisited once these land |
+
+Incremental re-interpretation (re-render only affected subtrees) is a
+cross-cutting concern starting at Phase 2 — its own open design task, not
+tied to any one phase's ship date.
 
 ---
 
 ## Open Issues and Challenges
 
-1. **v1's root-type input**: CLI flag only (`--type <FQDN>`), or a minimal
-   startup schema-picker screen — leaning CLI-flag-only for v1, deferring any
-   picker UI.
-2. **Extract action's output format**: raw bytes to a file path, vs.
-   hex/base64 to a status area, vs. both — not decided.
-3. **`NodeSpan` shape**: spec 0110 leaves open whether emission-order
-   `Vec<NodeSpan>` (relying on containment for structure) is sufficient for
-   this spec's navigate/fold/unfold logic, or whether an explicit
-   `parent_index` field is needed — to be settled once this spec's TUI
-   navigation logic is actually implemented.
+1. **v1's root-type input** — resolved: `--descriptor-set <path>`
+   (repeatable) and `--type <FQDN>` (optional override), matching
+   `prototext`'s own flags. No startup schema-picker UI in v1. See §3 for
+   the full flag/`--help` treatment, including a place for subsequent-
+   version flag ideas.
+2. **Extract action's output format** — resolved: two formats, both
+   supported — (1) plain binary (raw `raw_range` byte slice), and (2)
+   `#@ prototext` text (the node's rendering, sliced from `TextSink`'s
+   output via `text_range`). For the `#@ prototext` format, a `text_range`
+   slice carries its on-screen absolute indentation; extraction must apply
+   the same dedent transform as the copy-paste feature ("Copy with relative
+   indentation" above) so the extracted snippet is self-contained and
+   directly usable in an external editor, not just the interactive-copy
+   path.
+3. **`NodeSpan` shape**: to be determined by what `ratatui`'s view-building
+   code actually needs, not decided in the abstract ahead of implementing
+   §2's navigation logic — likely candidates are emission-order
+   `Vec<NodeSpan>` relying on containment, vs. an explicit `parent_index`
+   field, settled empirically once the TUI's cursor/fold/sibling-move logic
+   (Annex B) is actually being wired up. If Phase 4b's structural coloring
+   is pursued later, sub-line column spans per token would be an additional
+   requirement on top of whatever shape v1 settles on — worth revisiting
+   together rather than twice, but not blocking v1's decision.
+4. **Incremental re-interpretation**: re-rendering only the subtree(s)
+   affected by an active-overriding change, not the whole document (Phase
+   2, "Beyond v1") — no detailed design yet.
+5. **`reproto`-side `SourceCodeInfo` synthesis** (Phase 5, "Beyond v1"):
+   tracked in its own spec, `docs/specs/0112-reproto-source-code-info-synthesis.md`
+   — feasibility of having `reproto` synthesize `SourceCodeInfo.Location`
+   entries during decompilation, instead of recompiling with `protoc
+   --include_source_info`.
+6. **`.proto` navigator** (Phase 6, "Beyond v1"): tracked here only as a
+   pointer to a related future project, not owned by this spec or by
+   `protolens`'s own roadmap. May belong better under spec 0109's
+   higher-level `protolens` vision than here, once 0109 is revisited
+   (Phase 7) — left here for now per this spec's "leave 0109 untouched"
+   stance (Background).
+
+---
+
+## Annex A — `ratatui` + `crossterm`: rationale
+
+**`crossterm`** — cross-platform terminal backend (raw mode, alternate
+screen, key/mouse events, cursor control). Considered against:
+- `termion`: Unix-only (no Windows support) — a hard blocker if `protolens`
+  should ever run on Windows; `crossterm` has no such restriction.
+- Writing directly against a platform's terminal APIs: no cross-platform
+  abstraction, far more code for no benefit over an existing, widely-used
+  crate.
+
+**`ratatui`** (the maintained fork of the now-archived `tui-rs`) — immediate-
+mode widget/layout library built on top of a terminal backend (`crossterm`
+here). Considered against:
+- `tui-rs`: unmaintained since 2023 (archived); `ratatui` is its actively
+  maintained continuation and the de facto standard for new Rust TUI work —
+  no reason to pick the archived original.
+- `cursive`: a more opinionated, retained-mode widget framework (its own
+  event loop, view tree, focus management). Good fit for form-like UIs;
+  less natural for `protolens`'s core UI, which is fundamentally "one large
+  scrollable/foldable text pane with a cursor" — closer to a text-editor
+  widget than a form. `ratatui`'s immediate-mode model (redraw each frame
+  from application state) maps more directly onto "index + cursor position
+  + fold state" than `cursive`'s view-tree model would.
+- `termwiz` (from the `wezterm` project): capable but more niche/less
+  documented for general application use outside `wezterm` itself; smaller
+  ecosystem and fewer examples to build from.
+
+Why this pair fits `protolens` specifically: the core UI is a single
+scrollable text pane (the rendered `#@ prototext`) plus a cursor and,
+later, a secondary pane (type-definition assistance, Phase 5) — exactly
+`ratatui`'s sweet spot (`Paragraph`/custom widget with a `Block`, `Layout`
+splitting for the secondary pane, `Frame`-driven redraw keyed off
+`NodeSpan`-derived state). No retained widget tree or complex focus model
+is needed for v1's scope.
+
+## Annex B — key bindings and navigation-history proposal
+
+### Proposed key bindings (v1)
+
+| Key | Action |
+|---|---|
+| `j` / `Down` | Document-order move: next `NodeSpan` (by `raw_range` start) |
+| `k` / `Up` | Document-order move: previous `NodeSpan` |
+| `J` / `Shift-Down` | Sibling-skip move: next sibling (skips the current node's children) |
+| `K` / `Shift-Up` | Sibling-skip move: previous sibling |
+| `h` / `Left` | Parent move: jump to the cursor's containing `NodeSpan` (if the cursor is on a folded node, this doubles as "fold" — `nvim-tree`-style, see below) |
+| `l` / `Right` | Child move: jump to the cursor node's first child (mirrors `h`) |
+| `z` / `Space` | Toggle fold/unfold on the node under the cursor |
+| `Ctrl-O` | Navigation history: jump back to the previous recorded location |
+| `Ctrl-I` | Navigation history: jump forward (redo the last `Ctrl-O`) |
+| `x` | Extract: write the node under the cursor to a file (binary or `#@ prototext`, per Open Issue 2) |
+| `q` | Quit |
+
+Rationale for `h`/`l` doubling as fold/unfold on a folded node: this is the
+same convention `nvim-tree` and similar file-tree UIs use — pressing "go to
+parent" on an already-collapsed node is a natural synonym for "collapse
+further," and avoids needing a second dedicated fold key for that specific
+case (the dedicated `z`/`Space` binding remains available for folding an
+*expanded* node without first navigating to it).
+
+### Navigation history: not data-undo, a jumplist
+
+This is **not** an extension of spec 0109's data-model undo/redo — folding
+and cursor position are pure UI state (per Goal 3/§2), so there's nothing
+in the override/data model to undo here. The relevant concept is a
+**jumplist**, the same mechanism `vim` uses for `Ctrl-O`/`Ctrl-I`: an
+append-only history of "significant" cursor positions, with a movable
+pointer into it.
+
+- **What gets recorded**: only "big" jumps — parent move, sibling-skip
+  move, an explicit "go to" (e.g. a future search/filter feature) — not
+  every single `j`/`k` step. This matches `vim`'s own heuristic and avoids
+  the jumplist filling up with noise from routine scrolling.
+- **Why this matters for the workflow described**: the motivating case —
+  "I went to the parent to check something, now I want to get back to the
+  exact child I started from" — is exactly what a jumplist solves: `h`
+  (parent move) records the child's position before jumping, so `Ctrl-O`
+  returns to it precisely, without needing to manually re-navigate back
+  down through siblings.
+- **Scope for v1**: a small in-memory `Vec<NodeSpan index>` with a cursor
+  pointer is sufficient — no persistence across sessions needed, no
+  interaction with fold state beyond "the jumplist target might currently
+  be inside a folded subtree" (in which case jumping to it should also
+  unfold its ancestors, so the target is actually visible).
 
 ---
 
