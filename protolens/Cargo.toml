@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "protolens"
+version     = "0.1.0"
+edition     = "2021"
+description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf"
+license     = "MIT"
+repository  = "https://github.com/ThalesGroup/prototools"
+
+[[bin]]
+name = "protolens"
+path = "src/main.rs"
+
+[dependencies]
+prototext-core  = { workspace = true }
+prototext-graph = { path = "../prototext-graph", version = "0.2.1" }
+prost-reflect   = "0.16"
+clap            = { version = "4.5", features = ["derive", "env"] }
+clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
+ratatui         = "0.29"
+crossterm       = "0.28"
+workspace-hack  = { version = "0.1", path = "../workspace-hack" }
+
+[dev-dependencies]
+prost       = "0.14"
+prost-types = "0.14"

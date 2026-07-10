@@ -4,7 +4,7 @@
 
 # nix/shells.nix — user-shell and dev-shell definitions.
 #
-# user-shell: plain shell with prototext, reproto, protoscan installed.
+# user-shell: plain shell with prototext, protolens, reproto, protoscan installed.
 #             Activated by `nix-shell` (via shell.nix).
 #
 # dev-shell:  full development environment with Cargo, Rust tools, Python
@@ -18,7 +18,8 @@
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
-#               _hook_cargo      — cargo build --release -p prototext (guarded)
+#               _hook_cargo      — cargo build --release -p prototext / -p
+#                                  protolens (guarded)
 #               _hook_rust       — exports RUSTFLAGS; writes rust-toolchain.toml;
 #                                  rustup toolchain install
 #               _hook_man        — generates man pages into man/man1/
@@ -32,6 +33,7 @@
 , repoRoot          # toString ./.  — used for NIXSHELL_REPO and PATH
 , rustcVersion      # pkgs.rustc.unwrapped.version
 , prototext
+, protolens
 , reproto
 , reprotoSrc        # filtered reproto source (builtins.path)
 , reprotoBare       # bootstrap reproto package
@@ -47,7 +49,7 @@
   user-shell = pkgs.mkShell {
     name = "prototools-user";
 
-    buildInputs = [ prototext reproto protoscan ];
+    buildInputs = [ prototext protolens reproto protoscan ];
 
     shellHook = ''
       old_opts=$(set +o)
@@ -56,6 +58,7 @@
       export NIXSHELL_REPO="${repoRoot}"
       export MANPATH="${prototext}/share/man:${reproto}/share/man:${protoscan}/share/man:''${MANPATH:-}"
       source ${prototext}/share/bash-completion/completions/prototext.bash
+      source ${protolens}/share/bash-completion/completions/protolens.bash
       source ${reproto}/share/bash-completion/completions/reproto.bash
       source ${protoscan}/share/bash-completion/completions/protoscan.bash
 
@@ -227,6 +230,30 @@ RUFFEOF
         else
           echo "[hook] cargo: prototext binary up to date — skipping"
         fi
+
+        # Same staleness guard for protolens (depends on prototext-core and
+        # prototext-graph, but not on prototext itself).
+        local bin2="$PWD/target/release/protolens"
+        local watch2=(protolens/src prototext-core/src prototext-graph/src
+                      protolens/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
+                      Cargo.lock)
+        local stale2=0
+        if [[ ! -f "$bin2" ]]; then
+          stale2=1
+        else
+          for p in "''${watch2[@]}"; do
+            if [[ -e "$p" && -n "$(find "$p" -newer "$bin2" -print -quit 2>/dev/null)" ]]; then
+              stale2=1
+              break
+            fi
+          done
+        fi
+        if [[ "$stale2" -eq 1 ]]; then
+          echo "[hook] cargo: cargo build --release -p protolens"
+          cargo build --release --locked -p protolens
+        else
+          echo "[hook] cargo: protolens binary up to date — skipping"
+        fi
       }
 
       _hook_rust() {
@@ -268,10 +295,17 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       }
 
       _hook_completions() {
-        echo "[hook] completions: prototext, reproto, protoscan"
+        echo "[hook] completions: prototext, protolens, reproto, protoscan"
         # bash completion for prototext
         if command -v prototext &>/dev/null; then
           source <(PROTOTEXT_COMPLETE=bash prototext | sed \
+            -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
+            -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
+        fi
+
+        # bash completion for protolens
+        if command -v protolens &>/dev/null; then
+          source <(PROTOLENS_COMPLETE=bash protolens | sed \
             -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
             -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
         fi

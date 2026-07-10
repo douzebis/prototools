@@ -219,6 +219,53 @@ let
       prototextBare;
 
   # ---------------------------------------------------------------------------
+  # protolens — interactive TUI to decode/navigate/extract a binary protobuf.
+  # No wkt-db/prebuilt-wkt split needed (unlike prototext): protolens always
+  # requires an explicit --descriptor-set (spec 0111 v1, no embedded-WKT
+  # fallback), so there is only one build variant. protolens depends only on
+  # prototext-core (no build.rs of its own) and prototext-graph, but the
+  # single-Cargo-workspace `cargoWithProfile build ${workspaceArgs}` builds
+  # the whole workspace regardless (see prototextBare's own comment above on
+  # why a scoped -p invocation would break the depsCache fingerprint), so
+  # protocArgs/protoPatchPhase (needed by prototext's own build.rs) are still
+  # required here too.
+  # ---------------------------------------------------------------------------
+  protolensPostInstall = ''
+    installShellCompletion --cmd protolens \
+      --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens | sed \
+        -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
+        -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
+      --zsh  <(PROTOLENS_COMPLETE=zsh  $out/bin/protolens) \
+      --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
+  '';
+
+  protolensMeta = with pkgs.lib; {
+    description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf";
+    homepage    = "https://github.com/douzebis/prototools";
+    license     = licenses.mit;
+    maintainers = with maintainers; [ ];  # add: douzebis once registered
+    mainProgram = "protolens";
+    platforms   = platforms.unix;
+  };
+
+  protolens = crane.buildPackage (protocArgs // {
+    src                                = workspaceSrc;
+    pname                              = "protolens";
+    cargoArtifacts                     = depsCache;
+    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+    doCheck                            = false;
+    doInstallCargoArtifacts            = true;
+    postInstall                        = protolensPostInstall;
+    meta                               = protolensMeta;
+    buildPhaseCargoCommand             = "cargoWithProfile build ${workspaceArgs}";
+    doNotPostBuildInstallCargoBinaries = true;
+    installPhaseCommand                = ''
+      mkdir -p $out/bin
+      cp target/release/protolens $out/bin/
+    '';
+  });
+
+  # ---------------------------------------------------------------------------
   # makePyo3Extension — shared helper for the three PyO3 extensions.
   #
   # Each PyO3 extension follows the same pattern:
@@ -348,6 +395,7 @@ in {
     rustTests
     prototextBare
     prototext
+    protolens
     prototextCodec
     fdpScanLib
     prototextGraphLib;

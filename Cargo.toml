@@ -24,6 +24,7 @@ members = [
     "fdp-scan-pyo3",
     "prototext-graph",
     "prototext-graph-pyo3",
+    "protolens",
     "workspace-hack",
 ]
 

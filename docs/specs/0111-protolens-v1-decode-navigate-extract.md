@@ -65,6 +65,8 @@ shipped and the sketch below has been validated against real use.
    summary line; per spec 0109, fold state is pure UI state, not undoable).
    Full key-binding proposal, including sibling-skip movement, parent
    navigation, and a navigation-history ("jumplist") design: Annex B.
+   Screen layout — panes, gutter, status/command lines, and how the layout
+   grows across later phases: Annex C.
 4. **Extract**: for the node under the cursor, use its `raw_range` to obtain
    the corresponding byte sub-slice of the source blob, and expose it (write
    to a file, or print to a status/output area) — enough for the user to
@@ -109,7 +111,9 @@ protolens/
     decode.rs            — load blob + descriptor-set; if --type absent, call
                             prototext-graph::score_all to determine the root
                             type; call decode_and_render with an
-                            IndexingTextSink, hand back (text, Vec<NodeSpan>)
+                            IndexingTextSink, then build the navigation tree
+                            (below) from its Vec<NodeSpan>; hand back
+                            (text, Vec<TreeNode>)
     tui.rs                — ratatui app: render text pane, cursor/fold state, key handling
     extract.rs             — "extract" action: NodeSpan.raw_range -> byte slice -> file/stdout
 ```
@@ -117,7 +121,53 @@ protolens/
 No project-file format, no undo stack, no override picker in v1 — those land
 with the spec that introduces interactive override (per Non-goals).
 
+### Tree construction (ingestion)
+
+`IndexingTextSink` hands back `Vec<NodeSpan>` in emission order (pre-order,
+document order), each entry's `level` recording its nesting depth — but no
+parent/child/sibling links (spec 0110's `NodeSpan` doesn't carry them, and
+shouldn't: this is `protolens`-specific navigation structure, not a
+render-time concern). Resolves Open Issue 3 below.
+
+`decode.rs` builds a local arena immediately after decoding:
+
+```rust
+struct TreeNode {
+    span: NodeSpan,
+    parent: Option<usize>,
+    first_child: Option<usize>,
+    last_child: Option<usize>,
+    next_sibling: Option<usize>,
+    prev_sibling: Option<usize>,
+}
+// Vec<TreeNode>, index-parallel to the emitted Vec<NodeSpan> — index i IS
+// the i-th emitted node, so document-order move (j/k) stays free array-index
+// arithmetic; only parent/sibling/child need explicit links.
+```
+
+Construction is a single `O(n)` pass over the flat, level-annotated vec with
+a small stack of "currently open ancestors": pop until the stack top's level
+is one less than the incoming node's — that's the parent; splice the node
+into the parent's child list (`first_child`/`last_child` +
+`prev_sibling`/`next_sibling`); push; continue. Standard "rebuild a tree
+from flattened pre-order + depth" construction (the same idea as an
+`indextree`-style arena) — no bespoke research needed.
+
+Why sibling *links* rather than a `children: Vec<usize>` per node: `O(1)`
+sibling-skip (`J`/`K`, Annex B) and child-jump (`l`) without rescanning or a
+per-parent heap allocation — one flat backing array. `h` (parent move) is
+`O(1)` too.
+
+Deliberately `protolens`-local, not part of `NodeSpan`/spec 0110: future
+navigation needs (e.g. a cached subtree byte-size, a "next foldable
+ancestor" shortcut) are just new `TreeNode` fields, no upstream change
+required.
+
 ### §2 — v1 TUI interaction
+
+v1's screen is a single scrollable pane plus a 1-line header, status line,
+and command/message line (no split panes, no modal overlays — those are
+later phases; full layout, sizing, and gutter design: Annex C).
 
 - Cursor movement, fold/unfold, parent/sibling navigation, and navigation
   history: exact key bindings proposed in Annex B; semantics summarized
@@ -145,11 +195,14 @@ with the spec that introduces interactive override (per Non-goals).
 v1's flags mirror `prototext`'s own, since `protolens` reuses the same
 determination/decode machinery:
 
-- `--descriptor-set <path>` (repeatable): schema corpus for root-type
-  determination and for resolving any type the user references. Matches
-  `prototext`'s own flag of the same name; requires the corpus's sibling
-  `hopcroft.rkyv` for determination to run (same requirement as `prototext
-  list-schemas`).
+- `--descriptor-set <path>`: schema corpus for root-type determination and
+  for resolving any type the user references. Matches `prototext`'s own
+  flag of the same name — singular, not repeatable (verified against
+  `prototext`'s `Cli::descriptor: Option<PathBuf>`); requires the corpus's
+  sibling `hopcroft.rkyv` for determination to run (same requirement as
+  `prototext list-schemas`). Required in v1: unlike `prototext`, there is
+  no embedded-WKT-descriptor fallback, so its absence is a hard error even
+  if `--type` is given explicitly.
 - `--type <FQDN>`: explicit root type. Optional — if omitted, v1 attempts
   determination via `--descriptor-set` (Goal 2); if that fails (no
   `--descriptor-set`, or no confident candidate), `protolens` exits with an
@@ -163,11 +216,11 @@ TBD at implementation time):
 protolens — decode, navigate, and extract raw bytes from a binary protobuf
 
 USAGE:
-    protolens [--descriptor-set <path>]... [--type <FQDN>] <blob>
+    protolens --descriptor-set <path> [--type <FQDN>] <blob>
 
 OPTIONS:
     --descriptor-set <path>   FileDescriptorSet for root-type determination
-                               and type resolution (repeatable)
+                               and type resolution (required)
     --type <FQDN>             Root message type; if omitted, determined
                                automatically from --descriptor-set
     -h, --help                Print help
@@ -182,6 +235,52 @@ the CLI surface doesn't need a breaking redesign later — see Phasing):
 - A `--no-expand-any`-style flag mirroring `prototext`'s own, once Any/
   MessageSet default-overriding candidate scoring needs the same escape
   hatch `score_all`'s `ScoringOpts` already exposes.
+
+### §4 — Testing approach
+
+Nothing here needs an interactive terminal or a scripted end-to-end
+harness — `ratatui`'s own recommended pattern (separate app state from
+drawing) is enough:
+
+- **Pure-logic unit tests**: `TreeNode` arena construction (§1 — given a
+  synthetic `Vec<NodeSpan>`, assert correct `parent`/`first_child`/
+  `next_sibling` links), root-type determination, `extract.rs`'s byte-slice
+  and dedent transform, jumplist push/pop. Plain `#[test]`, deterministic,
+  no `ratatui`/`crossterm` involved.
+- **`App` state-machine tests**: `tui.rs` exposes an `App` with a
+  `handle_key(&mut self, key: KeyEvent)` method that owns all cursor/fold/
+  scroll/jumplist state, kept separate from the actual `frame.render_widget`
+  calls. Tests construct an `App` over a fixture tree, feed a scripted
+  `KeyEvent` sequence, and assert on the resulting state — no terminal
+  involved.
+- **Interaction + rendering tests, combined**: `ratatui::backend::TestBackend`
+  (built into `ratatui`, mature — an in-memory `Buffer` in place of a real
+  terminal). Run a scripted `KeyEvent` sequence through `App::handle_key`,
+  then `terminal.draw(|f| app.render(f))` against a `TestBackend`, then
+  assert on the buffer's cell contents (or via a snapshot crate like
+  `insta`). This combination — hand-rolled `App` + built-in `TestBackend` —
+  *is* the standard way to exercise a full interaction sequence end-to-end;
+  no PTY or real terminal process is needed. (Considered and rejected for
+  this: `ratatui-testlib`, a PTY-based `send_key()`/`wait_for()` harness —
+  too immature to depend on: v0.1.0, single maintainer, "implementation
+  starting" per its own docs, 63 downloads/month.)
+- **Fixture-based integration tests**: reuse `prototext-core/fixtures/
+  descriptor.pb` (already in-repo, already backing the `codec` bench) as
+  real input — decode it, assert tree/`NodeSpan` counts, walk known
+  navigation sequences, extract known ranges and diff the resulting bytes.
+- **Deliberately not tested**: real `crossterm` terminal I/O (raw-mode
+  entry, actual key events from a TTY) — kept to a thin
+  `crossterm::event::read()` loop translating into the same `KeyEvent`/
+  action type used above, small enough to be obviously correct by
+  inspection rather than needing its own test harness.
+- **Wiring**: no separate CI step needed — the workspace's `buildRustPackage`
+  derivation (`nixpkgs/pkgs/by-name/pr/prototools/package.nix`) already runs
+  `cargo test` for the whole workspace, so tests under `protolens/` are
+  picked up automatically.
+- **Beyond v1**: a saved-project file (Phase 7) would additionally enable
+  fully headless, golden-file end-to-end tests exercising the real
+  override/render pipeline, not just cursor bookkeeping — see "Project file
+  and batch mode" under "Beyond v1" below.
 
 ---
 
@@ -234,6 +333,37 @@ this section is committed for implementation by this spec.
   actually affected by an active-overriding change, not the whole document)
   needs its own detailed design once this lands — flagged, not solved here.
 
+### Project file and batch mode
+
+- **Saved project as a plain config file** (Phase 7's "save-project"): a
+  YAML file listing the overriding collection (§"Type overriding" above —
+  both active and inactive entries, so re-opening a project restores the
+  exact same alternative-hypothesis history, not just the current choice)
+  plus a handful of session globals — the blob path, the `--descriptor-set`
+  path(s), and, once it exists, a `.proto`-source-files path (Phase 5/6).
+  Human-readable and diffable by design (a real advantage over a binary
+  `.desc` export for this purpose) — a code reviewer can see exactly which
+  ranges were reinterpreted and how, in a plain text diff.
+- **Batch/headless mode**: given a project file, `protolens` doesn't
+  strictly need the TUI at all to reproduce a decode — `--project
+  <path> extract [--type-override-only] <output-format>`-style invocation
+  applies the saved overriding collection to the saved blob and writes the
+  result (binary or `#@ prototext`), with no terminal/`ratatui` involved.
+  This only works cleanly if the override-application/rendering pipeline
+  (Beyond v1's recursive-substitution model) is already factored out from
+  `tui.rs` as its own library-level entry point, independent of any
+  interactive state — a discipline worth keeping from the start (mirrors
+  §4's `App`-vs-rendering split) rather than retrofitting later.
+- **Why this matters for testing**: batch mode turns into `protolens`'s
+  strongest end-to-end test shape — fully deterministic input (blob +
+  descriptor-set + explicit saved overrides) to deterministic output
+  (extracted bytes/text), comparable against a golden file, with zero
+  interactive/terminal surface. Exercises the real override/render
+  pipeline, not just cursor bookkeeping (contrast with §4's `App`+
+  `TestBackend` tests, which cover interaction but not override
+  application). Not usable until Phase 7 lands the project-file format
+  itself — noted here for architecture, not committed for v1.
+
 ### Rendering and styling
 
 - **Copy with relative indentation**: the on-screen tree is indented per
@@ -258,7 +388,11 @@ this section is committed for implementation by this spec.
   grammar, e.g. YAML- or JSON-ish highlighters, that a generic library
   should handle it acceptably without a bespoke lexer) and feed the colored
   result into `ratatui` instead of the plain text. This is a textual,
-  re-lexing approach — no `NodeSpan` changes required.
+  re-lexing approach — no `NodeSpan` changes required. Like tree construction
+  above, colorization runs once at ingestion — producing a styled line
+  buffer alongside the plain one — not re-run per frame; the main pane then
+  windows into whichever buffer (plain or colored) is active (windowed-
+  rendering note, Annex C).
 - **Syntax coloring, longer term (structural, deferred)**: if the
   textual approach proves insufficient (e.g. it can't reliably distinguish
   overridden nodes or malformed values from well-typed ones), extend
@@ -320,12 +454,12 @@ dead ends, not a schedule.
 |---|---|---|
 | **v1** (this spec) | Decode/navigate/extract raw bytes (Goals 1–4) | spec 0110 |
 | **Phase 2** | Overriding data model (range + FQDN + descriptor-set, active/inactive); default overridings at root + `Any`/`MessageSet` ranges; full-tree re-render on change. No picker UI, no candidate ranking, no undo beyond active/inactive toggling. | v1's `IndexingTextSink`/`NodeSpan` index |
-| **Phase 3** | Override picker UI + `score_all` candidate ranking (spec 0109 Goals 3–4). Exact-position only; field-number-pool bulk override still deferred. | Phase 2's overriding model |
+| **Phase 3** | Override picker UI (modal overlay, Annex C) + `score_all` candidate ranking (spec 0109 Goals 3–4). Exact-position only; field-number-pool bulk override still deferred. | Phase 2's overriding model |
 | **Phase 4** | Rendering polish: textual syntax coloring (generic library over rendered lines), copy-with-dedent. | v1's `TextSink` output |
 | **Phase 4b** (deferred, conditional) | Structural syntax coloring (incl. malformity/invalid-serialization highlighting), if the textual approach (Phase 4) proves insufficient. | Phase 2 (styling hook) + `NodeSpan` column-span extension |
-| **Phase 5** | Type definition assistance pane: `reproto`-side `SourceCodeInfo` synthesis, in-pane viewer, import navigation, `$EDITOR` fallback. | Phase 3 (most useful alongside the candidate picker) + a `reproto`-side spec |
+| **Phase 5** | Type definition assistance pane (split-pane layout, Annex C): `reproto`-side `SourceCodeInfo` synthesis, in-pane viewer, import navigation, `$EDITOR` fallback. | Phase 3 (most useful alongside the candidate picker) + a `reproto`-side spec |
 | **Phase 6** (future, likely separate project) | Standalone `.proto` navigator library, later integrated into protolens's Phase 5 pane. | — |
-| **Phase 7** (revisit spec 0109) | Field-number-pool bulk override, true multi-step undo/redo, save-project, export `.desc`. | Phases 2–3; spec 0109 itself revisited once these land |
+| **Phase 7** (revisit spec 0109) | Field-number-pool bulk override, true multi-step undo/redo, save-project (YAML project file, "Project file and batch mode"), export `.desc`, batch/headless extract mode. | Phases 2–3; spec 0109 itself revisited once these land |
 
 Incremental re-interpretation (re-render only affected subtrees) is a
 cross-cutting concern starting at Phase 2 — its own open design task, not
@@ -349,15 +483,14 @@ tied to any one phase's ship date.
    indentation" above) so the extracted snippet is self-contained and
    directly usable in an external editor, not just the interactive-copy
    path.
-3. **`NodeSpan` shape**: to be determined by what `ratatui`'s view-building
-   code actually needs, not decided in the abstract ahead of implementing
-   §2's navigation logic — likely candidates are emission-order
-   `Vec<NodeSpan>` relying on containment, vs. an explicit `parent_index`
-   field, settled empirically once the TUI's cursor/fold/sibling-move logic
-   (Annex B) is actually being wired up. If Phase 4b's structural coloring
-   is pursued later, sub-line column spans per token would be an additional
-   requirement on top of whatever shape v1 settles on — worth revisiting
-   together rather than twice, but not blocking v1's decision.
+3. **`NodeSpan` shape** — resolved: `NodeSpan` itself (spec 0110) stays as
+   emitted (`raw_range`, `text_range`, `level`, `type_fqdn`), no upstream
+   change. `protolens` builds its own local arena (`TreeNode`: parent +
+   doubly-linked siblings + first/last child) on ingestion — see "Tree
+   construction (ingestion)" in §1. If Phase 4b's structural coloring is
+   pursued later, sub-line column spans per token would be an additional
+   requirement on `NodeSpan` itself — separate from this arena, revisit
+   then.
 4. **Incremental re-interpretation**: re-rendering only the subtree(s)
    affected by an active-overriding change, not the whole document (Phase
    2, "Beyond v1") — no detailed design yet.
@@ -459,6 +592,113 @@ pointer into it.
   interaction with fold state beyond "the jumplist target might currently
   be inside a folded subtree" (in which case jumping to it should also
   unfold its ancestors, so the target is actually visible).
+
+## Annex C — screen layout and pane design
+
+### v1 layout (single pane, committed)
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ protolens — descriptor.pb — google.protobuf.FileDescriptorSet       │ ← header (1 line)
+├────────────────────────────────────────────────────────────────────┤
+│  1 #@ google.protobuf.FileDescriptorSet                             │
+│  2 file {                                                           │
+│▸ 3   name: "google/protobuf/descriptor.proto"                       │ ← gutter + cursor line
+│  4   package: "google.protobuf"                                     │
+│▾ 5   message_type {                                                 │ ← fold indicator (expanded)
+│  6     name: "FileDescriptorProto"                                  │
+│  7     field { ... }                                                │
+│  ⋮                                                                   │
+├────────────────────────────────────────────────────────────────────┤
+│ L5/3062  bytes[212..8841]  google.protobuf.DescriptorProto           │ ← status line (1 line)
+├────────────────────────────────────────────────────────────────────┤
+│ :                                                                     │ ← command/message line (1 line)
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Four regions, laid out with `ratatui::Layout` as a single vertical split:
+
+- **Header** (`Constraint::Length(1)`): blob path, root type — static for
+  the session.
+- **Main pane** (`Constraint::Min(0)`, takes all remaining rows): the
+  `TextSink`-rendered `#@ prototext`, scrollable. A **2-column gutter**,
+  prepended by the TUI itself (not part of `TextSink`'s output, so it
+  never leaks into extracted/copied text) shows, per line: `▸`/`▾` fold
+  state on a foldable node's start line, blank otherwise; the cursor row
+  is highlighted separately (reverse video, or a leading marker — exact
+  styling TBD at implementation time). Keeping fold/cursor chrome in a
+  dedicated gutter, distinct from the render's own indentation, is what
+  keeps a selected/extracted range self-contained (ties into "Copy with
+  relative indentation" above and Open Issue 2's extraction format).
+- **Status line** (`Length(1)`): cursor position (`Lx/total`), the cursor
+  node's `raw_range`, its `type_fqdn` — "what am I looking at."
+- **Command/message line** (`Length(1)`): vim-style — echoes partial
+  multi-key sequences (e.g. after a leading `g`), hosts `:extract <path>`-
+  style ex-commands (Annex B), and doubles as a transient status/error
+  area (extract confirmation, decode errors).
+
+**Windowed, just-in-time rendering**: the main pane must never hand its full
+line buffer (plain text, or later, colorized — "Syntax coloring, short
+term" above) to `ratatui` each frame. Ingestion produces the complete
+buffer once; every redraw instead slices it to exactly the visible range
+(`scroll_offset..scroll_offset + pane_height`, derived from the main pane's
+`Rect` height) before constructing that frame's widget. This keeps each
+frame's work proportional to the terminal's visible rows, not to the
+document's total size — the payoff of `ratatui`'s immediate-mode model
+(Annex A) is only realized if the app does this slicing itself; feeding the
+whole buffer to a `Paragraph` every frame would forgo it.
+
+Minimum viable terminal: roughly 60×15. Below that, drop the header
+(folded into the status line) rather than refuse to run.
+
+A `?` help overlay (renders Annex B's key-binding table as a centered
+modal) is cheap enough to ship in v1 itself, even though the panes below
+it are Phase 3/5 features.
+
+### Later phases — modal overlay and split pane
+
+**Phase 3 (override picker)** — a centered floating/modal overlay, not a
+permanent pane, so v1's single-pane layout is otherwise untouched:
+
+```
+        ┌─────────────────────────────────────────────┐
+        │ Override type — range [212..8841]             │
+        ├─────────────────────────────────────────────┤
+        │ > google.protobuf.DescriptorProto     0.98    │
+        │   google.protobuf.FieldDescriptorProto 0.41   │
+        │   google.protobuf.EnumDescriptorProto  0.12   │
+        ├─────────────────────────────────────────────┤
+        │ Enter: apply   Esc: cancel                     │
+        └─────────────────────────────────────────────┘
+```
+
+Sized to content (`Percentage(60)` width, capped, centered via `Layout`
+margins), main pane dimmed/inactive behind it — an `fzf`/`telescope`-style
+picker, entries ranked by `score_all` (spec 0109 Goals 3–4).
+
+**Phase 5 (type definition assistance pane)** — horizontal split, main
+pane shrinks:
+
+```
+┌──────────────────────────────────┬───────────────────────────────┐
+│ Main tree pane (Percentage(65))    │ Type definition (Percentage(35))│
+│▾ message_type {                    │ message DescriptorProto {       │
+│▸   name: "DescriptorProto"         │   optional string name = 1;     │
+│    field { ... }                   │   repeated FieldDescriptorProto │
+│                                     │     field = 2;                  │
+│                                     │   ...                           │
+├─────────────────────────────────────┴───────────────────────────────┤
+│ status line                                                           │
+├───────────────────────────────────────────────────────────────────-──┤
+│ command/message line                                                  │
+└───────────────────────────────────────────────────────────────────-──┘
+```
+
+Toggled on/off with a key (exact binding TBD). Below a width threshold
+(e.g. 100 columns) the split is forced off rather than squeezing both
+panes unreadably — this pane is a "when you have room" feature, not core
+navigation, matching Phase 5's own framing ("Type definition assistance"
+above) as a helper pane, not a required one.
 
 ---
 

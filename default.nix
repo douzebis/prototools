@@ -249,18 +249,18 @@ let
 
   shells = import ./nix/shells.nix {
     inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto;
-    inherit (rust) prototext;
+    inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
 
   # ---------------------------------------------------------------------------
-  # Convenience bundle: prototext + reproto + protoscan
+  # Convenience bundle: prototext + protolens + reproto + protoscan
   # ---------------------------------------------------------------------------
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    paths  = [ rust.prototext python.reproto python.protoscan ];
+    paths  = [ rust.prototext rust.protolens python.reproto python.protoscan ];
   };
 
   # ---------------------------------------------------------------------------
@@ -273,7 +273,8 @@ let
   # ---------------------------------------------------------------------------
   ci = pkgs.linkFarmFromDrvs "ci" [
     rust.rustFmt rust.rustClippy rust.rustTests
-    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
+    rust.prototextBare rust.prototext rust.protolens
+    rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -283,7 +284,8 @@ let
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
   ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
     rust.rustFmt rust.rustTests
-    rust.prototextBare rust.prototext rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
+    rust.prototextBare rust.prototext rust.protolens
+    rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -299,6 +301,7 @@ in
   prototools           = prototools;
   prototext            = rust.prototext;
   prototext-bare       = rust.prototextBare;
+  protolens            = rust.protolens;
   rust-fmt             = rust.rustFmt;
   rust-clippy          = rust.rustClippy;
   rust-tests           = rust.rustTests;
