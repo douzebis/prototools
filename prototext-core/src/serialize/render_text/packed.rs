@@ -3,6 +3,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::ops::Range;
+
 use prost_reflect::Kind;
 
 use super::FieldOrExt;
@@ -41,7 +43,7 @@ fn write_nan_hex(bits: u64, out: &mut Vec<u8>) {
 // ── Per-element data ──────────────────────────────────────────────────────────
 
 /// Data for one decoded element of a packed field.
-struct PackedElem {
+pub(super) struct PackedElem {
     value_str: String,
     /// Per-element varint overhang bytes (for varint-packed types).
     ohb: u64,
@@ -52,6 +54,10 @@ struct PackedElem {
     nan_bits: Option<u64>,
     /// For ENUM: raw i32 numeric value (for the EnumName(N) annotation).
     enum_num: Option<i32>,
+    /// This element's own byte span *within the packed payload* (`data`,
+    /// the field's LEN-delimited contents after tag+length) — not yet
+    /// translated to absolute document coordinates (spec 0115 §1).
+    pub(super) byte_range: Range<usize>,
 }
 
 // ── Fixed-width packed decoder ────────────────────────────────────────────────
@@ -114,6 +120,7 @@ fn decode_packed_fixed_elems(
             neg_trunc: false,
             nan_bits,
             enum_num: None,
+            byte_range: i..i + elem_size,
         });
         i += elem_size;
     }
@@ -127,6 +134,7 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
     let mut elems = Vec::new();
     let mut i = 0;
     while i < data.len() {
+        let elem_start = i;
         let vr = parse_varint(data, i);
         if vr.varint_gar.is_some() {
             return Err(());
@@ -197,6 +205,7 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
             neg_trunc,
             nan_bits: None,
             enum_num: if is_enum { enum_num } else { None },
+            byte_range: elem_start..i,
         });
     }
     Ok(elems)
@@ -204,7 +213,7 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
 
 // ── Decode packed payload to per-element list ─────────────────────────────────
 
-fn decode_packed_elems(data: &[u8], foe: &FieldOrExt) -> Result<Vec<PackedElem>, ()> {
+pub(super) fn decode_packed_elems(data: &[u8], foe: &FieldOrExt) -> Result<Vec<PackedElem>, ()> {
     match foe.kind() {
         Kind::Double
         | Kind::Float

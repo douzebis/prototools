@@ -535,6 +535,126 @@ fn scalar_leaf_nodes_have_no_type_fqdn() {
     }
 }
 
+// ── Packed-repeated scalar fields (spec 0115) ───────────────────────────────
+
+#[test]
+fn packed_repeated_field_gets_one_node_span_per_element() {
+    use prost::Message as _;
+    use prost_reflect::DescriptorPool;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+
+    let msg_desc = DescriptorProto {
+        name: Some("Msg".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("vals".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_node_span_packed.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![msg_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let mut file_bytes = Vec::new();
+    file.encode(&mut file_bytes).unwrap();
+    let mut pool = DescriptorPool::new();
+    pool.decode_file_descriptor_proto(file_bytes.as_slice())
+        .expect("cannot add test proto to pool");
+    let schema = schema_from_pool(pool, "test.Msg").expect("cannot build schema");
+
+    // vals: field 1 (LEN, packed by default in proto3), tag (1<<3)|2 =
+    // 0x0a, len 3, payload [0x01, 0x02, 0x03] (three varint elements).
+    let wire: &[u8] = &[0x0a, 0x03, 0x01, 0x02, 0x03];
+
+    let (_text, spans) = decode_and_render_indexed(
+        wire,
+        schema.root_descriptor().as_ref(),
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
+    );
+
+    let elems: Vec<&NodeSpan> = spans.iter().filter(|s| s.field_number == 1).collect();
+    assert_eq!(elems.len(), 3, "expected one NodeSpan per packed element");
+    for (i, elem) in elems.iter().enumerate() {
+        assert!(!elem.is_message);
+        assert_eq!(
+            elem.packed_record_start,
+            Some(0),
+            "packed_record_start must point at the record's own tag"
+        );
+        // Element i's own byte, at offset 2 (tag+length) + i.
+        assert_eq!(elem.raw_range, (2 + i)..(2 + i + 1));
+        // Line i+1: line 0 is the `#@ prototext...` header (emit_header:
+        // true).
+        assert_eq!(elem.text_range, (i + 1)..(i + 2));
+    }
+}
+
+#[test]
+fn empty_packed_repeated_field_keeps_a_single_whole_record_span() {
+    use prost::Message as _;
+    use prost_reflect::DescriptorPool;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+
+    let msg_desc = DescriptorProto {
+        name: Some("Msg".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("vals".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_node_span_packed_empty.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![msg_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let mut file_bytes = Vec::new();
+    file.encode(&mut file_bytes).unwrap();
+    let mut pool = DescriptorPool::new();
+    pool.decode_file_descriptor_proto(file_bytes.as_slice())
+        .expect("cannot add test proto to pool");
+    let schema = schema_from_pool(pool, "test.Msg").expect("cannot build schema");
+
+    // vals: field 1 (LEN, packed), tag 0x0a, len 0, no payload.
+    let wire: &[u8] = &[0x0a, 0x00];
+
+    let (_text, spans) = decode_and_render_indexed(
+        wire,
+        schema.root_descriptor().as_ref(),
+        DecodeRenderOpts {
+            annotations: true,
+            emit_header: true,
+            ..Default::default()
+        },
+    );
+
+    let elems: Vec<&NodeSpan> = spans.iter().filter(|s| s.field_number == 1).collect();
+    assert_eq!(
+        elems.len(),
+        1,
+        "an empty packed record falls back to one whole-record span"
+    );
+    assert_eq!(elems[0].raw_range, 0..2);
+    assert!(elems[0].packed_record_start.is_none());
+}
+
 // ── `raw_range` fidelity ────────────────────────────────────────────────────
 
 #[test]

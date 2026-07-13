@@ -56,7 +56,7 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
     if !is_message {
         return &blob[range.clone()];
     }
-    &blob[message_payload_range(blob, range)]
+    &blob[message_payload_range(blob, range, None)]
 }
 
 /// For any field's full `tag[+length]+payload` span, return just the
@@ -66,7 +66,21 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 /// wire type (varint, fixed32, fixed64) has only its tag stripped.
 /// `pub(crate)`: also reused by `tui.rs`'s payload-only range display for
 /// every node, message/group or scalar alike (spec 0114 §1.1, extended).
-pub(crate) fn message_payload_range(blob: &[u8], range: &Range<usize>) -> Range<usize> {
+///
+/// `packed_record_start` is `NodeSpan::packed_record_start` (spec 0115
+/// §3): `Some` means `range` is one element of a packed-repeated field —
+/// it has no wire tag of its own (it's a bare value inside the record's
+/// shared LEN payload), so `range` is already the payload and is returned
+/// unstripped; stripping it would misparse the element's own first byte
+/// as a fake tag.
+pub(crate) fn message_payload_range(
+    blob: &[u8],
+    range: &Range<usize>,
+    packed_record_start: Option<usize>,
+) -> Range<usize> {
+    if packed_record_start.is_some() {
+        return range.clone();
+    }
     let tag = parse_wiretag(blob, range.start);
     let Some(wtype) = tag.wtype else {
         return range.clone();
@@ -316,6 +330,7 @@ mod tests {
                 // prepending — so left scalar-shaped, same as before this
                 // field existed.
                 is_message: false,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,
@@ -354,6 +369,7 @@ mod tests {
                 level: 0,
                 type_fqdn: Some("google.protobuf.FileOptions".to_string()),
                 is_message: true,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,
@@ -395,6 +411,7 @@ mod tests {
                 level: 0,
                 type_fqdn: Some("pkg.MyGroup".to_string()),
                 is_message: true,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,

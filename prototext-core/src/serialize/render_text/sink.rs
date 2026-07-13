@@ -219,7 +219,7 @@ use super::helpers::{
     field_decl, push_indent, push_tag_modifiers, render_invalid, wfl_prefix_n, wob_prefix_n,
     write_close_brace, write_dec_u64, AnnWriter, ScalarCtx,
 };
-use super::packed::render_packed;
+use super::packed::{decode_packed_elems, render_packed};
 use super::varint::{decode_varint_typed, render_varint_field, VarintKind};
 use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 
@@ -981,6 +981,14 @@ pub struct NodeSpan {
     /// (e.g. `protolens`'s override-target validation); `type_fqdn.is_some
     /// ()` alone is ambiguous (spec 0114 §1.2).
     pub is_message: bool,
+    /// Absolute offset (same coordinate space as `raw_range`) of the
+    /// *enclosing packed record's own* tag, when this span is one element
+    /// of a packed-repeated field — `None` for every other node, including
+    /// non-packed scalars (which have their own tag) and the record's own
+    /// summary span in the empty/invalid fallback cases (§2.4/§2.5), which
+    /// again carry their own tag. Purely an internal discriminator (spec
+    /// 0115 Non-goals) — not surfaced in any user-visible rendering.
+    pub packed_record_start: Option<usize>,
 }
 
 /// Per-`IndexingTextSink` "in-progress nested node" marker: captures what's
@@ -1071,6 +1079,13 @@ impl Sink for IndexingTextSink {
     ) {
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
+        // Captured before `value` is moved into the delegated call below,
+        // so we can still tell (after that call) whether this was a packed
+        // field — spec 0115 §2.
+        let packed_data = match &value {
+            ScalarValue::Packed(data) => Some(*data),
+            _ => None,
+        };
         self.inner.scalar_field(
             field_number,
             field_schema,
@@ -1081,6 +1096,37 @@ impl Sink for IndexingTextSink {
         );
         let text_end = self.inner.line_count();
         let base = self.raw_base;
+
+        // Packed-repeated scalar field: one `NodeSpan` per element instead
+        // of one span for the whole record (spec 0115 §2), reusing
+        // `decode_packed_elems`'s output purely for byte-range bookkeeping
+        // — `render_packed`'s own line-writing logic (already run via the
+        // delegated call above) is untouched and not duplicated here.
+        if let Some(data) = packed_data {
+            let fs = field_schema.expect("packed scalar requires a known field schema");
+            if let Ok(elems) = decode_packed_elems(data, fs) {
+                if !elems.is_empty() {
+                    let payload_start = raw_range.end - data.len();
+                    let packed_record_start = Some(base + raw_range.start);
+                    for (i, elem) in elems.iter().enumerate() {
+                        self.spans.push(NodeSpan {
+                            field_number,
+                            raw_range: (base + payload_start + elem.byte_range.start)
+                                ..(base + payload_start + elem.byte_range.end),
+                            text_range: (text_start + i)..(text_start + i + 1),
+                            level,
+                            type_fqdn: None,
+                            is_message: false,
+                            packed_record_start,
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Every other scalar (including an empty or undecodable packed
+        // record — spec 0115 §2.4/§2.5): one span for the whole field.
         self.spans.push(NodeSpan {
             field_number,
             raw_range: (base + raw_range.start)..(base + raw_range.end),
@@ -1088,6 +1134,7 @@ impl Sink for IndexingTextSink {
             level,
             type_fqdn: None,
             is_message: false,
+            packed_record_start: None,
         });
     }
 
@@ -1149,6 +1196,7 @@ impl Sink for IndexingTextSink {
             level,
             type_fqdn,
             is_message,
+            packed_record_start: None,
         });
     }
 

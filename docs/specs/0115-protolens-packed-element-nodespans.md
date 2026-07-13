@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0115 — `protolens`: one `NodeSpan` per packed-repeated element
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-07-13
 **Refs:** `docs/specs/0110-render-sink-unification.md`,
 `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
 `docs/specs/0114-protolens-range-type-override.md`

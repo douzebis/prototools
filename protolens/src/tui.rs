@@ -717,7 +717,11 @@ impl App {
     /// as `[0, n)`.
     fn display_range(&self, idx: usize) -> Range<usize> {
         let span = &self.tree[idx].span;
-        let raw = extract::message_payload_range(&self.blob, &span.raw_range);
+        let raw = extract::message_payload_range(
+            &self.blob,
+            &span.raw_range,
+            span.packed_record_start,
+        );
         (raw.start - self.wrapper_offset)..(raw.end - self.wrapper_offset)
     }
 
@@ -793,7 +797,11 @@ impl App {
             SortMode::Inferred => match &self.ctx.graph {
                 Some(graph) => {
                     let node = &self.tree[idx].span;
-                    let range = extract::message_payload_range(&self.blob, &node.raw_range);
+                    let range = extract::message_payload_range(
+                        &self.blob,
+                        &node.raw_range,
+                        node.packed_record_start,
+                    );
                     if self.active_override_range.as_ref() != Some(&range) {
                         if let Some(cached) = self.candidate_cache.get(&range) {
                             self.override_inferred_raw = cached;
@@ -836,7 +844,11 @@ impl App {
             return;
         };
         let node = &self.tree[idx].span;
-        let range = extract::message_payload_range(&self.blob, &node.raw_range);
+        let range = extract::message_payload_range(
+            &self.blob,
+            &node.raw_range,
+            node.packed_record_start,
+        );
         let range_bytes = &self.blob[range.clone()];
         self.override_inferred_raw = override_pane::inferred_candidates(range_bytes, graph);
         self.override_candidates_complete = true;
@@ -994,7 +1006,11 @@ impl App {
         };
 
         let old_span = self.tree[idx].span.clone();
-        let payload_range = extract::message_payload_range(&self.blob, &old_span.raw_range);
+        let payload_range = extract::message_payload_range(
+            &self.blob,
+            &old_span.raw_range,
+            old_span.packed_record_start,
+        );
         let payload_bytes = self.blob[payload_range.clone()].to_vec();
 
         let opts = DecodeRenderOpts {
@@ -2517,6 +2533,7 @@ mod tests {
                 level: 0,
                 type_fqdn: Some("google.protobuf.DescriptorProto".to_string()),
                 is_message: true,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,
@@ -2560,6 +2577,7 @@ mod tests {
                     level: 0,
                     type_fqdn: None,
                     is_message: false,
+                    packed_record_start: None,
                 },
                 parent: None,
                 first_child: None,
@@ -2623,6 +2641,7 @@ mod tests {
                 level: 0,
                 type_fqdn: None,
                 is_message: true,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,
@@ -2668,6 +2687,7 @@ mod tests {
                 level: 0,
                 type_fqdn: None,
                 is_message: false,
+                packed_record_start: None,
             },
             parent: None,
             first_child: None,
@@ -3179,13 +3199,11 @@ mod tests {
     /// `display_range` on a scalar node starts at the payload, same as a
     /// message/group node: the field's own tag (and, for length-delimited
     /// scalars, the length prefix) is stripped. A packed-repeated field is
-    /// the length-delimited case: `IndexingTextSink::scalar_field` pushes
-    /// exactly one `NodeSpan` for the *whole* packed record (every
-    /// element's line folded into one `text_range`, `raw_range` spanning
-    /// the record's full `tag+length+payload`) — so stripping tag+length
-    /// here yields exactly the concatenated packed elements, not the
-    /// individual elements' own sub-ranges (there is only one node/one
-    /// byte range for the whole packed field, by design).
+    /// the length-delimited case, but `IndexingTextSink::scalar_field`
+    /// pushes one `NodeSpan` *per element* (spec 0115), each already
+    /// bare-payload (`packed_record_start: Some(...)`) — so `display_range`
+    /// on one of those element nodes returns that element's own byte
+    /// unstripped, not the whole record's tag+length-stripped payload.
     #[test]
     fn display_range_strips_tag_and_length_for_scalars_including_packed() {
         use prost::Message as _;
@@ -3248,14 +3266,25 @@ mod tests {
         // Tag (1 byte) stripped: just the varint value byte.
         assert_eq!(app.display_range(id_idx), 1..2);
 
-        let vals_idx = app
+        let vals_indices: Vec<usize> = app
             .tree
             .iter()
-            .position(|n| n.span.field_number == 2)
-            .expect("tree must contain the packed vals field");
-        assert!(!app.tree[vals_idx].span.is_message);
-        // Tag+length (2 bytes) stripped: just the 3 packed payload bytes.
-        assert_eq!(app.display_range(vals_idx), 4..7);
+            .enumerate()
+            .filter(|(_, n)| n.span.field_number == 2)
+            .map(|(i, _)| i)
+            .collect();
+        // One NodeSpan per packed element (spec 0115), not one for the
+        // whole record.
+        assert_eq!(vals_indices.len(), 3);
+        for idx in &vals_indices {
+            assert!(!app.tree[*idx].span.is_message);
+            assert!(app.tree[*idx].span.packed_record_start.is_some());
+        }
+        // Each element's own byte, already bare-payload — no further
+        // tag/length stripping applied.
+        assert_eq!(app.display_range(vals_indices[0]), 4..5);
+        assert_eq!(app.display_range(vals_indices[1]), 5..6);
+        assert_eq!(app.display_range(vals_indices[2]), 6..7);
     }
 
     /// Spec 0114 §5: `apply_override` splices a re-rendered subtree into
