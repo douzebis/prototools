@@ -12,7 +12,10 @@
 use std::fmt;
 use std::path::Path;
 
+use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
+use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
 use prost_reflect::{DescriptorPool, MessageDescriptor};
+use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
 };
@@ -293,11 +296,75 @@ pub struct Decoded {
     pub lines: Vec<String>,
     pub tree: Vec<TreeNode>,
     pub root_type: String,
+    /// The wrapped blob actually decoded (spec 0114 §1.1): a real tag+length
+    /// prefix (field 1, `WT_LEN`) prepended to the caller's original blob,
+    /// so every `NodeSpan::raw_range` in `tree` is relative to *this* blob,
+    /// not the caller's original one.
+    pub blob: Vec<u8>,
+    /// Width in bytes of the wrapper's own tag+length prefix — subtract this
+    /// from any `raw_range` coordinate to recover the caller's original
+    /// (pre-wrap) numbering.
+    pub wrapper_offset: usize,
+}
+
+/// Build (or reuse, if already registered) a synthetic one-field message
+/// descriptor `protolens_internal.Wrapper_<sanitized root_fqdn>` whose sole
+/// field 1 is message-typed, referencing `root_fqdn` — the virtual
+/// encompassing protobuf of spec 0114 §1.1. Named per-root so that
+/// registering wrappers for two different root types on the same pool (as
+/// happens across repeated `decode()` calls) never collides.
+fn register_wrapper(
+    pool: &mut DescriptorPool,
+    root_desc: &MessageDescriptor,
+) -> Result<MessageDescriptor, DecodeError> {
+    let root_fqdn = root_desc.full_name();
+    let suffix = root_fqdn.replace('.', "_");
+    let full_name = format!("protolens_internal.Wrapper_{suffix}");
+    if let Some(existing) = pool.get_message_by_name(&full_name) {
+        return Ok(existing);
+    }
+
+    let field = FieldDescriptorProto {
+        name: Some("root".to_string()),
+        number: Some(1),
+        label: Some(Label::Optional as i32),
+        r#type: Some(Type::Message as i32),
+        type_name: Some(format!(".{root_fqdn}")),
+        ..Default::default()
+    };
+    let message = DescriptorProto {
+        name: Some(format!("Wrapper_{suffix}")),
+        field: vec![field],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some(format!("protolens_internal/wrapper_{suffix}.proto")),
+        package: Some("protolens_internal".to_string()),
+        dependency: vec![root_desc.parent_file().name().to_string()],
+        syntax: Some("proto2".to_string()),
+        message_type: vec![message],
+        ..Default::default()
+    };
+    pool.add_file_descriptor_proto(file)
+        .map_err(|e| DecodeError::Schema(format!("registering wrapper descriptor: {e}")))?;
+    pool.get_message_by_name(&full_name)
+        .ok_or_else(|| DecodeError::Schema("wrapper descriptor registered but not found".into()))
+}
+
+/// Prepend a real tag(field 1, `WT_LEN`)+length-varint prefix to `blob`,
+/// making it a genuinely valid encoding of the wrapper message (spec 0114
+/// §1.1).
+fn wrap_blob(blob: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(blob.len() + 10);
+    write_tag(1, WT_LEN, &mut out);
+    write_varint(blob.len() as u64, &mut out);
+    out.extend_from_slice(blob);
+    out
 }
 
 pub fn decode(
     blob: &[u8],
-    ctx: &DescriptorContext,
+    ctx: &mut DescriptorContext,
     type_override: Option<&str>,
     indent_size: usize,
     annotations: bool,
@@ -305,12 +372,16 @@ pub fn decode(
     let root_desc = determine_root_type(blob, ctx, type_override)?;
     let root_type = root_desc.full_name().to_string();
 
+    let wrapper_desc = register_wrapper(&mut ctx.pool, &root_desc)?;
+    let wrapped_blob = wrap_blob(blob);
+    let wrapper_offset = wrapped_blob.len() - blob.len();
+
     let opts = DecodeRenderOpts {
         annotations,
         indent_size,
         ..Default::default()
     };
-    let (text, spans) = decode_and_render_indexed(blob, Some(&root_desc), opts);
+    let (text, spans) = decode_and_render_indexed(&wrapped_blob, Some(&wrapper_desc), opts);
 
     let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
@@ -321,5 +392,7 @@ pub fn decode(
         lines,
         tree,
         root_type,
+        blob: wrapped_blob,
+        wrapper_offset,
     })
 }

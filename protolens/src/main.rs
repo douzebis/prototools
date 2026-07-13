@@ -92,7 +92,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let ctx = match decode::DescriptorContext::load(descriptor_set) {
+    let mut ctx = match decode::DescriptorContext::load(descriptor_set) {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");
@@ -102,7 +102,7 @@ fn main() -> ExitCode {
 
     let decoded = match decode::decode(
         &blob,
-        &ctx,
+        &mut ctx,
         cli.r#type.as_deref(),
         cli.indent,
         !cli.no_annotations,
@@ -120,13 +120,7 @@ fn main() -> ExitCode {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| cli.blob.display().to_string());
 
-    let mut app = tui::App::new(
-        decoded,
-        &blob_label,
-        blob,
-        cli.blob.clone(),
-        !cli.no_annotations,
-    );
+    let mut app = tui::App::new(decoded, &blob_label, cli.blob.clone(), !cli.no_annotations);
     if let Err(e) = tui::run(&mut app) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;

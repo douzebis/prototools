@@ -968,8 +968,19 @@ pub struct NodeSpan {
     /// declared field type for a regular nested message/group, or — for an
     /// Any/MessageSet-expanded wrapper node — the *resolved* type, which
     /// generally differs from the field's own declared type. `None` for
-    /// scalar fields and any node whose type genuinely isn't known.
+    /// scalar fields and any node whose type genuinely isn't known — this
+    /// is *not* a scalar/message discriminator (see `is_message`): a
+    /// message/group node with no resolved schema also has `type_fqdn:
+    /// None`.
     pub type_fqdn: Option<String>,
+    /// `true` for a nested message/group node (`begin_nested`/
+    /// `begin_virtual_nested`..`end_nested`), `false` for a scalar field
+    /// (`scalar_field`) — set independently of `type_fqdn`, which is
+    /// `None` for both a scalar *and* a schema-unresolved message/group.
+    /// This is the structural shape discriminator consumers should use
+    /// (e.g. `protolens`'s override-target validation); `type_fqdn.is_some
+    /// ()` alone is ambiguous (spec 0114 §1.2).
+    pub is_message: bool,
 }
 
 /// Per-`IndexingTextSink` "in-progress nested node" marker: captures what's
@@ -980,6 +991,7 @@ pub(super) struct IndexMark {
     text_start: usize,
     level: usize,
     type_fqdn: Option<String>,
+    is_message: bool,
     /// `IndexingTextSink::raw_base` as it was *before* this node was
     /// opened — i.e. the base to translate this node's own `raw_range`
     /// with at `end_nested`, and to restore `raw_base` to once this
@@ -1075,6 +1087,7 @@ impl Sink for IndexingTextSink {
             text_range: text_start..text_end,
             level,
             type_fqdn: None,
+            is_message: false,
         });
     }
 
@@ -1105,6 +1118,7 @@ impl Sink for IndexingTextSink {
             text_start,
             level,
             type_fqdn,
+            is_message: true,
             raw_base,
             inner,
         }
@@ -1121,6 +1135,7 @@ impl Sink for IndexingTextSink {
             text_start,
             level,
             type_fqdn,
+            is_message,
             raw_base,
             inner,
         } = mark;
@@ -1133,6 +1148,7 @@ impl Sink for IndexingTextSink {
             text_range: text_start..text_end,
             level,
             type_fqdn,
+            is_message,
         });
     }
 
@@ -1169,6 +1185,7 @@ impl Sink for IndexingTextSink {
             text_start,
             level,
             type_fqdn: type_fqdn.map(str::to_owned),
+            is_message: true,
             raw_base,
             inner,
         }

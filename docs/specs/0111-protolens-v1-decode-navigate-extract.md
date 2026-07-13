@@ -6,9 +6,12 @@ SPDX-License-Identifier: MIT
 
 # 0111 — `protolens` v1: decode / navigate / extract
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-07-10
 **Refs:** `docs/specs/0109-protolens-interactive-schema-inference.md`,
-`docs/specs/0110-render-sink-unification.md`
+`docs/specs/0110-render-sink-unification.md`,
+`docs/specs/0113-protolens-tui-refinements.md`,
+`docs/specs/0114-protolens-range-type-override.md`
 **App:** protolens (new)
 
 ---
@@ -87,7 +90,7 @@ shipped and the sketch below has been validated against real use.
   index shape are deliberately designed to support this later, v1 stops at
   extracting raw bytes. Splicing a re-rendered replacement into the composite
   view and re-indexing the replaced subtree is deferred to the spec that
-  introduces interactive override.
+  introduces interactive override (spec 0114).
 - Any change to `prototext-core`/`render_text` — spec 0110 is a fixed
   prerequisite, not something this spec revises.
 
@@ -657,8 +660,13 @@ it are Phase 3/5 features.
 
 ### Later phases — modal overlay and split pane
 
-**Phase 3 (override picker)** — a centered floating/modal overlay, not a
-permanent pane, so v1's single-pane layout is otherwise untouched:
+**Phase 3 (override picker)** — sketch superseded by spec 0114, which
+implements this phase as an ephemeral right-hand split pane instead of the
+centered modal originally sketched here. Left below for historical
+context.
+
+A centered floating/modal overlay, not a permanent pane, so v1's
+single-pane layout is otherwise untouched:
 
 ```
         ┌─────────────────────────────────────────────┐

@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 # 0113 — `protolens` TUI refinements (living record)
 
 **Status:** living / in progress
-**Refs:** `docs/specs/0111-protolens-v1-decode-navigate-extract.md`
+**Refs:** `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
+`docs/specs/0114-protolens-range-type-override.md`
 **App:** protolens
 
 ---
@@ -56,6 +57,7 @@ implementation revealed 0111's assumptions were wrong.
 - [x] [D6](#d6--folded-line-display-closing-brace-before-trailing-content) — Folded-line display: closing brace before trailing content
 - [x] [D12](#d12--d6s---splice-verified-against-real-annotated-output) — D6's `... }` splice verified against real annotated output
 - [x] [D13](#d13--raw-range-status-line-display-inclusive-bound) — Raw-range status-line display: inclusive bound
+- [ ] [D25](#d25--positional-path-notation-alongside-the-byte-range) — Positional-path notation, alongside the byte range
 
 ### Navigation & keybindings
 - [x] [D7](#d7--groups-are-foldable-same-as-messages-no-special-casing-needed) — Groups are foldable, same as messages
@@ -66,6 +68,7 @@ implementation revealed 0111's assumptions were wrong.
 - [x] [D18](#d18--lright-made-symmetric-with-hleft-aria-tree-view-pattern) — `l`/`Right` made symmetric with `h`/`Left` (ARIA tree-view pattern)
 - [x] [D19](#d19--homeend-and-ggg-jump-to-firstlast-visible-node) — `Home`/`End` and `gg`/`G` jump-to-first/last-visible-node
 - [ ] [D20](#d20--future-user-configurable-keybindings-file) — Future: user-configurable keybindings file
+- [ ] [D24](#d24--horizontal-panning-of-the-main-pane) — Horizontal panning of the main pane
 
 ### Mouse & input
 - [x] [D4](#d4--mouse-support-wheel--click) — Mouse support (wheel + click)
@@ -79,6 +82,9 @@ implementation revealed 0111's assumptions were wrong.
 - [x] [D11](#d11--foldunfold-state-must-be-transparent-to-extraction) — Fold/unfold state must be transparent to extraction (constraint on not-yet-written `extract.rs`)
 - [x] [D21](#d21--extract-command-line-x-and-extract) — Extract command line: `x` and `:extract`
 - [x] [D23](#d23--extract-default-path-proposal) — Extract default-path proposal
+
+### Command line
+- [ ] [D26](#d26--tab-completion-with-cycling-for-the-command-line) — Tab-completion with cycling for the command line
 
 ### Help & onboarding
 - [x] [D22](#d22--help-overlay-and-startup-splash-screen) — Help overlay and startup splash screen
@@ -612,6 +618,140 @@ before confirming.
 - Implemented as `App::default_extract_path()`, called once when `x` is
   pressed (not recomputed as the user edits the pre-filled buffer).
 
+### D24 — Horizontal panning of the main pane
+
+**Status:** Open — key bindings agreed; pan step size and clamping/gutter
+interaction still TBD at implementation time.
+
+Gap: long field values (and, once spec 0114 lands, an override's re-spliced
+subtree at extra indentation depth) can already exceed the main pane's
+rendered width; there is no horizontal scroll offset today — a line just
+renders as-is from column 0, clipped by the pane's `Rect` width.
+
+- Bindings: `Ctrl-Left`/`Ctrl-Right` pan the view left/right. Bare
+  `Left`/`Right` (parent/child move) and `Shift-Left`/`Shift-Right`
+  (fold-all/unfold-all siblings, D15/D17) are both already taken; `Ctrl`+
+  arrow follows the same modifier-escalation convention already used for
+  `Ctrl-O`/`Ctrl-I` (jumplist) layered over plain `o`/`i` (now also
+  `t` for spec 0114's override pane).
+- Considered `<`/`>` as an unclaimed fallback if `Ctrl`+arrow doesn't reach
+  the app in some terminal/multiplexer configuration — not adopted for v1;
+  `Shift`+arrow already relies on similar terminal support and works fine
+  in practice, so no reason to expect `Ctrl`+arrow to be worse.
+- Not yet decided: exact pan step (e.g. a fixed column count vs. a fraction
+  of the pane's visible width), clamping bounds (`0` on the left; on the
+  right, likely the longest *currently visible* line's length minus the
+  pane width, recomputed as the cursor/scroll position changes), and
+  whether the fold-marker gutter (D3) stays pinned to column 0 while only
+  the rendered text pans, or scrolls along with it.
+
+### D25 — Positional-path notation, alongside the byte range
+
+**Status:** Open — notation agreed; exact status-line layout and whether
+very deep paths need truncation still TBD at implementation time.
+
+Spec 0109's own User Interface section sketched a status-line "path"
+(`.1.2`) without ever defining it precisely. Raised again as an
+alternative/complementary way to identify the cursor node's range,
+distinct from D13's `bytes[start..end]`: a byte range needs no schema
+knowledge to *display*, but two different nodes can't be told apart from
+it alone if you don't already know the tree shape; a **positional path**
+identifies a node by its exact location in the tree instead, and does so
+unambiguously with no schema knowledge required either.
+
+- **Definition**: `/n_1/n_2/.../n_k`, a **slash-separated path**, where each
+  `n_i` is the **1-based ordinal position of that level's node among its own
+  parent's direct children, in document order** — *not* the field number.
+  Field number was considered and rejected: a repeated field occurrence
+  shares its field number with every other occurrence at the same level, so
+  field number alone wouldn't be unambiguous; sibling position always is.
+  This also means the path is computable purely structurally, from the same
+  sibling-chain (`first_child`/`next_sibling`) `build_tree` (D1) already
+  maintains — no field-number/tag inspection, no descriptor lookup needed.
+- **Empty-path (root) notation**: the root/whole-document path is a lone
+  `/`, with no segments after it — matching the familiar Unix filesystem-
+  root convention. Every other path is "the root's `/`, plus one more `/n`
+  segment per level" — uniform, no special-cased root format. Revises
+  0109's own leading-dot sketch (`.1.2`): a dot-based path would sit
+  directly adjacent to the status line's `.`-separated FQDN (e.g.
+  `google.protobuf.DescriptorProto`), risking visual collision between the
+  path's own `.` separators and the FQDN's; `/` avoids this entirely.
+- **1-based**, matching the status line's own existing `Lx/total` (D13's
+  neighbor) 1-based convention, for consistency within the same status
+  line.
+- **Display**: alongside `bytes[..]` (D13), not instead of it — e.g.
+  `L5/3062  bytes[212..8841]  path /1/2  google.protobuf.DescriptorProto`.
+  Exact column layout/ordering not yet decided.
+- Noted in passing (not adopted, no action taken): this positional path
+  would also be a valid, schema-independent key for identifying an
+  override's target range (spec 0114) — 0114 sticks with the byte range as
+  its cache/override key for now (already sufficient, no reason to
+  complicate), but the path notation may be worth revisiting once spec
+  0109's deferred "set of overrides" work needs a stable node identity
+  that survives a re-render (a byte range can shift after an ancestor's
+  own override changes its rendered length, if that ever becomes possible;
+  a positional path, defined purely on the *original* wire structure,
+  would not).
+
+### D26 — Tab-completion with cycling for the command line
+
+**Status:** Open — mechanism agreed; exact on-screen presentation of the
+cycling state (e.g. a status-line hint, or just the buffer text changing)
+still TBD at implementation time.
+
+Motivated by spec 0114's `:type-as`/`:type-as-raw` command names (typing
+either the command name or a full FQDN by hand is tedious), but designed
+as general command-line infra, not ad hoc to that one feature — it also
+benefits `:extract` (D21), and any future command added later.
+
+Two independent things can be completed, at whichever position the cursor
+sits in the command buffer: **(a)** the command name itself (the first
+token), and **(b)** currently, only `:type-as`'s FQDN argument (the second
+token, once the command name is resolved) — other commands' arguments
+(e.g. `:extract`'s `<path>`) are left plain-typed, matching D21's existing
+"no file browser, just like vim's own `:w <path>`" precedent; file-path
+completion is not addressed by this entry.
+
+- **Behavior**, modeled on vim's own `wildmenu`/`wildmode=longest,full`
+  (a natural fit, since the command line already deliberately mimics vim —
+  D21): the first `Tab` completes the current token to the longest common
+  prefix of all matching candidates. If that prefix is still ambiguous
+  (more than one candidate remains), each subsequent `Tab` — as long as no
+  other key has been pressed in between — cycles forward through the full
+  candidate list one at a time, replacing just that token, wrapping around
+  after the last candidate. `Shift-Tab` cycles backward through the same
+  list. Typing any other character, `Enter`, `Esc`, or `Backspace` ends the
+  cycling state and returns to plain editing.
+- **Templated, not ad hoc**: a single generic primitive, e.g.
+  `fn complete_prefix<'a>(prefix: &str, candidates: impl Iterator<Item =
+  &'a str>) -> Vec<&'a str>`, backs three call sites:
+  1. `run_command`'s dispatcher itself — unambiguous-prefix execution at
+     `Enter` time, with exact match always winning over prefix ambiguity
+     (spec 0114 §7): typing a command's full name resolves to itself even
+     when it's also a prefix of a longer command name (e.g. `:type-as` vs.
+     `:type-as-raw`) — matching vim's own `:command` abbreviation
+     convention and `argparse`'s prefix-matching, not a bespoke rule.
+  2. Command-name Tab-completion, driven off the same single
+     source-of-truth command-name registry already used by (1) — adding a
+     command to that registry is the only step needed for it to get both
+     prefix-dispatch and Tab-completion, automatically.
+  3. `:type-as`'s FQDN-argument Tab-completion (spec 0114) — candidates are
+     the same session-global, lexicographically-sorted FQDN list spec
+     0114 §3.2/§6 already computes once and caches, reused here rather than
+     recomputed. Structurally the same shape as the existing
+     `protolens/src/complete.rs::complete_type_names` (a
+     `clap_complete::ArgValueCompleter` used for the CLI's own `-t`/`--type`
+     *shell* completion, outside the TUI) — not literally shared code
+     (different completion frameworks: `clap_complete` vs. this TUI's own
+     command-line editor), but the same matching semantics; worth keeping
+     the two in sync if either changes.
+- **No conflict with the override pane's own `Tab`** (spec 0114 §2):
+  command-line editing (`App::command_buffer: Some(...)`, D21) and the
+  override pane are mutually exclusive input modes — command-line mode
+  already fully shadows every normal-mode key binding (D21), so its `Tab`
+  binding and the override pane's focus-toggle `Tab` binding never compete
+  for the same keypress.
+
 ---
 
 ## Open
@@ -620,6 +760,12 @@ before confirming.
   0111 Phase 7, not actionable until the project-file format exists.
 - **D20** — user-configurable keybindings file: deferred until a real
   keyboard-layout collision is reported (see D20).
+- **D24** — horizontal panning: key bindings settled, implementation
+  details (pan step, clamping, gutter behavior) still open.
+- **D25** — positional-path notation: notation settled, status-line layout
+  still open.
+- **D26** — Tab-completion with cycling: mechanism settled, on-screen
+  presentation of the cycling state still open.
 
 New entries get appended to the Index (grouped by category) and to
 Decisions (in `D<n>` order) as further TUI feedback arrives.

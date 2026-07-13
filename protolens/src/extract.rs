@@ -39,7 +39,7 @@ pub enum ExtractFormat {
 
 /// Raw byte sub-slice of `blob` for `node`'s own encoded value.
 ///
-/// For a *message* node (`is_message`: `NodeSpan::type_fqdn` is set — a
+/// For a *message* node (`is_message`: `NodeSpan::is_message` — a
 /// nested message/group, not a scalar field), the leading wire tag (and,
 /// for length-delimited fields, the length-prefix varint) is stripped, so
 /// the result is that message's raw payload on its own — directly
@@ -60,8 +60,9 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 }
 
 /// For a message/group node's full `tag[+length]+payload` span, return
-/// just the `payload` sub-range.
-fn message_payload_range(blob: &[u8], range: &Range<usize>) -> Range<usize> {
+/// just the `payload` sub-range. `pub(crate)`: also reused by `tui.rs`'s
+/// payload-only range display (spec 0114 §1.1).
+pub(crate) fn message_payload_range(blob: &[u8], range: &Range<usize>) -> Range<usize> {
     let tag = parse_wiretag(blob, range.start);
     let Some(wtype) = tag.wtype else {
         return range.clone();
@@ -127,12 +128,12 @@ pub fn extract(
 ) -> io::Result<()> {
     match format {
         ExtractFormat::Binary => {
-            let is_message = node.span.type_fqdn.is_some();
+            let is_message = node.span.is_message;
             let bytes = extract_binary(blob, &node.span.raw_range, is_message);
             std::fs::write(path, bytes)
         }
         ExtractFormat::Text => {
-            let is_message = node.span.type_fqdn.is_some();
+            let is_message = node.span.is_message;
             let r = &node.span.text_range;
             let r = if is_message {
                 message_text_range(r)
@@ -261,7 +262,7 @@ mod tests {
         let descriptor_path =
             std::env::temp_dir().join("protolens-extract-round-trip-descriptor.pb");
         std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
-        let ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
         std::fs::remove_file(&descriptor_path).unwrap();
 
         // Inner: field 1 varint 5 -> tag 0x08, value 0x05.
@@ -269,14 +270,16 @@ mod tests {
         // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
         let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-        let decoded = decode(&blob, &ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
         let inner_node = decoded
             .tree
             .iter()
             .find(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
             .expect("decoded tree must contain the Inner submessage");
 
-        let extracted = extract_binary(&blob, &inner_node.span.raw_range, true);
+        // `raw_range` is relative to `decoded.blob` (the wrapped blob, spec
+        // 0114 §1.1), not the local pre-wrap `blob` array.
+        let extracted = extract_binary(&decoded.blob, &inner_node.span.raw_range, true);
         assert_eq!(extracted, &inner_bytes);
 
         // Not asserting `!reopened.tree.is_empty()` here: an extract can
@@ -285,7 +288,7 @@ mod tests {
         // `extracted == inner_bytes` above already proves byte-for-byte
         // fidelity; this only additionally checks for the specific garbling
         // symptom reported (a field misread as an unrelated one).
-        let reopened = decode(extracted, &ctx, Some("test.Inner"), 2, true).unwrap();
+        let reopened = decode(extracted, &mut ctx, Some("test.Inner"), 2, true).unwrap();
         assert!(
             !reopened.lines.join("\n").contains("INVALID_STRING"),
             "re-decoded Inner extract must not contain garbled fields: {:?}",
@@ -305,6 +308,10 @@ mod tests {
                 text_range: 0..2,
                 level: 1,
                 type_fqdn: None,
+                // Not exercising message-line stripping here — just header
+                // prepending — so left scalar-shaped, same as before this
+                // field existed.
+                is_message: false,
             },
             parent: None,
             first_child: None,
@@ -342,6 +349,7 @@ mod tests {
                 text_range: 0..3,
                 level: 0,
                 type_fqdn: Some("google.protobuf.FileOptions".to_string()),
+                is_message: true,
             },
             parent: None,
             first_child: None,
@@ -365,9 +373,9 @@ mod tests {
     fn extract_text_group_strips_the_wrapping_field_and_brace_lines() {
         // Groups render with the same opening `... {` / closing `}` line
         // shape as messages (`Sink::begin_nested`/`end_nested`'s
-        // `NestedKind::Group` branch), so `type_fqdn.is_some()` alone
-        // (regardless of message vs. group) is enough to correctly trigger
-        // the same wrapping-line stripping.
+        // `NestedKind::Group` branch), so `is_message` alone (regardless of
+        // message vs. group) is enough to correctly trigger the same
+        // wrapping-line stripping.
         use prototext_core::serialize::render_text::NodeSpan;
 
         let lines: Vec<String> = vec![
@@ -382,6 +390,7 @@ mod tests {
                 text_range: 0..3,
                 level: 0,
                 type_fqdn: Some("pkg.MyGroup".to_string()),
+                is_message: true,
             },
             parent: None,
             first_child: None,
