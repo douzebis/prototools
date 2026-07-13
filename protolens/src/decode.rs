@@ -25,9 +25,6 @@ use prototext_graph::score::{
     score_all, ScoringOpts,
 };
 
-/// Maximum number of tied type names shown in an ambiguity error.
-const MAX_AMBIGUOUS_TYPES: usize = 10;
-
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -83,6 +80,21 @@ impl DescriptorContext {
 
         Ok(DescriptorContext { pool, graph })
     }
+
+    /// A trivially empty pool/no-graph context — `tui.rs`'s unit tests
+    /// exercise `App` state directly against synthetic `Decoded` fixtures
+    /// (no real `--descriptor-set` file), and `App` now needs *some*
+    /// `DescriptorContext` to hold (spec 0114 §3's candidate-list
+    /// computation reads `ctx.pool()`/`ctx.graph`). `pool`/`graph` are
+    /// private, so this constructor — not a struct literal — is the only
+    /// way for another module's tests to build one.
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        DescriptorContext {
+            pool: DescriptorPool::new(),
+            graph: None,
+        }
+    }
 }
 
 /// Read a descriptor file: accepts binary `FileDescriptorSet`, `#@` prototext
@@ -119,28 +131,32 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 
 /// Resolve the root message type to decode `blob` as.
 ///
-/// - `type_override` given: looked up directly in the pool, no scoring.
-/// - `type_override` absent: requires a scoring graph (`ctx.graph`); errors
-///   if the graph is missing, if all candidates are vetoed, or if multiple
-///   candidates tie at the top score (spec 0111 Goal 2).
+/// - `type_override` given: looked up directly in the pool; a lookup
+///   failure is a hard error (the user asked for a specific type).
+/// - `type_override` absent: tries autoinference via a scoring graph
+///   (`ctx.graph`). Returns `Ok(None)` — not an error — whenever inference
+///   doesn't produce a clean winner (no graph available, no candidates,
+///   all candidates vetoed, or a top-score tie): the caller then renders
+///   the blob with no type known (spec 0114, "protolens command line
+///   should not require --type").
 pub fn determine_root_type(
     blob: &[u8],
     ctx: &DescriptorContext,
     type_override: Option<&str>,
-) -> Result<MessageDescriptor, DecodeError> {
+) -> Result<Option<MessageDescriptor>, DecodeError> {
     if let Some(fqdn) = type_override {
-        return ctx.pool().get_message_by_name(fqdn).ok_or_else(|| {
-            DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
-        });
+        return ctx
+            .pool()
+            .get_message_by_name(fqdn)
+            .map(Some)
+            .ok_or_else(|| {
+                DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
+            });
     }
 
-    let graph = ctx.graph.as_ref().ok_or_else(|| {
-        DecodeError::Determination(
-            "no --type given and no hopcroft.rkyv scoring graph next to the descriptor set; \
-             pass --type explicitly"
-                .to_string(),
-        )
-    })?;
+    let Some(graph) = ctx.graph.as_ref() else {
+        return Ok(None);
+    };
 
     let scoring_opts = ScoringOpts::default();
     let mut results = score_all(blob, graph, &scoring_opts);
@@ -152,39 +168,21 @@ pub fn determine_root_type(
     });
 
     if results.is_empty() {
-        return Err(DecodeError::Determination(
-            "schema DB is empty; cannot determine message type".to_string(),
-        ));
+        return Ok(None);
     }
     let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
     if non_vetoed.is_empty() {
-        return Err(DecodeError::Determination(
-            "all candidate types vetoed; pass --type explicitly".to_string(),
-        ));
+        return Ok(None);
     }
 
     let top_score = non_vetoed[0].score();
-    let mut tied: Vec<&str> = non_vetoed
-        .iter()
-        .filter(|r| r.score() == top_score)
-        .map(|r| r.fqdn.as_str())
-        .collect();
-
-    if tied.len() > 1 {
-        tied.sort_unstable();
-        tied.truncate(MAX_AMBIGUOUS_TYPES);
-        return Err(DecodeError::Determination(format!(
-            "ambiguous type (top score {top_score} tied among: {}); pass --type explicitly",
-            tied.join(", ")
-        )));
+    let tied = non_vetoed.iter().filter(|r| r.score() == top_score).count();
+    if tied > 1 {
+        return Ok(None);
     }
 
     let fqdn = &non_vetoed[0].fqdn;
-    ctx.pool().get_message_by_name(fqdn).ok_or_else(|| {
-        DecodeError::Determination(format!(
-            "resolved type '{fqdn}' not found in descriptor set"
-        ))
-    })
+    Ok(ctx.pool().get_message_by_name(fqdn))
 }
 
 // ── Navigation tree ─────────────────────────────────────────────────────────
@@ -224,7 +222,7 @@ pub struct TreeNode {
 /// The (now topmost) remaining stack entry, if at the same level as `i`, is
 /// `i`'s immediate previous sibling — link incrementally, so by the time any
 /// node is pushed its sibling chain up to that point is already correct.
-fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
+pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
     let mut nodes: Vec<TreeNode> = spans
         .into_iter()
         .map(|span| TreeNode {
@@ -370,9 +368,14 @@ pub fn decode(
     annotations: bool,
 ) -> Result<Decoded, DecodeError> {
     let root_desc = determine_root_type(blob, ctx, type_override)?;
-    let root_type = root_desc.full_name().to_string();
+    let (root_type, wrapper_desc) = match &root_desc {
+        Some(desc) => (
+            desc.full_name().to_string(),
+            Some(register_wrapper(&mut ctx.pool, desc)?),
+        ),
+        None => ("<raw / no type>".to_string(), None),
+    };
 
-    let wrapper_desc = register_wrapper(&mut ctx.pool, &root_desc)?;
     let wrapped_blob = wrap_blob(blob);
     let wrapper_offset = wrapped_blob.len() - blob.len();
 
@@ -381,7 +384,7 @@ pub fn decode(
         indent_size,
         ..Default::default()
     };
-    let (text, spans) = decode_and_render_indexed(&wrapped_blob, Some(&wrapper_desc), opts);
+    let (text, spans) = decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), opts);
 
     let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
@@ -395,4 +398,73 @@ pub fn decode(
         blob: wrapped_blob,
         wrapper_offset,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message as _;
+    use prost_reflect::prost_types::FileDescriptorSet;
+
+    use super::*;
+
+    #[test]
+    fn determine_root_type_returns_none_without_override_or_graph() {
+        let ctx = DescriptorContext::empty_for_test();
+        let blob = [0x08u8, 0x05];
+        let resolved = determine_root_type(&blob, &ctx, None).unwrap();
+        assert!(resolved.is_none());
+    }
+
+    /// Spec 0114: `--type` is optional — with no graph (autoinference
+    /// unavailable), `decode()` must not error but instead render the
+    /// blob with no known type. The virtual wrapper's own top-level node
+    /// (spec 0114 §1.1) still probes as message-shaped even with no
+    /// schema (spec 0097's unknown-LEN-field cascade), so it is the sole
+    /// node in the tree, with `type_fqdn: None` — the same representation
+    /// `apply_override(None)` would produce, i.e. this initial render
+    /// already stands in for "the first override of the session".
+    #[test]
+    fn decode_without_type_override_or_graph_renders_raw_not_error() {
+        let inner_desc = DescriptorProto {
+            name: Some("Inner".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("test_decode_raw_fallback.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![inner_desc],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        let descriptor_path =
+            std::env::temp_dir().join("protolens-decode-raw-fallback-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // A single varint field (tag 0x08, value 5) — no --type, and this
+        // context has no hopcroft.rkyv, so autoinference is unavailable.
+        let blob = [0x08u8, 0x05];
+
+        let decoded = decode(&blob, &mut ctx, None, 2, true).unwrap();
+        assert_eq!(decoded.root_type, "<raw / no type>");
+        // The wrapper's own top-level field (the "virtual encompassing
+        // message", spec 0114 §1.1) — level 0, no type resolved.
+        let wrapper = decoded
+            .tree
+            .iter()
+            .find(|n| n.span.level == 0)
+            .expect("tree must contain the wrapper's top-level node");
+        assert!(wrapper.span.is_message);
+        assert_eq!(wrapper.span.type_fqdn, None);
+    }
 }

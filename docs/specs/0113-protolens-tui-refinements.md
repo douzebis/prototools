@@ -554,22 +554,26 @@ style ex-commands).
 
 0111 Annex C already anticipated a `?` help overlay ("cheap enough to
 ship in v1 itself") but it was never built; separately, a first-time user
-has no in-app hint that `?` exists at all. Decision: build both.
+has no in-app hint that help exists at all. Decision: build both.
+
+Later amended (spec 0114, main-pane search): `?` was reassigned to
+in-pane search (`/`/`?`/`n`, extended from the override pane to the main
+pane), so the help overlay moved to `F1` instead.
 
 - `HELP_TEXT: &[&str]` — a static, hand-phrased key-binding reference
   (grouped: Movement, Fold/unfold, Navigation history, Extract, Other),
   kept as flat text rather than generated from `handle_key`'s match arms
   so it can be organized for readability independent of match-arm order.
-- `?` toggles `App::help_open`; while open, `handle_key` defers to
+- `F1` toggles `App::help_open`; while open, `handle_key` defers to
   `handle_help_key`: `j`/`k`/`Down`/`Up` scroll one line,
-  `PageDown`/`PageUp` scroll by 10, `q`/`Esc`/`?` closes. `help_scroll` is
-  clamped against the popup's actual rendered height in `render_help`
+  `PageDown`/`PageUp` scroll by 10, `q`/`Esc`/`F1` closes. `help_scroll`
+  is clamped against the popup's actual rendered height in `render_help`
   (content length vs. `inner.height`), not against a fixed constant.
 - `App::splash: bool`, `true` from `App::new()`; the very first keypress
-  (any key, consumed without its normal effect) clears it — a "press any
-  key to continue" screen, the common convention for this kind of
-  one-shot onboarding hint. Shows the same header line as the main
-  header pane plus "Press ? for help." / "Press any key to continue.".
+  both clears it *and* is processed as a real command (transparent to
+  keyboard input — spec 0114 amendment), same as if there had been no
+  splash screen at all. Shows the same header line as the main header
+  pane plus "Press F1 for help." / "Press any key to continue.".
 - Both render as a centered modal via a new `centered_rect()` free
   function (the standard ratatui popup-centering recipe: nested
   `Percentage`-based vertical then horizontal `Layout` split) plus

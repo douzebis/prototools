@@ -59,9 +59,13 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
     &blob[message_payload_range(blob, range)]
 }
 
-/// For a message/group node's full `tag[+length]+payload` span, return
-/// just the `payload` sub-range. `pub(crate)`: also reused by `tui.rs`'s
-/// payload-only range display (spec 0114 §1.1).
+/// For any field's full `tag[+length]+payload` span, return just the
+/// `payload` sub-range — generic over wire type, not node kind: a
+/// length-delimited field (`WT_LEN` — messages, groups, strings, bytes,
+/// packed-repeated scalars) has both tag and length stripped; any other
+/// wire type (varint, fixed32, fixed64) has only its tag stripped.
+/// `pub(crate)`: also reused by `tui.rs`'s payload-only range display for
+/// every node, message/group or scalar alike (spec 0114 §1.1, extended).
 pub(crate) fn message_payload_range(blob: &[u8], range: &Range<usize>) -> Range<usize> {
     let tag = parse_wiretag(blob, range.start);
     let Some(wtype) = tag.wtype else {

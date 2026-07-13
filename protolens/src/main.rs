@@ -5,6 +5,7 @@
 mod complete;
 mod decode;
 mod extract;
+mod override_pane;
 mod tui;
 
 use std::path::PathBuf;
@@ -31,8 +32,10 @@ struct Cli {
     #[arg(long = "descriptor-set", env = "PROTOLENS_DESCRIPTOR_SET")]
     descriptor_set: Option<PathBuf>,
 
-    /// Root message type. If omitted, determined automatically from
-    /// --descriptor-set.
+    /// Root message type. If omitted, inferred automatically from
+    /// --descriptor-set (requires a hopcroft.rkyv scoring graph next to
+    /// it); if inference is unavailable or inconclusive, the blob is
+    /// rendered with no known type.
     #[arg(
         short = 't',
         long = "type",
@@ -120,7 +123,14 @@ fn main() -> ExitCode {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| cli.blob.display().to_string());
 
-    let mut app = tui::App::new(decoded, &blob_label, cli.blob.clone(), !cli.no_annotations);
+    let mut app = tui::App::new(
+        decoded,
+        &blob_label,
+        cli.blob.clone(),
+        !cli.no_annotations,
+        cli.indent,
+        ctx,
+    );
     if let Err(e) = tui::run(&mut app) {
         eprintln!("error: {e}");
         return ExitCode::FAILURE;

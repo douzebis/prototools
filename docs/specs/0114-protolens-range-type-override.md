@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0114 — `protolens`: single-range type override
 
-**Status:** draft
+**Status:** implemented
+**Implemented in:** 2026-07-13
 **Refs:** `docs/specs/0109-protolens-interactive-schema-inference.md`,
 `docs/specs/0110-render-sink-unification.md`,
 `docs/specs/0111-protolens-v1-decode-navigate-extract.md`,
@@ -386,9 +387,23 @@ windowed-rendering discipline as the main pane (Annex C).
 
 Vim-style, scoped to the override pane's candidate list (by FQDN text):
 `/` search forward, `?` search backward, `n` repeat the last search in the
-same direction. `?` shadowing the main pane's global help-toggle meaning is
-intentional and scoped to override-pane focus only — the same precedent as
-`:` already shadowing plain keys while a command is being typed.
+same direction. Confirming `/`/`?` with an empty typed pattern re-uses the
+last active pattern, searching in the newly chosen direction (which may
+differ from the direction that pattern was originally searched in — unlike
+`n`, which always repeats in the same direction as last time).
+
+Later amended (live interactive feedback) to also cover the main pane:
+`/`/`?`/`n` work identically there, requiring main-pane focus (reusing the
+command-line row as the search prompt — see `CommandLineKind` in
+`tui.rs`), matching document-order nodes by their own opening line's
+*current* rendered text — so a range whose type has been overridden (§5)
+is matched post-override, not against the original rendering, with no
+special-casing needed since overrides mutate the rendered text in place.
+A folded-away match is still found (the whole document is searched, not
+just currently-visible nodes) and its ancestors are then unfolded to
+reveal it. This reassigned `?` away from the main pane's help-toggle
+meaning (spec 0113 D22), which moved to `F1` instead — `Esc` and `F1` both
+close the help overlay.
 
 ### §5 — Applying an override
 
@@ -507,8 +522,7 @@ Override pane (only meaningful while it has focus, except `Tab`/`t` which work r
 | Key | Action |
 |---|---|
 | `j` / `Down`, `k` / `Up` | Move highlighted candidate (or onto the pinned raw entry) |
-| `a` | Sort candidates lexicographically |
-| `i` | Sort candidates by inferred score (default; persists across successive `t` invocations for the session) |
+| `i` | Toggle candidate sort: inferred score (default) / lexicographic — persists across successive `t` invocations for the session |
 | `/` | Search forward |
 | `?` | Search backward |
 | `n` | Repeat last search |
@@ -522,6 +536,13 @@ Command line (while a `:` command is being typed — spec 0113 D21/D26):
 |---|---|
 | `Tab` | Complete the current token (command name, or `:type-as`'s FQDN argument) to the longest common prefix of matches; if already at that prefix, cycle forward through candidates |
 | `Shift-Tab` | Cycle backward through candidates |
+
+Commands (§7 — bypass the override pane entirely, applying to the cursor node):
+
+| Command | Action |
+|---|---|
+| `:type-as <FQDN>` | Apply `<FQDN>` as the cursor node's type override |
+| `:type-as-raw` | Mark the cursor node's range as explicitly raw/unschema'd |
 
 No conflict with the override pane's own `Tab` (§2): command-line editing
 and the override pane are mutually exclusive input modes — command-line
