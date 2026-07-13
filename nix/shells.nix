@@ -18,10 +18,13 @@
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
+#               _hook_rust       — exports RUSTFLAGS, TREE_SITTER_TEXTPROTO_*;
+#                                  writes rust-toolchain.toml; rustup toolchain
+#                                  install
 #               _hook_cargo      — cargo build --release -p prototext / -p
-#                                  protolens (guarded)
-#               _hook_rust       — exports RUSTFLAGS; writes rust-toolchain.toml;
-#                                  rustup toolchain install
+#                                  protolens (guarded); runs after _hook_rust
+#                                  since protolens's build.rs requires
+#                                  TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR
 #               _hook_man        — generates man pages into man/man1/
 #               _hook_completions — sources bash completions
 
@@ -39,6 +42,7 @@
 , reprotoBare       # bootstrap reproto package
 , reprotoTestDeps   # full Python dep list for the dev-shell
 , treeSitterTextproto
+, treeSitterTextprotoRustLib
 , protoscan
 }:
 
@@ -257,11 +261,15 @@ RUFFEOF
       }
 
       _hook_rust() {
-        echo "[hook] rust: RUSTFLAGS, rust-toolchain.toml, rustup install"
+        echo "[hook] rust: RUSTFLAGS, TREE_SITTER_TEXTPROTO_*, rust-toolchain.toml, rustup install"
         # RUSTFLAGS is set globally in commonArgs (Nix build) so that all Crane
         # derivations share a single fingerprint.  Export the same value here
         # so that manual `cargo build -p prototext_codec_lib` in the shell aligns.
+        # TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR mirror commonArgs.env so
+        # that manual `cargo build -p protolens` aligns too (spec 0116 §7).
         export RUSTFLAGS="${pyo3Rustflags}"
+        export TREE_SITTER_TEXTPROTO_LIB_DIR="${treeSitterTextprotoRustLib}/lib"
+        export TREE_SITTER_TEXTPROTO_QUERIES_DIR="${treeSitterTextprotoRustLib}/queries"
 
         # Generate rust-toolchain.toml so rust-analyzer uses the same rustc
         # version as the nix-shell build.  Only written when the content
@@ -322,8 +330,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       _hook_python
       _hook_protos
       _hook_codegen
-      _hook_cargo
       _hook_rust
+      _hook_cargo
       _hook_man
       _hook_completions
 

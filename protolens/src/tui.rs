@@ -29,9 +29,12 @@ use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{decode_and_render_indexed, DecodeRenderOpts};
 
+use crate::colorize::{self, SyntaxRole};
 use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
 use crate::extract::{self, ExtractFormat};
 use crate::override_pane::{self, SortMode};
+use crate::render_cache::RenderCache;
+use crate::theme::{self, ThemeKind};
 
 /// Fixed horizontal-pan step, in columns (spec 0113 D24) — a generous but
 /// simple constant rather than a fraction of the pane's width, so panning
@@ -49,6 +52,11 @@ const MIN_OVERRIDE_WIDTH: u16 = 100;
 /// hundreds of distinct previously-viewed ranges. Exact cap left as an
 /// implementation-time tuning choice (spec Open Issue #1).
 const CANDIDATE_CACHE_MAX_BYTES: usize = 1 << 20;
+
+/// Byte budget for `App::render_cache` (spec 0116 §8) — same order of
+/// magnitude as `CANDIDATE_CACHE_MAX_BYTES`, its direct structural
+/// precedent, for the same short-lived-interactive-session reasoning.
+const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
 /// both `resolve_command`'s exact-match-wins prefix dispatch and the
@@ -244,6 +252,14 @@ pub struct App {
     /// re-render matches the rest of the document's own indentation.
     indent_size: usize,
     lines: Vec<String>,
+    /// Syntax-highlighting spans (spec 0116 §7), index-parallel to `lines`
+    /// — each entry holds that line's `(column range, role)` pairs.
+    /// Spliced in lockstep with `lines` by `apply_override`, so no
+    /// separate offset-shifting bookkeeping is needed.
+    line_styles: Vec<Vec<(Range<usize>, SyntaxRole)>>,
+    /// Resolved color theme (spec 0116 §9) — fixed for the session, never
+    /// `ThemeKind::System` (resolved once in `main.rs` before `App::new`).
+    theme: ThemeKind,
     tree: Vec<TreeNode>,
     /// Line index (in `lines`) -> node index, for nodes whose text starts
     /// on that line. Used for the fold-indicator gutter.
@@ -311,6 +327,11 @@ pub struct App {
     /// Byte-bounded MRU cache of capped inferred-candidate previews for
     /// ranges other than the one currently active (spec 0114 §6).
     candidate_cache: override_pane::CandidateCache,
+    /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
+    /// hints)` renders (spec 0116 §8) — consulted/populated by
+    /// `apply_override`, keyed by the same `payload_range`/type pair
+    /// `candidate_cache` already keys on.
+    render_cache: RenderCache,
     /// The tag/length-stripped target range whose complete-or-capped
     /// inferred-candidate list `override_inferred_raw` currently holds —
     /// `None` when no override pane is open, or the graph-less/
@@ -385,6 +406,7 @@ impl App {
         annotations: bool,
         indent_size: usize,
         ctx: DescriptorContext,
+        theme: ThemeKind,
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
         let mut line_to_node = HashMap::new();
@@ -406,6 +428,8 @@ impl App {
             annotations,
             indent_size,
             lines: decoded.lines,
+            line_styles: decoded.style_hints,
+            theme,
             tree: decoded.tree,
             line_to_node,
             cursor,
@@ -426,6 +450,7 @@ impl App {
             term_width: 0,
             override_list_height: 0,
             candidate_cache: override_pane::CandidateCache::new(CANDIDATE_CACHE_MAX_BYTES),
+            render_cache: RenderCache::new(RENDER_CACHE_MAX_BYTES),
             active_override_range: None,
             override_inferred_raw: Vec::new(),
             override_candidates_complete: false,
@@ -717,11 +742,8 @@ impl App {
     /// as `[0, n)`.
     fn display_range(&self, idx: usize) -> Range<usize> {
         let span = &self.tree[idx].span;
-        let raw = extract::message_payload_range(
-            &self.blob,
-            &span.raw_range,
-            span.packed_record_start,
-        );
+        let raw =
+            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
         (raw.start - self.wrapper_offset)..(raw.end - self.wrapper_offset)
     }
 
@@ -844,11 +866,8 @@ impl App {
             return;
         };
         let node = &self.tree[idx].span;
-        let range = extract::message_payload_range(
-            &self.blob,
-            &node.raw_range,
-            node.packed_record_start,
-        );
+        let range =
+            extract::message_payload_range(&self.blob, &node.raw_range, node.packed_record_start);
         let range_bytes = &self.blob[range.clone()];
         self.override_inferred_raw = override_pane::inferred_candidates(range_bytes, graph);
         self.override_candidates_complete = true;
@@ -1011,20 +1030,33 @@ impl App {
             &old_span.raw_range,
             old_span.packed_record_start,
         );
-        let payload_bytes = self.blob[payload_range.clone()].to_vec();
-
-        let opts = DecodeRenderOpts {
-            annotations: self.annotations,
-            indent_size: self.indent_size,
-            initial_level: old_span.level + 1,
-            emit_header: false,
-            ..Default::default()
+        // Render-cache lookup (spec 0116 §8) — same `payload_range`/type
+        // key `candidate_cache` already keys previews on; a hit skips
+        // both `decode_and_render_indexed` and the colorize pass.
+        let cache_key = (payload_range.clone(), new_fqdn.map(String::from));
+        let (new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
+            Some(cached) => cached,
+            None => {
+                let payload_bytes = self.blob[payload_range.clone()].to_vec();
+                let opts = DecodeRenderOpts {
+                    annotations: self.annotations,
+                    indent_size: self.indent_size,
+                    initial_level: old_span.level + 1,
+                    emit_header: false,
+                    ..Default::default()
+                };
+                let (new_text, new_spans) =
+                    decode_and_render_indexed(&payload_bytes, new_desc.as_ref(), opts);
+                let new_text = String::from_utf8(new_text)
+                    .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
+                let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
+                let new_style_hints = colorize::colorize(&new_text);
+                let value = (new_lines, new_spans, new_style_hints);
+                self.render_cache.insert(cache_key, value.clone());
+                value
+            }
         };
-        let (new_text, new_spans) =
-            decode_and_render_indexed(&payload_bytes, new_desc.as_ref(), opts);
-        let new_text = String::from_utf8(new_text)
-            .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
-        let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
+        let new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
 
         // Old interior line range (exclusive of the node's own opening/
         // closing brace lines).
@@ -1057,6 +1089,8 @@ impl App {
         }
 
         self.lines.splice(interior_start..interior_end, new_lines);
+        self.line_styles
+            .splice(interior_start..interior_end, new_line_styles);
 
         // Translate the freshly built local tree (payload-relative
         // coordinates) into this document's global coordinates and append
@@ -1980,6 +2014,84 @@ impl App {
         s
     }
 
+    /// Styled counterpart of `render_line_content` (spec 0116 §7/§9):
+    /// applies `self.line_styles[line_idx]`'s syntax-highlighting spans
+    /// via `theme::style_for`, then splices in the same fold-marker /
+    /// `" ... }"` collapse-summary text `render_line_content` inserts —
+    /// as unstyled spans, so highlighting and folding compose cleanly.
+    fn render_line_spans(&self, line_idx: usize) -> Vec<Span<'static>> {
+        let content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
+        let hints = self
+            .line_styles
+            .get(line_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let segments = segment_line(content, hints);
+
+        let Some(&idx) = self.line_to_node.get(&line_idx) else {
+            return self.spans_with_insertions(content, segments, Vec::new());
+        };
+        if !self.has_children(idx) {
+            return self.spans_with_insertions(content, segments, Vec::new());
+        }
+        let folded = self.folded.contains(&idx);
+        let marker = if folded { '▸' } else { '▾' };
+        let indent_len = content.len() - content.trim_start().len();
+
+        let mut insertions = vec![(indent_len, marker.to_string())];
+        if folded {
+            let insert_at = match content.rfind('{') {
+                Some(pos) => pos + 1,
+                None => content.len(),
+            };
+            insertions.push((insert_at, " ... }".to_string()));
+        }
+        self.spans_with_insertions(content, segments, insertions)
+    }
+
+    /// Turns `content`'s `segments` (byte ranges tagged with an optional
+    /// `SyntaxRole`, covering all of `content`) into styled `Span`s,
+    /// splicing in `insertions` — `(byte position in content, literal
+    /// text)` pairs, each rendered as its own unstyled `Span` at that
+    /// point (fold-marker/collapse-summary text is never part of the
+    /// highlighted source, so it never carries a role).
+    fn spans_with_insertions(
+        &self,
+        content: &str,
+        segments: Vec<(Range<usize>, Option<SyntaxRole>)>,
+        mut insertions: Vec<(usize, String)>,
+    ) -> Vec<Span<'static>> {
+        insertions.sort_by_key(|(pos, _)| *pos);
+        let mut segments: std::collections::VecDeque<_> = segments.into();
+        let mut result = Vec::new();
+        for (ins_pos, ins_text) in insertions {
+            while let Some((range, role)) = segments.pop_front() {
+                if range.end <= ins_pos {
+                    result.push(self.make_span(content[range].to_string(), role));
+                } else if range.start < ins_pos {
+                    result.push(self.make_span(content[range.start..ins_pos].to_string(), role));
+                    segments.push_front((ins_pos..range.end, role));
+                    break;
+                } else {
+                    segments.push_front((range, role));
+                    break;
+                }
+            }
+            result.push(Span::raw(ins_text));
+        }
+        for (range, role) in segments {
+            result.push(self.make_span(content[range].to_string(), role));
+        }
+        result
+    }
+
+    fn make_span(&self, text: String, role: Option<SyntaxRole>) -> Span<'static> {
+        match role {
+            Some(role) => Span::styled(text, theme::style_for(role, self.theme)),
+            None => Span::raw(text),
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         self.term_width = area.width;
@@ -2029,15 +2141,13 @@ impl App {
             .iter()
             .enumerate()
             .map(|(row, &line_idx)| {
-                let line_str = pan_line(&self.render_line_content(line_idx), self.pan_offset);
+                let mut spans = pan_spans(self.render_line_spans(line_idx), self.pan_offset);
                 if self.scroll_offset + row == cursor_row {
-                    Line::from(Span::styled(
-                        line_str,
-                        Style::default().add_modifier(Modifier::REVERSED),
-                    ))
-                } else {
-                    Line::from(line_str)
+                    for span in &mut spans {
+                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
                 }
+                Line::from(spans)
             })
             .collect();
         frame.render_widget(Paragraph::new(text_lines), inner);
@@ -2261,14 +2371,53 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-/// Drop the leading `offset` characters of `line` (spec 0113 D24) — the
-/// remainder is left for `ratatui::Paragraph` to clip to the pane's width
-/// as usual, same as an un-panned line.
-fn pan_line(line: &str, offset: usize) -> String {
-    if offset == 0 {
-        return line.to_string();
+/// Fills the gaps between `hints` (sorted, non-overlapping byte ranges
+/// into `content`) with `None`-tagged segments, so the result covers all
+/// of `content` — the input `App::spans_with_insertions` needs to build a
+/// complete `Vec<Span>` for a line (spec 0116 §7).
+fn segment_line(
+    content: &str,
+    hints: &[(Range<usize>, SyntaxRole)],
+) -> Vec<(Range<usize>, Option<SyntaxRole>)> {
+    let mut segments = Vec::new();
+    let mut pos = 0;
+    for (range, role) in hints {
+        if range.start > pos {
+            segments.push((pos..range.start, None));
+        }
+        segments.push((range.clone(), Some(*role)));
+        pos = range.end;
     }
-    line.chars().skip(offset).collect()
+    if pos < content.len() {
+        segments.push((pos..content.len(), None));
+    }
+    segments
+}
+
+/// Drop the leading `offset` characters of the rendered line (spec 0113
+/// D24's horizontal pan, composed with spec 0116 §7's syntax
+/// highlighting) — skips `offset` characters across the whole span
+/// sequence, trimming (not dropping the style of) whichever span the
+/// skip boundary lands inside. The remainder is left for
+/// `ratatui::Paragraph` to clip to the pane's width as usual, same as an
+/// un-panned line.
+fn pan_spans(spans: Vec<Span<'static>>, offset: usize) -> Vec<Span<'static>> {
+    if offset == 0 {
+        return spans;
+    }
+    let mut remaining = offset;
+    let mut result = Vec::new();
+    for span in spans {
+        let char_count = span.content.chars().count();
+        if remaining >= char_count {
+            remaining -= char_count;
+            continue;
+        }
+        let trimmed: String = span.content.chars().skip(remaining).collect();
+        remaining = 0;
+        result.push(Span::styled(trimmed, span.style));
+    }
+    result
 }
 
 /// Column where a fold marker is inserted by `App::render_line_content` —
@@ -2348,6 +2497,7 @@ mod tests {
             root_type: "google.protobuf.Empty".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         let mut app = App::new(
             decoded,
@@ -2356,6 +2506,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         );
 
         let backend = TestBackend::new(80, 24);
@@ -2393,6 +2544,7 @@ mod tests {
             root_type: "google.protobuf.Empty".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         let mut app = App::new(
             decoded,
@@ -2401,6 +2553,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         );
         app.splash = false;
 
@@ -2447,6 +2600,7 @@ mod tests {
             root_type: "google.protobuf.Empty".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         App::new(
             decoded,
@@ -2455,6 +2609,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         )
     }
 
@@ -2549,6 +2704,7 @@ mod tests {
             root_type: "google.protobuf.FileDescriptorProto".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         App::new(
             decoded,
@@ -2557,6 +2713,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         )
     }
 
@@ -2594,6 +2751,7 @@ mod tests {
             root_type: "google.protobuf.FileDescriptorProto".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         App::new(
             decoded,
@@ -2602,6 +2760,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         )
     }
 
@@ -2657,6 +2816,7 @@ mod tests {
             root_type: "google.protobuf.Empty".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         let mut app = App::new(
             decoded,
@@ -2665,6 +2825,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         );
         app.splash = false;
         app.term_width = 120;
@@ -2703,6 +2864,7 @@ mod tests {
             root_type: "test.Scalar".to_string(),
             blob: Vec::new(),
             wrapper_offset: 0,
+            style_hints: Vec::new(),
         };
         let mut app = App::new(
             decoded,
@@ -2711,6 +2873,7 @@ mod tests {
             true,
             2,
             DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
         );
         app.splash = false;
         app.term_width = 120;
@@ -3168,7 +3331,15 @@ mod tests {
         assert_eq!(decoded.wrapper_offset, 2);
         assert_eq!(decoded.blob.len(), blob.len() + 2);
 
-        let app = App::new(decoded, "test.pb", PathBuf::from("test.pb"), true, 2, ctx);
+        let app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
 
         // The level-0 node is the wrapper's sole field, standing in for
         // the entire original message (spec 0114 §1.1) — it did not exist
@@ -3255,7 +3426,15 @@ mod tests {
         let blob = [0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03];
 
         let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, true).unwrap();
-        let app = App::new(decoded, "test.pb", PathBuf::from("test.pb"), true, 2, ctx);
+        let app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
 
         let id_idx = app
             .tree
@@ -3371,7 +3550,15 @@ mod tests {
         blob.extend_from_slice(&node_payload);
 
         let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
-        let mut app = App::new(decoded, "test.pb", PathBuf::from("test.pb"), true, 2, ctx);
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
 
         let node_idx = app
             .tree
@@ -3503,7 +3690,15 @@ mod tests {
         // Outer { inner: Inner { id: 5 } }.
         let blob = [0x0Au8, 0x02, 0x08, 0x05];
         let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
-        let mut app = App::new(decoded, "test.pb", PathBuf::from("test.pb"), true, 2, ctx);
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
         app.splash = false;
         app.term_width = 120;
 
@@ -3603,7 +3798,15 @@ mod tests {
         // Outer { inner: Inner { id: 5 } }.
         let blob = [0x0Au8, 0x02, 0x08, 0x05];
         let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
-        let mut app = App::new(decoded, "test.pb", PathBuf::from("test.pb"), true, 2, ctx);
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
         app.splash = false;
         app.term_width = 120;
 

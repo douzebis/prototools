@@ -25,6 +25,8 @@ use prototext_graph::score::{
     score_all, ScoringOpts,
 };
 
+use crate::colorize::{self, SyntaxRole};
+
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -303,6 +305,11 @@ pub struct Decoded {
     /// from any `raw_range` coordinate to recover the caller's original
     /// (pre-wrap) numbering.
     pub wrapper_offset: usize,
+    /// Syntax-highlighting spans (spec 0116 §7), one entry per `lines`,
+    /// each holding that line's `(column range, role)` pairs — the
+    /// initial-load counterpart of `apply_override`'s per-splice
+    /// colorize pass (`protolens/src/tui.rs`).
+    pub style_hints: Vec<Vec<(std::ops::Range<usize>, SyntaxRole)>>,
 }
 
 /// Build (or reuse, if already registered) a synthetic one-field message
@@ -389,6 +396,7 @@ pub fn decode(
     let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
     let tree = build_tree(spans);
 
     Ok(Decoded {
@@ -397,6 +405,7 @@ pub fn decode(
         root_type,
         blob: wrapped_blob,
         wrapper_offset,
+        style_hints,
     })
 }
 

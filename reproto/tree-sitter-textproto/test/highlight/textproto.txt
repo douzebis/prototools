@@ -1,0 +1,96 @@
+# This is a top comment
+# <- comment
+outer {
+# <- attribute
+#     ^ punctuation.bracket
+  inner {
+# ^ attribute
+#       ^ punctuation.bracket
+    d: 1
+#   ^ attribute
+#    ^ punctuation.delimiter
+#      ^ number
+  }
+# ^ punctuation.bracket
+}
+# <- punctuation.bracket
+
+reg_scalar: 3
+# <- attribute
+#         ^ punctuation.delimiter
+#           ^ number
+reg_scalar: -inf
+# <- attribute
+#         ^ punctuation.delimiter
+#           ^ number
+vals: [1, 2]
+# <- attribute
+#   ^ punctuation.delimiter
+#     ^ punctuation.bracket.list
+#      ^ number
+#       ^ punctuation.delimiter
+#         ^ number
+#          ^ punctuation.bracket.list
+
+msgs { a: 1 }
+# <- attribute
+#    ^ punctuation.bracket
+#      ^ attribute
+#       ^ punctuation.delimiter
+#         ^ number
+#           ^ punctuation.bracket
+msgs { a: 2 }
+# <- attribute
+#         ^ number
+
+[pkg.Ext]: 10
+# <- punctuation.bracket.extension
+# ^ type
+#       ^ punctuation.bracket.extension
+#        ^ punctuation.delimiter
+#          ^ number
+
+any_value {
+# <- attribute
+#         ^ punctuation.bracket
+  [type.googleapis.com/pkg.Type] { foo: "bar" }
+# ^ punctuation.bracket.extension
+#    ^ string.special.url
+#                       ^ type
+#                              ^ punctuation.bracket.extension
+#                                ^ punctuation.bracket
+#                                  ^ attribute
+#                                     ^ punctuation.delimiter
+#                                        ^ string
+#                                             ^ punctuation.bracket
+}
+# <- punctuation.bracket
+
+label: "a\nb"
+# <- attribute
+#    ^ punctuation.delimiter
+#       ^ string
+#        ^ string.escape
+#          ^ string
+
+f: 1043E-04f
+# <- attribute
+#^ punctuation.delimiter
+#    ^ number
+h: 0xfffFF00aeF
+# <- attribute
+#^ punctuation.delimiter
+#    ^ number
+
+status: ACTIVE
+# <- attribute
+#     ^ punctuation.delimiter
+#        ^ constant
+flag: true
+# <- attribute
+#   ^ punctuation.delimiter
+#      ^ boolean
+flag2: false
+# <- attribute
+#    ^ punctuation.delimiter
+#        ^ boolean

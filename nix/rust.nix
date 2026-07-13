@@ -33,6 +33,7 @@
 , workspaceSrc
 , protoPatchPhase
 , wktRkyv ? null   # store path to wkt.rkyv; null for bare/bootstrap builds
+, treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
 }:
 
 let
@@ -68,6 +69,8 @@ let
     strictDeps        = true;
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
     env.PYO3_PYTHON   = pythonExecutable;
+    env.TREE_SITTER_TEXTPROTO_LIB_DIR     = "${treeSitterTextprotoRustLib}/lib";
+    env.TREE_SITTER_TEXTPROTO_QUERIES_DIR = "${treeSitterTextprotoRustLib}/queries";
     RUSTFLAGS         = pyo3Rustflags;
   };
 

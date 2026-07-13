@@ -127,7 +127,22 @@ let
   pyo3Rustflags = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
 
   # ---------------------------------------------------------------------------
-  # tree-sitter-textproto — plain C Python extension for the textproto grammar
+  # tree-sitter-textproto — plain C Python extension for the textproto grammar,
+  # plus a static Rust-linkable lib and a highlight-query regression check.
+  #
+  # treeSitterTextprotoGenerated — codegen only (shared): assembles the
+  #   upstream-fetched grammar.js with our own committed highlights.scm and
+  #   runs `tree-sitter generate` once. Consumed by both treeSitterTextproto
+  #   (Python extension) and treeSitterTextprotoRustLib (Rust static lib) so
+  #   codegen never runs twice.
+  # treeSitterTextproto — Python C extension (unchanged behavior), now
+  #   consuming the shared generated parser.c instead of re-running
+  #   `tree-sitter generate` itself.
+  # treeSitterTextprotoRustLib — static lib (.a) + queries/highlights.scm,
+  #   consumed by protolens's build.rs (via nix/rust.nix's commonArgs.env).
+  # treeSitterTextprotoHighlightTest — `tree-sitter generate && tree-sitter
+  #   test` check against our committed highlights.scm/test file, wired into
+  #   ci/ci-no-clippy.
   # ---------------------------------------------------------------------------
 
   treeSitterTextprotoSrc = pkgs.fetchzip {
@@ -137,18 +152,31 @@ let
     stripRoot = true;
   };
 
-  treeSitterTextproto = pkgs.stdenv.mkDerivation {
-    name              = "tree-sitter-textproto";
+  treeSitterTextprotoGenerated = pkgs.stdenv.mkDerivation {
+    name              = "tree-sitter-textproto-generated";
     src               = ./reproto/tree-sitter-textproto;
-    buildInputs       = [ pythonBin ];
     nativeBuildInputs = [ pkgs.tree-sitter pkgs.nodejs ];
-    buildPhase  = ''
+    buildPhase = ''
       cp ${treeSitterTextprotoSrc}/grammar.js .
       tree-sitter generate
+    '';
+    installPhase = ''
+      mkdir -p $out/src $out/queries
+      cp src/parser.c $out/src/
+      cp -r src/tree_sitter $out/src/tree_sitter
+      cp highlights.scm $out/queries/highlights.scm
+    '';
+  };
+
+  treeSitterTextproto = pkgs.stdenv.mkDerivation {
+    name        = "tree-sitter-textproto";
+    src         = ./reproto/tree-sitter-textproto;
+    buildInputs = [ pythonBin ];
+    buildPhase  = ''
       $CC -shared -fPIC \
         -o textproto$(python3-config --extension-suffix) \
-        binding.c src/parser.c \
-        -I src \
+        binding.c ${treeSitterTextprotoGenerated}/src/parser.c \
+        -I ${treeSitterTextprotoGenerated}/src \
         $(python3-config --includes --ldflags) \
         ${pkgs.lib.optionalString pkgs.stdenv.isDarwin "-undefined dynamic_lookup"}
     '';
@@ -158,6 +186,56 @@ let
       cp ${./reproto/tree-sitter-textproto/textproto.pyi} $out/textproto.pyi
     '';
   };
+
+  treeSitterTextprotoRustLib = pkgs.stdenv.mkDerivation {
+    name       = "tree-sitter-textproto-rust-lib";
+    dontUnpack = true;
+    buildPhase = ''
+      $CC -c -fPIC -I ${treeSitterTextprotoGenerated}/src \
+        -o parser.o ${treeSitterTextprotoGenerated}/src/parser.c
+      $AR rcs libtree-sitter-textproto.a parser.o
+    '';
+    installPhase = ''
+      mkdir -p $out/lib $out/queries
+      cp libtree-sitter-textproto.a $out/lib/
+      cp ${treeSitterTextprotoGenerated}/queries/highlights.scm $out/queries/
+    '';
+  };
+
+  # Standalone from treeSitterTextprotoGenerated — `tree-sitter test` reads
+  # queries/highlights.scm and test/highlight/ relative to its own cwd, so
+  # this assembles a minimal grammar directory (grammar.js + our committed
+  # highlights.scm + test file + a tree-sitter.json) and runs `tree-sitter
+  # generate && tree-sitter test` against it directly (no parser-directories
+  # discovery config needed for `test`, unlike `tree-sitter highlight`).
+  treeSitterTextprotoHighlightTest = pkgs.runCommand "tree-sitter-textproto-highlight-test" {
+    nativeBuildInputs = [ pkgs.tree-sitter pkgs.nodejs pkgs.stdenv.cc ];
+  } ''
+    set -euo pipefail
+    export HOME="$TMPDIR"
+    mkdir -p work/queries work/test/highlight
+    cd work
+    cp ${treeSitterTextprotoSrc}/grammar.js .
+    cp ${./reproto/tree-sitter-textproto/highlights.scm} queries/highlights.scm
+    cp ${./reproto/tree-sitter-textproto/test/highlight/textproto.txt} test/highlight/textproto.txt
+    cat > tree-sitter.json <<'JSON'
+    {
+      "grammars": [
+        {
+          "name": "textproto",
+          "camelcase": "Textproto",
+          "scope": "source.textproto",
+          "file-types": ["textproto", "txt"],
+          "highlights": "queries/highlights.scm"
+        }
+      ],
+      "metadata": { "version": "0.0.0", "license": "ISC" }
+    }
+    JSON
+    tree-sitter generate
+    tree-sitter test
+    touch $out
+  '';
 
   # ---------------------------------------------------------------------------
   # WKT proto list — read from the committed SOURCES file at eval time so
@@ -190,7 +268,7 @@ let
 
   rust = import ./nix/rust.nix {
     inherit pkgs crane pythonPkgs pythonBin pythonExecutable pyo3Rustflags
-            depsSrc workspaceSrc protoPatchPhase wktRkyv;
+            depsSrc workspaceSrc protoPatchPhase wktRkyv treeSitterTextprotoRustLib;
   };
 
   python = import ./nix/python.nix {
@@ -248,7 +326,8 @@ let
   '';
 
   shells = import ./nix/shells.nix {
-    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto;
+    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto
+            treeSitterTextprotoRustLib;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     repoRoot    = toString ./.;
@@ -278,6 +357,7 @@ let
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
+    treeSitterTextprotoHighlightTest
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -289,6 +369,7 @@ let
     python.reproto python.protoscan
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
+    treeSitterTextprotoHighlightTest
   ];
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
@@ -329,4 +410,5 @@ in
   prototext-graph-lib  = rust.prototextGraphLib;
   crates-io            = cratesIo;
   pypi                 = pypi;
+  tree-sitter-textproto-highlight-test = treeSitterTextprotoHighlightTest;
 }

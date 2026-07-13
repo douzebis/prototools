@@ -2,10 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
+mod colorize;
 mod complete;
 mod decode;
 mod extract;
 mod override_pane;
+mod render_cache;
+mod theme;
 mod tui;
 
 use std::path::PathBuf;
@@ -52,6 +55,12 @@ struct Cli {
     /// unknown/mismatched wire data to a plausible type.
     #[arg(long = "no-annotations")]
     no_annotations: bool,
+
+    /// Syntax-highlighting color palette (spec 0116 §9). `system` probes
+    /// the terminal's actual background once at startup and resolves to
+    /// `dark` or `light`.
+    #[arg(long = "theme", value_enum, default_value = "system")]
+    theme: theme::ThemeKind,
 
     /// Binary protobuf to decode.
     blob: PathBuf,
@@ -123,6 +132,17 @@ fn main() -> ExitCode {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| cli.blob.display().to_string());
 
+    // Resolved exactly once, before any rendering (spec 0116 §9) — no
+    // live re-detection while running.
+    let theme = match cli.theme {
+        theme::ThemeKind::System => theme::resolve_system(),
+        resolved => resolved,
+    };
+    // Primes the XTGETTCAP RGB probe now, before `tui::run` takes over the
+    // terminal with its own crossterm event loop (see `prime_supports_rgb`
+    // doc comment).
+    theme::prime_supports_rgb();
+
     let mut app = tui::App::new(
         decoded,
         &blob_label,
@@ -130,6 +150,7 @@ fn main() -> ExitCode {
         !cli.no_annotations,
         cli.indent,
         ctx,
+        theme,
     );
     if let Err(e) = tui::run(&mut app) {
         eprintln!("error: {e}");

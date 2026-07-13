@@ -1,0 +1,481 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+//! Theme: maps a `SyntaxRole` (spec 0116 §7) to a `ratatui::style::Style`
+//! (spec 0116 §9) — two fixed, built-in palette pairs (dark, light), each
+//! in two color depths (RGB, borrowed from VSCode Dark+/Light+; ANSI-16,
+//! a portable fallback — picked via `supports_rgb`, which checks
+//! `COLORTERM` first, then a live XTGETTCAP query to the terminal, then
+//! falls back to a static terminfo capability probe — mirroring Vim's own
+//! layered true-color auto-detection), plus a `System` selector resolved
+//! once at startup.
+
+use ratatui::style::{Color, Modifier, Style};
+
+use crate::colorize::SyntaxRole;
+
+/// The `--theme` CLI flag's three fixed choices (spec 0116 §9). `System`
+/// exists only at the CLI-selection layer — it is resolved to `Dark` or
+/// `Light` once at startup, before any rendering happens; `style_for`
+/// itself only ever takes the resolved `Dark`/`Light` variant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+pub enum ThemeKind {
+    Dark,
+    Light,
+    System,
+}
+
+/// Maps `role` to a `Style`. `theme` must already be resolved to
+/// `Dark`/`Light` (see `resolve_system`); passing `System` here is a
+/// programming error.
+///
+/// Picks between an RGB palette (borrowed from VSCode's Dark+/Light+
+/// themes) and a portable ANSI-16 fallback, based on `supports_rgb`
+/// (spec 0116 §9).
+pub fn style_for(role: SyntaxRole, theme: ThemeKind) -> Style {
+    match theme {
+        ThemeKind::Dark if supports_rgb() => style_for_dark_rgb(role),
+        ThemeKind::Dark => style_for_dark_ansi16(role),
+        ThemeKind::Light if supports_rgb() => style_for_light_rgb(role),
+        ThemeKind::Light => style_for_light_ansi16(role),
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    }
+}
+
+/// Whether the terminal advertises 24-bit color support, checked in the
+/// same order Vim does (patch 9.1.1060, vim/vim#16490): `COLORTERM=
+/// truecolor`/`24bit` (the signal `bat`, `delta`, and most other Rust
+/// terminal tools key off — a plain env lookup, re-checked on every
+/// call, no caching) first; then a live XTGETTCAP query to the terminal
+/// (`xtgettcap_reports_rgb`, cached); then a static terminfo capability
+/// probe (`terminfo_reports_rgb`, cached) for terminals that don't
+/// answer the live query.
+fn supports_rgb() -> bool {
+    colorterm_reports_truecolor() || xtgettcap_reports_rgb() || terminfo_reports_rgb()
+}
+
+fn colorterm_reports_truecolor() -> bool {
+    matches!(
+        std::env::var("COLORTERM").as_deref(),
+        Ok("truecolor") | Ok("24bit")
+    )
+}
+
+/// XTGETTCAP query string for the "RGB" capability: DCS `+q`, followed
+/// by the capability name hex-encoded byte-by-byte (`RGB` = `52 47 42`),
+/// terminated by ST. See
+/// <https://gnanenthiran.medium.com/decoding-xtgettcap-2a8ba98e26f7> and
+/// Vim's own `term.c` (`t_xtgettcap`).
+const XTGETTCAP_RGB_QUERY: &str = "\x1bP+q524742\x1b\\";
+
+/// Live XTGETTCAP fallback for when `COLORTERM` isn't set — this is
+/// Vim's *primary* true-color signal (patch 9.1.1060, vim/vim#16490):
+/// actively query the live terminal (not just its static terminfo
+/// entry) for the `RGB` termcap capability. Some terminals answer this
+/// correctly even though their terminfo database entry doesn't
+/// advertise `RGB`/`Tc`/`max_colors=16777216` — `terminfo_reports_rgb`
+/// remains as the fallback for terminals that don't answer this live
+/// query at all (e.g. some xterm builds).
+///
+/// Only attempted when both stdin and stdout are real terminals — under
+/// `cargo test` (and other non-interactive contexts) this is false, so
+/// no terminal I/O is attempted and the function returns `false`
+/// immediately.
+///
+/// Cached in a `OnceLock`: like `terminfo_reports_rgb`, the answer
+/// cannot change during a single process's lifetime, and — unlike a
+/// static terminfo lookup — repeating this query would mean repeated,
+/// real terminal round-trips.
+fn xtgettcap_reports_rgb() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        use std::io::IsTerminal;
+        if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+            return false;
+        }
+        query_xtgettcap_rgb().unwrap_or(false)
+    })
+}
+
+/// Performs the actual XTGETTCAP round-trip. Mirrors `terminal-light`'s
+/// own `xterm.rs::query` raw-mode-wrapping pattern: temporarily enables
+/// raw mode (if not already enabled) so the response isn't held back
+/// waiting for a newline, then restores the prior mode.
+///
+/// Must run before the TUI's own crossterm event loop starts polling
+/// the terminal (see `main.rs`'s `theme::prime_supports_rgb` call) —
+/// two concurrent readers of the tty would race.
+fn query_xtgettcap_rgb() -> Result<bool, xterm_query::XQError> {
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, is_raw_mode_enabled};
+    let switch_to_raw = !is_raw_mode_enabled()?;
+    if switch_to_raw {
+        enable_raw_mode()?;
+    }
+    let res = xterm_query::query(XTGETTCAP_RGB_QUERY, 100u16);
+    if switch_to_raw {
+        disable_raw_mode()?;
+    }
+    res.map(|response| parse_xtgettcap_response(&response))
+}
+
+/// Whether an XTGETTCAP response confirms the queried capability is
+/// supported: a successful response contains `1+r` followed by the
+/// hex-encoded capability name (`0+r` signals "unsupported", with no
+/// capability name echoed back).
+fn parse_xtgettcap_response(response: &str) -> bool {
+    response.contains("1+r524742")
+}
+
+/// Terminfo-based fallback for when neither `COLORTERM` nor a live
+/// XTGETTCAP query confirm true-color support — mirrors Vim's own
+/// true-color auto-detection (patch 9.1.1060, vim/vim#16490): query the
+/// terminal's *static* terminfo entry for the non-standard `RGB`/`Tc`
+/// boolean capabilities, or a `max_colors` value of `0x1000000`
+/// (16,777,216) — the sentinel some terminfo entries (e.g. `xterm-direct`)
+/// use for true-color support.
+///
+/// Cached in a `OnceLock`: parsing the terminfo database from disk is
+/// comparatively expensive, and — unlike `COLORTERM` — the answer cannot
+/// change during a single process's lifetime (`TERM` isn't toggled at
+/// runtime, and no test in this module mutates it).
+fn terminfo_reports_rgb() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        terminfo::Database::from_env()
+            .map(|db| database_reports_rgb(&db))
+            .unwrap_or(false)
+    })
+}
+
+fn database_reports_rgb(db: &terminfo::Database) -> bool {
+    if db.raw("RGB").is_some() || db.raw("Tc").is_some() {
+        return true;
+    }
+    matches!(
+        db.get::<terminfo::capability::MaxColors>(),
+        Some(max) if i32::from(max) == 0x0100_0000
+    )
+}
+
+/// Forces early, one-time evaluation of the cached `xtgettcap_reports_rgb`
+/// result. Must be called before `tui::run` takes over the terminal with
+/// raw mode + the alternate screen and starts its own crossterm event-
+/// polling loop — otherwise the probe's read and the TUI's own input
+/// handling could race over the same tty. Mirrors `resolve_system`'s own
+/// early-startup OSC query in `main.rs`.
+pub fn prime_supports_rgb() {
+    xtgettcap_reports_rgb();
+}
+
+/// RGB palette, dark — borrowed from VSCode's `dark_plus.json`/
+/// `dark_vs.json` (spec 0116 §9's "RGB palette" table; scope names
+/// cited there).
+fn style_for_dark_rgb(role: SyntaxRole) -> Style {
+    match role {
+        SyntaxRole::Attribute => Style::default().fg(Color::Rgb(0x9C, 0xDC, 0xFE)),
+        SyntaxRole::Type => Style::default().fg(Color::Rgb(0x4E, 0xC9, 0xB0)),
+        SyntaxRole::StringLiteral => Style::default().fg(Color::Rgb(0xCE, 0x91, 0x78)),
+        SyntaxRole::StringEscape => Style::default().fg(Color::Rgb(0xD7, 0xBA, 0x7D)),
+        SyntaxRole::StringSpecialUrl => Style::default()
+            .fg(Color::Rgb(0x4E, 0xC9, 0xB0))
+            .add_modifier(Modifier::UNDERLINED),
+        SyntaxRole::Comment => Style::default().fg(Color::Rgb(0x6A, 0x99, 0x55)),
+        SyntaxRole::Number => Style::default().fg(Color::Rgb(0xB5, 0xCE, 0xA8)),
+        SyntaxRole::Boolean => Style::default().fg(Color::Rgb(0x56, 0x9C, 0xD6)),
+        SyntaxRole::Constant => Style::default().fg(Color::Rgb(0x4E, 0xC9, 0xB0)),
+        SyntaxRole::PunctuationDelimiter => Style::default(),
+        SyntaxRole::PunctuationBracket => Style::default(),
+        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Rgb(0xDC, 0xDC, 0xAA)),
+        SyntaxRole::PunctuationBracketExtension => {
+            Style::default().fg(Color::Rgb(0xD1, 0x69, 0x69))
+        }
+    }
+}
+
+/// RGB palette, light — borrowed from VSCode's `light_plus.json`/
+/// `light_vs.json` (spec 0116 §9's "RGB palette" table; scope names
+/// cited there).
+fn style_for_light_rgb(role: SyntaxRole) -> Style {
+    match role {
+        SyntaxRole::Attribute => Style::default().fg(Color::Rgb(0xE5, 0x00, 0x00)),
+        SyntaxRole::Type => Style::default().fg(Color::Rgb(0x26, 0x7F, 0x99)),
+        SyntaxRole::StringLiteral => Style::default().fg(Color::Rgb(0xA3, 0x15, 0x15)),
+        SyntaxRole::StringEscape => Style::default().fg(Color::Rgb(0xEE, 0x00, 0x00)),
+        SyntaxRole::StringSpecialUrl => Style::default()
+            .fg(Color::Rgb(0x26, 0x7F, 0x99))
+            .add_modifier(Modifier::UNDERLINED),
+        SyntaxRole::Comment => Style::default().fg(Color::Rgb(0x00, 0x80, 0x00)),
+        SyntaxRole::Number => Style::default().fg(Color::Rgb(0x09, 0x86, 0x58)),
+        SyntaxRole::Boolean => Style::default().fg(Color::Rgb(0x00, 0x00, 0xFF)),
+        SyntaxRole::Constant => Style::default().fg(Color::Rgb(0x26, 0x7F, 0x99)),
+        SyntaxRole::PunctuationDelimiter => Style::default(),
+        SyntaxRole::PunctuationBracket => Style::default(),
+        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Rgb(0x04, 0x51, 0xA5)),
+        SyntaxRole::PunctuationBracketExtension => {
+            Style::default().fg(Color::Rgb(0x81, 0x1F, 0x3F))
+        }
+    }
+}
+
+/// ANSI-16 fallback palette, dark (spec 0116 §9's "ANSI-16 palette"
+/// table) — unchanged from this spec's original implementation.
+fn style_for_dark_ansi16(role: SyntaxRole) -> Style {
+    match role {
+        SyntaxRole::Attribute => Style::default(),
+        SyntaxRole::Type => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::StringLiteral => Style::default().fg(Color::Green),
+        SyntaxRole::StringEscape => Style::default()
+            .fg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::StringSpecialUrl => Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED),
+        SyntaxRole::Comment => Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+        SyntaxRole::Number => Style::default().fg(Color::Blue),
+        SyntaxRole::Boolean => Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::Constant => Style::default().fg(Color::Magenta),
+        SyntaxRole::PunctuationDelimiter => Style::default().fg(Color::DarkGray),
+        SyntaxRole::PunctuationBracket => Style::default().fg(Color::Gray),
+        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
+        SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::LightRed),
+    }
+}
+
+/// ANSI-16 fallback palette, light (spec 0116 §9's "ANSI-16 palette"
+/// table) — unchanged from this spec's original implementation.
+fn style_for_light_ansi16(role: SyntaxRole) -> Style {
+    match role {
+        SyntaxRole::Attribute => Style::default(),
+        SyntaxRole::Type => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::StringLiteral => Style::default().fg(Color::Green),
+        SyntaxRole::StringEscape => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::StringSpecialUrl => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::UNDERLINED),
+        SyntaxRole::Comment => Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+        SyntaxRole::Number => Style::default().fg(Color::Cyan),
+        SyntaxRole::Boolean => Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+        SyntaxRole::Constant => Style::default().fg(Color::Magenta),
+        SyntaxRole::PunctuationDelimiter => Style::default().fg(Color::DarkGray),
+        SyntaxRole::PunctuationBracket => Style::default().fg(Color::Black),
+        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Yellow),
+        SyntaxRole::PunctuationBracketExtension => Style::default().fg(Color::Red),
+    }
+}
+
+/// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
+/// (spec 0116 §9's "Selection mechanism"):
+///
+/// 1. `COLORFGBG` env var, if set (some terminals export `fg;bg` ANSI
+///    color indices; no terminal I/O needed) — `terminal_light::env::
+///    bg_color()`.
+/// 2. Otherwise, an OSC 11 query (bounded timeout), via
+///    `terminal_light::luma()` — handles tmux/screen passthrough.
+/// 3. If neither yields an answer, falls back to `Dark`.
+pub fn resolve_system() -> ThemeKind {
+    if let Ok(ansi) = terminal_light::env::bg_color() {
+        return theme_for_luma(terminal_light::Color::from(ansi).luma());
+    }
+    match terminal_light::luma() {
+        Ok(luma) => theme_for_luma(luma),
+        Err(_) => ThemeKind::Dark,
+    }
+}
+
+/// Threshold matching `terminal-light`'s own doc example (`luma() >
+/// 0.6`) for a single dark/light pivot.
+fn theme_for_luma(luma: f32) -> ThemeKind {
+    if luma > 0.6 {
+        ThemeKind::Light
+    } else {
+        ThemeKind::Dark
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards every test below that mutates `COLORFGBG`/`COLORTERM`.
+    /// `cargo test` runs tests in parallel threads within one process by
+    /// default, and env vars are process-global — without this, two such
+    /// tests running concurrently can observe each other's set/remove
+    /// calls mid-assertion (this caused a real, intermittent failure).
+    /// `.unwrap_or_else(...)` shields against lock poisoning from an
+    /// earlier panicking test so later tests still run.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn resolve_system_reads_colorfgbg_dark() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::set_var("COLORFGBG", "15;0");
+        }
+        assert_eq!(resolve_system(), ThemeKind::Dark);
+        unsafe {
+            std::env::remove_var("COLORFGBG");
+        }
+    }
+
+    #[test]
+    fn resolve_system_reads_colorfgbg_light() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::set_var("COLORFGBG", "0;15");
+        }
+        assert_eq!(resolve_system(), ThemeKind::Light);
+        unsafe {
+            std::env::remove_var("COLORFGBG");
+        }
+    }
+
+    const ALL_ROLES: [SyntaxRole; 13] = [
+        SyntaxRole::Attribute,
+        SyntaxRole::Type,
+        SyntaxRole::StringLiteral,
+        SyntaxRole::StringEscape,
+        SyntaxRole::StringSpecialUrl,
+        SyntaxRole::Comment,
+        SyntaxRole::Number,
+        SyntaxRole::Boolean,
+        SyntaxRole::Constant,
+        SyntaxRole::PunctuationDelimiter,
+        SyntaxRole::PunctuationBracket,
+        SyntaxRole::PunctuationBracketList,
+        SyntaxRole::PunctuationBracketExtension,
+    ];
+
+    // `PunctuationDelimiter`/`PunctuationBracket` are deliberately
+    // unstyled (terminal default) in both the RGB and ANSI-16 palettes
+    // — excluded from the "must be Rgb" assertion below.
+    const COLORED_ROLES: [SyntaxRole; 11] = [
+        SyntaxRole::Attribute,
+        SyntaxRole::Type,
+        SyntaxRole::StringLiteral,
+        SyntaxRole::StringEscape,
+        SyntaxRole::StringSpecialUrl,
+        SyntaxRole::Comment,
+        SyntaxRole::Number,
+        SyntaxRole::Boolean,
+        SyntaxRole::Constant,
+        SyntaxRole::PunctuationBracketList,
+        SyntaxRole::PunctuationBracketExtension,
+    ];
+
+    #[test]
+    fn style_for_uses_ansi16_when_colorterm_absent() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
+        // `terminfo_reports_rgb` is cached process-wide and reflects the
+        // *actual* environment `cargo test` runs in — if it's genuinely
+        // true-color-capable via terminfo (e.g. a dev's real terminal,
+        // as opposed to a headless CI sandbox), `supports_rgb` legitimately
+        // returns true even with `COLORTERM` unset, so there's nothing to
+        // assert here.
+        if terminfo_reports_rgb() {
+            return;
+        }
+        for role in ALL_ROLES {
+            for theme in [ThemeKind::Dark, ThemeKind::Light] {
+                let style = style_for(role, theme);
+                assert!(!matches!(
+                    style.fg,
+                    Some(Color::Rgb(..)) | Some(Color::Indexed(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn style_for_uses_rgb_when_colorterm_truecolor() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+        }
+        for role in COLORED_ROLES {
+            for theme in [ThemeKind::Dark, ThemeKind::Light] {
+                let style = style_for(role, theme);
+                assert!(matches!(style.fg, Some(Color::Rgb(..))));
+            }
+        }
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
+    }
+
+    #[test]
+    fn database_reports_rgb_true_capability() {
+        let mut builder = terminfo::Database::new();
+        builder.name("test");
+        builder.raw("RGB", ());
+        assert!(database_reports_rgb(&builder.build().unwrap()));
+    }
+
+    #[test]
+    fn database_reports_rgb_tc_capability() {
+        let mut builder = terminfo::Database::new();
+        builder.name("test");
+        builder.raw("Tc", ());
+        assert!(database_reports_rgb(&builder.build().unwrap()));
+    }
+
+    #[test]
+    fn database_reports_rgb_max_colors_sentinel() {
+        let mut builder = terminfo::Database::new();
+        builder.name("test");
+        builder.set(terminfo::capability::MaxColors(0x0100_0000));
+        assert!(database_reports_rgb(&builder.build().unwrap()));
+    }
+
+    #[test]
+    fn database_reports_rgb_false_for_plain_256color() {
+        let mut builder = terminfo::Database::new();
+        builder.name("test");
+        builder.set(terminfo::capability::MaxColors(256));
+        assert!(!database_reports_rgb(&builder.build().unwrap()));
+    }
+
+    #[test]
+    fn parse_xtgettcap_response_true_on_success() {
+        assert!(parse_xtgettcap_response("\x1bP1+r524742\x1b\\"));
+    }
+
+    #[test]
+    fn parse_xtgettcap_response_false_on_failure() {
+        assert!(!parse_xtgettcap_response("\x1bP0+r\x1b\\"));
+    }
+
+    #[test]
+    fn parse_xtgettcap_response_false_on_garbage() {
+        assert!(!parse_xtgettcap_response("not a response"));
+    }
+}
