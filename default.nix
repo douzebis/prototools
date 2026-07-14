@@ -130,9 +130,10 @@ let
   # tree-sitter-textproto — plain C Python extension for the textproto grammar,
   # plus a static Rust-linkable lib and a highlight-query regression check.
   #
-  # treeSitterTextprotoGenerated — codegen only (shared): assembles the
-  #   upstream-fetched grammar.js with our own committed highlights.scm and
-  #   runs `tree-sitter generate` once. Consumed by both treeSitterTextproto
+  # treeSitterTextprotoGenerated — codegen only (shared): runs `tree-sitter
+  #   generate` once against our own committed, locally-modified grammar.js
+  #   (docs/specs/0121-tree-sitter-textproto-field-no-vendoring.md) and our
+  #   own committed highlights.scm. Consumed by both treeSitterTextproto
   #   (Python extension) and treeSitterTextprotoRustLib (Rust static lib) so
   #   codegen never runs twice.
   # treeSitterTextproto — Python C extension (unchanged behavior), now
@@ -141,23 +142,15 @@ let
   # treeSitterTextprotoRustLib — static lib (.a) + queries/highlights.scm,
   #   consumed by protolens's build.rs (via nix/rust.nix's commonArgs.env).
   # treeSitterTextprotoHighlightTest — `tree-sitter generate && tree-sitter
-  #   test` check against our committed highlights.scm/test file, wired into
-  #   ci/ci-no-clippy.
+  #   test` check against our committed grammar.js/highlights.scm/test file,
+  #   wired into ci/ci-no-clippy.
   # ---------------------------------------------------------------------------
-
-  treeSitterTextprotoSrc = pkgs.fetchzip {
-    url    = "https://github.com/PorterAtGoogle/tree-sitter-textproto/"
-           + "archive/568471b80fd8793d37ed01865d8c2208a9fefd1b.tar.gz";
-    sha256 = "056h95fn779p73ik1gyr4n0y0r5w9pk09z25ly6mm42v5jlzq22l";
-    stripRoot = true;
-  };
 
   treeSitterTextprotoGenerated = pkgs.stdenv.mkDerivation {
     name              = "tree-sitter-textproto-generated";
     src               = ./reproto/tree-sitter-textproto;
     nativeBuildInputs = [ pkgs.tree-sitter pkgs.nodejs ];
     buildPhase = ''
-      cp ${treeSitterTextprotoSrc}/grammar.js .
       tree-sitter generate
     '';
     installPhase = ''
@@ -215,7 +208,7 @@ let
     export HOME="$TMPDIR"
     mkdir -p work/queries work/test/highlight
     cd work
-    cp ${treeSitterTextprotoSrc}/grammar.js .
+    cp ${./reproto/tree-sitter-textproto/grammar.js} grammar.js
     cp ${./reproto/tree-sitter-textproto/highlights.scm} queries/highlights.scm
     cp ${./reproto/tree-sitter-textproto/test/highlight/textproto.txt} test/highlight/textproto.txt
     cat > tree-sitter.json <<'JSON'

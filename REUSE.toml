@@ -21,3 +21,13 @@ path = [
 SPDX-FileCopyrightText = "cargo-hakari contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
+# Vendored, locally-modified copy of upstream tree-sitter-textproto's
+# grammar.js (pinned commit 568471b80fd8793d37ed01865d8c2208a9fefd1b) — see
+# docs/specs/0121-tree-sitter-textproto-field-no-vendoring.md.
+[[annotations]]
+path = [
+  "reproto/tree-sitter-textproto/grammar.js",
+]
+SPDX-FileCopyrightText = "Porter Matteo Haet"
+SPDX-License-Identifier = "ISC"
+

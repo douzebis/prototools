@@ -169,10 +169,17 @@ node paths) — no grammar changes:
   turns out to be missing a node needed for one of the Goals (unlikely,
   per the Background's confirmation these nodes already exist), that is
   out of scope for this spec and would need its own.
+  **Superseded (spec 0121, 2026-07-14)**: `grammar.js` is now vendored
+  and locally modified — see `docs/specs/0121-tree-sitter-textproto-field-no-vendoring.md`.
 - **No change to how `grammar.js`/`src/parser.c` are sourced** — still
   fetched-and-generated at Nix build time, never committed (Background).
   Only `queries/highlights.scm` gains committed, in-repo ownership; no
   external grammar clone or fork is introduced or required by this spec.
+  **Superseded (spec 0121, 2026-07-14)**: `grammar.js` is now committed
+  in-repo too (`reproto/tree-sitter-textproto/grammar.js`), following the
+  same "own it locally" precedent this spec already set for
+  `highlights.scm`/`binding.c` — only `src/parser.c` (machine-generated)
+  remains fetched-and-generated, unchanged.
 - **No renaming or removal of the existing 5 captures.** New captures
   are added alongside them, or existing patterns are narrowed to more
   specific node paths that additionally emit a new capture — consumers

@@ -315,6 +315,36 @@ mod tests {
     }
 
     #[test]
+    fn bare_decimal_field_name_is_attribute() {
+        // Spec 0121: protolens's own rendering convention for an
+        // unresolved/unknown field (shown by number instead of name).
+        let text = "1 { a: 1 }\n";
+        let hints = colorize(text);
+        assert!(hints
+            .iter()
+            .any(|h| h.role == SyntaxRole::Attribute && h.range == (0..1)));
+    }
+
+    #[test]
+    fn bare_decimal_field_name_does_not_corrupt_sibling_captures() {
+        // Spec 0121: before `field_no` was added to the grammar, a bare
+        // decimal field name (protolens's own "unresolved field, shown by
+        // number" rendering convention) had no `field_name` alternative to
+        // match, forcing tree-sitter's error-recovery mode — which then
+        // absorbed the next couple of syntactically-valid sibling fields
+        // into the same `ERROR` node, losing their captures entirely. This
+        // is the exact regression reported against a real document (an
+        // `Any`-typed field's `RPC_Request` payload, whose own
+        // `request_extensions` MessageSet field was still unpromoted at
+        // colorize-time).
+        let text = "outer {\n  1 { a: 1 }\n  flag: true\n  name: \"x\"\n}\n";
+        assert_eq!(roles_at(text, "flag"), vec![SyntaxRole::Attribute]);
+        assert_eq!(roles_at(text, "true"), vec![SyntaxRole::Boolean]);
+        assert_eq!(roles_at(text, "name"), vec![SyntaxRole::Attribute]);
+        assert_eq!(roles_at(text, "\"x\""), vec![SyntaxRole::StringLiteral]);
+    }
+
+    #[test]
     fn hints_by_line_buckets_by_row() {
         let lines = vec!["flag: true".to_string(), "n: 1".to_string()];
         let text = lines.join("\n");
