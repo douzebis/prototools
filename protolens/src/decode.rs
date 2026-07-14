@@ -55,6 +55,12 @@ impl std::error::Error for DecodeError {}
 pub struct DescriptorContext {
     pool: DescriptorPool,
     pub graph: Option<LoadedGraph>,
+    /// Canonicalized binary bytes `load()` decoded `pool` from — i.e.
+    /// after `read_descriptor_file`'s `#@ prototext`-to-binary conversion,
+    /// same normalization `main.rs` applies to the target blob (spec 0114
+    /// §1.1). Basis for `override_pane::sha256_hex`'s
+    /// `descriptor_set_sha256` (spec 0117 §4).
+    pub raw_bytes: Vec<u8>,
 }
 
 impl DescriptorContext {
@@ -80,7 +86,11 @@ impl DescriptorContext {
             None
         };
 
-        Ok(DescriptorContext { pool, graph })
+        Ok(DescriptorContext {
+            pool,
+            graph,
+            raw_bytes: bytes,
+        })
     }
 
     /// A trivially empty pool/no-graph context — `tui.rs`'s unit tests
@@ -95,6 +105,7 @@ impl DescriptorContext {
         DescriptorContext {
             pool: DescriptorPool::new(),
             graph: None,
+            raw_bytes: Vec::new(),
         }
     }
 }

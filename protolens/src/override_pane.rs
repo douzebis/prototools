@@ -11,6 +11,8 @@ use std::ops::Range;
 use prost_reflect::DescriptorPool;
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{score_all, ScoringOpts};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Sort mode for the override pane's ranked candidate list (spec 0114
 /// §3.2), toggled by `i` while the pane has focus. Applies only to the
@@ -143,6 +145,328 @@ impl CandidateCache {
     }
 }
 
+// ── Override collection (spec 0117) ─────────────────────────────────────────
+
+/// One of the three override scopes (spec 0117 §1), in increasing-priority
+/// order — also the collection's primary sort key (declaration order,
+/// `derive(Ord)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OverrideKind {
+    Path,
+    PathField,
+    FqdnField,
+}
+
+impl OverrideKind {
+    /// Rotates `z` in the override selection pane: `Path -> PathField ->
+    /// FqdnField -> Path -> ...` (spec 0117 §2).
+    pub fn next(self) -> Self {
+        match self {
+            OverrideKind::Path => OverrideKind::PathField,
+            OverrideKind::PathField => OverrideKind::FqdnField,
+            OverrideKind::FqdnField => OverrideKind::Path,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OverrideKind::Path => "path",
+            OverrideKind::PathField => "path-field",
+            OverrideKind::FqdnField => "fqdn-field",
+        }
+    }
+}
+
+/// The `(kind, ...)` key identifying an override, independent of its
+/// candidate type (spec 0117 §1). At most one active entry exists per
+/// distinct `OverrideOrigin` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverrideOrigin {
+    /// e.g. `/1/2` — canonical `positional_path` form, no trailing slash.
+    Path { path: String },
+    /// e.g. `/1`, field `2`.
+    PathField { path: String, field: u64 },
+    /// e.g. `pkg.Msg`, field `2`.
+    FqdnField { fqdn: String, field: u64 },
+}
+
+impl OverrideOrigin {
+    pub fn kind(&self) -> OverrideKind {
+        match self {
+            OverrideOrigin::Path { .. } => OverrideKind::Path,
+            OverrideOrigin::PathField { .. } => OverrideKind::PathField,
+            OverrideOrigin::FqdnField { .. } => OverrideKind::FqdnField,
+        }
+    }
+
+    /// User-facing display of the origin (kind is shown separately) —
+    /// `path`, `path:field`, or `fqdn:field`.
+    pub fn label(&self) -> String {
+        match self {
+            OverrideOrigin::Path { path } => path.clone(),
+            OverrideOrigin::PathField { path, field } => format!("{path}:{field}"),
+            OverrideOrigin::FqdnField { fqdn, field } => format!("{fqdn}:{field}"),
+        }
+    }
+
+    /// Secondary sort key within a kind: origin string, then field number
+    /// where applicable (spec 0117 §1).
+    fn sort_key(&self) -> (&str, Option<u64>) {
+        match self {
+            OverrideOrigin::Path { path } => (path.as_str(), None),
+            OverrideOrigin::PathField { path, field } => (path.as_str(), Some(*field)),
+            OverrideOrigin::FqdnField { fqdn, field } => (fqdn.as_str(), Some(*field)),
+        }
+    }
+}
+
+/// One entry of the collection: an origin, its candidate type (`None` =
+/// raw/no type), and whether it is the currently-active entry for that
+/// origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverrideEntry {
+    pub origin: OverrideOrigin,
+    pub r#type: Option<String>,
+    pub active: bool,
+}
+
+/// The persistent collection of overrides (spec 0117 §1). Always kept
+/// sorted by kind, then origin, then type (`None` first) — the same order
+/// used for the management pane's listing and the YAML file's entry order.
+#[derive(Debug, Default)]
+pub struct OverrideCollection {
+    entries: Vec<OverrideEntry>,
+}
+
+impl OverrideCollection {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn entries(&self) -> &[OverrideEntry] {
+        &self.entries
+    }
+
+    fn sort(&mut self) {
+        self.entries.sort_by(|a, b| {
+            a.origin
+                .kind()
+                .cmp(&b.origin.kind())
+                .then_with(|| a.origin.sort_key().cmp(&b.origin.sort_key()))
+                .then_with(|| a.r#type.cmp(&b.r#type))
+        });
+    }
+
+    /// Seeds the startup root entry (spec 0117 §1): `path: "/"`, active,
+    /// typed as given (`None` if neither `--type` nor inference resolved
+    /// one).
+    pub fn seed_root(&mut self, r#type: Option<String>) {
+        self.entries.push(OverrideEntry {
+            origin: OverrideOrigin::Path {
+                path: "/".to_string(),
+            },
+            r#type,
+            active: true,
+        });
+        self.sort();
+    }
+
+    /// Creates (or reactivates, if an entry with this exact origin and
+    /// type already exists) an override, deactivating every other entry
+    /// sharing `origin` (spec 0117 §1's per-origin active invariant).
+    pub fn activate(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
+        for e in self.entries.iter_mut() {
+            if e.origin == origin {
+                e.active = false;
+            }
+        }
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.origin == origin && e.r#type == r#type)
+        {
+            e.active = true;
+        } else {
+            self.entries.push(OverrideEntry {
+                origin,
+                r#type,
+                active: true,
+            });
+        }
+        self.sort();
+    }
+
+    /// Toggles the entry at `idx` (an index into `entries()`) between
+    /// active/inactive (spec 0117 §3's `a` key). Activating deactivates
+    /// every other entry sharing its origin. A no-op sort — `active`
+    /// isn't part of the sort key, so entry order is unaffected.
+    pub fn toggle_active(&mut self, idx: usize) {
+        let Some(entry) = self.entries.get(idx) else {
+            return;
+        };
+        let target_active = !entry.active;
+        if target_active {
+            let origin = entry.origin.clone();
+            for e in self.entries.iter_mut() {
+                if e.origin == origin {
+                    e.active = false;
+                }
+            }
+        }
+        self.entries[idx].active = target_active;
+    }
+
+    /// Removes the entry at `idx` (spec 0117 §3's `Delete`/`Backspace`).
+    pub fn remove(&mut self, idx: usize) {
+        if idx < self.entries.len() {
+            self.entries.remove(idx);
+        }
+    }
+
+    /// Drops every entry whose origin `resolves` rejects (spec 0117 §4:
+    /// silent per-entry drop on restore for origins that no longer match
+    /// the current tree/descriptor pool).
+    pub fn retain_resolvable(&mut self, mut resolves: impl FnMut(&OverrideOrigin) -> bool) {
+        self.entries.retain(|e| resolves(&e.origin));
+    }
+}
+
+// ── YAML save/restore (spec 0117 §4) ────────────────────────────────────────
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(Serialize, Deserialize)]
+struct YamlFile {
+    version: u32,
+    target: YamlTarget,
+    overrides: Vec<YamlEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct YamlTarget {
+    pub blob_sha256: String,
+    pub descriptor_set_sha256: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum YamlEntry {
+    Path {
+        path: String,
+        r#type: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        active: bool,
+    },
+    PathField {
+        path: String,
+        field: u64,
+        r#type: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        active: bool,
+    },
+    FqdnField {
+        fqdn: String,
+        field: u64,
+        r#type: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        active: bool,
+    },
+}
+
+/// SHA-256 hex digest of `bytes` (spec 0117 §4's `blob_sha256`/
+/// `descriptor_set_sha256`, computed over canonicalized binary bytes).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+impl OverrideCollection {
+    /// Serializes the collection to the spec 0117 §4 YAML format.
+    pub fn to_yaml(&self, blob_sha256: String, descriptor_set_sha256: String) -> String {
+        let overrides = self
+            .entries
+            .iter()
+            .map(|e| match &e.origin {
+                OverrideOrigin::Path { path } => YamlEntry::Path {
+                    path: path.clone(),
+                    r#type: e.r#type.clone(),
+                    active: e.active,
+                },
+                OverrideOrigin::PathField { path, field } => YamlEntry::PathField {
+                    path: path.clone(),
+                    field: *field,
+                    r#type: e.r#type.clone(),
+                    active: e.active,
+                },
+                OverrideOrigin::FqdnField { fqdn, field } => YamlEntry::FqdnField {
+                    fqdn: fqdn.clone(),
+                    field: *field,
+                    r#type: e.r#type.clone(),
+                    active: e.active,
+                },
+            })
+            .collect();
+        let file = YamlFile {
+            version: 1,
+            target: YamlTarget {
+                blob_sha256,
+                descriptor_set_sha256,
+            },
+            overrides,
+        };
+        serde_norway::to_string(&file).expect("OverrideCollection YAML serialization cannot fail")
+    }
+
+    /// Parses the spec 0117 §4 YAML format, returning the (unsorted-check
+    /// not required — re-sorted here) collection plus the recorded target
+    /// hashes for the caller to compare against the currently-loaded blob/
+    /// descriptor set.
+    pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), serde_norway::Error> {
+        let file: YamlFile = serde_norway::from_str(text)?;
+        let entries = file
+            .overrides
+            .into_iter()
+            .map(|y| match y {
+                YamlEntry::Path {
+                    path,
+                    r#type,
+                    active,
+                } => OverrideEntry {
+                    origin: OverrideOrigin::Path { path },
+                    r#type,
+                    active,
+                },
+                YamlEntry::PathField {
+                    path,
+                    field,
+                    r#type,
+                    active,
+                } => OverrideEntry {
+                    origin: OverrideOrigin::PathField { path, field },
+                    r#type,
+                    active,
+                },
+                YamlEntry::FqdnField {
+                    fqdn,
+                    field,
+                    r#type,
+                    active,
+                } => OverrideEntry {
+                    origin: OverrideOrigin::FqdnField { fqdn, field },
+                    r#type,
+                    active,
+                },
+            })
+            .collect();
+        let mut collection = OverrideCollection { entries };
+        collection.sort();
+        Ok((collection, file.target))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +506,181 @@ mod tests {
         let mut cache = CandidateCache::new(1);
         cache.insert(0..10, vec![("a.A".to_string(), 1), ("b.B".to_string(), 2)]);
         assert!(cache.get(&(0..10)).is_some());
+    }
+
+    #[test]
+    fn seed_root_creates_a_single_active_path_entry() {
+        let mut collection = OverrideCollection::new();
+        collection.seed_root(Some("pkg.Root".to_string()));
+        let entries = collection.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].origin,
+            OverrideOrigin::Path {
+                path: "/".to_string()
+            }
+        );
+        assert_eq!(entries[0].r#type.as_deref(), Some("pkg.Root"));
+        assert!(entries[0].active);
+    }
+
+    #[test]
+    fn activate_deactivates_other_entries_sharing_the_same_origin() {
+        let mut collection = OverrideCollection::new();
+        let origin = OverrideOrigin::Path {
+            path: "/1".to_string(),
+        };
+        collection.activate(origin.clone(), Some("pkg.A".to_string()));
+        collection.activate(origin.clone(), Some("pkg.B".to_string()));
+        let entries = collection.entries();
+        assert_eq!(entries.len(), 2);
+        let a = entries
+            .iter()
+            .find(|e| e.r#type.as_deref() == Some("pkg.A"))
+            .unwrap();
+        let b = entries
+            .iter()
+            .find(|e| e.r#type.as_deref() == Some("pkg.B"))
+            .unwrap();
+        assert!(!a.active);
+        assert!(b.active);
+
+        // Reactivating the first (already-existing) entry flips them back.
+        collection.activate(origin, Some("pkg.A".to_string()));
+        let entries = collection.entries();
+        assert_eq!(entries.len(), 2); // no duplicate created
+        let a = entries
+            .iter()
+            .find(|e| e.r#type.as_deref() == Some("pkg.A"))
+            .unwrap();
+        let b = entries
+            .iter()
+            .find(|e| e.r#type.as_deref() == Some("pkg.B"))
+            .unwrap();
+        assert!(a.active);
+        assert!(!b.active);
+    }
+
+    #[test]
+    fn toggle_active_deactivates_siblings_sharing_the_same_origin() {
+        let mut collection = OverrideCollection::new();
+        let origin = OverrideOrigin::Path {
+            path: "/1".to_string(),
+        };
+        collection.activate(origin.clone(), Some("pkg.A".to_string()));
+        collection.activate(origin, Some("pkg.B".to_string()));
+        // After the two `activate` calls above, pkg.B is active, pkg.A is not.
+        let idx_a = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.A"))
+            .unwrap();
+        collection.toggle_active(idx_a);
+        let entries = collection.entries();
+        assert!(
+            entries
+                .iter()
+                .find(|e| e.r#type.as_deref() == Some("pkg.A"))
+                .unwrap()
+                .active
+        );
+        assert!(
+            !entries
+                .iter()
+                .find(|e| e.r#type.as_deref() == Some("pkg.B"))
+                .unwrap()
+                .active
+        );
+    }
+
+    #[test]
+    fn remove_drops_the_entry_at_index() {
+        let mut collection = OverrideCollection::new();
+        collection.seed_root(Some("pkg.Root".to_string()));
+        collection.remove(0);
+        assert!(collection.entries().is_empty());
+    }
+
+    #[test]
+    fn retain_resolvable_drops_entries_the_predicate_rejects() {
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1".to_string(),
+            },
+            None,
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/2".to_string(),
+            },
+            None,
+        );
+        collection.retain_resolvable(|origin| match origin {
+            OverrideOrigin::Path { path } => path == "/1",
+            _ => false,
+        });
+        assert_eq!(collection.entries().len(), 1);
+        assert_eq!(
+            collection.entries()[0].origin,
+            OverrideOrigin::Path {
+                path: "/1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn yaml_round_trip_preserves_entries_and_target_hashes() {
+        let mut collection = OverrideCollection::new();
+        collection.seed_root(Some("pkg.Root".to_string()));
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1".to_string(),
+            },
+            None,
+        );
+        collection.activate(
+            OverrideOrigin::PathField {
+                path: "/1".to_string(),
+                field: 2,
+            },
+            Some("pkg.Sub".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::FqdnField {
+                fqdn: "pkg.Root".to_string(),
+                field: 3,
+            },
+            Some("pkg.Other".to_string()),
+        );
+
+        let yaml = collection.to_yaml("blobhash".to_string(), "deschash".to_string());
+        let (restored, target) = OverrideCollection::from_yaml(&yaml).unwrap();
+        assert_eq!(target.blob_sha256, "blobhash");
+        assert_eq!(target.descriptor_set_sha256, "deschash");
+        assert_eq!(restored.entries(), collection.entries());
+    }
+
+    #[test]
+    fn yaml_omits_active_key_for_inactive_entries() {
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1".to_string(),
+            },
+            None,
+        );
+        collection.toggle_active(0); // deactivate it
+        let yaml = collection.to_yaml("b".to_string(), "d".to_string());
+        assert!(!yaml.contains("active"));
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_digest() {
+        // SHA-256 of the empty byte string.
+        assert_eq!(
+            sha256_hex(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }

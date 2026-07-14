@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0117 — protolens override collection
 
-Status: draft
-Implemented in: (unimplemented)
+Status: implemented
+Implemented in: 2026-07-13
 Refs: docs/specs/0109-protolens-interactive-schema-inference.md,
       docs/specs/0114-protolens-range-type-override.md
 App: protolens
@@ -336,4 +336,4 @@ None.
 |------------------------------------|----------------------------------------------------------------------|
 | `protolens/src/override_pane.rs`   | `OverrideKind`/`OverrideOrigin`/`OverrideEntry`/`OverrideCollection`, sorting, YAML (de)serialization, hashing |
 | `protolens/src/tui.rs`             | management pane state/rendering, `z`/`a`/`Delete`/`s`/`r`/`o` key handling, pane mutual exclusion, `:save-overrides`/`:restore-overrides` commands, filesystem-path completion widget |
-| `protolens/Cargo.toml`             | add `serde`, `serde_yaml`, `sha2` dependencies (already present transitively in `Cargo.lock`) |
+| `protolens/Cargo.toml`             | add `serde`, `serde_norway`, `sha2` dependencies (`serde`/`sha2` already present transitively in `Cargo.lock`; `serde_norway` — a maintained hard-fork of the archived `serde_yaml`, fixing YAML 1.1's implicit-typing "Norway problem" — is new) |

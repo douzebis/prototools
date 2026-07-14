@@ -32,7 +32,7 @@ use prototext_core::serialize::render_text::{decode_and_render_indexed, DecodeRe
 use crate::colorize::{self, SyntaxRole};
 use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
 use crate::extract::{self, ExtractFormat};
-use crate::override_pane::{self, SortMode};
+use crate::override_pane::{self, OverrideKind, OverrideOrigin, SortMode};
 use crate::render_cache::RenderCache;
 use crate::theme::{self, ThemeKind};
 
@@ -62,7 +62,13 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 /// both `resolve_command`'s exact-match-wins prefix dispatch and the
 /// command line's Tab-completion (`App::start_tab_completion`). Adding a
 /// command here is the only step needed for it to get both, automatically.
-const COMMANDS: &[&str] = &["extract", "type-as", "type-as-raw"];
+const COMMANDS: &[&str] = &[
+    "extract",
+    "type-as",
+    "type-as-raw",
+    "save-overrides",
+    "restore-overrides",
+];
 
 /// Filter `candidates` to those starting with `prefix` (spec 0113 D26) — a
 /// small generic primitive, not ad hoc to any one caller.
@@ -141,6 +147,18 @@ struct OverrideSearch {
     buffer: String,
 }
 
+/// One row of the override management pane's grouped-by-origin listing:
+/// an origin's own (unindented, non-selectable) header row, or one of its
+/// candidate types (an index into `overrides.entries()`, indented under
+/// the header — spec 0117 §3 amendment: origin kind is dropped from the
+/// display since it's implicit from the origin's own format, and each
+/// origin's types are grouped under a dedicated header line instead of
+/// repeating the origin on every row).
+enum ManageRow {
+    Header(String),
+    Entry(usize),
+}
+
 /// What the shared `command_buffer`/`command_cursor` text-entry state
 /// currently represents (spec 0114 §4, extended to the main pane): a
 /// `:`/`x`-triggered ex-command, or an in-pane `/`/`?` search pattern.
@@ -207,18 +225,43 @@ const HELP_TEXT: &[&str] = &[
     "                   group node under the cursor",
     "  Tab              move focus between the main pane and the",
     "                   override pane (while it is open)",
+    "  z                rotate the override's target kind: path,",
+    "                   path-field, fqdn-field (pane focused)",
     "  i                toggle candidate sort: inferred score (default)",
     "                   or lexicographic",
     "  /  ?  n          search / search backward / repeat (pane focused)",
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",
     "                   (pane focused)",
     "  Enter            apply the highlighted type (pane focused) and",
-    "                   close the pane",
+    "                   close the pane; also records the override in the",
+    "                   collection (see \"Override management\" below)",
     "  Esc              cancel and close the override pane",
     "  :type-as <FQDN>  apply <FQDN> as the cursor node's type override,",
     "                   bypassing the pane",
     "  :type-as-raw     mark the cursor node's range as explicitly raw/",
     "                   unschema'd, bypassing the pane",
+    "",
+    "Override management",
+    "  o                open/close the override management pane (closes",
+    "                   the override pane, if open)",
+    "  j/k, PageUp/Down, Home/End   move the highlighted entry",
+    "  /  ?  n          search / search backward / repeat",
+    "  a                toggle the highlighted entry active/inactive",
+    "  Delete/Backspace remove the highlighted entry from the collection",
+    "  s                pre-fill \":save-overrides <default path>\"",
+    "  r                pre-fill \":restore-overrides \"",
+    "  :save-overrides <path>",
+    "                   write the whole override collection to <path>",
+    "                   as YAML",
+    "  :restore-overrides <path>",
+    "                   replace the override collection wholesale with",
+    "                   <path>'s contents (entries that no longer",
+    "                   resolve are silently dropped; a target-hash",
+    "                   mismatch warns but does not block)",
+    "  Tab              complete a filesystem path (save-overrides/",
+    "                   restore-overrides argument)",
+    "  (management-pane actions never change the current rendering —",
+    "  only Enter in the override pane does)",
     "",
     "Other",
     "  F1               toggle this help",
@@ -350,6 +393,33 @@ pub struct App {
     /// complete list (a fresh `score_all` call) the moment the user tries
     /// to scroll past it (spec 0114 §6).
     override_candidates_complete: bool,
+    /// Persistent collection of overrides (spec 0117 §1) — distinct from,
+    /// and unrelated to, the one-shot `apply_override` splice-render
+    /// mechanism above; see spec 0117's Non-goals.
+    overrides: override_pane::OverrideCollection,
+    /// Override selection pane's current target kind (spec 0117 §2),
+    /// rotated by `z`; persists across successive `t` invocations for the
+    /// session, mirroring `override_sort`.
+    override_kind: OverrideKind,
+    /// `true` while the override management pane (spec 0117 §3, `o`) is
+    /// open — always focused while open (no separate focus flag, unlike
+    /// the override selection pane's `override_focus`: nothing else in
+    /// the management pane needs main-pane focus back). Mutually
+    /// exclusive with `override_target.is_some()`.
+    manage_open: bool,
+    /// Highlighted row (index into `overrides.entries()`) in the
+    /// management pane.
+    manage_highlight: usize,
+    /// Scroll offset (in rows) for the management pane's listing.
+    manage_scroll: usize,
+    /// `Some` while `/`/`?` in-pane search text is being typed in the
+    /// management pane (spec 0117 §3, mirroring `override_search`).
+    manage_search: Option<OverrideSearch>,
+    /// Last confirmed management-pane in-pane search — `n` repeats it.
+    last_manage_search: Option<(SearchDir, String)>,
+    /// Management pane's visible row count as of the last
+    /// `render_manage_pane()` call — basis for `PageUp`/`PageDown`.
+    manage_list_height: usize,
     back_stack: Vec<usize>,
     fwd_stack: Vec<usize>,
     /// Document-order first node — `Home`/`gg` target.
@@ -421,6 +491,17 @@ impl App {
             .iter()
             .position(|n| n.doc_prev.is_none())
             .unwrap_or(0);
+        // Spec 0117 §1: seed the root `path` override with whatever type
+        // was explicitly requested or inferred; `None` (raw) if neither —
+        // `decode::decode` uses the "<raw / no type>" sentinel for that
+        // case rather than an `Option`.
+        let root_override_type = if decoded.root_type == "<raw / no type>" {
+            None
+        } else {
+            Some(decoded.root_type.clone())
+        };
+        let mut overrides = override_pane::OverrideCollection::new();
+        overrides.seed_root(root_override_type);
         let mut app = App {
             blob: decoded.blob,
             wrapper_offset: decoded.wrapper_offset,
@@ -454,6 +535,14 @@ impl App {
             active_override_range: None,
             override_inferred_raw: Vec::new(),
             override_candidates_complete: false,
+            overrides,
+            override_kind: OverrideKind::Path,
+            manage_open: false,
+            manage_highlight: 0,
+            manage_scroll: 0,
+            manage_search: None,
+            last_manage_search: None,
+            manage_list_height: 0,
             back_stack: Vec::new(),
             fwd_stack: Vec::new(),
             first_node: cursor,
@@ -770,10 +859,120 @@ impl App {
             );
             return;
         }
+        // Mutually exclusive with the management pane (spec 0117 §3):
+        // they share one right-hand UI slot.
+        if self.manage_open {
+            self.close_manage_pane();
+        }
         self.override_target = Some(self.cursor);
         self.override_focus = true;
         self.override_scroll = 0;
         self.recompute_override_candidates();
+    }
+
+    /// `o`: toggle the override management pane (spec 0117 §3). Closes
+    /// it (cancelling) if already open. Otherwise opens it — no
+    /// cursor-node-kind precondition, unlike `t` — closing the override
+    /// selection pane first if it's open (mutual exclusion, one shared
+    /// right-hand UI slot).
+    fn toggle_manage_pane(&mut self) {
+        if self.manage_open {
+            self.close_manage_pane();
+            return;
+        }
+        if self.term_width < MIN_OVERRIDE_WIDTH {
+            self.message = format!(
+                "terminal too narrow for override management pane (need >= \
+                 {MIN_OVERRIDE_WIDTH} columns)"
+            );
+            return;
+        }
+        if self.override_target.is_some() {
+            self.close_override();
+        }
+        self.manage_open = true;
+        self.manage_highlight = 0;
+        self.manage_scroll = 0;
+    }
+
+    /// Close the override management pane (spec 0117 §3).
+    fn close_manage_pane(&mut self) {
+        self.manage_open = false;
+        self.manage_search = None;
+    }
+
+    /// Move the management pane's highlighted row by `delta`, clamped to
+    /// `0..overrides.entries().len()` (spec 0117 §3's `j`/`k`).
+    fn move_manage_highlight(&mut self, delta: isize) {
+        let len = self.overrides.entries().len();
+        if len == 0 {
+            self.manage_highlight = 0;
+            return;
+        }
+        let current = self.manage_highlight as isize;
+        self.manage_highlight = (current + delta).clamp(0, len as isize - 1) as usize;
+    }
+
+    /// The management pane's grouped-by-origin display rows (spec 0117
+    /// §3 amendment): one `Header` row per distinct origin (in the
+    /// collection's own sort order — origins never interleave, since
+    /// `OverrideCollection::sort` already groups by origin), followed by
+    /// one `Entry` row per type recorded under it.
+    fn manage_display_rows(&self) -> Vec<ManageRow> {
+        let mut rows = Vec::new();
+        let mut prev_origin: Option<&OverrideOrigin> = None;
+        for (idx, entry) in self.overrides.entries().iter().enumerate() {
+            if prev_origin != Some(&entry.origin) {
+                rows.push(ManageRow::Header(entry.origin.label()));
+                prev_origin = Some(&entry.origin);
+            }
+            rows.push(ManageRow::Entry(idx));
+        }
+        rows
+    }
+
+    /// One management-pane type row's display text: indented, active
+    /// marker (`*`) leading, type label (spec 0117 §3 amendment).
+    fn manage_type_line(&self, idx: usize) -> String {
+        let e = &self.overrides.entries()[idx];
+        let marker = if e.active { '*' } else { ' ' };
+        let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
+        format!("  {marker} {type_label}")
+    }
+
+    /// Search corpus for management-pane entry `idx` (spec 0117 §3's
+    /// `/`/`?`/`n`) — origin label plus type label, so searching for
+    /// either the origin or the type finds it, independent of how the
+    /// grouped display happens to lay them out across rows.
+    fn manage_search_text(&self, idx: usize) -> String {
+        let e = &self.overrides.entries()[idx];
+        let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
+        format!("{} {type_label}", e.origin.label())
+    }
+
+    /// Find the next management-pane entry (spec 0117 §3's `/`/`?`/`n`)
+    /// whose search text (`manage_search_text`) contains `pattern`
+    /// (case-insensitive), searching in `dir` from just past the current
+    /// highlight, wrapping around. Moves the highlight there on success;
+    /// otherwise leaves it unchanged and sets a status-line message.
+    fn jump_to_manage_match(&mut self, dir: SearchDir, pattern: &str) {
+        let n = self.overrides.entries().len();
+        if pattern.is_empty() || n == 0 {
+            return;
+        }
+        let needle = pattern.to_lowercase();
+        let start = self.manage_highlight % n;
+        let order: Vec<usize> = match dir {
+            SearchDir::Forward => (1..=n).map(|d| (start + d) % n).collect(),
+            SearchDir::Backward => (1..=n).map(|d| (start + n - d) % n).collect(),
+        };
+        for i in order {
+            if self.manage_search_text(i).to_lowercase().contains(&needle) {
+                self.manage_highlight = i;
+                return;
+            }
+        }
+        self.message = format!("pattern not found: {pattern}");
     }
 
     /// Close the override pane (cancelling — spec 0114 §2), regardless of
@@ -1194,6 +1393,41 @@ impl App {
         Ok(())
     }
 
+    /// Origin for the currently-selected `override_kind`, targeting node
+    /// `idx` (spec 0117 §2). `PathField`/`FqdnField` error out when `idx`
+    /// is the wrapper root (no parent) or, for `FqdnField`, when the
+    /// parent's `type_fqdn` is unresolved.
+    fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
+        match self.override_kind {
+            OverrideKind::Path => Ok(OverrideOrigin::Path {
+                path: self.positional_path(idx),
+            }),
+            OverrideKind::PathField => {
+                let parent = self.tree[idx]
+                    .parent
+                    .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
+                Ok(OverrideOrigin::PathField {
+                    path: self.positional_path(parent),
+                    field: self.tree[idx].span.field_number,
+                })
+            }
+            OverrideKind::FqdnField => {
+                let parent = self.tree[idx]
+                    .parent
+                    .ok_or_else(|| "cursor is the wrapper root (no parent)".to_string())?;
+                let fqdn = self.tree[parent]
+                    .span
+                    .type_fqdn
+                    .clone()
+                    .ok_or_else(|| "parent's type is unresolved".to_string())?;
+                Ok(OverrideOrigin::FqdnField {
+                    fqdn,
+                    field: self.tree[idx].span.field_number,
+                })
+            }
+        }
+    }
+
     /// Handle a keypress while the override pane has focus (spec 0114
     /// §2/§3/§4).
     fn handle_override_key(&mut self, key: KeyEvent) {
@@ -1256,6 +1490,9 @@ impl App {
                 };
                 self.recompute_override_candidates();
             }
+            KeyCode::Char('z') => {
+                self.override_kind = self.override_kind.next();
+            }
             KeyCode::Char('/') => {
                 self.override_search = Some(OverrideSearch {
                     dir: SearchDir::Forward,
@@ -1274,24 +1511,143 @@ impl App {
                 }
             }
             KeyCode::Enter => {
+                let Some(idx) = self.override_target else {
+                    return;
+                };
                 // Row 0 is the pinned `<raw / no type>` entry (§3.1);
                 // rows 1.. are `override_candidates[row - 1]`.
-                let result = if self.override_highlight == 0 {
-                    self.apply_override(None)
+                let new_fqdn = if self.override_highlight == 0 {
+                    None
                 } else {
                     match self
                         .override_candidates
                         .get(self.override_highlight - 1)
                         .map(|(fqdn, _)| fqdn.clone())
                     {
-                        Some(fqdn) => self.apply_override(Some(&fqdn)),
-                        None => Err("no candidate selected".to_string()),
+                        Some(fqdn) => Some(fqdn),
+                        None => {
+                            self.message =
+                                "cannot apply override: no candidate selected".to_string();
+                            return;
+                        }
                     }
                 };
-                match result {
-                    Ok(()) => self.close_override(),
-                    Err(e) => self.message = format!("cannot apply override: {e}"),
+                // Spec 0117 §2: per-kind origin — errors (wrapper root,
+                // unresolved parent FQDN) abort before either the
+                // collection or 0114's splice-render is touched.
+                let origin = match self.override_origin_for_kind(idx) {
+                    Ok(origin) => origin,
+                    Err(e) => {
+                        self.message = format!("cannot create override: {e}");
+                        return;
+                    }
+                };
+                // `Path` kind only: 0114 §5's existing one-shot splice-
+                // render, unchanged, alongside — not instead of — the new
+                // collection bookkeeping below (spec 0117 Non-goals).
+                if self.override_kind == OverrideKind::Path {
+                    if let Err(e) = self.apply_override(new_fqdn.as_deref()) {
+                        self.message = format!("cannot apply override: {e}");
+                        return;
+                    }
                 }
+                self.overrides.activate(origin, new_fqdn);
+                self.close_override();
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a keypress while the override management pane is open (spec
+    /// 0117 §3) — always focused while open, no separate focus check
+    /// (unlike `handle_override_key`).
+    fn handle_manage_key(&mut self, key: KeyEvent) {
+        if let Some(search) = &mut self.manage_search {
+            match key.code {
+                KeyCode::Esc => self.manage_search = None,
+                KeyCode::Enter => {
+                    let OverrideSearch { dir, buffer } =
+                        self.manage_search.take().expect("checked above");
+                    let pattern = if buffer.is_empty() {
+                        self.last_manage_search
+                            .as_ref()
+                            .map(|(_, p)| p.clone())
+                            .unwrap_or(buffer)
+                    } else {
+                        buffer
+                    };
+                    self.last_manage_search = Some((dir, pattern.clone()));
+                    self.jump_to_manage_match(dir, &pattern);
+                }
+                KeyCode::Backspace => {
+                    if search.buffer.pop().is_none() {
+                        self.manage_search = None;
+                    }
+                }
+                KeyCode::Char(c) => search.buffer.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') => self.request_quit(),
+            KeyCode::Esc | KeyCode::Char('o') => self.close_manage_pane(),
+            KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
+            KeyCode::PageDown => {
+                self.move_manage_highlight(self.manage_list_height.max(1) as isize)
+            }
+            KeyCode::PageUp => {
+                self.move_manage_highlight(-(self.manage_list_height.max(1) as isize))
+            }
+            KeyCode::Home => self.manage_highlight = 0,
+            KeyCode::End => {
+                self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
+            }
+            KeyCode::Char('/') => {
+                self.manage_search = Some(OverrideSearch {
+                    dir: SearchDir::Forward,
+                    buffer: String::new(),
+                });
+            }
+            KeyCode::Char('?') => {
+                self.manage_search = Some(OverrideSearch {
+                    dir: SearchDir::Backward,
+                    buffer: String::new(),
+                });
+            }
+            KeyCode::Char('n') => {
+                if let Some((dir, pattern)) = self.last_manage_search.clone() {
+                    self.jump_to_manage_match(dir, &pattern);
+                }
+            }
+            // Spec 0117 §3: bookkeeping only — no rendering effect for any
+            // kind, including `path` (see spec 0117 Non-goals).
+            KeyCode::Char('a') => {
+                if !self.overrides.entries().is_empty() {
+                    self.overrides.toggle_active(self.manage_highlight);
+                }
+            }
+            KeyCode::Delete | KeyCode::Backspace => {
+                if !self.overrides.entries().is_empty() {
+                    self.overrides.remove(self.manage_highlight);
+                    let len = self.overrides.entries().len();
+                    if self.manage_highlight >= len {
+                        self.manage_highlight = len.saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Char('s') => {
+                let buf = format!("save-overrides {}", self.default_save_overrides_path());
+                self.command_kind = CommandLineKind::Command;
+                self.command_cursor = buf.chars().count();
+                self.command_buffer = Some(buf);
+            }
+            KeyCode::Char('r') => {
+                let buf = "restore-overrides ".to_string();
+                self.command_kind = CommandLineKind::Command;
+                self.command_cursor = buf.chars().count();
+                self.command_buffer = Some(buf);
             }
             _ => {}
         }
@@ -1385,6 +1741,10 @@ impl App {
         }
         if self.override_focus {
             self.handle_override_key(key);
+            return;
+        }
+        if self.manage_open {
+            self.handle_manage_key(key);
             return;
         }
         self.message.clear();
@@ -1581,6 +1941,13 @@ impl App {
             KeyCode::Esc if self.override_target.is_some() => self.close_override(),
             KeyCode::Tab if self.override_target.is_some() => self.override_focus = true,
 
+            // Override management pane (spec 0117 §3): `o` opens/closes
+            // it, mirroring `t`. Always focused while open, so it's
+            // dispatched to directly (see `handle_key`'s
+            // `self.manage_open` check) rather than via a `Tab`-toggled
+            // focus flag.
+            KeyCode::Char('o') => self.toggle_manage_pane(),
+
             // Help overlay. `F1`, not `?` — `?` is owned by in-pane search
             // (spec 0114 §4-style, extended to the main pane).
             KeyCode::F(1) => {
@@ -1738,6 +2105,14 @@ impl App {
             {
                 self.complete_type_as_fqdn(cmd, arg_prefix);
             }
+            Some((cmd, arg_prefix))
+                if matches!(
+                    resolve_command(cmd),
+                    Ok("save-overrides") | Ok("restore-overrides")
+                ) =>
+            {
+                self.complete_fs_path(cmd, arg_prefix);
+            }
             Some(_) => {}
         }
     }
@@ -1789,6 +2164,71 @@ impl App {
         }
         // `all_type_fqdns` is already sorted; `complete_prefix` preserves
         // that order via its filter, no re-sort needed.
+        let token_start = cmd.chars().count() + 1;
+        let cursor_byte = self.char_byte_index(self.command_cursor);
+        let buf = self.command_buffer.clone().unwrap_or_default();
+        let suffix = buf[cursor_byte..].to_string();
+        if matches.len() == 1 {
+            self.replace_token(token_start, &suffix, &matches[0]);
+            return;
+        }
+        let refs: Vec<&str> = matches.iter().map(String::as_str).collect();
+        let lcp = longest_common_prefix(&refs);
+        if lcp.chars().count() > arg_prefix.chars().count() {
+            self.replace_token(token_start, &suffix, &lcp);
+        }
+        self.completion = Some(CompletionState {
+            token_start,
+            suffix,
+            candidates: matches,
+            index: None,
+        });
+    }
+
+    /// `:save-overrides`/`:restore-overrides`'s argument completion (spec
+    /// 0117 §4) — candidates are `std::fs::read_dir`'s entries for the
+    /// argument's directory portion (everything up to and including its
+    /// last `/`, or the current directory if there is none), filtered by
+    /// its final path segment; directory entries get a trailing `/`
+    /// appended, so a further Tab press descends into them. No
+    /// `!arg_prefix.contains(' ')` guard, unlike `complete_type_as_fqdn` —
+    /// a path argument is everything after the command name's single
+    /// space, embedded spaces included.
+    fn complete_fs_path(&mut self, cmd: &str, arg_prefix: &str) {
+        let (dir_part, file_prefix) = match arg_prefix.rfind('/') {
+            Some(i) => (&arg_prefix[..=i], &arg_prefix[i + 1..]),
+            None => ("", arg_prefix),
+        };
+        let read_dir_path = if dir_part.is_empty() {
+            Path::new(".")
+        } else {
+            Path::new(dir_part)
+        };
+        let entries = match std::fs::read_dir(read_dir_path) {
+            Ok(rd) => rd,
+            Err(e) => {
+                self.message = format!("cannot list '{}': {e}", read_dir_path.display());
+                return;
+            }
+        };
+        let mut matches: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(file_prefix) {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let mut candidate = format!("{dir_part}{name}");
+            if is_dir {
+                candidate.push('/');
+            }
+            matches.push(candidate);
+        }
+        if matches.is_empty() {
+            self.message = format!("no path matches '{arg_prefix}'");
+            return;
+        }
+        matches.sort_unstable();
         let token_start = cmd.chars().count() + 1;
         let cursor_byte = self.char_byte_index(self.command_cursor);
         let buf = self.command_buffer.clone().unwrap_or_default();
@@ -1862,6 +2302,8 @@ impl App {
             Ok("extract") => self.run_extract(tokens.collect()),
             Ok("type-as") => self.run_type_as(tokens.collect()),
             Ok("type-as-raw") => self.run_type_as_raw(),
+            Ok("save-overrides") => self.run_save_overrides(tokens.collect()),
+            Ok("restore-overrides") => self.run_restore_overrides(tokens.collect()),
             Ok(other) => unreachable!("resolve_command returned unregistered command: {other}"),
             Err(e) => self.message = e,
         }
@@ -1933,6 +2375,155 @@ impl App {
             Ok(()) => self.message = format!("extracted to {path}"),
             Err(e) => self.message = format!("extract error: {e}"),
         }
+    }
+
+    /// Propose a default `:save-overrides` path — same directory/stem as
+    /// the target blob, `.yaml` extension (spec 0117 §4, mirroring
+    /// `default_extract_path`).
+    fn default_save_overrides_path(&self) -> String {
+        let stem = self
+            .blob_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "overrides".to_string());
+        let filename = format!("{stem}.yaml");
+        match self.blob_path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                dir.join(filename).to_string_lossy().into_owned()
+            }
+            _ => filename,
+        }
+    }
+
+    /// SHA-256 hex digests of the currently-loaded blob/descriptor set,
+    /// canonicalized-binary bytes (spec 0117 §4's `blob_sha256`/
+    /// `descriptor_set_sha256`) — the caller's original (pre-wrap) blob,
+    /// and the descriptor set's own canonicalized bytes (`ctx.raw_bytes`).
+    fn target_hashes(&self) -> (String, String) {
+        let blob_sha256 = override_pane::sha256_hex(&self.blob[self.wrapper_offset..]);
+        let descriptor_set_sha256 = override_pane::sha256_hex(&self.ctx.raw_bytes);
+        (blob_sha256, descriptor_set_sha256)
+    }
+
+    /// `idx`'s `pos`-th child (1-based, document order) — the sibling-chain
+    /// counterpart to `sibling_position`.
+    fn nth_child(&self, idx: usize, pos: usize) -> Option<usize> {
+        let mut cur = self.tree[idx].first_child;
+        for _ in 1..pos {
+            cur = cur.and_then(|c| self.tree[c].next_sibling);
+        }
+        cur
+    }
+
+    /// Inverse of `positional_path`: resolves a canonical `/1/2/3`-style
+    /// path (or bare `/` for the wrapper root) back to a tree index.
+    /// `None` if any segment doesn't parse as a 1-based position, or
+    /// doesn't resolve against the current tree (spec 0117 §4 restore-time
+    /// validation).
+    fn resolve_path(&self, path: &str) -> Option<usize> {
+        let root = self.tree.iter().position(|n| n.parent.is_none())?;
+        if path == "/" {
+            return Some(root);
+        }
+        let mut cur = root;
+        for seg in path.trim_start_matches('/').split('/') {
+            let pos: usize = seg.parse().ok()?;
+            cur = self.nth_child(cur, pos)?;
+        }
+        Some(cur)
+    }
+
+    /// Whether `origin` resolves against the currently-loaded tree/
+    /// descriptor pool (spec 0117 §4 restore-time validation): `Path`
+    /// needs the path to resolve to a node; `PathField` additionally
+    /// needs that node to have at least one child with the given field
+    /// number; `FqdnField` needs the FQDN to resolve in the descriptor
+    /// pool and that message to declare the given field number.
+    fn origin_resolves(&self, origin: &OverrideOrigin) -> bool {
+        match origin {
+            OverrideOrigin::Path { path } => self.resolve_path(path).is_some(),
+            OverrideOrigin::PathField { path, field } => match self.resolve_path(path) {
+                Some(idx) => {
+                    let mut child = self.tree[idx].first_child;
+                    while let Some(c) = child {
+                        if self.tree[c].span.field_number == *field {
+                            return true;
+                        }
+                        child = self.tree[c].next_sibling;
+                    }
+                    false
+                }
+                None => false,
+            },
+            OverrideOrigin::FqdnField { fqdn, field } => self
+                .ctx
+                .pool()
+                .get_message_by_name(fqdn)
+                .and_then(|m| m.get_field(*field as u32))
+                .is_some(),
+        }
+    }
+
+    /// `save-overrides <path>` (spec 0117 §4): writes the entire
+    /// collection, plus the current target's hashes, to `<path>` as YAML.
+    fn run_save_overrides(&mut self, args: Vec<&str>) {
+        if args.is_empty() {
+            self.message = "save-overrides: missing path".to_string();
+            return;
+        }
+        let path = args.join(" ");
+        let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
+        let yaml = self.overrides.to_yaml(blob_sha256, descriptor_set_sha256);
+        match std::fs::write(&path, yaml) {
+            Ok(()) => self.message = format!("saved overrides to {path}"),
+            Err(e) => self.message = format!("save-overrides error: {e}"),
+        }
+    }
+
+    /// `restore-overrides <path>` (spec 0117 §4): replaces the collection
+    /// wholesale with `<path>`'s contents, silently dropping any entry
+    /// that doesn't resolve against the current tree/descriptor pool, and
+    /// warning (without blocking) on a target-hash mismatch.
+    fn run_restore_overrides(&mut self, args: Vec<&str>) {
+        if args.is_empty() {
+            self.message = "restore-overrides: missing path".to_string();
+            return;
+        }
+        let path = args.join(" ");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.message = format!("restore-overrides error: {e}");
+                return;
+            }
+        };
+        let (mut collection, target) = match override_pane::OverrideCollection::from_yaml(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                self.message = format!("restore-overrides error: {e}");
+                return;
+            }
+        };
+        collection.retain_resolvable(|origin| self.origin_resolves(origin));
+        let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
+        let mut warnings = Vec::new();
+        if target.blob_sha256 != blob_sha256 {
+            warnings.push("blob hash mismatch");
+        }
+        if target.descriptor_set_sha256 != descriptor_set_sha256 {
+            warnings.push("descriptor-set hash mismatch");
+        }
+        self.overrides = collection;
+        self.manage_highlight = 0;
+        self.manage_scroll = 0;
+        self.message = if warnings.is_empty() {
+            format!("restored overrides from {path}")
+        } else {
+            format!(
+                "restored overrides from {path} (warning: {})",
+                warnings.join(", ")
+            )
+        };
     }
 
     /// Handle one mouse event: wheel scroll moves the cursor like `j`/`k`;
@@ -2103,10 +2694,13 @@ impl App {
             ])
             .split(area);
 
-        // Ephemeral right-hand split (spec 0114 §2) when the override
-        // pane is open — 50/50, giving the candidate list (FQDNs, plus
-        // inferred-mode scores) enough room to be legible.
-        let (main_outer, override_outer) = if self.override_target.is_some() {
+        // Ephemeral right-hand split (spec 0114 §2, extended by spec 0117
+        // §3 to the management pane) when either the override selection
+        // pane or the management pane is open — 50/50, giving the
+        // candidate/entry list enough room to be legible. The two panes
+        // are mutually exclusive (spec 0117 §3), so at most one of these
+        // is ever true.
+        let (main_outer, right_outer) = if self.override_target.is_some() || self.manage_open {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -2225,8 +2819,12 @@ impl App {
         frame.render_widget(status_block, status_outer);
         frame.render_widget(Paragraph::new(status), status_inner);
 
-        if let Some(override_area) = override_outer {
-            self.render_override_pane(frame, override_area);
+        if let Some(right_area) = right_outer {
+            if self.override_target.is_some() {
+                self.render_override_pane(frame, right_area);
+            } else if self.manage_open {
+                self.render_manage_pane(frame, right_area);
+            }
         }
 
         if self.splash {
@@ -2253,8 +2851,10 @@ impl App {
             SortMode::Inferred => "inferred",
         };
         let title = format!(
-            " Override — range [{}..{}) — sort: {sort_label} ",
-            range.start, range.end
+            " Override — range [{}..{}) — sort: {sort_label} — kind: {} (z to rotate) ",
+            range.start,
+            range.end,
+            self.override_kind.label()
         );
         let border_style = if self.override_focus {
             Style::default().add_modifier(Modifier::BOLD)
@@ -2305,6 +2905,66 @@ impl App {
                 )));
             } else {
                 lines.push(Line::from(text));
+            }
+        }
+        if let Some(search_line) = search_line {
+            lines.push(Line::from(search_line));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// Override management pane (spec 0117 §3) — always focused while
+    /// open (bold border unconditionally), lists the whole
+    /// `OverrideCollection` in its canonical sort order.
+    fn render_manage_pane(&mut self, frame: &mut Frame, area: Rect) {
+        let title = format!(" Overrides ({} entries) ", self.overrides.entries().len());
+        let border_style = Style::default().add_modifier(Modifier::BOLD);
+        let block = Block::bordered().title(title).border_style(border_style);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let search_line = self.manage_search.as_ref().map(|s| {
+            let prefix = match s.dir {
+                SearchDir::Forward => '/',
+                SearchDir::Backward => '?',
+            };
+            format!("{prefix}{}", s.buffer)
+        });
+        let list_height =
+            (inner.height as usize).saturating_sub(usize::from(search_line.is_some()));
+        self.manage_list_height = list_height;
+
+        let rows = self.manage_display_rows();
+        let total_rows = rows.len();
+        let highlighted_row = rows
+            .iter()
+            .position(|r| matches!(r, ManageRow::Entry(idx) if *idx == self.manage_highlight))
+            .unwrap_or(0);
+        if list_height > 0 {
+            if highlighted_row < self.manage_scroll {
+                self.manage_scroll = highlighted_row;
+            } else if highlighted_row >= self.manage_scroll + list_height {
+                self.manage_scroll = highlighted_row + 1 - list_height;
+            }
+        }
+        let end = (self.manage_scroll + list_height).min(total_rows);
+        let start = self.manage_scroll.min(total_rows);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for row in &rows[start..end] {
+            match row {
+                ManageRow::Header(label) => lines.push(Line::from(label.clone())),
+                ManageRow::Entry(idx) => {
+                    let text = self.manage_type_line(*idx);
+                    if *idx == self.manage_highlight {
+                        lines.push(Line::from(Span::styled(
+                            text,
+                            Style::default().add_modifier(Modifier::REVERSED),
+                        )));
+                    } else {
+                        lines.push(Line::from(text));
+                    }
+                }
             }
         }
         if let Some(search_line) = search_line {
@@ -2740,9 +3400,9 @@ mod tests {
                 first_child: None,
                 last_child: None,
                 next_sibling: (i + 1 < n).then_some(i + 1),
-                prev_sibling: (i > 0).then_some(i - 1),
+                prev_sibling: i.checked_sub(1),
                 doc_next: (i + 1 < n).then_some(i + 1),
-                doc_prev: (i > 0).then_some(i - 1),
+                doc_prev: i.checked_sub(1),
             })
             .collect();
         let decoded = Decoded {
@@ -3878,5 +4538,185 @@ mod tests {
         }
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.command_buffer.as_deref(), Some("type-as test.Inner"));
+    }
+
+    /// Spec 0117 §4: `resolve_path` is the inverse of `positional_path`
+    /// for every node reachable from the root, and `None` for a path that
+    /// doesn't resolve against the current tree.
+    #[test]
+    fn resolve_path_is_the_inverse_of_positional_path() {
+        let (app, inner_idx, id_idx) = type_as_fixture();
+        let outer_idx = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("tree must have a wrapper root");
+        assert_eq!(
+            app.resolve_path(&app.positional_path(outer_idx)),
+            Some(outer_idx)
+        );
+        assert_eq!(
+            app.resolve_path(&app.positional_path(inner_idx)),
+            Some(inner_idx)
+        );
+        assert_eq!(app.resolve_path(&app.positional_path(id_idx)), Some(id_idx));
+        assert_eq!(app.resolve_path("/99"), None);
+    }
+
+    /// Spec 0117 §4's restore-time validation: `origin_resolves` checks
+    /// each of the three origin kinds against the current tree/descriptor
+    /// pool.
+    #[test]
+    fn origin_resolves_checks_path_field_and_fqdn_field_origins() {
+        let (app, inner_idx, _) = type_as_fixture();
+        let inner_path = app.positional_path(inner_idx);
+
+        assert!(app.origin_resolves(&OverrideOrigin::Path {
+            path: inner_path.clone()
+        }));
+        assert!(!app.origin_resolves(&OverrideOrigin::Path {
+            path: "/99".to_string()
+        }));
+
+        assert!(app.origin_resolves(&OverrideOrigin::PathField {
+            path: inner_path.clone(),
+            field: 1,
+        }));
+        assert!(!app.origin_resolves(&OverrideOrigin::PathField {
+            path: inner_path,
+            field: 99,
+        }));
+
+        assert!(app.origin_resolves(&OverrideOrigin::FqdnField {
+            fqdn: "test.Inner".to_string(),
+            field: 1,
+        }));
+        assert!(!app.origin_resolves(&OverrideOrigin::FqdnField {
+            fqdn: "test.Inner".to_string(),
+            field: 99,
+        }));
+        assert!(!app.origin_resolves(&OverrideOrigin::FqdnField {
+            fqdn: "test.NoSuchType".to_string(),
+            field: 1,
+        }));
+    }
+
+    /// Spec 0117 §4: `default_save_overrides_path` mirrors
+    /// `default_extract_path`'s directory/stem derivation, but always
+    /// with a `.yaml` extension.
+    #[test]
+    fn default_save_overrides_path_uses_blob_stem_with_yaml_extension() {
+        let (mut app, _, _) = type_as_fixture();
+        app.blob_path = PathBuf::from("/tmp/some/target.pb");
+        assert_eq!(app.default_save_overrides_path(), "/tmp/some/target.yaml");
+    }
+
+    /// Spec 0117 §4: `:save-overrides`/`:restore-overrides` round-trip the
+    /// collection through YAML, and restore silently drops an entry whose
+    /// origin no longer resolves against the current tree.
+    #[test]
+    fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: app.positional_path(inner_idx),
+                field: 1,
+            },
+            Some("test.Inner".to_string()),
+        );
+        // Doesn't resolve against this tree — must be dropped on restore.
+        app.overrides.activate(
+            OverrideOrigin::Path {
+                path: "/99".to_string(),
+            },
+            None,
+        );
+        assert_eq!(app.overrides.entries().len(), 3); // root + the two above
+
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir()
+            .join(format!("protolens-tui-save-restore-{n}.yaml"))
+            .to_string_lossy()
+            .into_owned();
+
+        app.run_save_overrides(vec![&path]);
+        assert!(
+            app.message.starts_with("saved overrides to"),
+            "unexpected message: {}",
+            app.message
+        );
+
+        app.overrides = override_pane::OverrideCollection::new();
+        app.run_restore_overrides(vec![&path]);
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(
+            app.message.starts_with("restored overrides from"),
+            "unexpected message: {}",
+            app.message
+        );
+        assert!(
+            !app.message.contains("warning"),
+            "unexpected warning: {}",
+            app.message
+        );
+        assert_eq!(app.overrides.entries().len(), 2); // "/99" silently dropped
+        assert!(!app
+            .overrides
+            .entries()
+            .iter()
+            .any(|e| matches!(&e.origin, OverrideOrigin::Path { path } if path == "/99")));
+    }
+
+    /// Spec 0117 §4: a target-hash mismatch on restore warns in the
+    /// message line but does not block the restore.
+    #[test]
+    fn restore_overrides_warns_on_hash_mismatch_without_blocking() {
+        let (mut app, _, _) = type_as_fixture();
+        let yaml = app
+            .overrides
+            .to_yaml("deadbeef".to_string(), "deadbeef".to_string());
+
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir()
+            .join(format!("protolens-tui-restore-hash-mismatch-{n}.yaml"))
+            .to_string_lossy()
+            .into_owned();
+        std::fs::write(&path, &yaml).unwrap();
+
+        app.run_restore_overrides(vec![&path]);
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(app.message.contains("warning"), "{}", app.message);
+        assert!(app.message.contains("blob hash mismatch"));
+        assert!(app.message.contains("descriptor-set hash mismatch"));
+        assert_eq!(app.overrides.entries().len(), 1); // restore still applied
+    }
+
+    /// Spec 0117 §4: `Tab` completes `:save-overrides`/`:restore-overrides`'s
+    /// path argument against real directory entries, cycling on the
+    /// longest common prefix — no `!arg_prefix.contains(' ')` restriction,
+    /// unlike `:type-as`'s FQDN completer.
+    #[test]
+    fn tab_completes_filesystem_path_for_save_overrides_argument() {
+        let (mut app, _, _) = type_as_fixture();
+        let dir =
+            std::env::temp_dir().join(format!("protolens-tui-fs-complete-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("alpha.yaml"), b"").unwrap();
+        std::fs::write(dir.join("alphabet.yaml"), b"").unwrap();
+
+        let prefix = format!("save-overrides {}/al", dir.to_string_lossy());
+        app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        for c in prefix.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let expected = format!("save-overrides {}/alpha", dir.to_string_lossy());
+        assert_eq!(app.command_buffer.as_deref(), Some(expected.as_str()));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
