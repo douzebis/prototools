@@ -1430,6 +1430,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm 0.28.1",
+ "libc",
  "prost",
  "prost-reflect",
  "prost-types",

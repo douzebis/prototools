@@ -20,7 +20,9 @@ use std::io;
 use std::ops::Range;
 use std::path::Path;
 
-use prototext_core::helpers::{parse_varint, parse_wiretag, WT_LEN};
+use prototext_core::helpers::{
+    parse_varint, parse_wiretag, write_tag, WT_END_GROUP, WT_LEN, WT_START_GROUP,
+};
 
 use crate::decode::TreeNode;
 
@@ -62,10 +64,13 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 /// For any field's full `tag[+length]+payload` span, return just the
 /// `payload` sub-range — generic over wire type, not node kind: a
 /// length-delimited field (`WT_LEN` — messages, groups, strings, bytes,
-/// packed-repeated scalars) has both tag and length stripped; any other
-/// wire type (varint, fixed32, fixed64) has only its tag stripped.
-/// `pub(crate)`: also reused by `tui.rs`'s payload-only range display for
-/// every node, message/group or scalar alike (spec 0114 §1.1, extended).
+/// packed-repeated scalars) has both tag and length stripped; a group
+/// (`WT_START_GROUP`) has both its leading START_GROUP tag and its
+/// trailing END_GROUP tag stripped (the latter fixed post-spec-0120: see
+/// below); any other wire type (varint, fixed32, fixed64) has only its
+/// tag stripped. `pub(crate)`: also reused by `tui.rs`'s payload-only
+/// range display for every node, message/group or scalar alike (spec
+/// 0114 §1.1, extended).
 ///
 /// `packed_record_start` is `NodeSpan::packed_record_start` (spec 0115
 /// §3): `Some` means `range` is one element of a packed-repeated field —
@@ -73,6 +78,16 @@ pub fn extract_binary<'a>(blob: &'a [u8], range: &Range<usize>, is_message: bool
 /// shared LEN payload), so `range` is already the payload and is returned
 /// unstripped; stripping it would misparse the element's own first byte
 /// as a fake tag.
+///
+/// The trailing END_GROUP tag is stripped by re-encoding it from the
+/// leading tag's own field number (`write_tag(field_number, WT_END_GROUP,
+/// ..)`) rather than parsing backward from `range.end` (varints can't be
+/// parsed right-to-left) — correct because a group's END_GROUP tag always
+/// shares the *same* field number as its own START_GROUP tag (spec 0120
+/// bugfix: previously left in place, corrupting a fresh top-level
+/// re-decode of the payload — e.g. `splice_override`'s wrap-and-redecode
+/// trick — since wire type 4 is invalid at top level, producing a
+/// spurious `INVALID_GROUP_END` entry).
 pub(crate) fn message_payload_range(
     blob: &[u8],
     range: &Range<usize>,
@@ -91,9 +106,15 @@ pub(crate) fn message_payload_range(
             return len.next_pos..range.end;
         }
     }
-    // WT_START_GROUP (or anything else): no length prefix — strip only the
-    // leading tag. A group's `range` also has a trailing END_GROUP tag
-    // this doesn't strip (rare/deprecated wire feature, not handled here).
+    if wtype == WT_START_GROUP {
+        if let Some(field_number) = tag.wfield {
+            let mut end_tag = Vec::new();
+            write_tag(field_number as u32, WT_END_GROUP, &mut end_tag);
+            let end = range.end.saturating_sub(end_tag.len()).max(tag.next_pos);
+            return tag.next_pos..end;
+        }
+    }
+    // Any other wire type: no length prefix — strip only the leading tag.
     tag.next_pos..range.end
 }
 
@@ -193,14 +214,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_binary_group_strips_leading_tag_but_keeps_trailing_end_tag() {
+    fn extract_binary_group_strips_leading_and_trailing_tags() {
         // Group field 5: START_GROUP tag (5<<3)|3 = 0x2B, inner varint
         // field 1 = 7 (tag 0x08, value 0x07), END_GROUP tag (5<<3)|4 =
-        // 0x2C. Groups have no length prefix, so only the leading tag is
-        // stripped — the trailing END_GROUP tag stays (it's part of the
-        // group's own raw_range, not a wrapping field).
+        // 0x2C. Groups have no length prefix; both the leading
+        // START_GROUP tag and the trailing END_GROUP tag are stripped
+        // (spec 0120 bugfix — leaving the trailing tag in place corrupts
+        // a fresh top-level re-decode of the extracted payload).
         let blob = [0x2Bu8, 0x08, 0x07, 0x2C];
-        assert_eq!(extract_binary(&blob, &(0..4), true), &blob[1..]);
+        assert_eq!(extract_binary(&blob, &(0..4), true), &blob[1..3]);
     }
 
     #[test]
@@ -316,6 +338,7 @@ mod tests {
 
     #[test]
     fn extract_text_prepends_the_prototext_header() {
+        use prototext_core::helpers::WT_LEN;
         use prototext_core::serialize::render_text::NodeSpan;
 
         let lines: Vec<String> = vec!["  options {".to_string(), "  }".to_string()];
@@ -331,6 +354,7 @@ mod tests {
                 // field existed.
                 is_message: false,
                 packed_record_start: None,
+                wire_type: WT_LEN,
             },
             parent: None,
             first_child: None,
@@ -339,6 +363,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-header-test.pb");
         extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();
@@ -354,6 +379,7 @@ mod tests {
         // closing line — extracting it verbatim produced text still
         // wrapped in the original field, not standalone prototext for the
         // extracted message's own type.
+        use prototext_core::helpers::WT_LEN;
         use prototext_core::serialize::render_text::NodeSpan;
 
         let lines: Vec<String> = vec![
@@ -370,6 +396,7 @@ mod tests {
                 type_fqdn: Some("google.protobuf.FileOptions".to_string()),
                 is_message: true,
                 packed_record_start: None,
+                wire_type: WT_LEN,
             },
             parent: None,
             first_child: None,
@@ -378,6 +405,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-message-text-test.pb");
         extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();
@@ -396,6 +424,7 @@ mod tests {
         // `NestedKind::Group` branch), so `is_message` alone (regardless of
         // message vs. group) is enough to correctly trigger the same
         // wrapping-line stripping.
+        use prototext_core::helpers::WT_START_GROUP;
         use prototext_core::serialize::render_text::NodeSpan;
 
         let lines: Vec<String> = vec![
@@ -412,6 +441,7 @@ mod tests {
                 type_fqdn: Some("pkg.MyGroup".to_string()),
                 is_message: true,
                 packed_record_start: None,
+                wire_type: WT_START_GROUP,
             },
             parent: None,
             first_child: None,
@@ -420,6 +450,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let path = std::env::temp_dir().join("protolens-extract-group-text-test.pb");
         extract(&path, ExtractFormat::Text, b"", &lines, &node).unwrap();

@@ -14,9 +14,12 @@ use crate::colorize::StyleHint;
 
 /// Key: the same `payload_range` `apply_override` already computes via
 /// `extract::message_payload_range`, plus the type it was rendered under
-/// (`None` = raw/schema-less override) — the exact two inputs that
-/// determine `decode_and_render_indexed`'s output.
-type RenderKey = (Range<usize>, Option<String>);
+/// (`None` = raw/schema-less override), plus the field name the
+/// synthetic wrapper used (spec 0119 G4: entry-level name overrides make
+/// this a genuine rendering input, not just schema-derived trivia) — the
+/// exact three inputs that determine `decode_and_render_indexed`'s
+/// output.
+type RenderKey = (Range<usize>, Option<String>, String);
 
 /// Value: everything `apply_override` derives from a fresh
 /// `decode_and_render_indexed` call plus the colorize pass (§7) — a
@@ -99,11 +102,16 @@ mod tests {
     #[test]
     fn render_cache_hit_promotes_to_most_recently_used() {
         let mut cache = RenderCache::new(1_000_000);
-        cache.insert((0..10, None), value("a"));
-        cache.insert((10..20, Some("pkg.A".to_string())), value("b"));
-        assert!(cache.get(&(0..10, None)).is_some());
-        assert!(cache.get(&(10..20, Some("pkg.A".to_string()))).is_some());
-        assert!(cache.get(&(20..30, None)).is_none());
+        cache.insert((0..10, None, "f".to_string()), value("a"));
+        cache.insert(
+            (10..20, Some("pkg.A".to_string()), "f".to_string()),
+            value("b"),
+        );
+        assert!(cache.get(&(0..10, None, "f".to_string())).is_some());
+        assert!(cache
+            .get(&(10..20, Some("pkg.A".to_string()), "f".to_string()))
+            .is_some());
+        assert!(cache.get(&(20..30, None, "f".to_string())).is_none());
     }
 
     #[test]
@@ -111,20 +119,23 @@ mod tests {
         // Each entry costs len("a") = 1 byte; budget of 2 fits exactly
         // two entries at a time.
         let mut cache = RenderCache::new(2);
-        cache.insert((0..10, None), value("a"));
-        cache.insert((10..20, None), value("b"));
-        cache.insert((20..30, None), value("c"));
+        cache.insert((0..10, None, "f".to_string()), value("a"));
+        cache.insert((10..20, None, "f".to_string()), value("b"));
+        cache.insert((20..30, None, "f".to_string()), value("c"));
         // First insert (0..10) should have been evicted.
-        assert!(cache.get(&(0..10, None)).is_none());
-        assert!(cache.get(&(10..20, None)).is_some());
-        assert!(cache.get(&(20..30, None)).is_some());
+        assert!(cache.get(&(0..10, None, "f".to_string())).is_none());
+        assert!(cache.get(&(10..20, None, "f".to_string())).is_some());
+        assert!(cache.get(&(20..30, None, "f".to_string())).is_some());
     }
 
     #[test]
     fn render_cache_keeps_oversized_entry_alone() {
         let mut cache = RenderCache::new(1);
-        cache.insert((0..10, None), value("way too big for the budget"));
-        assert!(cache.get(&(0..10, None)).is_some());
+        cache.insert(
+            (0..10, None, "f".to_string()),
+            value("way too big for the budget"),
+        );
+        assert!(cache.get(&(0..10, None, "f".to_string())).is_some());
     }
 
     #[test]
@@ -135,10 +146,10 @@ mod tests {
             role: SyntaxRole::Attribute,
         }];
         cache.insert(
-            (0..10, None),
+            (0..10, None, "f".to_string()),
             (vec!["flag".to_string()], Vec::new(), hints.clone()),
         );
-        let (_, _, cached_hints) = cache.get(&(0..10, None)).unwrap();
+        let (_, _, cached_hints) = cache.get(&(0..10, None, "f".to_string())).unwrap();
         assert_eq!(cached_hints, hints);
     }
 }

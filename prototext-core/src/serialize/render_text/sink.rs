@@ -207,6 +207,7 @@ use prost_reflect::Kind;
 
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
+    WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT,
 };
 use crate::serialize::common::{
     escape_bytes_into, escape_string_into, format_double_protoc, format_fixed32_protoc,
@@ -989,6 +990,20 @@ pub struct NodeSpan {
     /// again carry their own tag. Purely an internal discriminator (spec
     /// 0115 Non-goals) — not surfaced in any user-visible rendering.
     pub packed_record_start: Option<usize>,
+    /// The wire type this node's own value was decoded from — one of
+    /// `crate::helpers::{WT_VARINT, WT_I64, WT_LEN, WT_START_GROUP,
+    /// WT_I32}`. Set independently of `is_message`/`type_fqdn`: a `LEN`
+    /// field rendered as a scalar string/bytes still carries `WT_LEN`, so
+    /// consumers can tell it apart from a genuinely non-recursable scalar
+    /// (`WT_VARINT`/`WT_I64`/`WT_I32`) without re-parsing the wire tag
+    /// themselves. For a packed-repeated element, this is the *element's*
+    /// own wire type (from the field's declared `Kind`), not the packed
+    /// record's outer `WT_LEN`. For a virtual wrapper node (Any/MessageSet
+    /// expansion), `WT_LEN` is used regardless of the original wire
+    /// encoding — always message-shaped, so the exact value only matters
+    /// for the `WT_LEN | WT_START_GROUP` recursion-eligibility check,
+    /// which either value would satisfy.
+    pub wire_type: u32,
 }
 
 /// Per-`IndexingTextSink` "in-progress nested node" marker: captures what's
@@ -1000,6 +1015,7 @@ pub(super) struct IndexMark {
     level: usize,
     type_fqdn: Option<String>,
     is_message: bool,
+    wire_type: u32,
     /// `IndexingTextSink::raw_base` as it was *before* this node was
     /// opened — i.e. the base to translate this node's own `raw_range`
     /// with at `end_nested`, and to restore `raw_base` to once this
@@ -1081,10 +1097,17 @@ impl Sink for IndexingTextSink {
         let level = LEVEL.with(|c| c.get());
         // Captured before `value` is moved into the delegated call below,
         // so we can still tell (after that call) whether this was a packed
-        // field — spec 0115 §2.
+        // field — spec 0115 §2 — and what wire type it came off the wire
+        // as (spec 0118 §8).
         let packed_data = match &value {
             ScalarValue::Packed(data) => Some(*data),
             _ => None,
+        };
+        let wire_type = match &value {
+            ScalarValue::Varint { .. } => WT_VARINT,
+            ScalarValue::Fixed64(_) => WT_I64,
+            ScalarValue::Fixed32(_) => WT_I32,
+            ScalarValue::Bytes(_) | ScalarValue::Packed(_) => WT_LEN,
         };
         self.inner.scalar_field(
             field_number,
@@ -1104,6 +1127,14 @@ impl Sink for IndexingTextSink {
         // delegated call above) is untouched and not duplicated here.
         if let Some(data) = packed_data {
             let fs = field_schema.expect("packed scalar requires a known field schema");
+            // Each element's own wire type (not the packed record's outer
+            // `WT_LEN`) — mirrors the fixed/varint split
+            // `decode_packed_elems` itself already makes.
+            let elem_wire_type = match fs.kind() {
+                Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => WT_I64,
+                Kind::Float | Kind::Fixed32 | Kind::Sfixed32 => WT_I32,
+                _ => WT_VARINT,
+            };
             if let Ok(elems) = decode_packed_elems(data, fs) {
                 if !elems.is_empty() {
                     let payload_start = raw_range.end - data.len();
@@ -1118,6 +1149,7 @@ impl Sink for IndexingTextSink {
                             type_fqdn: None,
                             is_message: false,
                             packed_record_start,
+                            wire_type: elem_wire_type,
                         });
                     }
                     return;
@@ -1135,6 +1167,7 @@ impl Sink for IndexingTextSink {
             type_fqdn: None,
             is_message: false,
             packed_record_start: None,
+            wire_type,
         });
     }
 
@@ -1150,6 +1183,10 @@ impl Sink for IndexingTextSink {
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
         let type_fqdn = declared_type_fqdn(field_schema);
+        let wire_type = match kind {
+            NestedKind::Message => WT_LEN,
+            NestedKind::Group => WT_START_GROUP,
+        };
         let raw_base = self.raw_base;
         let inner = self.inner.begin_nested(
             field_number,
@@ -1166,6 +1203,7 @@ impl Sink for IndexingTextSink {
             level,
             type_fqdn,
             is_message: true,
+            wire_type,
             raw_base,
             inner,
         }
@@ -1183,6 +1221,7 @@ impl Sink for IndexingTextSink {
             level,
             type_fqdn,
             is_message,
+            wire_type,
             raw_base,
             inner,
         } = mark;
@@ -1197,6 +1236,7 @@ impl Sink for IndexingTextSink {
             type_fqdn,
             is_message,
             packed_record_start: None,
+            wire_type,
         });
     }
 
@@ -1234,6 +1274,8 @@ impl Sink for IndexingTextSink {
             level,
             type_fqdn: type_fqdn.map(str::to_owned),
             is_message: true,
+            // Always message-shaped; see `NodeSpan::wire_type` doc comment.
+            wire_type: WT_LEN,
             raw_base,
             inner,
         }

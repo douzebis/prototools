@@ -228,6 +228,25 @@ pub struct OverrideEntry {
     pub origin: OverrideOrigin,
     pub r#type: Option<String>,
     pub active: bool,
+    /// Display-name override (spec 0119 G4): `None` keeps the
+    /// schema-derived real field name (or its own fallback chain);
+    /// `Some` takes priority over it wherever the real field name would
+    /// otherwise be resolved.
+    pub name: Option<String>,
+    /// `true` when this entry was created by `render_overrides`'s
+    /// internal Any/MessageSet auto-expansion seeding (`activate_auto`),
+    /// as opposed to an explicit user action (`activate`, via the
+    /// override pane or `type-as`) — spec 0120 follow-up. Session-only:
+    /// never round-tripped through the YAML save/restore format (a
+    /// restored entry is always treated as a deliberate, pinned user
+    /// choice, immune to demotion). Lets `render_overrides` detect when
+    /// an auto-derived entry's governing ancestor has since changed
+    /// (e.g. its MessageSet `Item` was deactivated back to raw) and stop
+    /// honoring the now-stale derived type for this pass, without
+    /// touching `active` — the entry transparently resumes applying once
+    /// the ancestor context is restored, since only a manual `activate`
+    /// pins `auto` back to `false`.
+    pub auto: bool,
 }
 
 /// The persistent collection of overrides (spec 0117 §1). Always kept
@@ -269,6 +288,8 @@ impl OverrideCollection {
             },
             r#type,
             active: true,
+            name: None,
+            auto: false,
         });
         self.sort();
     }
@@ -276,7 +297,26 @@ impl OverrideCollection {
     /// Creates (or reactivates, if an entry with this exact origin and
     /// type already exists) an override, deactivating every other entry
     /// sharing `origin` (spec 0117 §1's per-origin active invariant).
+    /// Always a deliberate, user-driven action (override pane, `type-as`
+    /// command) — pins the entry's `auto` flag to `false`, even if it was
+    /// previously auto-seeded, since an explicit re-selection through
+    /// this path is the user endorsing it. Internal auto-expansion
+    /// seeding uses `activate_auto` instead.
     pub fn activate(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
+        self.activate_impl(origin, r#type, false);
+    }
+
+    /// Like `activate`, but for `render_overrides`'s internal Any/
+    /// MessageSet auto-expansion seeding (spec 0120 follow-up): marks the
+    /// entry `auto: true`, making it subject to demotion (silently not
+    /// honored for a render pass, without touching `active`) whenever its
+    /// governing ancestor's context no longer supports the derivation
+    /// that produced it.
+    pub fn activate_auto(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
+        self.activate_impl(origin, r#type, true);
+    }
+
+    fn activate_impl(&mut self, origin: OverrideOrigin, r#type: Option<String>, auto: bool) {
         for e in self.entries.iter_mut() {
             if e.origin == origin {
                 e.active = false;
@@ -288,14 +328,27 @@ impl OverrideCollection {
             .find(|e| e.origin == origin && e.r#type == r#type)
         {
             e.active = true;
+            e.auto = auto;
         } else {
             self.entries.push(OverrideEntry {
                 origin,
                 r#type,
                 active: true,
+                name: None,
+                auto,
             });
         }
         self.sort();
+    }
+
+    /// Sets the entry at `idx`'s display-name override (spec 0119 G4's
+    /// `e` key) — a direct in-place mutation, not a remove-and-recreate
+    /// (unlike `activate`): `name` is not part of an entry's identity,
+    /// so this can never create a duplicate or change sort order.
+    pub fn rename(&mut self, idx: usize, name: Option<String>) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            entry.name = name;
+        }
     }
 
     /// Toggles the entry at `idx` (an index into `entries()`) between
@@ -360,6 +413,8 @@ enum YamlEntry {
         r#type: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         active: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     PathField {
         path: String,
@@ -367,6 +422,8 @@ enum YamlEntry {
         r#type: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         active: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     FqdnField {
         fqdn: String,
@@ -374,6 +431,8 @@ enum YamlEntry {
         r#type: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         active: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 }
 
@@ -394,18 +453,21 @@ impl OverrideCollection {
                     path: path.clone(),
                     r#type: e.r#type.clone(),
                     active: e.active,
+                    name: e.name.clone(),
                 },
                 OverrideOrigin::PathField { path, field } => YamlEntry::PathField {
                     path: path.clone(),
                     field: *field,
                     r#type: e.r#type.clone(),
                     active: e.active,
+                    name: e.name.clone(),
                 },
                 OverrideOrigin::FqdnField { fqdn, field } => YamlEntry::FqdnField {
                     fqdn: fqdn.clone(),
                     field: *field,
                     r#type: e.r#type.clone(),
                     active: e.active,
+                    name: e.name.clone(),
                 },
             })
             .collect();
@@ -434,30 +496,39 @@ impl OverrideCollection {
                     path,
                     r#type,
                     active,
+                    name,
                 } => OverrideEntry {
                     origin: OverrideOrigin::Path { path },
                     r#type,
                     active,
+                    name,
+                    auto: false,
                 },
                 YamlEntry::PathField {
                     path,
                     field,
                     r#type,
                     active,
+                    name,
                 } => OverrideEntry {
                     origin: OverrideOrigin::PathField { path, field },
                     r#type,
                     active,
+                    name,
+                    auto: false,
                 },
                 YamlEntry::FqdnField {
                     fqdn,
                     field,
                     r#type,
                     active,
+                    name,
                 } => OverrideEntry {
                     origin: OverrideOrigin::FqdnField { fqdn, field },
                     r#type,
                     active,
+                    name,
+                    auto: false,
                 },
             })
             .collect();

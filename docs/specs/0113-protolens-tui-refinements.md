@@ -58,6 +58,11 @@ implementation revealed 0111's assumptions were wrong.
 - [x] [D12](#d12--d6s---splice-verified-against-real-annotated-output) — D6's `... }` splice verified against real annotated output
 - [x] [D13](#d13--raw-range-status-line-display-inclusive-bound) — Raw-range status-line display: inclusive bound
 - [ ] [D25](#d25--positional-path-notation-alongside-the-byte-range) — Positional-path notation, alongside the byte range
+- [x] [D27](#d27--drop-the-trailing--for-messagegroup-paths-in-the-status-line) — Drop the trailing `/` for message/group paths in the status line
+- [x] [D29](#d29--status-pane-title) — Status pane title
+- [x] [D33](#d33--visual-hint-for-overridden-fields-in-the-main-pane) — Visual hint for overridden fields in the main pane
+- [x] [D34](#d34--anymessageset-fields-dont-expand-in-the-main-pane) — `Any`/`MessageSet` fields don't expand in the main pane
+- [x] [D35](#d35--bold-border-indicates-keyboard-focus) — Bold border indicates keyboard focus
 
 ### Navigation & keybindings
 - [x] [D7](#d7--groups-are-foldable-same-as-messages-no-special-casing-needed) — Groups are foldable, same as messages
@@ -69,10 +74,13 @@ implementation revealed 0111's assumptions were wrong.
 - [x] [D19](#d19--homeend-and-ggg-jump-to-firstlast-visible-node) — `Home`/`End` and `gg`/`G` jump-to-first/last-visible-node
 - [ ] [D20](#d20--future-user-configurable-keybindings-file) — Future: user-configurable keybindings file
 - [ ] [D24](#d24--horizontal-panning-of-the-main-pane) — Horizontal panning of the main pane
+- [x] [D32](#d32--space-as-an-alias-for-a-in-the-override-management-pane) — `Space` as an alias for `a` in the override management pane
 
 ### Mouse & input
 - [x] [D4](#d4--mouse-support-wheel--click) — Mouse support (wheel + click)
 - [x] [D14](#d14--mouse-driven-text-selection-for-copy) — Mouse-driven text selection for copy
+- [x] [D28](#d28--mouse-event-dismisses-the-splash-screen) — Mouse event dismisses the splash screen
+- [x] [D30](#d30--mouse-support-for-the-override-selection-and-management-panes) — Mouse support for the override selection and management panes
 
 ### CLI flags & options
 - [x] [D5](#d5--configurable-indent-step) — Configurable indent step
@@ -91,6 +99,9 @@ implementation revealed 0111's assumptions were wrong.
 
 ### Persistence (future)
 - [ ] [D9](#d9--foldedunfolded-node-list-belongs-in-the-saved-project-config-future) — Folded/unfolded node list belongs in the saved project config
+
+### Process & signals
+- [x] [D31](#d31--ctrl-z-suspends-the-process) — `Ctrl-Z` suspends the process
 
 ---
 
@@ -755,6 +766,326 @@ completion is not addressed by this entry.
   already fully shadows every normal-mode key binding (D21), so its `Tab`
   binding and the override pane's focus-toggle `Tab` binding never compete
   for the same keypress.
+
+### D27 — Drop the trailing `/` for message/group paths in the status line
+
+**Status:** Implemented (2026-07-14)
+
+D25 decorates a message/group node's positional path with a trailing `/`
+in the status line (e.g. `/1/`), mirroring 0114 §3's own listing
+convention for the override selection pane. In practice this decoration
+doesn't add value — the status line already carries other cues (the
+FQDN/`<raw / no type>` label right next to it) that make a node's
+message-ness obvious — so it should be dropped: the status line always
+shows the bare `positional_path` form (e.g. `/1`), same as every other
+consumer of `positional_path` (0117's `path`/`path-field` origins, the
+management pane's listing).
+
+- Implementation note: this decoration is applied at exactly one site,
+  `protolens/src/tui.rs`'s status-line-building code (the
+  `ends_with('/')`/`push('/')` pair around the `path` variable, just before
+  it's written into the status line). `override_pane.rs`'s own listing
+  does **not** apply this decoration anywhere (checked directly — no
+  `ends_with`/`push('/')` there), so 0117 §1's text describing the
+  trailing slash as shared display logic between the status line and
+  0114 §3's listing is itself slightly inaccurate; only the status line
+  ever added it. Removing the one site fully resolves this, no other
+  call site is affected.
+
+### D28 — Mouse event dismisses the splash screen
+
+**Status:** Implemented (2026-07-14)
+
+The startup splash screen already treats every keypress as "dismiss and
+proceed to the main view" (D22) — any key, not just a specific one, and
+the dismissing key is **transparent**: `handle_key` sets `self.splash =
+false` unconditionally at the top, then the same call keeps processing
+the key as a real command (confirmed via `handle_key`'s own comment and
+the `splash_dismissing_keypress_is_also_processed_as_a_command` test) —
+it is not swallowed/consumed by the dismissal. A mouse event (click or
+wheel) did not get this same transparency: `handle_mouse` was dispatched
+independently of the splash screen's active/inactive state, so a stray
+click/scroll while the splash is up was silently swallowed rather than
+dismissing it. Fix: `handle_mouse` sets `self.splash = false`
+unconditionally at the top, mirroring `handle_key`, then continues
+processing the same event as a real mouse event — the first mouse event
+that lands on the splash both dismisses it and acts on the newly-revealed
+main view underneath, exactly matching the keyboard behavior above.
+
+### D29 — Status pane title
+
+**Status:** Implemented (2026-07-14)
+
+The main/status pane currently renders with a plain `Block::bordered()`
+and no `.title(...)` — every other bordered pane in the TUI (override
+selection, override management, help overlay, splash) already has one
+(`protolens/src/tui.rs`'s various `render_*` functions all call
+`.title(...)`). Give the status pane a title too, along the lines of
+`" status — hit F1 for help "`, matching the existing title style (a
+short label, `F1`-for-help pointer, space-padded).
+
+- Wording chosen at implementation time: `" Status — F1 for help "`, on the
+  status pane itself (`chunks[1]`'s own `Block`, distinct from the main
+  pane's `header`-titled block above it).
+
+### D30 — Mouse support for the override selection and management panes
+
+**Status:** Implemented (2026-07-14)
+
+D4 gave the main pane mouse wheel scroll + click-to-select; the override
+selection pane (0114 §2) and override management pane (0117 §3) never
+got the same treatment — wheel/click events landing on either pane are
+currently ignored (or fall through to whatever the main pane's own mouse
+handler does with those screen coordinates, which is arguably worse than
+simply doing nothing).
+
+- **Wheel**: scroll the pane's own list (`override_scroll`/
+  `manage_scroll`), same semantics as D4's main-pane wheel scroll —
+  clamped to the list's own length, independent of the main pane's
+  scroll position.
+- **Click**: move the pane's own highlight (`override_highlight`/
+  `manage_highlight`) to the row under the cursor, same semantics as D4's
+  main-pane click-to-select.
+- Only active when the relevant pane is open/focused — a click landing
+  on the main pane while, say, the management pane is open should still
+  act on the main pane if the main pane also has focus (mirrors 0114 §2's
+  existing `override_focus`-gated `Tab`-toggle between the main pane and
+  the override selection pane).
+- **Implementation note**: neither pane currently persists its own render
+  `Rect` as an `App` field (only `main_area` is, consumed by D4's
+  `handle_click`) — `render_override_pane`/`render_manage_pane` compute a
+  local `inner: Rect` at render time and discard it. Since the two panes
+  are mutually exclusive (`override_target.is_some()` XOR `manage_open`,
+  never both), a single shared stored `Rect` field would suffice for
+  both.
+- **Implementation as built (first pass)**: `handle_mouse` gated purely on
+  the same focus conditions `handle_key` already checks (`manage_open`,
+  then `override_focus`), not on the clicked screen coordinates — every
+  mouse event was routed to whichever pane currently had keyboard focus,
+  exactly mirroring how `handle_key` routes every keypress regardless of
+  the (nonexistent) "position" of a key press. Wheel scroll called
+  `move_override_highlight`/`move_manage_highlight` by one row (the same
+  functions `j`/`k` already use — the pane's own render-time auto-scroll
+  keeps the highlight in view, so there's no separate "scroll without
+  moving the highlight" concept, matching the main pane's own D4 wheel
+  behavior via `move_down`/`move_up`). Click hit-tests against the new
+  `side_area` field, ignores rows past the pane's own `list_height` (the
+  in-pane search line, when present), and — for the management pane —
+  ignores clicks landing on a `ManageRow::Header` row.
+- **Revised (2026-07-14 feedback)**: focus-gated routing meant a click in
+  the main pane while a side pane was open both moved the highlighted row
+  *and* left keyboard focus stuck in the side pane — no way to reclaim the
+  main pane by clicking it — and wheel scroll ignored the mouse's actual
+  hover position entirely. Two changes:
+  - **Click always refocuses the pane it lands in.** A click in
+    `main_area` clears `override_focus`/`manage_focus` (shifting keyboard
+    focus back to the main pane) without closing whichever side pane is
+    open; a click in `side_area` (re-)claims focus for that pane, same as
+    before. This required giving the management pane its own `manage_focus:
+    bool` field mirroring the override pane's pre-existing
+    `override_focus` — previously the management pane had no independent
+    focus concept at all ("always focused while open"), so `handle_key`
+    gated on `manage_open` alone; it now gates on `manage_open &&
+    manage_focus`, with `Tab` (both from inside the pane and from the main
+    pane's own keymap) toggling it, exactly like the override pane's
+    existing `Tab` behavior.
+  - **Wheel scroll routes by hover position, not keyboard focus** — a new
+    `App::rect_contains(area, col, row)` hit-test against `main_area`/
+    `side_area` decides which pane's scroll handler a wheel event goes to,
+    independent of which pane currently holds keyboard focus. `MouseEvent`
+    already carries absolute screen coordinates, so this needed no new
+    plumbing beyond the existing `main_area`/`side_area` tracking.
+  - Click routing itself is unchanged from the first pass (still hit-tests
+    `main_area`/`side_area`); only *which pane a click can end up giving
+    focus to* changed, per the bullet above.
+
+### D31 — `Ctrl-Z` suspends the process
+
+**Status:** Implemented (2026-07-14)
+
+Standard Unix job-control behavior (`SIGTSTP`) is currently unavailable
+from within `protolens` — there is no key bound to it, and even if the
+terminal driver forwarded a raw `Ctrl-Z` byte through crossterm's raw
+mode, the process wouldn't leave the alternate screen/mouse-capture/raw
+mode first, leaving the shell in a corrupted display state on suspend
+(and again on `fg` resume). Add an explicit `Ctrl-Z` binding, checked
+centrally the same way `quit_confirm` already is (at the top of
+`handle_key`, ahead of every other dispatch, so it works uniformly
+across every input mode — main/override/manage/command-line).
+
+- On `Ctrl-Z`: call `restore_terminal()` (leave alt-screen, disable mouse
+  capture, disable raw mode — the same cleanup already used on normal
+  exit and in the panic hook), then raise `SIGTSTP` on itself.
+- On resume (`SIGCONT`, i.e. `fg`): re-run `run()`'s startup sequence
+  (`enable_raw_mode`, `EnterAlternateScreen`, `EnableMouseCapture`) and
+  force a full redraw (`Terminal::clear()`) before returning to the
+  event loop — the terminal's own screen contents are unknown/stale
+  after a suspend/resume cycle (other programs may have run and printed
+  to the same terminal in between).
+- Unix-only (`#[cfg(unix)]`) — no `SIGTSTP` equivalent on Windows;
+  `Ctrl-Z` would need to either no-op or be left unbound on that
+  platform.
+- Needs a signal-raising crate — `libc` or `nix` — neither of which is
+  currently a `protolens` dependency (checked `Cargo.toml`); this adds a
+  new dependency, worth flagging even though it's a small, common one.
+
+- **Implementation as built**: as designed above. `libc` added as a
+  `[target.'cfg(unix)'.dependencies]` entry (not an unconditional
+  dependency) so it's simply absent from non-Unix builds. `App` gained a
+  `should_suspend: bool` flag (mirroring `should_quit`'s own split): the
+  centralized `handle_key` check (itself `#[cfg(unix)]`) only *sets* the
+  flag, since actually raising `SIGTSTP` and redrawing needs the
+  `Terminal` handle that only `run_loop` owns, not `App`; `run_loop`
+  checks it right after `should_quit`, right where `should_quit` is
+  itself checked, and calls a new `suspend(&mut Terminal<B>)` helper
+  (`#[cfg(unix)]`, next to `restore_terminal`) that does the
+  restore-terminal / `libc::raise(SIGTSTP)` / re-init / `terminal.clear()`
+  sequence in one place. Placed the check ahead of `quit_confirm`'s own
+  resolution (not after) so a pending quit confirmation survives a
+  suspend/resume cycle unresolved, rather than being silently cancelled
+  by the Ctrl-Z keypress itself.
+
+### D32 — `Space` as an alias for `a` in the override management pane
+
+**Status:** Implemented (2026-07-14)
+
+`a` toggles the highlighted entry's active/inactive status in the
+override management pane (0117 §3). Bind `Space` (`KeyCode::Char(' ')`)
+as an alias for the same action — purely a convenience binding, no
+behavior change beyond the existing `a` handler
+(`self.overrides.toggle_active(self.manage_highlight); self.
+render_overrides(self.first_node);`, spec 0118 §6). No conflict: `Space`
+is not otherwise bound in `handle_manage_key`.
+
+### D33 — Visual hint for overridden fields in the main pane
+
+**Status:** Implemented (2026-07-14).
+
+**Implementation as built**: styling choice resolved to bold, applied as
+a single boolean state (not distinguishing the three override kinds) —
+both confirmed with the author before implementing. A new
+`App::footer_line_to_node: HashMap<usize, usize>` field mirrors the
+pre-existing `line_to_node`'s maintenance exactly (same two update sites:
+`App::new`'s initial build, and `splice_override`'s post-splice rebuild),
+but maps a node's *closing*-brace line (`text_range.end - 1`) back to the
+node, and only for nodes with children (a childless/scalar node's single
+line is already covered by `line_to_node`). A new helper,
+`line_has_active_override(&self, line_idx: usize) -> bool`, looks a line
+up in `line_to_node` first, falls back to `footer_line_to_node`, and — if
+a node is found — checks `resolve_active_override(idx).is_some()`. The
+main pane's render loop applies `Modifier::BOLD` to every span on a line
+whenever `line_has_active_override(line_idx)` is true, composed with the
+existing `Modifier::REVERSED` cursor-row styling.
+
+Currently, a node rendered under an active override looks identical to
+one rendered under its natural/inherited type — the only way to tell is
+to open the management pane and check which entries are active, or
+recall which nodes were retyped during the session. Add some visual hint
+directly in the main pane's own rendering, for any node whose subtree
+root carries an active override (i.e. `resolve_active_override(idx).
+is_some()` at the node itself — not merely "some ancestor happens to
+also have an unrelated override," and not "this node's rendered type
+happens to match what it would have had anyway via 0117's re-affirming
+`activate` semantics").
+
+- **Candidate styling**: bold (author's own suggestion) — cheap to apply
+  via the existing `colorize`/`line_styles` pipeline, doesn't collide
+  with the existing syntax-highlighting palette (which uses color, not
+  weight). Alternatives worth considering at implementation time: a
+  distinct color (risks colliding with existing token-kind colors), an
+  inline marker character (e.g. a `*`/`†` prefix — risks visually
+  competing with D3's fold marker and D25's positional-path notation,
+  both of which already compete for the same left-hand gutter space), or
+  a combination (bold + one of the above).
+- **Scope**: applies only to the node that is itself the *direct* target
+  of an active override (its own header/interior/footer lines) — should
+  not cascade visual weight onto every descendant line merely because an
+  ancestor is overridden (that would make deeply-nested overridden
+  documents visually noisy without adding information; a descendant's
+  own status is already independently checkable by moving the cursor
+  onto it).
+- Not yet decided whether this should also distinguish the three override
+  *kinds* (`path` vs. `path-field` vs. `fqdn-field`, spec 0117 §1) or
+  treat "has an active override, of whichever kind" as a single boolean
+  state for styling purposes — leaning toward the latter (simpler, and
+  the kind is already visible in the management pane) unless a concrete
+  need for finer-grained visual distinction comes up.
+
+### D34 — `Any`/`MessageSet` fields don't expand in the main pane
+
+**Status:** Implemented (2026-07-14).
+
+Reported behavior: an `Any`/`MessageSet` field renders as opaque bytes in
+the main pane instead of expanding into the packed message's fields, even
+though `DecodeRenderOpts`'s `expand_any`/`expand_message_set` both default
+to `true` and protolens never overrides them off.
+
+**Root cause**: expanding an `Any`/`MessageSet` field requires resolving
+a type name (a type URL or extension name, only known at decode time) to
+a `MessageDescriptor`. prototext-core exposes this as a pluggable,
+caller-installed thread-local callback (`ANY_LOADER`, `set_any_loader`/
+`clear_any_loader` in `prototext-core/src/serialize/render_text/mod.rs`)
+— `decode_and_render`/`decode_and_render_indexed` only set
+`EXPAND_ANY`/`HIDE_UNKNOWN`/`EXPAND_MESSAGE_SET` internally, they never
+install `ANY_LOADER` themselves. Every other consumer in the repo installs
+it around its own decode calls — the CLI's `install_any_loader`
+(`prototext/src/run.rs:620-677`), the pyo3 bindings, the test suite — but
+`protolens` never does (confirmed via a repo-wide grep for
+`set_any_loader`/`ANY_LOADER` call sites). Without a loader installed,
+`render_any_expansion` (and the MessageSet equivalent) silently fall
+through — `ANY_LOADER.with(...)` returns `None` — and the field falls
+back to raw-bytes rendering. `prototext decode` is unaffected because it
+performs this installation step; protolens simply never added the
+equivalent.
+
+**Proposed fix**: add a protolens-specific loader-install function,
+analogous to `prototext/src/run.rs`'s `install_any_loader`, called around
+protolens's `decode_and_render_indexed` invocations. protolens's
+`DescriptorContext` is always backed by an eager `DescriptorPool` (no
+lazy-pool JIT-load path, unlike the CLI's), so the closure is simpler:
+`ctx.pool().get_message_by_name(key).map(Arc::new)` for the `Any` case,
+plus the MessageSet `"extendee_fqdn/field_number"` sentinel-key handling
+the CLI's version already demonstrates.
+
+**Implementation as built (first pass, later superseded)**: `decode.rs`'s
+`install_any_loader(ctx: &DescriptorContext)` mirrored the CLI's version
+but read `&DescriptorContext` (not `&mut`), since protolens's pool is
+always eager — no lazy/JIT-load pre-step needed. It was bracketed around
+both of the crate's `decode_and_render_indexed` call sites: `decode()`'s
+initial paint and `splice_override`'s re-render on override apply.
+Covered by a dedicated regression test,
+`decode_expands_any_fields_via_installed_loader`.
+
+**Superseded (spec 0120, 2026-07-14)**: this loader-callback approach
+correctly fixed the reported symptom, but follow-up interactive testing
+found the resulting expansion produced malformed navigation/cursor
+positions for `Any`/MessageSet content (see spec 0120's Background for the
+full root-cause writeup). Spec 0120 redesigned the mechanism entirely:
+`expand_any`/`expand_message_set` are now disabled in protolens's own
+`DecodeRenderOpts`, and protolens's own `render_overrides` pass detects
+Any/MessageSet-shaped nodes and applies the equivalent expansion itself,
+via the same override machinery a user would trigger by hand with `t`.
+`install_any_loader`/`clear_any_loader`/`ANY_LOADER` and
+`decode_expands_any_fields_via_installed_loader` were all removed as part
+of that redesign — see spec 0120 for the current, actual mechanism this
+decision's reported bug is now fixed by.
+
+### D35 — Bold border indicates keyboard focus
+
+**Status:** Implemented (2026-07-14).
+
+Reported (2026-07-14 feedback, alongside D30's revision): once mouse
+clicks could move keyboard focus between the main pane and a side pane
+(D30), there was no visible sign of which pane currently held it.
+Proposed and agreed: mirror the override/management panes' own existing
+`override_focus`/`manage_focus`-driven border style (`Modifier::BOLD`)
+on the main pane too.
+
+**Implementation**: the main content block's border style is now
+`Modifier::BOLD` exactly when neither side pane holds focus (`!
+override_focus && !manage_focus`) — the main pane has focus precisely
+when no side pane does, so no new flag was needed, just a new border-style
+computation at the main block's construction site in `render`.
 
 ---
 

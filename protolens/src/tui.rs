@@ -227,8 +227,8 @@ const HELP_TEXT: &[&str] = &[
     "                   override pane (while it is open)",
     "  z                rotate the override's target kind: path,",
     "                   path-field, fqdn-field (pane focused)",
-    "  i                toggle candidate sort: inferred score (default)",
-    "                   or lexicographic",
+    "  a                toggle candidate sort: inferred score (default)",
+    "                   or alphanumeric",
     "  /  ?  n          search / search backward / repeat (pane focused)",
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",
     "                   (pane focused)",
@@ -244,6 +244,8 @@ const HELP_TEXT: &[&str] = &[
     "Override management",
     "  o                open/close the override management pane (closes",
     "                   the override pane, if open)",
+    "  Tab              move focus between the main pane and the",
+    "                   management pane (while it is open)",
     "  j/k, PageUp/Down, Home/End   move the highlighted entry",
     "  /  ?  n          search / search backward / repeat",
     "  a                toggle the highlighted entry active/inactive",
@@ -266,6 +268,7 @@ const HELP_TEXT: &[&str] = &[
     "Other",
     "  F1               toggle this help",
     "  q                quit (press again to confirm)",
+    "  Ctrl-Z           suspend (fg to resume) — Unix only",
     "",
     "j/k or PageUp/PageDown scroll this help; q, Esc, or F1 closes it.",
 ];
@@ -307,6 +310,15 @@ pub struct App {
     /// Line index (in `lines`) -> node index, for nodes whose text starts
     /// on that line. Used for the fold-indicator gutter.
     line_to_node: HashMap<usize, usize>,
+    /// Line index -> node index, for message/group nodes' own closing
+    /// (`}`) line (`text_range.end - 1`) — the counterpart to
+    /// `line_to_node`'s opening-line mapping, both maintained in lockstep
+    /// at the same two sites (`App::new`, `splice_override`'s rebuild).
+    /// Used by spec 0113 D33's bold override hint, which needs to
+    /// recognize a node's own closing line as directly "its own" (not a
+    /// descendant's), the same way `line_to_node` already recognizes its
+    /// own opening line.
+    footer_line_to_node: HashMap<usize, usize>,
     cursor: usize,
     folded: HashSet<usize>,
     /// Rows currently visible (line indices in `lines`, folded-away lines
@@ -402,11 +414,13 @@ pub struct App {
     /// session, mirroring `override_sort`.
     override_kind: OverrideKind,
     /// `true` while the override management pane (spec 0117 §3, `o`) is
-    /// open — always focused while open (no separate focus flag, unlike
-    /// the override selection pane's `override_focus`: nothing else in
-    /// the management pane needs main-pane focus back). Mutually
-    /// exclusive with `override_target.is_some()`.
+    /// open. Mutually exclusive with `override_target.is_some()`.
     manage_open: bool,
+    /// `true` when the management pane has focus (mirroring
+    /// `override_focus`); meaningless while `manage_open` is `false`.
+    /// A main-pane mouse click while the pane stays open shifts this
+    /// back to `false` without closing it (2026-07-14 feedback).
+    manage_focus: bool,
     /// Highlighted row (index into `overrides.entries()`) in the
     /// management pane.
     manage_highlight: usize,
@@ -417,6 +431,11 @@ pub struct App {
     manage_search: Option<OverrideSearch>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
+    /// `Some` while `e` in the management pane is editing the highlighted
+    /// entry's display-name override (spec 0119 G4) — pre-filled with its
+    /// current `name` (empty if `None`), mutually exclusive with
+    /// `manage_search`.
+    manage_rename: Option<String>,
     /// Management pane's visible row count as of the last
     /// `render_manage_pane()` call — basis for `PageUp`/`PageDown`.
     manage_list_height: usize,
@@ -459,6 +478,12 @@ pub struct App {
     /// Main pane's inner (bordered-away) `Rect` as of the last `render()`
     /// call — used to hit-test mouse clicks against display rows/columns.
     main_area: Rect,
+    /// Override selection pane's / override management pane's inner
+    /// `Rect` as of the last render (spec 0113 D30) — used to hit-test
+    /// mouse clicks the same way `main_area` does. A single field
+    /// suffices since the two panes are mutually exclusive
+    /// (`override_target.is_some()` XOR `manage_open`).
+    side_area: Rect,
     pub message: String,
     pub should_quit: bool,
     /// `true` right after a first `q` press asks for confirmation; a
@@ -466,6 +491,12 @@ pub struct App {
     /// Checked centrally at the top of `handle_key`, ahead of every other
     /// dispatch, so it applies uniformly regardless of focus.
     quit_confirm: bool,
+    /// `true` right after `Ctrl-Z` (spec 0113 D31, Unix only), checked by
+    /// `run_loop` after each `handle_key` call — mirrors `should_quit`'s
+    /// own "flag set here, acted on there" split, since actually
+    /// suspending the process needs the `Terminal` handle that only
+    /// `run_loop` owns.
+    pub should_suspend: bool,
 }
 
 impl App {
@@ -480,8 +511,12 @@ impl App {
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
         let mut line_to_node = HashMap::new();
+        let mut footer_line_to_node = HashMap::new();
         for (idx, node) in decoded.tree.iter().enumerate() {
             line_to_node.insert(node.span.text_range.start, idx);
+            if node.first_child.is_some() {
+                footer_line_to_node.insert(node.span.text_range.end - 1, idx);
+            }
         }
         let header = format!("protolens — {blob_label} — {}", decoded.root_type);
         // Document-order first node (doc_prev == None) — not array index 0,
@@ -501,7 +536,7 @@ impl App {
             Some(decoded.root_type.clone())
         };
         let mut overrides = override_pane::OverrideCollection::new();
-        overrides.seed_root(root_override_type);
+        overrides.seed_root(root_override_type.clone());
         let mut app = App {
             blob: decoded.blob,
             wrapper_offset: decoded.wrapper_offset,
@@ -513,6 +548,7 @@ impl App {
             theme,
             tree: decoded.tree,
             line_to_node,
+            footer_line_to_node,
             cursor,
             folded: HashSet::new(),
             visible_rows: Vec::new(),
@@ -538,10 +574,12 @@ impl App {
             overrides,
             override_kind: OverrideKind::Path,
             manage_open: false,
+            manage_focus: false,
             manage_highlight: 0,
             manage_scroll: 0,
             manage_search: None,
             last_manage_search: None,
+            manage_rename: None,
             manage_list_height: 0,
             back_stack: Vec::new(),
             fwd_stack: Vec::new(),
@@ -557,10 +595,35 @@ impl App {
             help_scroll: 0,
             header,
             main_area: Rect::default(),
+            side_area: Rect::default(),
             message: String::new(),
             should_quit: false,
             quit_confirm: false,
+            should_suspend: false,
         };
+        // Spec 0118 §2.1: the wrapper root is already rendered under
+        // `root_override_type` by `decode()` itself, matching the
+        // `seed_root` entry above — mark it as such so the first
+        // `render_overrides` pass doesn't treat it as a mismatch and
+        // needlessly re-splice the entire tree (which would invalidate
+        // every already-computed node index: `cursor`, `folded`, etc.).
+        if let Some(node) = app.tree.get_mut(cursor) {
+            // The root's own field name is always "0" (decode()'s own
+            // sentinel — mirrors `field_name_for`'s no-parent case), and
+            // can't yet carry a §G4 name override at this point (the
+            // collection was just seeded, nothing has been renamed).
+            node.rendered_as = Some((Some(root_override_type), "0".to_string()));
+        }
+        // Spec 0120: Any/MessageSet auto-expansion is computed by
+        // `render_overrides` itself (`auto_expand_type`), not by
+        // `decode()`'s own initial paint — run one pass now so the
+        // initial view already shows any/MessageSet content expanded,
+        // matching the pre-spec-0120 behavior where `decode()` expanded
+        // it directly via prototext-core. Guarded like the block above:
+        // an empty tree has no node at `cursor` to render.
+        if !app.tree.is_empty() {
+            app.render_overrides(cursor);
+        }
         app.rebuild_visible_rows();
         app
     }
@@ -836,21 +899,38 @@ impl App {
         (raw.start - self.wrapper_offset)..(raw.end - self.wrapper_offset)
     }
 
+    /// Whether `idx` is eligible as an override target (`t`, `type-as`,
+    /// `type-as-raw`): a message/group node already (`NodeSpan::
+    /// is_message`, spec 0114 §1.2 — *not* `type_fqdn.is_some()`, which is
+    /// ambiguous between a scalar and a schema-unresolved message/group),
+    /// or a plain scalar carrying a length-delimited payload (`wire_type
+    /// == WT_LEN` — string, bytes, or an unresolved LEN-wire field) that
+    /// *could* be reinterpreted as an embedded message. Any/MessageSet
+    /// auto-expansion (spec 0120) already reinterprets exactly this kind
+    /// of scalar unconditionally; a manual override that turns out to
+    /// target genuinely non-message bytes simply fails to parse and
+    /// `splice_override` reports it — the user is trusted to judge
+    /// whether the result is meaningful (2026-07-14 feedback: `t` used
+    /// to unconditionally refuse every string/bytes field).
+    fn can_override(&self, idx: usize) -> bool {
+        let span = &self.tree[idx].span;
+        span.is_message || span.wire_type == prototext_core::helpers::WT_LEN
+    }
+
     /// `t`: toggle the override pane for the node under the cursor (spec
     /// 0114 §1/§2). Closes it (cancelling) if already open, regardless of
     /// which pane currently has focus. Otherwise opens it — moving focus
-    /// there — if the cursor sits on a message/group node (`NodeSpan::
-    /// is_message`, spec 0114 §1.2 — *not* `type_fqdn.is_some()`, which is
-    /// ambiguous between a scalar and a schema-unresolved message/group)
-    /// and the terminal is wide enough; a scalar/leaf target or an
+    /// there — if the cursor sits on an eligible node (`can_override`)
+    /// and the terminal is wide enough; an ineligible target or an
     /// over-narrow terminal instead leaves a status-line message.
     fn toggle_override(&mut self) {
         if self.override_target.is_some() {
             self.close_override();
             return;
         }
-        if !self.tree[self.cursor].span.is_message {
-            self.message = "cannot override: not a message/group field".to_string();
+        if !self.can_override(self.cursor) {
+            self.message =
+                "cannot override: not a message/group or length-delimited field".to_string();
             return;
         }
         if self.term_width < MIN_OVERRIDE_WIDTH {
@@ -891,6 +971,7 @@ impl App {
             self.close_override();
         }
         self.manage_open = true;
+        self.manage_focus = true;
         self.manage_highlight = 0;
         self.manage_scroll = 0;
     }
@@ -932,12 +1013,16 @@ impl App {
     }
 
     /// One management-pane type row's display text: indented, active
-    /// marker (`*`) leading, type label (spec 0117 §3 amendment).
+    /// marker (`*`) leading, type label (spec 0117 §3 amendment), plus
+    /// the display-name override when set (spec 0119 §G4).
     fn manage_type_line(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
         let marker = if e.active { '*' } else { ' ' };
         let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
-        format!("  {marker} {type_label}")
+        match &e.name {
+            Some(name) => format!("  {marker} {type_label}  as \"{name}\""),
+            None => format!("  {marker} {type_label}"),
+        }
     }
 
     /// Search corpus for management-pane entry `idx` (spec 0117 §3's
@@ -1041,8 +1126,8 @@ impl App {
                         .collect()
                 }
                 None => {
-                    self.message = "no scoring graph available for inferred order; press 'i' \
-                                     for lexicographic"
+                    self.message = "no scoring graph available for inferred order; press 'a' \
+                                     for alphanumeric"
                         .to_string();
                     Vec::new()
                 }
@@ -1197,23 +1282,424 @@ impl App {
         }
     }
 
-    /// Apply a type override to the node at `self.override_target` (spec
-    /// 0114 §5): re-decode its payload bytes under `new_fqdn` (or
-    /// schema-less/"raw" if `None`), and splice the result into
-    /// `self.lines`/`self.tree` in place of the node's previous interior.
+    /// Looks up `idx`'s own field on its parent's schema (spec 0119
+    /// §G1/§G2's shared lookup): requires both that `idx`'s parent has a
+    /// resolved `type_fqdn` and that its schema declares `idx`'s
+    /// `field_number`. Returns `None` when either fails (no parent,
+    /// unresolved parent type, or the field isn't declared) — the same
+    /// failure mode `natural_type`/`field_name_for` both fall back from.
+    fn parent_field(&self, idx: usize) -> Option<prost_reflect::FieldDescriptor> {
+        let parent = self.tree[idx].parent?;
+        let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
+        let field_number = self.tree[idx].span.field_number;
+        self.ctx
+            .pool()
+            .get_message_by_name(fqdn)?
+            .get_field(field_number as u32)
+    }
+
+    /// The type `idx` would naturally have from its parent's schema, used
+    /// as the fallback when no active override applies (spec 0119 §G1) —
+    /// `None` only when genuinely no type information is available (no
+    /// parent schema, field not declared, or a non-message field kind).
+    fn natural_type(&self, idx: usize) -> Option<String> {
+        match self.parent_field(idx)?.kind() {
+            prost_reflect::Kind::Message(desc) => Some(desc.full_name().to_string()),
+            _ => None,
+        }
+    }
+
+    /// `true` when `idx`'s resolved type is `google.protobuf.Any` — spec
+    /// 0120 §G1's detection rule, a plain FQDN match (per review).
+    fn is_any_typed(&self, idx: usize) -> bool {
+        self.tree[idx].span.type_fqdn.as_deref() == Some("google.protobuf.Any")
+    }
+
+    /// `true` when `idx`'s resolved type is a MessageSet — spec 0120 §G2's
+    /// detection rule: `message_set_wire_format = true` in the resolved
+    /// `MessageDescriptor`'s own options, and zero declared fields. Mirrors
+    /// `prototext-core`'s own (private, unreachable from this crate)
+    /// `is_message_set` heuristic — an independent replica, not a shared
+    /// helper, since protolens already has direct `prost_reflect`/
+    /// `ctx.pool()` access and needs no new plumbing (spec 0120's
+    /// assessment).
+    fn is_message_set_typed(&self, idx: usize) -> bool {
+        let Some(fqdn) = self.tree[idx].span.type_fqdn.as_ref() else {
+            return false;
+        };
+        let Some(desc) = self.ctx.pool().get_message_by_name(fqdn) else {
+            return false;
+        };
+        let msf = desc
+            .descriptor_proto()
+            .options
+            .as_ref()
+            .and_then(|o| o.message_set_wire_format)
+            .unwrap_or(false);
+        msf && desc.fields().count() == 0
+    }
+
+    /// The sibling of `idx` (another child of `idx`'s own parent) whose
+    /// `field_number` is `field_number`, if any — used by
+    /// `auto_expand_type` to locate Any's `type_url` next to `value`, and
+    /// MessageSet's `type_id` next to `message`.
+    fn find_sibling(&self, idx: usize, field_number: u64) -> Option<usize> {
+        let parent = self.tree[idx].parent?;
+        let mut c = self.tree[parent].first_child;
+        while let Some(ci) = c {
+            if self.tree[ci].span.field_number == field_number {
+                return Some(ci);
+            }
+            c = self.tree[ci].next_sibling;
+        }
+        None
+    }
+
+    /// Reads `idx`'s own raw payload (tag/length stripped, per
+    /// `extract::message_payload_range`) as a UTF-8 string — used to read
+    /// Any's `type_url` value directly off the wire, independent of how
+    /// (or whether) it's currently rendered.
+    fn read_string_field(&self, idx: usize) -> Option<String> {
+        let span = &self.tree[idx].span;
+        let payload =
+            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
+        String::from_utf8(self.blob[payload].to_vec()).ok()
+    }
+
+    /// Reads `idx`'s own raw payload as a varint — used to read
+    /// MessageSet's `type_id` value directly off the wire.
+    fn read_varint_field(&self, idx: usize) -> Option<u64> {
+        let span = &self.tree[idx].span;
+        let payload =
+            extract::message_payload_range(&self.blob, &span.raw_range, span.packed_record_start);
+        prototext_core::helpers::parse_varint(&self.blob, payload.start).varint
+    }
+
+    /// `true` when `idx` is structurally *eligible* for Any/MessageSet
+    /// auto-expansion (spec 0120) — regardless of whether the actual
+    /// target type turns out to be resolvable. Used by `render_overrides`
+    /// to widen its child-recursion gate (normally `span.is_message`
+    /// only) just enough to give these two specific field shapes a
+    /// chance to be visited and auto-overridden, without reopening the
+    /// spec 0119 bug where every plain scalar LEN-wire field got
+    /// incorrectly demoted to raw by being recursed into at all.
+    fn is_auto_expand_candidate(&self, idx: usize) -> bool {
+        let Some(parent) = self.tree[idx].parent else {
+            return false;
+        };
+        let field_number = self.tree[idx].span.field_number;
+        if field_number == 2 && self.is_any_typed(parent) {
+            return true;
+        }
+        // MessageSet tier 1 (the "Item" group wrapper itself) needs no
+        // entry here: it's already `is_message == true` naturally (a
+        // real decoded group), so `render_overrides`'s own `is_message`
+        // half of its recursion gate already reaches it.
+        if field_number == 3
+            && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+        {
+            if let Some(grandparent) = self.tree[parent].parent {
+                return self.is_message_set_typed(grandparent);
+            }
+        }
+        false
+    }
+
+    /// The Any/MessageSet auto-derived type for `idx`, if `idx` is one of
+    /// the two eligible field shapes (spec 0120 §G1/§G2) and the type it
+    /// points at is resolvable in `ctx.pool()` — `None` otherwise (either
+    /// not an eligible shape, or an unresolvable `type_url`/`type_id`,
+    /// both of which fall back to plain raw rendering like any other
+    /// unresolvable type). Consulted as a fallback tier between an
+    /// explicit active override and `natural_type` in `render_overrides`.
+    fn auto_expand_type(&mut self, idx: usize) -> Option<String> {
+        let parent = self.tree[idx].parent?;
+        let field_number = self.tree[idx].span.field_number;
+
+        // Any's `value` (field 2): FQDN read from the sibling `type_url`
+        // (field 1), stripped of any leading `.../` host/prefix segment
+        // (mirrors `any_field.rs`'s own `rfind('/')` resolution).
+        if field_number == 2 && self.is_any_typed(parent) {
+            let type_url_idx = self.find_sibling(idx, 1)?;
+            let type_url = self.read_string_field(type_url_idx)?;
+            let fqdn = match type_url.rfind('/') {
+                Some(slash) => &type_url[slash + 1..],
+                None => type_url.as_str(),
+            };
+            return self
+                .ctx
+                .pool()
+                .get_message_by_name(fqdn)
+                .map(|d| d.full_name().to_string());
+        }
+
+        // MessageSet tier 1: the "Item" group wrapper (field 1,
+        // `WT_START_GROUP`) auto-derives to the synthetic, globally
+        // shared `protolens_internal.MessageSetItem` shape (`type_id` +
+        // `message`) — registered once per pool and reused across every
+        // MessageSet occurrence in the document.
+        if field_number == 1
+            && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+            && self.is_message_set_typed(parent)
+        {
+            return decode::register_message_set_item(self.ctx.pool_mut())
+                .ok()
+                .map(|d| d.full_name().to_string());
+        }
+
+        // MessageSet tier 2: "message" (field 3) of an Item already
+        // retyped (tier 1) to `MessageSetItem` — extension type resolved
+        // from the sibling `type_id` (field 2), keyed against the
+        // MessageSet container's (idx's grandparent) own extensions.
+        if field_number == 3
+            && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+        {
+            let grandparent = self.tree[parent].parent?;
+            if self.is_message_set_typed(grandparent) {
+                let type_id_idx = self.find_sibling(idx, 2)?;
+                let type_id = self.read_varint_field(type_id_idx)?;
+                let grandparent_fqdn = self.tree[grandparent].span.type_fqdn.clone()?;
+                let extendee = self.ctx.pool().get_message_by_name(&grandparent_fqdn)?;
+                let ext = extendee.get_extension(type_id as u32)?;
+                if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                    return Some(inner.full_name().to_string());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// The display name to use for `idx`'s synthetic wrapper field in
+    /// `splice_override` (spec 0119 §G2, extended by §G4): the resolved
+    /// active override entry's own `name` override when set (§G4 takes
+    /// priority); otherwise `idx`'s real field name when resolvable from
+    /// the parent's schema; `"0"` for the true document root (no parent
+    /// at all — mirrors `decode()`'s own sentinel); otherwise `idx`'s
+    /// field number as a string (protobuf field names can never be
+    /// all-digits, so this can't collide with a real name).
+    fn field_name_for(&self, idx: usize) -> String {
+        if let Some(name) = self
+            .resolve_active_override_entry(idx)
+            .and_then(|e| e.name.clone())
+        {
+            return name;
+        }
+        if let Some(field) = self.parent_field(idx) {
+            field.name().to_string()
+        } else if self.tree[idx].parent.is_none() {
+            "0".to_string()
+        } else {
+            self.tree[idx].span.field_number.to_string()
+        }
+    }
+
+    /// Resolves `idx`'s applicable override entry, per the priority
+    /// `Path > PathField > FqdnField` (spec 0117), or `None` when no
+    /// active entry applies at all — spec 0118 §2. Only `active` entries
+    /// are considered (at most one active entry per origin, per spec
+    /// 0117's invariant). Shared by `resolve_active_override` (the
+    /// entry's `r#type`) and `field_name_for` (spec 0119 §G4's `name`).
+    fn resolve_active_override_entry(&self, idx: usize) -> Option<&override_pane::OverrideEntry> {
+        let path = self.positional_path(idx);
+        for e in self.overrides.entries() {
+            if e.active {
+                if let OverrideOrigin::Path { path: p } = &e.origin {
+                    if *p == path {
+                        return Some(e);
+                    }
+                }
+            }
+        }
+        let parent = self.tree[idx].parent?;
+        let field = self.tree[idx].span.field_number;
+        let parent_path = self.positional_path(parent);
+        for e in self.overrides.entries() {
+            if e.active {
+                if let OverrideOrigin::PathField { path: p, field: f } = &e.origin {
+                    if *p == parent_path && *f == field {
+                        return Some(e);
+                    }
+                }
+            }
+        }
+        if let Some(fqdn) = &self.tree[parent].span.type_fqdn {
+            for e in self.overrides.entries() {
+                if e.active {
+                    if let OverrideOrigin::FqdnField {
+                        fqdn: f,
+                        field: fld,
+                    } = &e.origin
+                    {
+                        if f == fqdn && *fld == field {
+                            return Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolves to the type (or `None` = raw) that should currently be
+    /// used to render `idx`'s payload, or the outer `None` when no active
+    /// override applies at all — spec 0118 §2.
+    fn resolve_active_override(&self, idx: usize) -> Option<Option<String>> {
+        self.resolve_active_override_entry(idx)
+            .map(|e| e.r#type.clone())
+    }
+
+    /// Recursive override-driven rendering pass (spec 0118 §3): resolves
+    /// `idx`'s applicable override and splices a fresh render whenever the
+    /// resolved target no longer matches what's currently displayed
+    /// (`TreeNode::rendered_as`, spec 0118 §2.1) — comparing against
+    /// provenance, not just "is there an override right now?", is what
+    /// correctly detects a demotion (an override that used to apply no
+    /// longer does), not just fresh promotions/retypes.
     ///
-    /// The overridden node's own opening/closing lines and `raw_range`
-    /// (tag/length-inclusive) are untouched — only its interior (children)
-    /// changes. Old descendant array entries are abandoned in place
-    /// (orphaned, not removed — `Vec` indices must stay stable for every
-    /// other still-live node) and the newly rendered subtree is appended
-    /// at the end of `self.tree`; all reachability is pointer-based, so
-    /// the orphans are simply never referenced again.
-    fn apply_override(&mut self, new_fqdn: Option<&str>) -> Result<(), String> {
-        let idx = self
-            .override_target
-            .ok_or_else(|| "no override target".to_string())?;
-        let new_desc = match new_fqdn {
+    /// Any/MessageSet auto-expansion (spec 0120) is seeded as a real,
+    /// persisted `OverrideEntry` (`OverrideOrigin::Path`) the first time
+    /// `idx` is visited with *no entry at all yet existing* for its path —
+    /// checked via `self.overrides.entries()`, not via
+    /// `resolve_active_override`: the latter can't distinguish "never
+    /// seeded" from "user explicitly deactivated the seeded entry", and
+    /// naively re-seeding (calling `activate` again) on every subsequent
+    /// pass would both silently resurrect a deactivation the user just
+    /// made in the manage pane, and — since `activate` unconditionally
+    /// resorts the entries list — reshuffle `manage_highlight`'s raw index
+    /// out from under the very keypress that triggered this pass. Once
+    /// truly first-seeded, `auto_expand_type(idx)` computes the derived
+    /// type, `self.overrides.activate` records it, and — because this
+    /// happens *before* `target`/`current` are computed below — the very
+    /// same pass's `resolve_active_override` already sees it, so no
+    /// separate fallback tier is needed in the splice logic itself. This
+    /// makes the derived type a real, visible, user-editable/removable
+    /// entry in the override management pane (rather than a silent
+    /// dynamic fallback), and means every subsequent pass resolves it via
+    /// the ordinary entries scan instead of re-deriving it from the wire
+    /// each time. When no active override applies at all after seeding
+    /// (`target == None`, e.g. the type wasn't resolvable, or the user
+    /// deactivated it), the effective splice target falls back to
+    /// `natural_type(idx)` — `idx`'s inherited type from its parent's
+    /// schema. That fallback never fires when an active entry explicitly
+    /// says raw (`target == Some(None)`), which still renders raw, since
+    /// that's an explicit user choice. The *outer* `Option` of `target` is
+    /// still what gets stored into `rendered_as`, preserving the
+    /// provenance distinction for the next pass — paired with
+    /// `field_name_for(idx)` (spec 0119 §G4): either half changing (a
+    /// retype, or a name-only rename of the governing entry) is enough to
+    /// trigger a re-splice, since both feed directly into the rendered
+    /// text.
+    ///
+    /// Named `render_overrides` (not `render`) to avoid colliding with the
+    /// unrelated `render(&mut self, frame: &mut Frame)` ratatui draw
+    /// method below.
+    fn render_overrides(&mut self, idx: usize) {
+        let origin = OverrideOrigin::Path {
+            path: self.positional_path(idx),
+        };
+        let already_seeded = self.overrides.entries().iter().any(|e| e.origin == origin);
+        if !already_seeded {
+            if let Some(t) = self.auto_expand_type(idx) {
+                // MessageSet tier 1's synthetic wrapper field has no
+                // schema-declared name to fall back on (`field_name_for`
+                // would otherwise show the bare field number "1"), so
+                // seed it with the display name `prototext-core`'s native
+                // MessageSet rendering uses for it ("Item") — spec 0120
+                // §G2's follow-up cosmetic fix.
+                let is_message_set_item = self.tree[idx].span.field_number == 1
+                    && self.tree[idx].span.wire_type == prototext_core::helpers::WT_START_GROUP
+                    && self.tree[idx]
+                        .parent
+                        .is_some_and(|p| self.is_message_set_typed(p));
+                self.overrides.activate_auto(origin.clone(), Some(t));
+                if is_message_set_item {
+                    if let Some(entry_idx) = self
+                        .overrides
+                        .entries()
+                        .iter()
+                        .position(|e| e.origin == origin)
+                    {
+                        self.overrides.rename(entry_idx, Some("Item".to_string()));
+                    }
+                }
+            }
+        }
+        // Demotion (spec 0120 follow-up): an *auto*-seeded entry's
+        // derivation depended on its ancestor's context at the time it
+        // was seeded (e.g. tier 2's extension-type lookup needs its
+        // parent to still resolve as `MessageSetItem`). If that ancestor
+        // context has since changed — most commonly because the user
+        // deactivated (or retyped) the ancestor's own auto-derived entry
+        // — re-deriving now not only can, but must, disagree with the
+        // stale persisted type. Detected without touching `active` (so
+        // it transparently resumes once the ancestor context is
+        // restored): only entries the user has never manually
+        // (re-)activated are eligible, since `activate` always pins
+        // `auto` back to `false`.
+        let stale_auto_entry = self
+            .resolve_active_override_entry(idx)
+            .filter(|e| e.auto)
+            .map(|e| e.r#type.clone());
+        let target = match stale_auto_entry {
+            Some(entry_type) if self.auto_expand_type(idx) != entry_type => None,
+            _ => self.resolve_active_override(idx),
+        };
+        let field_name = self.field_name_for(idx);
+        let current = Some((target.clone(), field_name));
+        if current != self.tree[idx].rendered_as {
+            let effective = match &target {
+                Some(explicit) => explicit.clone(),
+                None => self.natural_type(idx),
+            };
+            match self.splice_override(idx, effective) {
+                Ok(()) => self.tree[idx].rendered_as = current,
+                Err(e) => self.message = format!("cannot apply override: {e}"),
+            }
+        }
+        let mut child = self.tree[idx].first_child;
+        while let Some(c) = child {
+            // Recurse into every node actually rendered as message/group
+            // (`NodeSpan::is_message`) — the set of nodes that can carry
+            // nested overridable children at all (spec 0119) — plus the
+            // two specific plain-scalar shapes eligible for Any/
+            // MessageSet auto-expansion (spec 0120's
+            // `is_auto_expand_candidate`): those aren't `is_message` yet
+            // (they're still bytes/varint until auto-overridden), but
+            // must still be visited once so `auto_expand_type` above gets
+            // a chance to promote them. Recursing into every plain
+            // scalar LEN-wire field unconditionally would reopen the
+            // spec 0119 bug this same gate was introduced to fix
+            // (`natural_type` demoting an ordinary string/bytes field to
+            // a raw record dump) — `is_auto_expand_candidate` is
+            // deliberately narrow, matching only these two shapes.
+            if self.tree[c].span.is_message || self.is_auto_expand_candidate(c) {
+                self.render_overrides(c);
+            }
+            child = self.tree[c].next_sibling;
+        }
+    }
+
+    /// Unified splice mechanic (spec 0118 §4): regenerates the *whole*
+    /// rendering of `idx` — header, interior, and footer alike — under
+    /// `target` (`None` = revert to raw, `Some(fqdn)` = retype/promote).
+    /// No existing rendering of `idx` is ever reused verbatim: generalizes
+    /// `register_wrapper`/`wrap_blob` (spec 0114 §1.1, previously
+    /// hardcoded to field number `1` for the document root) to `idx`'s own
+    /// real field number, wrapping its payload with a real tag+length and
+    /// decoding it as if it were the sole field of a synthetic one-field
+    /// message — exactly the trick the root's own initial paint already
+    /// used, generalized to every node. This is what fixes task #34 (a
+    /// stale `#@` type annotation surviving a retype) as a byproduct, for
+    /// every node.
+    ///
+    /// `idx` keeps its own tree-array identity (so `cursor`/`folded`/
+    /// back-jump state referencing it stays valid) — only its `span`
+    /// (`raw_range` excepted: the underlying bytes haven't moved) and its
+    /// children (old ones orphaned via `collect_descendants`, new ones
+    /// appended and stitched in) are replaced.
+    fn splice_override(&mut self, idx: usize, target: Option<String>) -> Result<(), String> {
+        let target_desc = match &target {
             Some(fqdn) => Some(
                 self.ctx
                     .pool()
@@ -1224,30 +1710,85 @@ impl App {
         };
 
         let old_span = self.tree[idx].span.clone();
+        let field_number = old_span.field_number;
+        let field_name = self.field_name_for(idx);
         let payload_range = extract::message_payload_range(
             &self.blob,
             &old_span.raw_range,
             old_span.packed_record_start,
         );
-        // Render-cache lookup (spec 0116 §8) — same `payload_range`/type
-        // key `candidate_cache` already keys previews on; a hit skips
-        // both `decode_and_render_indexed` and the colorize pass.
-        let cache_key = (payload_range.clone(), new_fqdn.map(String::from));
+        let payload_bytes = self.blob[payload_range.clone()].to_vec();
+        let wrapped = decode::wrap_blob(field_number, &payload_bytes);
+        let wrapper_width = wrapped.len() - payload_bytes.len();
+
+        // Render-cache lookup (spec 0116 §8/0118 §5) — same
+        // `payload_range`/type key `candidate_cache` already keys
+        // previews on; a hit skips both `decode_and_render_indexed` and
+        // the colorize pass.
+        let cache_key = (payload_range.clone(), target.clone(), field_name.clone());
         let (new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
-                let payload_bytes = self.blob[payload_range.clone()].to_vec();
+                let wrapper_desc = match &target_desc {
+                    Some(desc) => Some(
+                        decode::register_wrapper(
+                            self.ctx.pool_mut(),
+                            field_number,
+                            &field_name,
+                            desc,
+                        )
+                        .map_err(|e| e.to_string())?,
+                    ),
+                    None => None,
+                };
                 let opts = DecodeRenderOpts {
                     annotations: self.annotations,
                     indent_size: self.indent_size,
-                    initial_level: old_span.level + 1,
+                    initial_level: old_span.level,
                     emit_header: false,
+                    // Any/MessageSet expansion is handled by protolens
+                    // itself, as automatic overrides (spec 0120), not by
+                    // prototext-core's own virtual-node expansion.
+                    expand_any: false,
+                    expand_message_set: false,
                     ..Default::default()
                 };
                 let (new_text, new_spans) =
-                    decode_and_render_indexed(&payload_bytes, new_desc.as_ref(), opts);
-                let new_text = String::from_utf8(new_text)
+                    decode_and_render_indexed(&wrapped, wrapper_desc.as_ref(), opts);
+                let mut new_text = String::from_utf8(new_text)
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
+                // Mirrors `decode()`'s own root-header stripping: `"0"` is
+                // `field_name_for`'s sentinel for the true document root
+                // with no G4 name override set (never a real field name),
+                // so drop it from the freshly-spliced header line too.
+                // `parent.is_none()` narrows this to the true root only —
+                // `field_name == "0"` alone would also match a MessageSet/
+                // Any virtual container node (`field_number: 0`, spec
+                // 0110's `NodeSpan::field_number` doc), which has a real
+                // parent and must keep its `"0"` token.
+                //
+                // Which literal token actually got rendered depends on
+                // whether a schema was resolved: with `wrapper_desc`
+                // (`register_wrapper` was called with `field_name` as the
+                // synthetic field's proto name), the header shows that
+                // `field_name` verbatim (`"0 "`); with no schema (a raw/
+                // no-type root override, or de-activating back to it),
+                // `decode_and_render_indexed` has no field name to fall
+                // back to at all and instead prints the literal wrapping
+                // `field_number` (always `1` for the root, spec 0114
+                // §1.1) — strip whichever one actually appears (2026-07-14
+                // interactive-testing feedback: the raw-override case was
+                // previously left unstripped, still showing e.g. `"1 {"`).
+                if self.tree[idx].parent.is_none() && field_name == "0" {
+                    let stale_prefix = if wrapper_desc.is_some() {
+                        "0 ".to_string()
+                    } else {
+                        format!("{field_number} ")
+                    };
+                    if let Some(stripped) = new_text.strip_prefix(&stale_prefix) {
+                        new_text = stripped.to_string();
+                    }
+                }
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
                 let new_style_hints = colorize::colorize(&new_text);
                 let value = (new_lines, new_spans, new_style_hints);
@@ -1257,23 +1798,21 @@ impl App {
         };
         let new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
 
-        // Old interior line range (exclusive of the node's own opening/
-        // closing brace lines).
-        let interior_start = old_span.text_range.start + 1;
-        let interior_end = old_span.text_range.end - 1;
-        let delta = new_lines.len() as isize - (interior_end - interior_start) as isize;
+        let delta = new_lines.len() as isize
+            - (old_span.text_range.end - old_span.text_range.start) as isize;
 
         // Collect old descendants (pointer-based, before any pointer is
         // overwritten below) and scrub them from `folded` — otherwise
         // `rebuild_visible_rows` could read their now-meaningless stale
-        // `text_range` and hide unrelated post-splice content.
+        // `text_range` and hide unrelated post-splice content. `idx`
+        // itself is deliberately left in `folded` untouched (spec 0118
+        // §7 — fold state on `idx` survives its own retype).
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
         for d in &old_descendants {
             self.folded.remove(d);
         }
-        let old_descendants: std::collections::HashSet<usize> =
-            old_descendants.into_iter().collect();
+        let old_descendants: HashSet<usize> = old_descendants.into_iter().collect();
 
         // The live node immediately following the *whole* old subtree in
         // document order — the seam the new subtree must be spliced back
@@ -1287,79 +1826,106 @@ impl App {
             }
         }
 
-        self.lines.splice(interior_start..interior_end, new_lines);
-        self.line_styles
-            .splice(interior_start..interior_end, new_line_styles);
+        // Replace `idx`'s *whole* line range (header, interior, and
+        // footer alike) — not just its interior, unlike the old
+        // `apply_override`.
+        self.lines.splice(
+            old_span.text_range.start..old_span.text_range.end,
+            new_lines,
+        );
+        self.line_styles.splice(
+            old_span.text_range.start..old_span.text_range.end,
+            new_line_styles,
+        );
 
-        // Translate the freshly built local tree (payload-relative
+        // Translate the freshly built local tree (wrapped-buffer-relative
         // coordinates) into this document's global coordinates and append
-        // it at the array's end.
+        // it at the array's end. `build_tree` always emits a container's
+        // own span last (post-order) — the local tree's final entry is
+        // always idx's *new* self (the wrapped field, whatever shape it
+        // turned out to be); everything else is its descendants.
         let base = self.tree.len();
-        let byte_offset = payload_range.start;
-        let line_offset = interior_start;
+        let byte_offset = payload_range.start as isize - wrapper_width as isize;
+        let local_len = new_spans.len();
+        let local_root_idx = local_len - 1;
         let local_tree = decode::build_tree(new_spans);
-        let local_len = local_tree.len();
         for node in local_tree {
             let mut span = node.span;
-            span.raw_range =
-                (span.raw_range.start + byte_offset)..(span.raw_range.end + byte_offset);
-            span.text_range =
-                (span.text_range.start + line_offset)..(span.text_range.end + line_offset);
+            span.raw_range = (span.raw_range.start as isize + byte_offset) as usize
+                ..(span.raw_range.end as isize + byte_offset) as usize;
+            span.text_range = (span.text_range.start + old_span.text_range.start)
+                ..(span.text_range.end + old_span.text_range.start);
             let translate = |o: Option<usize>| o.map(|i| i + base);
+            // `idx`'s new self is *not* pushed as a separate live entry
+            // (its own span/children are folded into `self.tree[idx]`
+            // below) — root-level local nodes (parent `None`) and its
+            // direct children (local parent == the local root) both
+            // become `idx`'s children, so both map their parent to `idx`.
+            let parent = if node.parent.is_none() || node.parent == Some(local_root_idx) {
+                Some(idx)
+            } else {
+                node.parent.map(|p| p + base)
+            };
             self.tree.push(TreeNode {
                 span,
-                parent: node.parent.map_or(Some(idx), |p| Some(p + base)),
+                parent,
                 first_child: translate(node.first_child),
                 last_child: translate(node.last_child),
                 next_sibling: translate(node.next_sibling),
                 prev_sibling: translate(node.prev_sibling),
                 doc_next: translate(node.doc_next),
                 doc_prev: translate(node.doc_prev),
+                rendered_as: None,
             });
         }
 
-        if local_len > 0 {
-            let first_new = (base..base + local_len)
-                .find(|&i| self.tree[i].doc_prev.is_none())
-                .expect("non-empty local tree has a document-order first node");
+        // The pushed copy of the local root (at `new_self_idx`) is left
+        // orphaned, never referenced again — its span/children are copied
+        // into the live `idx` entry instead, same "abandon in place"
+        // pattern already used for old descendants.
+        let new_self_idx = base + local_root_idx;
+        let mut new_self_span = self.tree[new_self_idx].span.clone();
+        new_self_span.raw_range = old_span.raw_range.clone();
+        // `wrap_blob` always wraps `idx`'s payload as a fresh `WT_LEN`
+        // tag (spec 0120 follow-up) regardless of `idx`'s true original
+        // wire type in the document — so the freshly-decoded wrapper
+        // span's own `wire_type` is generic wrapping metadata, not a
+        // faithful re-derivation of what's actually at `raw_range` in
+        // `self.blob`. Preserved here alongside `raw_range` (both
+        // describe the *real* underlying bytes, unaffected by how this
+        // splice chose to reinterpret them) so a later pass can still
+        // tell, e.g., that `idx` is really a `WT_START_GROUP` node even
+        // after one or more splices — `extract::message_payload_range`
+        // sidesteps this by re-parsing the tag from `blob` directly
+        // rather than trusting `span.wire_type`, but `auto_expand_type`'s
+        // structural candidacy checks read `span.wire_type` straight
+        // from the tree and would otherwise wrongly see every
+        // previously-spliced node as `WT_LEN` from its second splice
+        // onward.
+        new_self_span.wire_type = old_span.wire_type;
+        self.tree[idx].span = new_self_span;
+        self.tree[idx].first_child = self.tree[new_self_idx].first_child;
+        self.tree[idx].last_child = self.tree[new_self_idx].last_child;
+
+        if local_len > 1 {
+            let first_new = self.tree[new_self_idx].doc_next;
             let last_new = (base..base + local_len)
                 .find(|&i| self.tree[i].doc_next.is_none())
-                .expect("non-empty local tree has a document-order last node");
-            self.tree[idx].doc_next = Some(first_new);
-            self.tree[first_new].doc_prev = Some(idx);
+                .expect("local tree with descendants has a document-order last node");
+            self.tree[idx].doc_next = first_new;
+            if let Some(fnw) = first_new {
+                self.tree[fnw].doc_prev = Some(idx);
+            }
             self.tree[last_new].doc_next = after;
             if let Some(a) = after {
                 self.tree[a].doc_prev = Some(last_new);
             }
-            // Root-level local nodes (no local parent) are `idx`'s direct
-            // children, already sibling-linked to each other in document
-            // order by `build_tree` — walk that chain (not array
-            // position, which is post-order) to find its two ends.
-            let any_root = (base..base + local_len)
-                .find(|&i| self.tree[i].parent == Some(idx))
-                .expect("non-empty local tree has at least one root-level node");
-            let mut root_first = any_root;
-            while let Some(p) = self.tree[root_first].prev_sibling {
-                root_first = p;
-            }
-            let mut root_last = any_root;
-            while let Some(n) = self.tree[root_last].next_sibling {
-                root_last = n;
-            }
-            self.tree[idx].first_child = Some(root_first);
-            self.tree[idx].last_child = Some(root_last);
         } else {
             self.tree[idx].doc_next = after;
             if let Some(a) = after {
                 self.tree[a].doc_prev = Some(idx);
             }
-            self.tree[idx].first_child = None;
-            self.tree[idx].last_child = None;
         }
-
-        self.tree[idx].span.type_fqdn = new_fqdn.map(String::from);
-        self.tree[idx].span.text_range.end =
-            (self.tree[idx].span.text_range.end as isize + delta) as usize;
 
         // Forward doc-chain shift: every node from `after` onward has its
         // own text_range shifted by `delta`.
@@ -1382,10 +1948,15 @@ impl App {
         // Full rebuild — walking the doc chain (not array order) so
         // orphaned entries are naturally excluded.
         self.line_to_node.clear();
+        self.footer_line_to_node.clear();
         let mut cur = Some(self.first_node);
         while let Some(c) = cur {
             self.line_to_node
                 .insert(self.tree[c].span.text_range.start, c);
+            if self.tree[c].first_child.is_some() {
+                self.footer_line_to_node
+                    .insert(self.tree[c].span.text_range.end - 1, c);
+            }
             cur = self.tree[c].doc_next;
         }
         self.rebuild_visible_rows();
@@ -1483,7 +2054,7 @@ impl App {
                 }
                 self.override_highlight = self.override_candidates.len();
             }
-            KeyCode::Char('i') => {
+            KeyCode::Char('a') => {
                 self.override_sort = match self.override_sort {
                     SortMode::Lexicographic => SortMode::Inferred,
                     SortMode::Inferred => SortMode::Lexicographic,
@@ -1542,17 +2113,27 @@ impl App {
                         return;
                     }
                 };
-                // `Path` kind only: 0114 §5's existing one-shot splice-
-                // render, unchanged, alongside — not instead of — the new
-                // collection bookkeeping below (spec 0117 Non-goals).
-                if self.override_kind == OverrideKind::Path {
-                    if let Err(e) = self.apply_override(new_fqdn.as_deref()) {
-                        self.message = format!("cannot apply override: {e}");
-                        return;
-                    }
-                }
-                self.overrides.activate(origin, new_fqdn);
+                // Spec 0118 §6: any kind's activation triggers the
+                // recursive render pass — `path`/`path-field`/`fqdn-field`
+                // alike, not just `path` (unlike the old one-shot
+                // `apply_override`, which only ever fired for `path`).
+                self.overrides.activate(origin.clone(), new_fqdn.clone());
+                self.render_overrides(self.first_node);
+                // Spec 0119 G3: land in the management pane, highlighting
+                // the entry just created/reactivated, instead of just
+                // closing the pane. `activate` guarantees at most one
+                // entry per origin is active, so this origin/type pair
+                // unambiguously identifies it.
+                let target_highlight = self
+                    .overrides
+                    .entries()
+                    .iter()
+                    .position(|e| e.origin == origin && e.r#type == new_fqdn);
                 self.close_override();
+                self.manage_open = true;
+                self.manage_focus = true;
+                self.manage_highlight = target_highlight.unwrap_or(0);
+                self.manage_scroll = 0;
             }
             _ => {}
         }
@@ -1562,6 +2143,30 @@ impl App {
     /// 0117 §3) — always focused while open, no separate focus check
     /// (unlike `handle_override_key`).
     fn handle_manage_key(&mut self, key: KeyEvent) {
+        if let Some(buffer) = &mut self.manage_rename {
+            match key.code {
+                KeyCode::Esc => self.manage_rename = None,
+                KeyCode::Enter => {
+                    let buffer = self.manage_rename.take().expect("checked above");
+                    let name = if buffer.is_empty() {
+                        None
+                    } else {
+                        Some(buffer)
+                    };
+                    let was_active = self.overrides.entries()[self.manage_highlight].active;
+                    self.overrides.rename(self.manage_highlight, name);
+                    if was_active {
+                        self.render_overrides(self.first_node);
+                    }
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                _ => {}
+            }
+            return;
+        }
         if let Some(search) = &mut self.manage_search {
             match key.code {
                 KeyCode::Esc => self.manage_search = None,
@@ -1591,6 +2196,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.request_quit(),
+            KeyCode::Tab => self.manage_focus = false,
             KeyCode::Esc | KeyCode::Char('o') => self.close_manage_pane(),
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
@@ -1621,19 +2227,40 @@ impl App {
                     self.jump_to_manage_match(dir, &pattern);
                 }
             }
-            // Spec 0117 §3: bookkeeping only — no rendering effect for any
-            // kind, including `path` (see spec 0117 Non-goals).
-            KeyCode::Char('a') => {
+            // Spec 0119 §G4: edit the highlighted entry's display-name
+            // override, pre-filled with its current value (empty when
+            // unset).
+            KeyCode::Char('e') => {
+                if !self.overrides.entries().is_empty() {
+                    let current = self.overrides.entries()[self.manage_highlight]
+                        .name
+                        .clone()
+                        .unwrap_or_default();
+                    self.manage_rename = Some(current);
+                }
+            }
+            // Spec 0118 §6: toggling active status changes the active set
+            // (possibly for a sibling too), so it always triggers a
+            // recursive render pass.
+            KeyCode::Char('a') | KeyCode::Char(' ') => {
                 if !self.overrides.entries().is_empty() {
                     self.overrides.toggle_active(self.manage_highlight);
+                    self.render_overrides(self.first_node);
                 }
             }
             KeyCode::Delete | KeyCode::Backspace => {
                 if !self.overrides.entries().is_empty() {
+                    // Spec 0118 §6: only re-render when the removed entry
+                    // was active — removing an inactive entry cannot
+                    // change any node's resolved override.
+                    let was_active = self.overrides.entries()[self.manage_highlight].active;
                     self.overrides.remove(self.manage_highlight);
                     let len = self.overrides.entries().len();
                     if self.manage_highlight >= len {
                         self.manage_highlight = len.saturating_sub(1);
+                    }
+                    if was_active {
+                        self.render_overrides(self.first_node);
                     }
                 }
             }
@@ -1717,6 +2344,18 @@ impl App {
         // been no splash screen at all (spec 0113 D22 amendment).
         self.splash = false;
 
+        // `Ctrl-Z` suspends the process (spec 0113 D31, Unix only) —
+        // checked centrally here, ahead of every other dispatch, so it
+        // applies uniformly regardless of focus/mode, same as
+        // `quit_confirm` below. Left unbound on non-Unix platforms
+        // (no `SIGTSTP` equivalent). Doesn't touch `quit_confirm`, so a
+        // pending quit confirmation survives a suspend/resume cycle.
+        #[cfg(unix)]
+        if key.code == KeyCode::Char('z') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_suspend = true;
+            return;
+        }
+
         // A prior `q` press is awaiting confirmation (see `request_quit`):
         // resolve it here, ahead of every other dispatch, so it applies
         // uniformly regardless of which mode/pane has focus. A second `q`
@@ -1743,7 +2382,7 @@ impl App {
             self.handle_override_key(key);
             return;
         }
-        if self.manage_open {
+        if self.manage_open && self.manage_focus {
             self.handle_manage_key(key);
             return;
         }
@@ -1942,11 +2581,12 @@ impl App {
             KeyCode::Tab if self.override_target.is_some() => self.override_focus = true,
 
             // Override management pane (spec 0117 §3): `o` opens/closes
-            // it, mirroring `t`. Always focused while open, so it's
-            // dispatched to directly (see `handle_key`'s
-            // `self.manage_open` check) rather than via a `Tab`-toggled
-            // focus flag.
+            // it, mirroring `t`. `Tab` moves focus back into it while
+            // it's open, mirroring the override selection pane (a
+            // main-pane mouse click can also shift focus here without
+            // closing the pane — `handle_mouse`, 2026-07-14 feedback).
             KeyCode::Char('o') => self.toggle_manage_pane(),
+            KeyCode::Tab if self.manage_open => self.manage_focus = true,
 
             // Help overlay. `F1`, not `?` — `?` is owned by in-pane search
             // (spec 0114 §4-style, extended to the main pane).
@@ -2334,22 +2974,24 @@ impl App {
     }
 
     /// Shared application logic for `type-as`/`type-as-raw` (spec 0114 §5
-    /// step 1): validates the cursor is on a message/group node (§1) —
-    /// same refusal `t` gives — then applies `new_fqdn` via
-    /// `apply_override` against the cursor node, without ever opening the
-    /// override pane. `override_target` is saved/restored around the
-    /// call: an already-open pane (targeting a possibly different node,
-    /// reachable via `Tab`-focus + main-pane navigation) is left
-    /// untouched.
+    /// step 1, spec 0118 §6): validates the cursor is on an eligible node
+    /// (`can_override`, §1) — same refusal `t` gives — then activates a
+    /// `Path`-kind override for the cursor node's positional path and
+    /// runs the recursive `render_overrides` pass (§4/§6), without ever
+    /// opening the override pane. Unlike the old `apply_override`-based
+    /// one-shot splice, this persists the override in the collection.
     fn type_as(&mut self, new_fqdn: Option<&str>) -> Result<(), String> {
-        if !self.tree[self.cursor].span.is_message {
-            return Err("cannot override: not a message/group field".to_string());
+        if !self.can_override(self.cursor) {
+            return Err(
+                "cannot override: not a message/group or length-delimited field".to_string(),
+            );
         }
-        let saved = self.override_target;
-        self.override_target = Some(self.cursor);
-        let result = self.apply_override(new_fqdn);
-        self.override_target = saved;
-        result.map_err(|e| format!("cannot apply override: {e}"))
+        let origin = OverrideOrigin::Path {
+            path: self.positional_path(self.cursor),
+        };
+        self.overrides.activate(origin, new_fqdn.map(String::from));
+        self.render_overrides(self.first_node);
+        Ok(())
     }
 
     /// `extract [--binary|--text] <path>` — default format is `#@ prototext`
@@ -2514,6 +3156,9 @@ impl App {
             warnings.push("descriptor-set hash mismatch");
         }
         self.overrides = collection;
+        // Spec 0118 §6: replacing the whole collection can change the
+        // resolved override for any node, so always re-render.
+        self.render_overrides(self.first_node);
         self.manage_highlight = 0;
         self.manage_scroll = 0;
         self.message = if warnings.is_empty() {
@@ -2530,12 +3175,135 @@ impl App {
     /// a left click on a foldable node's marker column toggles its fold,
     /// a click elsewhere on a node's line moves the cursor there.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        // Dismiss the splash screen transparently, same as `handle_key`
+        // (spec 0113 D22/D28): the mouse event that dismisses it is also
+        // processed as a real event, not swallowed.
+        self.splash = false;
+
         self.message.clear();
+
+        let side_open = self.manage_open || self.override_target.is_some();
+        let over_side = side_open && Self::rect_contains(self.side_area, event.column, event.row);
+        let over_main = Self::rect_contains(self.main_area, event.column, event.row);
+
+        // Wheel scroll routes to whichever pane the mouse is currently
+        // hovering, independent of keyboard focus (2026-07-14 feedback,
+        // item 4) — unlike `handle_key`, which always follows focus,
+        // since a mouse event already carries its own screen position
+        // (`event.column`/`event.row`), making hover-based routing both
+        // natural and unambiguous.
+        if matches!(
+            event.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            if over_side {
+                if self.manage_open {
+                    self.handle_manage_mouse(event);
+                } else {
+                    self.handle_override_mouse(event);
+                }
+            } else if over_main {
+                match event.kind {
+                    MouseEventKind::ScrollDown => self.move_down(),
+                    MouseEventKind::ScrollUp => self.move_up(),
+                    _ => unreachable!(),
+                }
+            }
+            return;
+        }
+
+        if let MouseEventKind::Down(MouseButton::Left) = event.kind {
+            if over_main {
+                // A click in the main pane always shifts keyboard focus
+                // back to it without closing the side pane (2026-07-14
+                // feedback, item 3) — `handle_key` follows `override_focus`/
+                // `manage_focus`, so clearing them here is what makes the
+                // shift stick for subsequent keystrokes too.
+                self.override_focus = false;
+                self.manage_focus = false;
+                self.handle_click(event.column, event.row);
+            } else if over_side {
+                // Symmetric with the main-pane case above: clicking the
+                // side pane (re-)claims keyboard focus for it too.
+                if self.manage_open {
+                    self.manage_focus = true;
+                    self.handle_manage_click(event.column, event.row);
+                } else {
+                    self.override_focus = true;
+                    self.handle_override_click(event.column, event.row);
+                }
+            }
+        }
+    }
+
+    /// Whether `(col, row)` falls inside `area` (used for mouse hit-
+    /// testing against `main_area`/`side_area`).
+    fn rect_contains(area: Rect, col: u16, row: u16) -> bool {
+        col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
+    }
+
+    /// Mouse handling for the override selection pane (spec 0113 D30):
+    /// wheel scroll moves the highlight by one row (same effect as `j`/
+    /// `k`, which is what the render function's own auto-scroll-into-view
+    /// logic keys off of), click moves the highlight to the row under the
+    /// cursor.
+    fn handle_override_mouse(&mut self, event: MouseEvent) {
         match event.kind {
-            MouseEventKind::ScrollDown => self.move_down(),
-            MouseEventKind::ScrollUp => self.move_up(),
-            MouseEventKind::Down(MouseButton::Left) => self.handle_click(event.column, event.row),
+            MouseEventKind::ScrollDown => self.move_override_highlight(1),
+            MouseEventKind::ScrollUp => self.move_override_highlight(-1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_override_click(event.column, event.row)
+            }
             _ => {}
+        }
+    }
+
+    fn handle_override_click(&mut self, col: u16, row: u16) {
+        let area = self.side_area;
+        if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
+        {
+            return;
+        }
+        let rel_row = (row - area.y) as usize;
+        if rel_row >= self.override_list_height {
+            return;
+        }
+        let absolute_row = self.override_scroll + rel_row;
+        let total_rows = self.override_candidates.len() + 1;
+        if absolute_row < total_rows {
+            self.override_highlight = absolute_row;
+        }
+    }
+
+    /// Mouse handling for the override management pane (spec 0113 D30):
+    /// wheel scroll moves the highlight by one entry, click moves the
+    /// highlight to the entry under the cursor (header rows under the
+    /// click are ignored, same as clicking whitespace).
+    fn handle_manage_mouse(&mut self, event: MouseEvent) {
+        match event.kind {
+            MouseEventKind::ScrollDown => self.move_manage_highlight(1),
+            MouseEventKind::ScrollUp => self.move_manage_highlight(-1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_manage_click(event.column, event.row)
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_manage_click(&mut self, col: u16, row: u16) {
+        let area = self.side_area;
+        if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
+        {
+            return;
+        }
+        let rel_row = (row - area.y) as usize;
+        if rel_row >= self.manage_list_height {
+            return;
+        }
+        let absolute_row = self.manage_scroll + rel_row;
+        let rows = self.manage_display_rows();
+        if let Some(ManageRow::Entry(idx)) = rows.get(absolute_row) {
+            self.manage_highlight = *idx;
         }
     }
 
@@ -2683,6 +3451,26 @@ impl App {
         }
     }
 
+    /// Spec 0113 D33: `true` when `line_idx` is one of *its own* node's
+    /// header/footer lines (`line_to_node`'s opening-line mapping, or
+    /// `footer_line_to_node`'s closing-line mapping — never a
+    /// descendant's own lines, which is what keeps this from cascading
+    /// visual weight down a whole overridden subtree) and that node
+    /// currently carries an active override, of whichever kind (a single
+    /// boolean state — the three override kinds are not visually
+    /// distinguished here, they're already visible in the management
+    /// pane).
+    fn line_has_active_override(&self, line_idx: usize) -> bool {
+        let idx = self
+            .line_to_node
+            .get(&line_idx)
+            .or_else(|| self.footer_line_to_node.get(&line_idx));
+        match idx {
+            Some(&idx) => self.resolve_active_override(idx).is_some(),
+            None => false,
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         self.term_width = area.width;
@@ -2710,7 +3498,20 @@ impl App {
             (chunks[0], None)
         };
 
-        let main_block = Block::bordered().title(format!(" {} ", self.header));
+        // Bold border marks whichever pane currently holds keyboard
+        // focus, mirroring the override/management panes' own
+        // `override_focus`/`manage_focus`-driven border style — the main
+        // pane has focus exactly when neither side pane does (2026-07-14
+        // feedback: no prior visible sign of which pane focus was in).
+        let main_focused = !self.override_focus && !self.manage_focus;
+        let main_border_style = if main_focused {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let main_block = Block::bordered()
+            .title(format!(" {} ", self.header))
+            .border_style(main_border_style);
         let inner = main_block.inner(main_outer);
         frame.render_widget(main_block, main_outer);
         self.main_area = inner;
@@ -2736,6 +3537,11 @@ impl App {
             .enumerate()
             .map(|(row, &line_idx)| {
                 let mut spans = pan_spans(self.render_line_spans(line_idx), self.pan_offset);
+                if self.line_has_active_override(line_idx) {
+                    for span in &mut spans {
+                        span.style = span.style.add_modifier(Modifier::BOLD);
+                    }
+                }
                 if self.scroll_offset + row == cursor_row {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::REVERSED);
@@ -2754,6 +3560,14 @@ impl App {
         // there — which is most of the time in ordinary navigation, since
         // `self.message` is cleared on every normal-mode keypress before
         // its handler runs.
+        // The management pane's rename buffer (spec 0119 §G4's `e` key)
+        // shares this same bottom bar rather than being appended inside
+        // the side pane's own line list (2026-07-14 interactive
+        // feedback): unlike `:command`/`/`-search, that side-pane-local
+        // spot never got a real terminal cursor, making it unclear where
+        // typing lands — this bar already solves that for the main pane's
+        // own command/search input, so reusing it fixes both at once.
+        const RENAME_PREFIX: &str = "name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
                 let prefix = match self.command_kind {
@@ -2763,7 +3577,10 @@ impl App {
                 };
                 format!("{prefix}{buf}")
             }
-            None => self.message.clone(),
+            None => match &self.manage_rename {
+                Some(buf) => format!("{RENAME_PREFIX}{buf}"),
+                None => self.message.clone(),
+            },
         };
         let status_outer = if cmd_text.is_empty() {
             chunks[1]
@@ -2783,6 +3600,12 @@ impl App {
                 // this the user can't tell where they're typing.
                 let x = cmd_inner.x + 1 + self.command_cursor as u16;
                 frame.set_cursor_position((x, cmd_inner.y));
+            } else if let Some(buf) = &self.manage_rename {
+                // Rename has no separate cursor-position state — always
+                // appending/popping at the buffer's end, so the cursor
+                // always sits right after the last character typed.
+                let x = cmd_inner.x + RENAME_PREFIX.len() as u16 + buf.chars().count() as u16;
+                frame.set_cursor_position((x, cmd_inner.y));
             }
             bottom[1]
         };
@@ -2790,16 +3613,9 @@ impl App {
         let status = if self.tree.is_empty() {
             "(empty — decoded to zero fields)".to_string()
         } else {
-            let mut path = self.positional_path(self.cursor);
+            let path = self.positional_path(self.cursor);
             let range = self.display_range(self.cursor);
             let node = &self.tree[self.cursor].span;
-            // A message/group node's path is postfixed with `/`, marking
-            // it as a "directory" (its children live under it) rather
-            // than a "leaf" — the wrapper's own root path is already
-            // exactly `/` (spec 0114 §1.1), so it's left as-is.
-            if node.is_message && !path.ends_with('/') {
-                path.push('/');
-            }
             let type_label = match node.type_fqdn.as_deref() {
                 Some(fqdn) => format!("type: {fqdn}"),
                 None => String::new(),
@@ -2814,7 +3630,7 @@ impl App {
                 type_label,
             )
         };
-        let status_block = Block::bordered();
+        let status_block = Block::bordered().title(" Status — F1 for help ");
         let status_inner = status_block.inner(status_outer);
         frame.render_widget(status_block, status_outer);
         frame.render_widget(Paragraph::new(status), status_inner);
@@ -2864,6 +3680,7 @@ impl App {
         let block = Block::bordered().title(title).border_style(border_style);
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.side_area = inner;
 
         let search_line = self.override_search.as_ref().map(|s| {
             let prefix = match s.dir {
@@ -2918,11 +3735,19 @@ impl App {
     /// `OverrideCollection` in its canonical sort order.
     fn render_manage_pane(&mut self, frame: &mut Frame, area: Rect) {
         let title = format!(" Overrides ({} entries) ", self.overrides.entries().len());
-        let border_style = Style::default().add_modifier(Modifier::BOLD);
+        let border_style = if self.manage_focus {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
         let block = Block::bordered().title(title).border_style(border_style);
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.side_area = inner;
 
+        // The rename buffer no longer reserves a row here — it renders in
+        // the shared bottom command/message bar instead (`render`,
+        // 2026-07-14 feedback), which also gives it a real cursor.
         let search_line = self.manage_search.as_ref().map(|s| {
             let prefix = match s.dir {
                 SearchDir::Forward => '/',
@@ -3096,6 +3921,25 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
+/// `Ctrl-Z` suspend (spec 0113 D31): leave the terminal in the same clean
+/// state a normal exit would (mirroring `restore_terminal`/the panic
+/// hook), raise `SIGTSTP` on this process, and — once `fg` sends
+/// `SIGCONT` and execution resumes right here — re-enter the alternate
+/// screen/mouse-capture/raw-mode trio and force a full redraw, since the
+/// terminal's actual contents are unknown after a suspend/resume cycle
+/// (another program may have used the same terminal in between).
+#[cfg(unix)]
+fn suspend<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    restore_terminal();
+    // SAFETY: raising a signal on our own process is always sound.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()
+}
+
 /// Run the interactive TUI loop against a real terminal.
 pub fn run(app: &mut App) -> io::Result<()> {
     enable_raw_mode()?;
@@ -3134,11 +3978,17 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result
         if app.should_quit {
             return Ok(());
         }
+        #[cfg(unix)]
+        if app.should_suspend {
+            app.should_suspend = false;
+            suspend(terminal)?;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use prototext_core::helpers::{WT_LEN, WT_VARINT};
     use prototext_core::serialize::render_text::NodeSpan;
     use ratatui::backend::TestBackend;
 
@@ -3231,6 +4081,45 @@ mod tests {
         assert!(app.quit_confirm);
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit);
+    }
+
+    /// Spec 0113 D31: `Ctrl-Z` sets `should_suspend` (the actual
+    /// `SIGTSTP`/terminal dance lives in `run_loop`/`suspend`, outside
+    /// `App`'s own unit-testable surface) — checked centrally, so it
+    /// fires uniformly regardless of a pending quit confirmation, and
+    /// leaves that confirmation untouched.
+    #[test]
+    #[cfg(unix)]
+    fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
+        let decoded = Decoded {
+            lines: Vec::new(),
+            tree: Vec::new(),
+            root_type: "google.protobuf.Empty".to_string(),
+            blob: Vec::new(),
+            wrapper_offset: 0,
+            style_hints: Vec::new(),
+        };
+        let mut app = App::new(
+            decoded,
+            "empty.pb",
+            PathBuf::from("empty.pb"),
+            true,
+            2,
+            DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.quit_confirm);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert!(app.should_suspend);
+        assert!(!app.should_quit);
+        assert!(
+            app.quit_confirm,
+            "Ctrl-Z must not disturb a pending quit confirmation"
+        );
     }
 
     #[test]
@@ -3349,6 +4238,7 @@ mod tests {
                 type_fqdn: Some("google.protobuf.DescriptorProto".to_string()),
                 is_message: true,
                 packed_record_start: None,
+                wire_type: WT_LEN,
             },
             parent: None,
             first_child: None,
@@ -3357,6 +4247,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let decoded = Decoded {
             lines,
@@ -3395,6 +4286,7 @@ mod tests {
                     type_fqdn: None,
                     is_message: false,
                     packed_record_start: None,
+                    wire_type: WT_VARINT,
                 },
                 parent: None,
                 first_child: None,
@@ -3403,6 +4295,7 @@ mod tests {
                 prev_sibling: i.checked_sub(1),
                 doc_next: (i + 1 < n).then_some(i + 1),
                 doc_prev: i.checked_sub(1),
+                rendered_as: None,
             })
             .collect();
         let decoded = Decoded {
@@ -3461,6 +4354,7 @@ mod tests {
                 type_fqdn: None,
                 is_message: true,
                 packed_record_start: None,
+                wire_type: WT_LEN,
             },
             parent: None,
             first_child: None,
@@ -3469,6 +4363,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let decoded = Decoded {
             lines,
@@ -3509,6 +4404,7 @@ mod tests {
                 type_fqdn: None,
                 is_message: false,
                 packed_record_start: None,
+                wire_type: WT_VARINT,
             },
             parent: None,
             first_child: None,
@@ -3517,6 +4413,7 @@ mod tests {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         };
         let decoded = Decoded {
             lines,
@@ -3543,6 +4440,58 @@ mod tests {
         assert!(app.message.contains("not a message/group"));
     }
 
+    /// 2026-07-14 feedback: `t` must not refuse a plain string/bytes
+    /// field just because it isn't schema-typed as a message — it's
+    /// still `WT_LEN`-wire and may in practice carry an embedded
+    /// submessage the schema doesn't know about, so the user should be
+    /// free to attempt reinterpreting it.
+    #[test]
+    fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
+        let lines: Vec<String> = vec!["value: \"hi\"".to_string()];
+        let node = TreeNode {
+            span: NodeSpan {
+                field_number: 1,
+                raw_range: 0..4,
+                text_range: 0..1,
+                level: 0,
+                type_fqdn: None,
+                is_message: false,
+                packed_record_start: None,
+                wire_type: WT_LEN,
+            },
+            parent: None,
+            first_child: None,
+            last_child: None,
+            next_sibling: None,
+            prev_sibling: None,
+            doc_next: None,
+            doc_prev: None,
+            rendered_as: None,
+        };
+        let decoded = Decoded {
+            lines,
+            tree: vec![node],
+            root_type: "test.Scalar".to_string(),
+            blob: vec![0x0A, 0x02, b'h', b'i'],
+            wrapper_offset: 0,
+            style_hints: Vec::new(),
+        };
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.override_target, Some(0));
+    }
+
     /// Spec 0114 §2: `t` refuses to open the pane below the minimum
     /// terminal width.
     #[test]
@@ -3556,20 +4505,20 @@ mod tests {
         assert!(app.message.contains("too narrow"));
     }
 
-    /// Spec 0114 §3.2: sort mode defaults to `Inferred` on open, and `i`
+    /// Spec 0114 §3.2: sort mode defaults to `Inferred` on open, and `a`
     /// toggles between the two modes.
     #[test]
-    fn override_sort_defaults_to_inferred_and_i_toggles_it() {
+    fn override_sort_defaults_to_inferred_and_a_toggles_it() {
         let mut app = message_node_app();
         app.splash = false;
         app.term_width = 120;
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
         assert_eq!(app.override_sort, SortMode::Inferred);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.override_sort, SortMode::Lexicographic);
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.override_sort, SortMode::Inferred);
     }
 
@@ -3907,6 +4856,87 @@ mod tests {
         assert!(app.override_focus);
     }
 
+    /// A mouse click landing in the main pane shifts keyboard focus back
+    /// to it without closing the still-open side pane (2026-07-14
+    /// feedback, item 3).
+    #[test]
+    fn mouse_click_in_main_pane_refocuses_without_closing_override_pane() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.cursor = inner_idx;
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert!(app.override_target.is_some());
+        assert!(app.override_focus);
+
+        app.main_area = Rect::new(0, 0, 40, 20);
+        app.side_area = Rect::new(60, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert!(
+            !app.override_focus,
+            "click in main pane must shift focus back to it"
+        );
+        assert_eq!(
+            app.override_target,
+            Some(inner_idx),
+            "the override pane must stay open"
+        );
+    }
+
+    /// Wheel scroll routes to whichever pane the mouse is hovering, not
+    /// whichever pane currently has keyboard focus (2026-07-14 feedback,
+    /// item 4).
+    #[test]
+    fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.cursor = inner_idx;
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert!(app.override_focus, "keyboard focus starts in the side pane");
+
+        app.main_area = Rect::new(0, 0, 40, 20);
+        app.side_area = Rect::new(60, 0, 40, 20);
+        app.override_candidates = vec![("a.B".to_string(), None), ("a.C".to_string(), None)];
+        app.override_highlight = 0;
+
+        let cursor_before = app.cursor;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_ne!(
+            app.cursor, cursor_before,
+            "hovering the main pane must scroll it, even though the side \
+             pane still has keyboard focus"
+        );
+        assert_eq!(
+            app.override_highlight, 0,
+            "the unhovered side pane must not react"
+        );
+
+        let cursor_after_main_scroll = app.cursor;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 65,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.cursor, cursor_after_main_scroll,
+            "hovering the side pane must not move the main-pane cursor"
+        );
+        assert_eq!(
+            app.override_highlight, 1,
+            "hovering the side pane must scroll it"
+        );
+    }
+
     /// `Esc` closes the override pane regardless of which pane currently
     /// has focus — same "works regardless of focus" treatment as `t`
     /// (spec 0114 §8's key-bindings table).
@@ -4126,12 +5156,12 @@ mod tests {
         assert_eq!(app.display_range(vals_indices[2]), 6..7);
     }
 
-    /// Spec 0114 §5: `apply_override` splices a re-rendered subtree into
-    /// `self.lines`/`self.tree` in place of a node's previous interior,
-    /// repeatable on the same node (the design's key risk: post-order
-    /// array contiguity does not survive a *second* override of the same
-    /// node, since the first override's new nodes are appended at the
-    /// array's end — `apply_override` must never rely on it).
+    /// Spec 0118 §4: `splice_override` regenerates a whole node (not just
+    /// its interior) into `self.lines`/`self.tree`, repeatable on the
+    /// same node (the design's key risk: post-order array contiguity does
+    /// not survive a *second* override of the same node, since the first
+    /// override's new nodes are appended at the array's end —
+    /// `splice_override` must never rely on it).
     #[test]
     fn apply_override_splices_tree_and_lines_repeatedly() {
         use prost::Message as _;
@@ -4259,7 +5289,7 @@ mod tests {
         app.override_target = Some(node_idx);
 
         // 1) Re-typed as itself: idempotent structural round-trip.
-        app.apply_override(Some("test.Node"))
+        app.splice_override(node_idx, Some("test.Node".to_string()))
             .expect("re-typing as the same type must succeed");
         assert_children(&app, "re-typed as itself");
         assert_eq!(
@@ -4272,12 +5302,13 @@ mod tests {
         );
 
         // 2) Raw override (no schema).
-        app.apply_override(None).expect("raw override must succeed");
+        app.splice_override(node_idx, None)
+            .expect("raw override must succeed");
         assert_eq!(app.tree[node_idx].span.type_fqdn, None);
 
         // 3) Re-typed again, on top of two prior overrides — exercises
         // repeated overrides of the same node.
-        app.apply_override(Some("test.Node"))
+        app.splice_override(node_idx, Some("test.Node".to_string()))
             .expect("third override must still succeed");
         assert_children(&app, "re-typed a third time");
 
@@ -4381,6 +5412,11 @@ mod tests {
         assert!(app.override_target.is_none(), "pane must close on success");
         assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
         assert!(app.message.is_empty(), "no error expected: {}", app.message);
+        // Spec 0119 G3: `Enter` lands in the management pane instead of
+        // just closing outright.
+        assert!(app.manage_open, "must open the management pane (G3)");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.manage_open);
 
         // A ranked candidate row: re-open, switch to lexicographic sort
         // (no scoring graph in this fixture), and select the first
@@ -4397,6 +5433,51 @@ mod tests {
         assert_eq!(
             app.tree[inner_idx].span.type_fqdn.as_deref(),
             Some(chosen.as_str())
+        );
+    }
+
+    /// Spec 0119 §G4: `e` in the management pane opens a rename buffer
+    /// pre-filled from the highlighted entry's current name; `Enter`
+    /// confirms, mutating the entry in place and — since the entry is
+    /// active — triggering a re-render whose header line picks up the
+    /// new name (the `(type, field_name)` re-splice gate).
+    #[test]
+    fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.cursor = inner_idx;
+        app.run_command("type-as test.Inner");
+        assert_eq!(
+            app.tree[inner_idx].span.type_fqdn.as_deref(),
+            Some("test.Inner")
+        );
+
+        app.toggle_manage_pane();
+        assert!(app.manage_open);
+        let entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| e.active && e.r#type.as_deref() == Some("test.Inner"))
+            .expect("type-as must have created an active entry for test.Inner");
+        app.manage_highlight = entry_idx;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.manage_rename.is_some());
+        for c in "custom_name".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.manage_rename.is_none());
+        assert_eq!(
+            app.overrides.entries()[entry_idx].name.as_deref(),
+            Some("custom_name")
+        );
+
+        let line_idx = app.tree[inner_idx].span.text_range.start;
+        let header = &app.lines[line_idx];
+        assert!(
+            header.contains("custom_name"),
+            "expected the renamed field name in the re-rendered header: {header}"
         );
     }
 
@@ -4481,6 +5562,565 @@ mod tests {
         (app, inner_idx, id_idx)
     }
 
+    /// The document root has no real field name of its own — a
+    /// `splice_override`-driven re-render of the root (any retype, not
+    /// just the initial `decode()` paint) must keep omitting
+    /// `field_name_for`'s synthetic `"0"` sentinel from the header line,
+    /// same as `decode_omits_the_synthetic_root_field_name_from_the_header_line`
+    /// (`decode.rs`) covers for the initial paint.
+    #[test]
+    fn splice_override_omits_the_synthetic_root_field_name_from_the_header_line() {
+        let (mut app, _, _) = type_as_fixture();
+        app.splice_override(app.first_node, Some("test.Outer".to_string()))
+            .unwrap();
+        assert!(
+            !app.lines[0].starts_with("0 "),
+            "root header line must not show the synthetic \"0\" field name: {:?}",
+            app.lines[0]
+        );
+        assert!(app.lines[0].starts_with('{'));
+    }
+
+    /// Reproduces interactive-testing feedback (2026-07-14): retyping the
+    /// document root *raw* (no schema, `target: None`) must also omit a
+    /// stale numeric field-number token from the header line. Before this
+    /// fix, `splice_override`'s stale-prefix-stripping only recognized the
+    /// schema-resolved case's literal `"0 "` prefix (`register_wrapper`'s
+    /// synthetic field name) — with no schema resolved,
+    /// `decode_and_render_indexed` instead falls back to printing the
+    /// literal wrapping `field_number` (always `1` for the root, spec
+    /// 0114 §1.1), which went unstripped and showed as `"1 {"`.
+    #[test]
+    fn splice_override_raw_root_omits_the_stale_field_number_from_the_header_line() {
+        let (mut app, _, _) = type_as_fixture();
+        app.splice_override(app.first_node, None).unwrap();
+        assert!(
+            !app.lines[0].starts_with("1 "),
+            "raw root header line must not show the stale field number: {:?}",
+            app.lines[0]
+        );
+        assert!(app.lines[0].starts_with('{'));
+    }
+
+    /// Reproduces interactive-testing feedback (2026-07-14, post-D34): a
+    /// root node retyped raw (`None`) then retyped back to a real schema
+    /// must still expand its `Any` descendants — a bare re-splice of the
+    /// root shouldn't lose `Any` expansion the *initial* `render_overrides`
+    /// pass (spec 0120) got right. Fixture mirrors `decode.rs`'s own
+    /// `decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans`.
+    #[test]
+    fn splice_override_reactivating_root_type_still_expands_any_fields() {
+        use prost::Message as _;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        use crate::decode::{decode, DescriptorContext};
+
+        let any_msg = DescriptorProto {
+            name: Some("Any".to_string()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("type_url".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("value".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Bytes as i32),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let any_file = FileDescriptorProto {
+            name: Some("google/protobuf/any.proto".to_string()),
+            syntax: Some("proto3".to_string()),
+            package: Some("google.protobuf".to_string()),
+            message_type: vec![any_msg],
+            ..Default::default()
+        };
+
+        let payload_msg = DescriptorProto {
+            name: Some("Payload".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("label".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let container_msg = DescriptorProto {
+            name: Some("Container".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("payload".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".google.protobuf.Any".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let acme_file = FileDescriptorProto {
+            name: Some("acme.proto".to_string()),
+            syntax: Some("proto2".to_string()),
+            package: Some("acme".to_string()),
+            dependency: vec!["google/protobuf/any.proto".to_string()],
+            message_type: vec![payload_msg, container_msg],
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet {
+            file: vec![any_file, acme_file],
+        };
+
+        let descriptor_path =
+            std::env::temp_dir().join("protolens-tui-splice-any-reactivate-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // Container { payload: Any { type_url:
+        // "type.googleapis.com/acme.Payload", value: Payload { label:
+        // "hello" } } }.
+        let label = b"hello";
+        let mut payload_bytes = vec![0x0au8, label.len() as u8];
+        payload_bytes.extend_from_slice(label);
+        let type_url = b"type.googleapis.com/acme.Payload";
+        let mut any_bytes = vec![0x0au8, type_url.len() as u8];
+        any_bytes.extend_from_slice(type_url);
+        any_bytes.push(0x12);
+        any_bytes.push(payload_bytes.len() as u8);
+        any_bytes.extend_from_slice(&payload_bytes);
+        let mut blob = vec![0x0au8, any_bytes.len() as u8];
+        blob.extend_from_slice(&any_bytes);
+
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        // 1) retype the root raw (no schema) — mirrors the interactive
+        //    "override / with raw/no-type" step, driven through the same
+        //    `overrides.activate` + `render_overrides` path the `Enter`
+        //    key handler uses in the override pane (not a bare
+        //    `splice_override` call, which bypasses the recursive pass
+        //    entirely and would miss this bug).
+        let root_origin = override_pane::OverrideOrigin::Path {
+            path: "/".to_string(),
+        };
+        app.overrides.activate(root_origin.clone(), None);
+        app.render_overrides(app.first_node);
+        // 2) retype the root back to the real schema — mirrors
+        //    reactivating `acme.Container` in the management pane.
+        app.overrides
+            .activate(root_origin, Some("acme.Container".to_string()));
+        app.render_overrides(app.first_node);
+
+        assert!(
+            app.tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+            "Any field must still expand after retyping the root away and \
+             back: {:#?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.contains("label") && l.contains("hello")),
+            "expanded Any payload's own field must appear in the \
+             re-spliced text: {:?}",
+            app.lines
+        );
+    }
+
+    /// Builds the shared `Container { extensions: TestMessageSet { Item {
+    /// type_id: 100, message: ExtPayload { label: "hi" } } } }` fixture
+    /// used by both the auto-expansion test and the toggle/reactivate
+    /// regression test below.
+    fn message_set_fixture() -> App {
+        use prost::Message as _;
+        use prost_types::descriptor_proto::ExtensionRange;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+            MessageOptions,
+        };
+
+        use crate::decode::{decode, DescriptorContext};
+
+        let message_set_msg = DescriptorProto {
+            name: Some("TestMessageSet".to_string()),
+            options: Some(MessageOptions {
+                message_set_wire_format: Some(true),
+                ..Default::default()
+            }),
+            extension_range: vec![ExtensionRange {
+                start: Some(1),
+                end: Some(536870912),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ext_payload_msg = DescriptorProto {
+            name: Some("ExtPayload".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("label".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let extension_field = FieldDescriptorProto {
+            name: Some("ext_payload".to_string()),
+            number: Some(100),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".ms_test.ExtPayload".to_string()),
+            extendee: Some(".ms_test.TestMessageSet".to_string()),
+            ..Default::default()
+        };
+        let container_msg = DescriptorProto {
+            name: Some("Container".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("extensions".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".ms_test.TestMessageSet".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("ms_test.proto".to_string()),
+            syntax: Some("proto2".to_string()),
+            package: Some("ms_test".to_string()),
+            message_type: vec![message_set_msg, ext_payload_msg, container_msg],
+            extension: vec![extension_field],
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        // Unique per call (this fixture is shared by several tests that
+        // may run concurrently) to avoid one test's cleanup racing
+        // another's read of the same path.
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let descriptor_path = std::env::temp_dir().join(format!(
+            "protolens-tui-message-set-expand-descriptor-{n}.pb"
+        ));
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // Container { extensions: TestMessageSet {
+        //   Item { type_id: 100, message: ExtPayload { label: "hi" } }
+        // } }.
+        let ext_payload_bytes = [0x0au8, 0x02, b'h', b'i'];
+        let mut item_bytes = vec![0x0bu8, 0x10, 100u8];
+        item_bytes.push(0x1a);
+        item_bytes.push(ext_payload_bytes.len() as u8);
+        item_bytes.extend_from_slice(&ext_payload_bytes);
+        item_bytes.push(0x0c); // END_GROUP
+        let mut blob = vec![0x12u8, item_bytes.len() as u8];
+        blob.extend_from_slice(&item_bytes);
+
+        let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+        app
+    }
+
+    /// Regression test (spec 0120 §G2, post-bugfix): a MessageSet's
+    /// group-wire "Item" entries (field 1, `WT_START_GROUP`) must be
+    /// decomposed via the two-tier auto-expansion (tier 1: synthetic
+    /// `protolens_internal.MessageSetItem`; tier 2: the specific
+    /// extension type resolved from `type_id`) through `render_overrides`
+    /// — not corrupted into a flat raw scalar, which is what happened
+    /// before the fix (`render_overrides`'s `is_message` recursion gate
+    /// unconditionally spliced the group node with no matching tier,
+    /// poisoning the render via `extract::message_payload_range`'s
+    /// documented "leaves the trailing END_GROUP tag" behavior for
+    /// `WT_START_GROUP`). Also asserts both tiers land as real,
+    /// persisted, active `OverrideEntry` rows (spec 0120 redesign: no
+    /// longer a silent dynamic fallback).
+    #[test]
+    fn message_set_group_items_auto_expand_through_render_overrides() {
+        let app = message_set_fixture();
+
+        assert!(
+            app.tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+            "MessageSet Item's message must auto-expand to the resolved \
+             extension type: {:#?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.contains("label") && l.contains("hi")),
+            "expanded MessageSet extension payload's own field must appear \
+             in the spliced text: {:?}",
+            app.lines
+        );
+
+        let item_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+            .expect("Item group must be spliced to the synthetic MessageSetItem type");
+        let item_path = app.positional_path(item_idx);
+        assert!(
+            app.overrides.entries().iter().any(|e| {
+                e.active
+                    && matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path)
+                    && e.r#type.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+            }),
+            "tier-1 auto-expansion must be a real, persisted, active \
+             override entry: {:#?}",
+            app.overrides.entries()
+        );
+        assert!(
+            app.overrides.entries().iter().any(|e| {
+                matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path)
+                    && e.name.as_deref() == Some("Item")
+            }),
+            "tier-1 auto-expansion must be seeded with the display name \
+             \"Item\" (mirroring prototext-core's native MessageSet \
+             rendering), not the bare field number: {:#?}",
+            app.overrides.entries()
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.trim_start().starts_with("Item {")),
+            "the Item wrapper must render under the name \"Item\", not \
+             its field number: {:?}",
+            app.lines
+        );
+
+        let message_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+            .expect("message field must resolve to ExtPayload");
+        let message_path = app.positional_path(message_idx);
+        assert!(
+            app.overrides.entries().iter().any(|e| {
+                e.active
+                    && matches!(&e.origin, OverrideOrigin::Path { path } if *path == message_path)
+                    && e.r#type.as_deref() == Some("ms_test.ExtPayload")
+            }),
+            "tier-2 auto-expansion must be a real, persisted, active \
+             override entry: {:#?}",
+            app.overrides.entries()
+        );
+    }
+
+    /// Regression test for the manage-pane toggle/reactivate bug reported
+    /// against spec 0120's auto-expansion seeding: deactivating a
+    /// MessageSet tier-1 (`MessageSetItem`) auto-derived override via
+    /// `toggle_active` (the manage pane's `a`/Space key) must actually
+    /// stick across a `render_overrides` pass — not be silently
+    /// resurrected, which is what happened when the seeding condition in
+    /// `render_overrides` only checked "no active override currently
+    /// resolves" rather than "no entry exists yet for this origin at
+    /// all". Also asserts that reactivating it re-splices the Item's
+    /// payload back to the expanded `ExtPayload` form.
+    #[test]
+    fn toggling_message_set_auto_override_off_and_on_sticks() {
+        let mut app = message_set_fixture();
+
+        let item_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+            .expect("Item group must be spliced to the synthetic MessageSetItem type");
+        let item_path = app.positional_path(item_idx);
+        let entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+            .expect("tier-1 entry must exist");
+
+        // Deactivate, then re-render: the entry must stay inactive (not
+        // be re-seeded), and the Item node must revert to its natural
+        // (un-overridden) type.
+        app.overrides.toggle_active(entry_idx);
+        app.render_overrides(app.first_node);
+        assert!(
+            !app.overrides.entries()[entry_idx].active,
+            "deactivating the tier-1 override must stick across a render \
+             pass, not self-heal back to active: {:#?}",
+            app.overrides.entries()
+        );
+        assert_eq!(
+            app.tree[item_idx].span.type_fqdn.as_deref(),
+            None,
+            "Item node must render raw/natural once its override is \
+             deactivated: {:#?}",
+            app.lines
+        );
+
+        // Reactivate: the same entry (same index — `toggle_active` never
+        // resorts) must come back active, and the Item's payload must
+        // re-expand to ExtPayload.
+        app.overrides.toggle_active(entry_idx);
+        app.render_overrides(app.first_node);
+        assert!(
+            app.overrides.entries()[entry_idx].active,
+            "reactivating the tier-1 override must stick: {:#?}",
+            app.overrides.entries()
+        );
+        assert_eq!(
+            app.tree[item_idx].span.type_fqdn.as_deref(),
+            Some(decode::MESSAGE_SET_ITEM_FQDN),
+            "Item node must re-expand once its override is reactivated: \
+             {:#?}",
+            app.lines
+        );
+        assert!(
+            app.tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+            "tier-2 auto-expansion must also come back after reactivating \
+             tier-1: {:#?}",
+            app.lines
+        );
+    }
+
+    /// Regression test (2026-07-14 interactive feedback): deactivating a
+    /// MessageSet's tier-1 (`Item`) auto-derived override must also stop
+    /// honoring its tier-2 (`message`) auto-derived override, even though
+    /// the tier-2 entry itself is never touched — its derivation
+    /// (looking up the extension type from `type_id`) is only valid
+    /// while its parent still resolves as `MessageSetItem`, so it must
+    /// demote alongside its ancestor rather than keep rendering the stale
+    /// extension type. Previously, only deactivating an *outer* ancestor
+    /// override (e.g. an enclosing `Any`) cleared it — deactivating the
+    /// immediate tier-1 `Item` alone was not enough.
+    #[test]
+    fn deactivating_tier_1_demotes_the_still_active_tier_2_entry() {
+        let mut app = message_set_fixture();
+
+        let item_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+            .expect("Item group must be spliced to the synthetic MessageSetItem type");
+        let item_path = app.positional_path(item_idx);
+        let item_entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+            .expect("tier-1 entry must exist");
+        let message_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+            .expect("message field must resolve to ExtPayload");
+        let message_path = app.positional_path(message_idx);
+        let message_entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(
+                |e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == message_path),
+            )
+            .expect("tier-2 entry must exist");
+
+        // Deactivate tier-1 only — tier-2's own entry is left untouched.
+        app.overrides.toggle_active(item_entry_idx);
+        app.render_overrides(app.first_node);
+
+        assert!(
+            app.overrides.entries()[message_entry_idx].active,
+            "tier-2's own entry must remain active (untouched by \
+             deactivating tier-1) — demotion must not mutate `active`: \
+             {:#?}",
+            app.overrides.entries()
+        );
+        // `app.tree` retains splice-abandoned/orphaned entries (never
+        // referenced again but never removed from the `Vec` either — see
+        // `splice_override`'s "abandon in place" pattern), so checking
+        // for absence must go through the *rendered* text (`app.lines`),
+        // which only ever reflects the current, live splice — not
+        // `app.tree.iter()`, which could still find the old, no-longer-
+        // reachable `ExtPayload` node from before this deactivation.
+        assert!(
+            !app.lines.iter().any(|l| l.contains("ExtPayload")),
+            "tier-2's stale extension-type annotation must disappear \
+             once its governing tier-1 ancestor is deactivated: {:?}",
+            app.lines
+        );
+
+        // Reactivating tier-1 must bring tier-2 back without touching
+        // tier-2's own entry.
+        app.overrides.toggle_active(item_entry_idx);
+        app.render_overrides(app.first_node);
+        assert!(
+            app.tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+            "tier-2 must resume once its tier-1 ancestor is reactivated: \
+             {:?}",
+            app.lines
+        );
+    }
+
+    /// Spec 0113 D33: the bold override hint applies to a node's own
+    /// header and (when it has children) footer line, but must not
+    /// cascade to descendant lines.
+    #[test]
+    fn line_has_active_override_marks_header_and_footer_but_not_children() {
+        let (mut app, inner_idx, id_idx) = type_as_fixture();
+        app.cursor = inner_idx;
+        app.run_command("type-as test.Inner");
+        assert_eq!(
+            app.tree[inner_idx].span.type_fqdn.as_deref(),
+            Some("test.Inner")
+        );
+
+        let header_line = app.tree[inner_idx].span.text_range.start;
+        let footer_line = app.tree[inner_idx].span.text_range.end - 1;
+        assert!(app.line_has_active_override(header_line));
+        assert!(app.line_has_active_override(footer_line));
+
+        let id_line = app.tree[id_idx].span.text_range.start;
+        assert!(!app.line_has_active_override(id_line));
+    }
+
     /// Spec 0114 §7: `:type-as <FQDN>` applies the override directly to
     /// the cursor node, bypassing the override pane entirely — it must
     /// never open (`override_target` stays `None` throughout).
@@ -4511,8 +6151,9 @@ mod tests {
         assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
     }
 
-    /// Spec 0114 §7/§5 step 1: `:type-as` on a non-message/group node is
-    /// refused with the same message `t` gives.
+    /// Spec 0114 §7/§5 step 1: `:type-as` on an ineligible node (neither
+    /// message/group nor length-delimited scalar) is refused with the
+    /// same message `t` gives.
     #[test]
     fn type_as_command_rejects_non_message_node() {
         let (mut app, _, id_idx) = type_as_fixture();
@@ -4520,7 +6161,7 @@ mod tests {
         app.run_command("type-as test.Inner");
         assert!(
             app.message
-                .contains("cannot override: not a message/group field"),
+                .contains("cannot override: not a message/group or length-delimited field"),
             "unexpected message: {}",
             app.message
         );

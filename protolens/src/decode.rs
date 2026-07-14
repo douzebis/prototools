@@ -68,6 +68,13 @@ impl DescriptorContext {
         &self.pool
     }
 
+    /// Mutable pool access — needed by `tui.rs`'s `splice_override` (spec
+    /// 0118 §4) to call `register_wrapper` for an arbitrary target type,
+    /// mirroring `decode()`'s own (in-module, private-field) access.
+    pub(crate) fn pool_mut(&mut self) -> &mut DescriptorPool {
+        &mut self.pool
+    }
+
     /// Load a `DescriptorContext` from a `--descriptor-set` path. v1 has no
     /// schemaless/embedded-WKT fallback (spec 0111 Goal 2): the caller must
     /// always supply a path.
@@ -223,6 +230,17 @@ pub struct TreeNode {
     pub prev_sibling: Option<usize>,
     pub doc_next: Option<usize>,
     pub doc_prev: Option<usize>,
+    /// Which override (if any) currently produced this node's rendering,
+    /// paired with the field name it was rendered under (spec 0118 §2.1,
+    /// extended by spec 0119 G4) — `None` until the first `render()` pass
+    /// touches it (freshly built by `build_tree`, whether from the
+    /// initial raw decode or a splice's local tree). Both halves of the
+    /// pair are inputs to the actual rendered text (the type via
+    /// `splice_override`'s target, the name via a synthetic wrapper's
+    /// field label), so either one changing must trigger a re-splice —
+    /// tracking only the type here would miss a name-only change (e.g.
+    /// spec 0119 G4's per-entry rename).
+    pub rendered_as: Option<(Option<Option<String>>, String)>,
 }
 
 /// Build the navigation arena from a flat, level-annotated, post-order
@@ -247,6 +265,7 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
             prev_sibling: None,
             doc_next: None,
             doc_prev: None,
+            rendered_as: None,
         })
         .collect();
 
@@ -288,8 +307,11 @@ pub(crate) fn build_tree(spans: Vec<NodeSpan>) -> Vec<TreeNode> {
         stack.push((i, level));
     }
 
-    // Document-order chain: sort by raw_range.start (stable — ties broken
-    // by array position, harmless since ties don't occur for real spans).
+    // Document-order chain: sort by raw_range.start. Every NodeSpan is
+    // backed by a real tag/length prefix of its own (spec 0120 — Any/
+    // MessageSet expansion is disabled at the prototext-core level, so
+    // no virtual wrapper node with a borrowed/shared range ever reaches
+    // this function), so raw_range.start values never tie.
     let mut doc_order: Vec<usize> = (0..nodes.len()).collect();
     doc_order.sort_by_key(|&i| nodes[i].span.raw_range.start);
     for w in doc_order.windows(2) {
@@ -324,28 +346,44 @@ pub struct Decoded {
 }
 
 /// Build (or reuse, if already registered) a synthetic one-field message
-/// descriptor `protolens_internal.Wrapper_<sanitized root_fqdn>` whose sole
-/// field 1 is message-typed, referencing `root_fqdn` — the virtual
-/// encompassing protobuf of spec 0114 §1.1. Named per-root so that
-/// registering wrappers for two different root types on the same pool (as
-/// happens across repeated `decode()` calls) never collides.
-fn register_wrapper(
+/// descriptor `protolens_internal.Wrapper_<field_number>_<sanitized
+/// target_fqdn>` whose sole field `field_number` is message-typed,
+/// referencing `target_desc` — the virtual encompassing protobuf of spec
+/// 0114 §1.1, generalized (spec 0118 §4) to an arbitrary field number so
+/// `splice_override` can wrap any node's own field, not just the document
+/// root (always field `1`). Named per-`(field_number, target_fqdn)` so
+/// that registering wrappers for different targets on the same pool (as
+/// happens across repeated `decode()`/`splice_override` calls) never
+/// collides. `pub(crate)`: also called from `tui.rs`'s `splice_override`.
+pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
-    root_desc: &MessageDescriptor,
+    field_number: u64,
+    field_name: &str,
+    target_desc: &MessageDescriptor,
 ) -> Result<MessageDescriptor, DecodeError> {
-    let root_fqdn = root_desc.full_name();
-    let suffix = root_fqdn.replace('.', "_");
+    let target_fqdn = target_desc.full_name();
+    // `field_name` is part of the cache/registration key, not just
+    // `field_number`+`target_fqdn` (spec 0119 §G2): two nodes can share
+    // the same field number and override target while having different
+    // real field names (e.g. field 1 named differently in two distinct
+    // parent messages) — without this, the second registration would
+    // silently reuse the first one's field name via `get_message_by_name`
+    // returning the cached descriptor unchanged.
+    let suffix = format!(
+        "{field_number}_{field_name}_{}",
+        target_fqdn.replace('.', "_")
+    );
     let full_name = format!("protolens_internal.Wrapper_{suffix}");
     if let Some(existing) = pool.get_message_by_name(&full_name) {
         return Ok(existing);
     }
 
     let field = FieldDescriptorProto {
-        name: Some("root".to_string()),
-        number: Some(1),
+        name: Some(field_name.to_string()),
+        number: Some(field_number as i32),
         label: Some(Label::Optional as i32),
         r#type: Some(Type::Message as i32),
-        type_name: Some(format!(".{root_fqdn}")),
+        type_name: Some(format!(".{target_fqdn}")),
         ..Default::default()
     };
     let message = DescriptorProto {
@@ -356,7 +394,7 @@ fn register_wrapper(
     let file = FileDescriptorProto {
         name: Some(format!("protolens_internal/wrapper_{suffix}.proto")),
         package: Some("protolens_internal".to_string()),
-        dependency: vec![root_desc.parent_file().name().to_string()],
+        dependency: vec![target_desc.parent_file().name().to_string()],
         syntax: Some("proto2".to_string()),
         message_type: vec![message],
         ..Default::default()
@@ -367,12 +405,70 @@ fn register_wrapper(
         .ok_or_else(|| DecodeError::Schema("wrapper descriptor registered but not found".into()))
 }
 
-/// Prepend a real tag(field 1, `WT_LEN`)+length-varint prefix to `blob`,
-/// making it a genuinely valid encoding of the wrapper message (spec 0114
-/// §1.1).
-fn wrap_blob(blob: &[u8]) -> Vec<u8> {
+/// FQDN of the synthetic, globally-shared "Item" shape used to represent
+/// a MessageSet group entry generically — `type_id` (field 2) and
+/// `message` (field 3, raw bytes) — before the specific extension type
+/// is known (spec 0120 §G2 tier 1).  Registered once per pool
+/// (`register_message_set_item`), reused by every MessageSet occurrence
+/// in the document: the shape is always identical, independent of any
+/// particular extendee.
+pub(crate) const MESSAGE_SET_ITEM_FQDN: &str = "protolens_internal.MessageSetItem";
+
+/// Build (or reuse, if already registered) the synthetic
+/// `protolens_internal.MessageSetItem` descriptor: `type_id: int32 = 2`,
+/// `message: bytes = 3` — the generic tier-1 shape for a MessageSet
+/// group entry (spec 0120 §G2). Unlike `register_wrapper`, this has no
+/// per-target parameters: the shape never varies, so it's registered
+/// exactly once and shared by every MessageSet in the document.
+/// `pub(crate)`: also called from `tui.rs`'s `auto_expand_type`.
+pub(crate) fn register_message_set_item(
+    pool: &mut DescriptorPool,
+) -> Result<MessageDescriptor, DecodeError> {
+    if let Some(existing) = pool.get_message_by_name(MESSAGE_SET_ITEM_FQDN) {
+        return Ok(existing);
+    }
+    let type_id_field = FieldDescriptorProto {
+        name: Some("type_id".to_string()),
+        number: Some(2),
+        label: Some(Label::Optional as i32),
+        r#type: Some(Type::Int32 as i32),
+        ..Default::default()
+    };
+    let message_field = FieldDescriptorProto {
+        name: Some("message".to_string()),
+        number: Some(3),
+        label: Some(Label::Optional as i32),
+        r#type: Some(Type::Bytes as i32),
+        ..Default::default()
+    };
+    let message = DescriptorProto {
+        name: Some("MessageSetItem".to_string()),
+        field: vec![type_id_field, message_field],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("protolens_internal/message_set_item.proto".to_string()),
+        package: Some("protolens_internal".to_string()),
+        syntax: Some("proto2".to_string()),
+        message_type: vec![message],
+        ..Default::default()
+    };
+    pool.add_file_descriptor_proto(file)
+        .map_err(|e| DecodeError::Schema(format!("registering MessageSetItem descriptor: {e}")))?;
+    pool.get_message_by_name(MESSAGE_SET_ITEM_FQDN)
+        .ok_or_else(|| {
+            DecodeError::Schema("MessageSetItem descriptor registered but not found".into())
+        })
+}
+
+/// Prepend a real tag(`field_number`, `WT_LEN`)+length-varint prefix to
+/// `blob`, making it a genuinely valid encoding of a wrapper message's
+/// sole field (spec 0114 §1.1, generalized spec 0118 §4 to an arbitrary
+/// field number). `pub(crate)`: also called from `tui.rs`'s
+/// `splice_override`.
+pub(crate) fn wrap_blob(field_number: u64, blob: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(blob.len() + 10);
-    write_tag(1, WT_LEN, &mut out);
+    write_tag(field_number as u32, WT_LEN, &mut out);
     write_varint(blob.len() as u64, &mut out);
     out.extend_from_slice(blob);
     out
@@ -389,23 +485,47 @@ pub fn decode(
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
             desc.full_name().to_string(),
-            Some(register_wrapper(&mut ctx.pool, desc)?),
+            Some(register_wrapper(&mut ctx.pool, 1, "0", desc)?),
         ),
         None => ("<raw / no type>".to_string(), None),
     };
 
-    let wrapped_blob = wrap_blob(blob);
+    let wrapped_blob = wrap_blob(1, blob);
     let wrapper_offset = wrapped_blob.len() - blob.len();
 
     let opts = DecodeRenderOpts {
         annotations,
         indent_size,
+        // Any/MessageSet expansion is handled by protolens itself, as
+        // automatic overrides (spec 0120), not by prototext-core's own
+        // virtual-node expansion — disabling both here lets Any/
+        // MessageSet-typed fields fall through to ordinary
+        // nested-message / unknown-field rendering, giving every field
+        // (including `type_url`/`type_id`) a real `NodeSpan`.
+        expand_any: false,
+        expand_message_set: false,
         ..Default::default()
     };
     let (text, spans) = decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), opts);
 
-    let text = String::from_utf8(text)
+    let mut text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
+    // The document root has no real field name of its own — `"0"` is
+    // just `register_wrapper`'s synthetic placeholder (spec 0114 §1.1),
+    // never meant to be shown. Strip it from the root's own header line
+    // (its first two bytes, unconditionally, since nothing precedes it —
+    // `emit_header` is left `false` here) whenever a schema was resolved
+    // (`wrapper_desc.is_some()`; the raw/no-type case never emits a `"0"`
+    // token at all, since `render_message` falls back to the field
+    // number, not a field name, when `root_desc` is `None`). Done here,
+    // before splitting into lines/colorizing, since `NodeSpan::text_range`
+    // is line-indexed, not byte-indexed (spec 0110), so shortening line 0
+    // in place can't desync anything downstream.
+    if wrapper_desc.is_some() {
+        if let Some(stripped) = text.strip_prefix("0 ") {
+            text = stripped.to_string();
+        }
+    }
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
     let tree = build_tree(spans);
@@ -486,5 +606,183 @@ mod tests {
             .expect("tree must contain the wrapper's top-level node");
         assert!(wrapper.span.is_message);
         assert_eq!(wrapper.span.type_fqdn, None);
+    }
+
+    /// The document root has no real field name of its own —
+    /// `register_wrapper`'s synthetic `"0"` placeholder (spec 0114 §1.1)
+    /// must never leak into the rendered header line when no G4 name
+    /// override applies (there is none yet at initial `decode()` time).
+    #[test]
+    fn decode_omits_the_synthetic_root_field_name_from_the_header_line() {
+        let msg_desc = DescriptorProto {
+            name: Some("Msg".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("test_decode_root_name.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![msg_desc],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        let descriptor_path = std::env::temp_dir().join("protolens-decode-root-name-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        let blob = [0x08u8, 0x05];
+        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, true).unwrap();
+        assert!(
+            !decoded.lines[0].starts_with("0 "),
+            "root header line must not show the synthetic \"0\" field name: {:?}",
+            decoded.lines[0]
+        );
+        assert!(decoded.lines[0].starts_with('{'));
+    }
+
+    /// Spec 0120: `decode()` disables `expand_any`/`expand_message_set`,
+    /// so a `google.protobuf.Any` field is *not* auto-expanded at this
+    /// layer (that's `tui.rs`'s `render_overrides`/`auto_expand_type`'s
+    /// job, spec 0120 §G1) — instead it falls through to ordinary
+    /// nested-message rendering under Any's own real 2-field descriptor,
+    /// giving `type_url` (field 1) and `value` (field 2) real,
+    /// correctly-ordered `NodeSpan`s of their own (no virtual wrapper, no
+    /// fabricated `field_number: 0`). Fixture mirrors `prototext/tests/
+    /// node_span.rs`'s own `any_schema`/`any_wire_bytes`.
+    #[test]
+    fn decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans() {
+        let any_msg = DescriptorProto {
+            name: Some("Any".to_string()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("type_url".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("value".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Bytes as i32),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let any_file = FileDescriptorProto {
+            name: Some("google/protobuf/any.proto".to_string()),
+            syntax: Some("proto3".to_string()),
+            package: Some("google.protobuf".to_string()),
+            message_type: vec![any_msg],
+            ..Default::default()
+        };
+
+        let payload_msg = DescriptorProto {
+            name: Some("Payload".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("label".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let container_msg = DescriptorProto {
+            name: Some("Container".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("payload".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".google.protobuf.Any".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let acme_file = FileDescriptorProto {
+            name: Some("acme.proto".to_string()),
+            syntax: Some("proto2".to_string()),
+            package: Some("acme".to_string()),
+            dependency: vec!["google/protobuf/any.proto".to_string()],
+            message_type: vec![payload_msg, container_msg],
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet {
+            file: vec![any_file, acme_file],
+        };
+
+        let descriptor_path =
+            std::env::temp_dir().join("protolens-decode-any-expansion-descriptor.pb");
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // Container { payload: Any { type_url:
+        // "type.googleapis.com/acme.Payload", value: Payload { label:
+        // "hello" } } }.
+        let label = b"hello";
+        let mut payload_bytes = vec![0x0au8, label.len() as u8];
+        payload_bytes.extend_from_slice(label);
+        let type_url = b"type.googleapis.com/acme.Payload";
+        let mut any_bytes = vec![0x0au8, type_url.len() as u8];
+        any_bytes.extend_from_slice(type_url);
+        any_bytes.push(0x12);
+        any_bytes.push(payload_bytes.len() as u8);
+        any_bytes.extend_from_slice(&payload_bytes);
+        let mut blob = vec![0x0au8, any_bytes.len() as u8];
+        blob.extend_from_slice(&any_bytes);
+
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let any_idx = decoded
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("google.protobuf.Any"))
+            .expect("tree must contain the unexpanded Any node itself");
+        let type_url_idx = decoded.tree[any_idx]
+            .first_child
+            .expect("Any node must have type_url as its first child");
+        let value_idx = decoded.tree[type_url_idx]
+            .next_sibling
+            .expect("Any node must have value as its second child");
+        assert_eq!(decoded.tree[type_url_idx].span.field_number, 1);
+        assert_eq!(decoded.tree[value_idx].span.field_number, 2);
+        assert!(
+            decoded.tree[value_idx].span.type_fqdn.is_none(),
+            "value must stay unexpanded (plain bytes) at decode() layer: {:#?}",
+            decoded.tree[value_idx].span
+        );
+        assert!(
+            !decoded
+                .tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+            "acme.Payload must not appear — auto-expansion is tui.rs's job, \
+             not decode()'s: {:#?}",
+            decoded.lines
+        );
+        // Real tag/length-backed ranges, in document order: type_url's
+        // range must end before value's own range starts.
+        assert!(
+            decoded.tree[type_url_idx].span.raw_range.end
+                <= decoded.tree[value_idx].span.raw_range.start,
+            "type_url and value must have real, non-overlapping, correctly \
+             ordered raw ranges: {:#?}",
+            (
+                &decoded.tree[type_url_idx].span,
+                &decoded.tree[value_idx].span
+            )
+        );
     }
 }

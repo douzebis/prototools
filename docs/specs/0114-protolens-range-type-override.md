@@ -66,8 +66,9 @@ naming split, not an inconsistency.
    unambiguous, including on the first visible line (§1.1).
 2. **Override pane**: an ephemeral right-hand split (§2), listing a pinned
    `<raw / no type>` entry (§3.1) followed by candidate types for the
-   target range, sorted lexicographically (`a`) or by inferred plausibility
-   (`i`, default — reusing `score_all`, no new inference logic). On open,
+   target range, sorted lexicographically or by inferred plausibility
+   (default — reusing `score_all`, no new inference logic), `a` toggling
+   between the two. On open,
    the highlighted row defaults to the first ranked candidate, not the
    pinned raw entry (§3.1). Vim-style in-pane search (`/`, `?`, `n`).
    `Enter` applies the highlighted candidate (or raw) and closes the pane;
@@ -314,6 +315,36 @@ wire tag byte itself (`WT_LEN` vs `WT_START_GROUP`), not from `NodeSpan`
   behavior for cases already covered by its regression tests, correct now
   for the previously-mishandled unresolved-message case too.
 
+#### §1.3 — Amendment: widen eligibility to length-delimited scalars
+
+**Discovered:** interactive testing (2026-07-14) — `t`/`:type-as`
+unconditionally refused every field currently rendered as a scalar
+`string`/`bytes` (e.g. `tracking_tag: "\002tpc_change_id\003..." #@ string
+= 2`), even when such a field could plausibly carry an embedded message
+the active schema doesn't declare. **Status:** implemented (2026-07-14).
+
+**Design decision** (confirmed with the user): an override that produces
+an invalid/nonsensical reinterpretation is acceptable — `protolens` should
+allow the attempt and let the user judge the result, not pre-emptively
+block it. This is the same trust model the Any/MessageSet auto-override
+machinery (spec 0120) already relies on unconditionally, and
+`splice_override` already reports a bad reinterpretation gracefully via
+its `Result<(), String>` return rather than panicking.
+
+**Design.** New shared eligibility predicate,
+`fn can_override(&self, idx: usize) -> bool`: `span.is_message ||
+span.wire_type == WT_LEN` (§1.2's `is_message` field, plus spec 0115's
+`wire_type` discriminator). A packed-repeated element is *not*
+inadvertently included by the `WT_LEN` half: packed encoding only ever
+applies to primitive numeric/bool/enum kinds, so a packed element's own
+`wire_type` (`sink.rs`'s `elem_wire_type`) is always
+`WT_VARINT`/`WT_I32`/`WT_I64`, never `WT_LEN` — the packed field *as a
+whole* remains excluded exactly as before, with no new container-level
+`NodeSpan` needed. `toggle_override` and the shared `type_as` logic
+(`:type-as`/`:type-as-raw`) both call `can_override` in place of the bare
+`is_message` check, with the refusal message updated to "cannot override:
+not a message/group or length-delimited field."
+
 ### §2 — Pane layout and focus model
 
 Ephemeral horizontal split, structurally the same `ratatui::Layout` split
@@ -350,7 +381,7 @@ persistent toggle):
 
 #### §3.1 — The pinned `<raw / no type>` entry
 
-Always the list's first row, regardless of sort mode, unaffected by `a`/`i`
+Always the list's first row, regardless of sort mode, unaffected by `a`
 toggling and excluded from in-pane search (§4) matching (it isn't an FQDN).
 Selecting it assigns "no type" to the range: the range is explicitly
 overridden to render as unschema'd/raw wire data — `prototext-core`
@@ -368,16 +399,16 @@ inferred type," not "mark this raw" — raw remains one `k`/`Up` press away.
 
 #### §3.2 — Sort modes for the ranked candidates
 
-Two sort modes, toggled by `a` (lexicographic) / `i` (inferred, **default**)
-while the override pane has focus — apply only to the ranked candidates
-below the pinned raw entry:
+Two sort modes, `a` toggling between them while the override pane has
+focus — apply only to the ranked candidates below the pinned raw entry:
 
 - **Lexicographic**: all message/group types known to the loaded
   descriptor set, alphabetically by FQDN. Cheap — no `score_all` call (§6).
-- **Inferred**: ranked by `score_all(range_bytes, graph, opts)` against the
-  target range, descending score (ties broken by FQDN). This is the same
-  scoring engine `protolens`'s own root-type determination already uses
-  (spec 0111 Goal 2), applied here per-range instead of corpus-wide.
+- **Inferred** (**default**): ranked by `score_all(range_bytes, graph,
+  opts)` against the target range, descending score (ties broken by
+  FQDN). This is the same scoring engine `protolens`'s own root-type
+  determination already uses (spec 0111 Goal 2), applied here per-range
+  instead of corpus-wide.
 
 `j`/`k` (or arrows) move the highlighted candidate within the pane
 (including onto the pinned raw entry); scrolling follows the same
@@ -522,7 +553,7 @@ Override pane (only meaningful while it has focus, except `Tab`/`t` which work r
 | Key | Action |
 |---|---|
 | `j` / `Down`, `k` / `Up` | Move highlighted candidate (or onto the pinned raw entry) |
-| `i` | Toggle candidate sort: inferred score (default) / lexicographic — persists across successive `t` invocations for the session |
+| `a` | Toggle candidate sort: inferred score (default) / lexicographic — persists across successive `t` invocations for the session |
 | `/` | Search forward |
 | `?` | Search backward |
 | `n` | Repeat last search |
