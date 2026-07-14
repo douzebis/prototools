@@ -49,59 +49,59 @@ implementation revealed 0111's assumptions were wrong.
 ## Index
 
 ### Data model & tree construction
-- [x] [D1](#d1--nodespan-emission-order-is-post-order-not-pre-order) — `NodeSpan` emission order is post-order, not pre-order
+- [x] [D1](#d1-nodespan-emission-order-is-post-order-not-pre-order) — `NodeSpan` emission order is post-order, not pre-order
 
 ### Layout & rendering
-- [x] [D2](#d2--all-panes-bordered-shared-border-between-adjacent-panes) — All panes bordered, shared border between adjacent panes
-- [x] [D3](#d3--fold-marker-indentation) — Fold marker indentation
-- [x] [D6](#d6--folded-line-display-closing-brace-before-trailing-content) — Folded-line display: closing brace before trailing content
-- [x] [D12](#d12--d6s---splice-verified-against-real-annotated-output) — D6's `... }` splice verified against real annotated output
-- [x] [D13](#d13--raw-range-status-line-display-inclusive-bound) — Raw-range status-line display: inclusive bound
-- [ ] [D25](#d25--positional-path-notation-alongside-the-byte-range) — Positional-path notation, alongside the byte range
-- [x] [D27](#d27--drop-the-trailing--for-messagegroup-paths-in-the-status-line) — Drop the trailing `/` for message/group paths in the status line
-- [x] [D29](#d29--status-pane-title) — Status pane title
-- [x] [D33](#d33--visual-hint-for-overridden-fields-in-the-main-pane) — Visual hint for overridden fields in the main pane
-- [x] [D34](#d34--anymessageset-fields-dont-expand-in-the-main-pane) — `Any`/`MessageSet` fields don't expand in the main pane
-- [x] [D35](#d35--bold-border-indicates-keyboard-focus) — Bold border indicates keyboard focus
+- [x] [D2](#d2-all-panes-bordered-shared-border-between-adjacent-panes) — All panes bordered, shared border between adjacent panes
+- [x] [D3](#d3-fold-marker-indentation) — Fold marker indentation
+- [x] [D6](#d6-folded-line-display-closing-brace-before-trailing-content) — Folded-line display: closing brace before trailing content
+- [x] [D12](#d12-d6-s-splice-verified-against-real-annotated-output) — D6's `... }` splice verified against real annotated output
+- [x] [D13](#d13-raw-range-status-line-display-inclusive-bound) — Raw-range status-line display: inclusive bound
+- [ ] [D25](#d25-positional-path-notation-alongside-the-byte-range) — Positional-path notation, alongside the byte range
+- [x] [D27](#d27-drop-the-trailing-for-message-group-paths-in-the-status-line) — Drop the trailing `/` for message/group paths in the status line
+- [x] [D29](#d29-status-pane-title) — Status pane title
+- [x] [D33](#d33-visual-hint-for-overridden-fields-in-the-main-pane) — Visual hint for overridden fields in the main pane
+- [x] [D34](#d34-any-messageset-fields-don-t-expand-in-the-main-pane) — `Any`/`MessageSet` fields don't expand in the main pane
+- [x] [D35](#d35-bold-border-indicates-keyboard-focus) — Bold border indicates keyboard focus
 
 ### Navigation & keybindings
-- [x] [D7](#d7--groups-are-foldable-same-as-messages-no-special-casing-needed) — Groups are foldable, same as messages
-- [x] [D8](#d8--folding-then-unfolding-a-node-must-not-mutate-descendants-fold-state) — Folding then unfolding a node must not mutate descendants' fold state
-- [x] [D15](#d15--page-updown-fold-allunfold-all-siblings) — Page Up/Down; fold-all/unfold-all siblings
-- [x] [D16](#d16--at-the-root-h-and-h-fold-the-whole-root-level) — At the root, `h`/`H` fold the whole root level
-- [x] [D17](#d17--shift-left-as-an-alias-for-h) — `Shift-Left` as an alias for `H`
-- [x] [D18](#d18--lright-made-symmetric-with-hleft-aria-tree-view-pattern) — `l`/`Right` made symmetric with `h`/`Left` (ARIA tree-view pattern)
-- [x] [D19](#d19--homeend-and-ggg-jump-to-firstlast-visible-node) — `Home`/`End` and `gg`/`G` jump-to-first/last-visible-node
-- [ ] [D20](#d20--future-user-configurable-keybindings-file) — Future: user-configurable keybindings file
-- [ ] [D24](#d24--horizontal-panning-of-the-main-pane) — Horizontal panning of the main pane
-- [x] [D32](#d32--space-as-an-alias-for-a-in-the-override-management-pane) — `Space` as an alias for `a` in the override management pane
+- [x] [D7](#d7-groups-are-foldable-same-as-messages-no-special-casing-needed) — Groups are foldable, same as messages
+- [x] [D8](#d8-folding-then-unfolding-a-node-must-not-mutate-descendants-fold-state) — Folding then unfolding a node must not mutate descendants' fold state
+- [x] [D15](#d15-page-up-down-fold-all-unfold-all-siblings) — Page Up/Down; fold-all/unfold-all siblings
+- [x] [D16](#d16-at-the-root-h-h-fold-the-whole-root-level) — At the root, `h`/`H` fold the whole root level
+- [x] [D17](#d17-shift-left-as-an-alias-for-h) — `Shift-Left` as an alias for `H`
+- [x] [D18](#d18-l-right-made-symmetric-with-h-left-aria-tree-view-pattern) — `l`/`Right` made symmetric with `h`/`Left` (ARIA tree-view pattern)
+- [x] [D19](#d19-home-end-and-gg-g-jump-to-first-last-visible-node) — `Home`/`End` and `gg`/`G` jump-to-first/last-visible-node
+- [ ] [D20](#d20-future-user-configurable-keybindings-file) — Future: user-configurable keybindings file
+- [ ] [D24](#d24-horizontal-panning-of-the-main-pane) — Horizontal panning of the main pane
+- [x] [D32](#d32-space-as-an-alias-for-a-in-the-override-management-pane) — `Space` as an alias for `a` in the override management pane
 
 ### Mouse & input
-- [x] [D4](#d4--mouse-support-wheel--click) — Mouse support (wheel + click)
-- [x] [D14](#d14--mouse-driven-text-selection-for-copy) — Mouse-driven text selection for copy
-- [x] [D28](#d28--mouse-event-dismisses-the-splash-screen) — Mouse event dismisses the splash screen
-- [x] [D30](#d30--mouse-support-for-the-override-selection-and-management-panes) — Mouse support for the override selection and management panes
+- [x] [D4](#d4-mouse-support-wheel-click) — Mouse support (wheel + click)
+- [x] [D14](#d14-mouse-driven-text-selection-for-copy) — Mouse-driven text selection for copy
+- [x] [D28](#d28-mouse-event-dismisses-the-splash-screen) — Mouse event dismisses the splash screen
+- [x] [D30](#d30-mouse-support-for-the-override-selection-and-management-panes) — Mouse support for the override selection and management panes
 
 ### CLI flags & options
-- [x] [D5](#d5--configurable-indent-step) — Configurable indent step
-- [x] [D10](#d10---no-annotations-cli-flag) — `--no-annotations` CLI flag
+- [x] [D5](#d5-configurable-indent-step) — Configurable indent step
+- [x] [D10](#d10-no-annotations-cli-flag) — `--no-annotations` CLI flag
 
 ### Extraction invariants
-- [x] [D11](#d11--foldunfold-state-must-be-transparent-to-extraction) — Fold/unfold state must be transparent to extraction (constraint on not-yet-written `extract.rs`)
-- [x] [D21](#d21--extract-command-line-x-and-extract) — Extract command line: `x` and `:extract`
-- [x] [D23](#d23--extract-default-path-proposal) — Extract default-path proposal
+- [x] [D11](#d11-fold-unfold-state-must-be-transparent-to-extraction) — Fold/unfold state must be transparent to extraction (constraint on not-yet-written `extract.rs`)
+- [x] [D21](#d21-extract-command-line-x-and-extract) — Extract command line: `x` and `:extract`
+- [x] [D23](#d23-extract-default-path-proposal) — Extract default-path proposal
 
 ### Command line
-- [ ] [D26](#d26--tab-completion-with-cycling-for-the-command-line) — Tab-completion with cycling for the command line
+- [ ] [D26](#d26-tab-completion-with-cycling-for-the-command-line) — Tab-completion with cycling for the command line
 
 ### Help & onboarding
-- [x] [D22](#d22--help-overlay-and-startup-splash-screen) — Help overlay and startup splash screen
+- [x] [D22](#d22-help-overlay-and-startup-splash-screen) — Help overlay and startup splash screen
 
 ### Persistence (future)
-- [ ] [D9](#d9--foldedunfolded-node-list-belongs-in-the-saved-project-config-future) — Folded/unfolded node list belongs in the saved project config
+- [ ] [D9](#d9-folded-unfolded-node-list-belongs-in-the-saved-project-config-future) — Folded/unfolded node list belongs in the saved project config
 
 ### Process & signals
-- [x] [D31](#d31--ctrl-z-suspends-the-process) — `Ctrl-Z` suspends the process
+- [x] [D31](#d31-ctrl-z-suspends-the-process) — `Ctrl-Z` suspends the process
 
 ---
 
