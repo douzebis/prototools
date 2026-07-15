@@ -280,6 +280,52 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
     }
 }
 
+/// Manage-pane auto/manual override-entry color (spec 0130) — a small,
+/// standalone style function independent of `SyntaxRole`/
+/// `RECOGNIZED_NAMES` (those are strictly one variant per
+/// `queries/highlights.scm` capture name; these two colors have no
+/// corresponding syntax capture). Colors reused from existing
+/// `SyntaxRole` palette entries rather than invented: `auto` mirrors
+/// `Comment`'s values (minus `ITALIC`); manual mirrors `Boolean`'s RGB
+/// values paired with a plain, unbold ANSI-16 `Blue` in both themes.
+pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
+    match theme {
+        ThemeKind::Dark if supports_rgb() => manage_entry_style_dark_rgb(auto),
+        ThemeKind::Dark => manage_entry_style_ansi16(auto),
+        ThemeKind::Light if supports_rgb() => manage_entry_style_light_rgb(auto),
+        ThemeKind::Light => manage_entry_style_ansi16(auto),
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    }
+}
+
+fn manage_entry_style_dark_rgb(auto: bool) -> Style {
+    if auto {
+        Style::default().fg(Color::Rgb(0x6A, 0x99, 0x55))
+    } else {
+        Style::default().fg(Color::Rgb(0x56, 0x9C, 0xD6))
+    }
+}
+
+fn manage_entry_style_light_rgb(auto: bool) -> Style {
+    if auto {
+        Style::default().fg(Color::Rgb(0x00, 0x80, 0x00))
+    } else {
+        Style::default().fg(Color::Rgb(0x00, 0x00, 0xFF))
+    }
+}
+
+/// Same ANSI-16 fallback in both dark and light themes (no per-theme
+/// substitution, unlike `style_for_dark_ansi16`/`style_for_light_ansi16`).
+fn manage_entry_style_ansi16(auto: bool) -> Style {
+    if auto {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Blue)
+    }
+}
+
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
 /// (spec 0116 §9's "Selection mechanism"):
 ///

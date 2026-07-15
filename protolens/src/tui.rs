@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
@@ -45,6 +46,13 @@ const PAN_STEP: usize = 8;
 /// override pane (spec 0114 §2) — matches 0111 Annex C's own Phase-5
 /// threshold; rendering an unusably narrow split is worse than refusing.
 const MIN_OVERRIDE_WIDTH: u16 = 100;
+
+/// Maximum gap between two same-line `Down(MouseButton::Left)` events for
+/// the second to count as a double-click (feedback, 2026-07-15) —
+/// crossterm reports `Down` identically for single and double clicks, so
+/// the app disambiguates them itself by comparing consecutive `Down`
+/// timestamps/positions (`App::last_click`).
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
 /// for a short-lived interactive session: at a rough ~50-70 bytes per
@@ -345,6 +353,17 @@ pub struct App {
     /// `None`/`None` together with `select_anchor` means no selection.
     /// Equal to `select_anchor` for a plain click with no drag.
     select_end: Option<usize>,
+    /// Timestamp + `line_idx` of the most recent main-pane left-click
+    /// `Down` event (feedback, 2026-07-15) — compared against on the next
+    /// `Down` to recognize a double-click (same line, within
+    /// `DOUBLE_CLICK_THRESHOLD`). `None` before the first click.
+    last_click: Option<(Instant, usize)>,
+    /// Whether the click currently in progress (`Down` already handled,
+    /// matching `Up` not yet seen) was recognized as the second click of
+    /// a double-click — consulted by the `Up` handler to decide whether a
+    /// plain (non-dragged) click should deselect (`false`, the default)
+    /// or keep the single-line selection `Down` just set (`true`).
+    pending_double_click: bool,
     folded: HashSet<usize>,
     /// Rows currently visible (line indices in `lines`, folded-away lines
     /// excluded) — rebuilt only on fold-state changes, not every frame.
@@ -516,6 +535,12 @@ pub struct App {
     help_open: bool,
     /// Scroll offset (in `HELP_TEXT` lines) while the help overlay is open.
     help_scroll: usize,
+    /// Help overlay's inner (bordered-away) `Rect` as of the last
+    /// `render_help()` call (feedback, 2026-07-15) — used to hit-test
+    /// mouse wheel/Shift-wheel events against the overlay instead of
+    /// letting them fall through to whichever pane it happens to be
+    /// drawn on top of. Only meaningful while `help_open`.
+    help_area: Rect,
     header: String,
     /// Main pane's inner (bordered-away) `Rect` as of the last `render()`
     /// call — used to hit-test mouse clicks against display rows/columns.
@@ -599,6 +624,8 @@ impl App {
             cursor,
             select_anchor: None,
             select_end: None,
+            last_click: None,
+            pending_double_click: false,
             folded: HashSet::new(),
             visible_rows: Vec::new(),
             scroll_offset: 0,
@@ -645,6 +672,7 @@ impl App {
             splash: true,
             help_open: false,
             help_scroll: 0,
+            help_area: Rect::default(),
             header,
             main_area: Rect::default(),
             side_area: Rect::default(),
@@ -1021,11 +1049,37 @@ impl App {
         if self.manage_open {
             self.close_manage_pane();
         }
+        // Spec 0132 §G1: priority (1) of the default-highlight order —
+        // an already-active override for this node takes precedence
+        // over `recompute_override_candidates`'s own priority (2)/(3)
+        // default (top-inferred candidate, else `<raw / no type>`).
+        // Resolved before `recompute_override_candidates` overwrites
+        // `override_candidates`, per the cursor's node.
+        let active_type = self
+            .resolve_active_override_entry(self.cursor)
+            .map(|e| e.r#type.clone());
         self.override_target = Some(self.cursor);
         self.override_focus = true;
         self.override_scroll = 0;
         self.override_pan_offset = 0;
         self.recompute_override_candidates();
+        if let Some(fqdn_or_raw) = active_type {
+            let highlight = match &fqdn_or_raw {
+                None => Some(0),
+                Some(fqdn) => self
+                    .override_candidates
+                    .iter()
+                    .position(|(f, _)| f == fqdn)
+                    .map(|row| row + 1),
+            };
+            if let Some(highlight) = highlight {
+                self.override_highlight = highlight;
+            }
+        }
+        // Spec 0132 §G2: live-preview the initial highlighted row from
+        // the very first frame the pane is shown, not just after the
+        // first navigation keystroke.
+        self.preview_override_highlight();
     }
 
     /// `o`: toggle the override management pane (spec 0117 §3). Closes
@@ -1144,7 +1198,26 @@ impl App {
     /// any) into `candidate_cache`, capped to however many rows the pane
     /// was actually showing — spec 0114 §6's "other entries keep only the
     /// first N lines."
+    ///
+    /// Spec 0132 §G3: first settles `override_target`'s main-pane
+    /// rendering back to its actual effective type — reverting whatever
+    /// the live preview last spliced in. Uses the full recursive
+    /// `render_overrides` (not the single-node `resettle_node`): the live
+    /// preview's own `splice_override` call rebuilds `idx`'s entire
+    /// subtree from scratch, with no overrides applied to any of the
+    /// fresh descendants (§G2's "no live nested Any/MessageSet preview"
+    /// non-goal) — a `resettle_node`-only revert would fix `idx` itself
+    /// but leave every previously-auto-expanded Any/MessageSet descendant
+    /// un-re-expanded. `render_overrides`'s recursion re-seeds/reapplies
+    /// every descendant's own override exactly as it does on any other
+    /// pass. A no-op when nothing was ever previewed (the `Enter`-confirm
+    /// call site already ran `render_overrides` itself, which leaves
+    /// `rendered_as` matching everywhere, so this becomes the cheap
+    /// "already current" path throughout the subtree).
     fn close_override(&mut self) {
+        if let Some(idx) = self.override_target {
+            self.render_overrides(idx);
+        }
         if let Some(range) = self.active_override_range.take() {
             let n = self.override_list_height.max(1);
             let capped: Vec<_> = self.override_inferred_raw.iter().take(n).cloned().collect();
@@ -1259,6 +1332,51 @@ impl App {
         let max = self.override_candidates.len();
         let current = self.override_highlight as isize;
         self.override_highlight = (current + delta).clamp(0, max as isize) as usize;
+        // Spec 0132 §G2: live-preview the newly-highlighted candidate.
+        self.preview_override_highlight();
+    }
+
+    /// Spec 0132 §G2: live-previews the currently-highlighted override
+    /// candidate by splicing it directly into the main pane — cheap,
+    /// single-node `splice_override` call that deliberately does not
+    /// touch `self.overrides`, so a later `Enter`-confirm (which does
+    /// touch it) is entirely unaffected by whatever was last previewed.
+    /// No-op if the override pane isn't open. Row 0 is the pinned
+    /// `<raw / no type>` entry (§3.1); rows 1.. are
+    /// `override_candidates[row - 1]`.
+    ///
+    /// `idx`'s own `rendered_as` *is* deliberately invalidated
+    /// (`None`'d out) on every successful preview splice — unlike a real
+    /// `render_overrides`/`resettle_node` splice, which records the
+    /// splice's own target into `rendered_as` so a later pass can no-op
+    /// when nothing changed. A preview splice's target is provisional,
+    /// not `idx`'s real effective type, so `rendered_as` must not claim
+    /// otherwise: leaving it stale (matching whatever it held before the
+    /// pane opened) would make a later revert's `resettle_node` — which
+    /// compares against `rendered_as` to decide whether to re-splice at
+    /// all — wrongly conclude nothing needs re-splicing whenever the
+    /// previewed row happens to coincide with what was already recorded
+    /// (e.g. the common case of previewing the raw/no-type row on a node
+    /// whose real effective type is itself schema-inferred, not an
+    /// explicit override), permanently leaving the preview's content on
+    /// screen instead of actually reverting (2026-07-15 feedback: `Esc`
+    /// silently failed to restore nested Any/MessageSet auto-expansion,
+    /// root-caused to exactly this).
+    fn preview_override_highlight(&mut self) {
+        let Some(idx) = self.override_target else {
+            return;
+        };
+        let tentative = if self.override_highlight == 0 {
+            None
+        } else {
+            self.override_candidates
+                .get(self.override_highlight - 1)
+                .map(|(fqdn, _)| fqdn.clone())
+        };
+        match self.splice_override(idx, tentative) {
+            Ok(()) => self.tree[idx].rendered_as = None,
+            Err(e) => self.message = format!("cannot preview override: {e}"),
+        }
     }
 
     /// Find the next `override_candidates` entry (1-based row, the pinned
@@ -1629,6 +1747,54 @@ impl App {
             .map(|e| e.r#type.clone())
     }
 
+    /// Spec 0120's stale-auto-entry demotion (factored out of
+    /// `render_overrides` by spec 0132 §G3, so it can also be reused by
+    /// the override-pane live preview/revert): the override (if any)
+    /// that should currently be considered "active" for `idx`, demoting
+    /// a stale `auto` entry — one whose ancestor context has since
+    /// changed, `auto_entry_in_scope` returning `false` — back to
+    /// "nothing active", same as `resolve_active_override` otherwise.
+    /// Outer `None` = no override active; inner `Option<String>` = the
+    /// override's type (`None` = raw/no-type override).
+    fn effective_override_target(&mut self, idx: usize) -> Option<Option<String>> {
+        let stale_auto_entry = self
+            .resolve_active_override_entry(idx)
+            .filter(|e| e.auto)
+            .cloned();
+        match stale_auto_entry {
+            Some(entry) if !self.auto_entry_in_scope(&entry) => None,
+            _ => self.resolve_active_override(idx),
+        }
+    }
+
+    /// Spec 0132 §G3: settles `idx`'s main-pane rendering to its current
+    /// "effective" override target (`effective_override_target`'s
+    /// explicit type if one is active, else `natural_type(idx)` when
+    /// nothing is active at all) — splicing only if it doesn't already
+    /// match `self.tree[idx].rendered_as` (the same no-op-when-already-
+    /// current guard `render_overrides` always used, verbatim). Factored
+    /// out of `render_overrides` itself (which calls this for `idx`
+    /// before recursing into children) so the override-pane's live-
+    /// preview revert (on close/cancel) can reuse the exact same
+    /// "effective type" computation — including the stale-auto-entry
+    /// demotion and natural-type fallback a plain
+    /// `resolve_active_override_entry`-only revert would get wrong.
+    fn resettle_node(&mut self, idx: usize) {
+        let target = self.effective_override_target(idx);
+        let field_name = self.field_name_for(idx);
+        let current = Some((target.clone(), field_name));
+        if current != self.tree[idx].rendered_as {
+            let effective = match &target {
+                Some(explicit) => explicit.clone(),
+                None => self.natural_type(idx),
+            };
+            match self.splice_override(idx, effective) {
+                Ok(()) => self.tree[idx].rendered_as = current,
+                Err(e) => self.message = format!("cannot apply override: {e}"),
+            }
+        }
+    }
+
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
@@ -1739,26 +1905,7 @@ impl App {
         // restored): only entries the user has never manually
         // (re-)activated are eligible, since `activate` always pins
         // `auto` back to `false`.
-        let stale_auto_entry = self
-            .resolve_active_override_entry(idx)
-            .filter(|e| e.auto)
-            .cloned();
-        let target = match stale_auto_entry {
-            Some(entry) if !self.auto_entry_in_scope(&entry) => None,
-            _ => self.resolve_active_override(idx),
-        };
-        let field_name = self.field_name_for(idx);
-        let current = Some((target.clone(), field_name));
-        if current != self.tree[idx].rendered_as {
-            let effective = match &target {
-                Some(explicit) => explicit.clone(),
-                None => self.natural_type(idx),
-            };
-            match self.splice_override(idx, effective) {
-                Ok(()) => self.tree[idx].rendered_as = current,
-                Err(e) => self.message = format!("cannot apply override: {e}"),
-            }
-        }
+        self.resettle_node(idx);
         let mut child = self.tree[idx].first_child;
         while let Some(c) = child {
             // Recurse into every node actually rendered as message/group
@@ -2288,12 +2435,16 @@ impl App {
             KeyCode::PageUp => {
                 self.move_override_highlight(-(self.override_list_height.max(1) as isize))
             }
-            KeyCode::Home => self.override_highlight = 0,
+            KeyCode::Home => {
+                self.override_highlight = 0;
+                self.preview_override_highlight();
+            }
             KeyCode::End => {
                 if !self.override_candidates_complete && self.override_sort == SortMode::Inferred {
                     self.upgrade_active_override_to_complete();
                 }
                 self.override_highlight = self.override_candidates.len();
+                self.preview_override_highlight();
             }
             KeyCode::Char('a') => {
                 self.override_sort = match self.override_sort {
@@ -2900,6 +3051,15 @@ impl App {
             KeyCode::Esc => {
                 self.select_anchor = None;
                 self.select_end = None;
+            }
+
+            // Spec 0131 §G1: `Ctrl-C` is the single, explicit copy key —
+            // copies the active drag-selection if one exists, else the
+            // cursor's own current line. Mouse release no longer copies
+            // by itself (see the no-op `Up(MouseButton::Left)` arm in
+            // `handle_mouse`).
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.copy_current_selection_or_line()
             }
             KeyCode::Tab if self.override_target.is_some() => self.override_focus = true,
 
@@ -3526,12 +3686,47 @@ impl App {
     /// a left click on a foldable node's marker column toggles its fold,
     /// a click elsewhere on a node's line moves the cursor there.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        // A bare `Moved` event (no button held, no wheel) is pointer-
+        // tracking noise, not user input — `EnableMouseCapture` turns on
+        // any-motion reporting, so the terminal sends one of these on
+        // essentially every pixel the mouse crosses, with no click at
+        // all. Nothing in this function does anything with `Moved`
+        // itself; without this guard, the side effects below (splash
+        // dismissal in particular) fired on the very first stray cursor
+        // twitch after startup, well before the user ever saw the splash
+        // screen, or read as an unintended cause behind status messages
+        // vanishing while the mouse merely hovered over the terminal.
+        if event.kind == MouseEventKind::Moved {
+            return;
+        }
+
         // Dismiss the splash screen transparently, same as `handle_key`
         // (spec 0113 D22/D28): the mouse event that dismisses it is also
         // processed as a real event, not swallowed.
         self.splash = false;
 
         self.message.clear();
+
+        // Feedback (2026-07-15): while the `F1` help overlay is open,
+        // mouse wheel/Shift-wheel hovering over it scrolls its own text
+        // instead of leaking through to whichever pane happens to be
+        // drawn underneath — `over_main`/`over_side` below have no idea
+        // the overlay exists, so this must be checked first. Shift-wheel
+        // is reported as a plain `ScrollUp`/`ScrollDown` with the `SHIFT`
+        // modifier set (matched here regardless), not as a distinct
+        // event kind — help has no horizontal content to pan, so there's
+        // no separate Shift behavior to give it. Native
+        // `ScrollLeft`/`ScrollRight` (a real horizontal wheel/trackpad
+        // gesture) is likewise swallowed here rather than panning the
+        // pane behind the overlay.
+        if self.help_open && Self::rect_contains(self.help_area, event.column, event.row) {
+            match event.kind {
+                MouseEventKind::ScrollDown => self.help_scroll = self.help_scroll.saturating_add(1),
+                MouseEventKind::ScrollUp => self.help_scroll = self.help_scroll.saturating_sub(1),
+                _ => {}
+            }
+            return;
+        }
 
         let side_open = self.manage_open || self.override_target.is_some();
         let over_side = side_open && Self::rect_contains(self.side_area, event.column, event.row);
@@ -3616,9 +3811,29 @@ impl App {
                 self.override_focus = false;
                 self.manage_focus = false;
                 self.handle_click(event.column, event.row);
-                // Spec 0129 §G1: a click also starts a fresh whole-line
-                // selection, replacing any previous one.
                 let line_idx = self.main_pane_line_idx(event.column, event.row);
+
+                // Double-click detection (feedback, 2026-07-15): crossterm
+                // reports `Down` identically for single and double
+                // clicks, so recognizing the second click of a pair means
+                // comparing this `Down` against the previous one's own
+                // timestamp/line ourselves. The `Up` handler below is
+                // what actually acts on `pending_double_click`.
+                let now = Instant::now();
+                self.pending_double_click = matches!(
+                    (self.last_click, line_idx),
+                    (Some((t, prev_line)), Some(cur_line))
+                        if prev_line == cur_line && now.duration_since(t) < DOUBLE_CLICK_THRESHOLD
+                );
+                self.last_click = line_idx.map(|l| (now, l));
+
+                // Spec 0129 §G1: a click also (re-)seeds the drag
+                // selection's anchor/end, replacing any previous one, so
+                // a following `Drag` still works. Whether a *non-dragged*
+                // click keeps or discards this single-line selection is
+                // decided by the `Up` handler below (feedback, 2026-07-15:
+                // a plain click now deselects; only a double-click keeps
+                // it selected).
                 self.select_anchor = line_idx;
                 self.select_end = line_idx;
             } else if over_side {
@@ -3647,11 +3862,24 @@ impl App {
                         self.select_end = Some(line_idx);
                     }
                 }
-                // Spec 0129 §G2: release copies the selected lines' full
-                // text to the OS clipboard; `select_anchor`/`select_end`
-                // are left untouched so the highlight persists (§G3).
+                // Spec 0131 §G1: mouse release intentionally no longer
+                // copies by itself — selection state was already
+                // finalized by the preceding `Down`/`Drag` handling
+                // (§G1/§G3 of spec 0129, unchanged); `Ctrl-C` is now the
+                // sole trigger for the actual clipboard write.
+                //
+                // Feedback (2026-07-15): single vs. double click vs. drag
+                // disambiguation. A drag (`select_anchor != select_end`)
+                // always keeps its selection, unchanged. Otherwise: a
+                // plain single click deselects everything; a double-click
+                // (recognized by the `Down` handler above, same line,
+                // within `DOUBLE_CLICK_THRESHOLD`) instead keeps the
+                // single-line selection `Down` just set.
                 MouseEventKind::Up(MouseButton::Left) => {
-                    self.copy_selection_to_clipboard();
+                    if self.select_anchor == self.select_end && !self.pending_double_click {
+                        self.select_anchor = None;
+                        self.select_end = None;
+                    }
                 }
                 _ => {}
             }
@@ -3677,16 +3905,35 @@ impl App {
         Some((stop - start + 1, text))
     }
 
-    /// Spec 0129 §G2: copy the currently-selected main-pane lines to the
-    /// OS clipboard. No-op if there is no active selection.
+    /// Spec 0129 §G2/0131 §G2: copy the currently-selected main-pane
+    /// lines to the OS clipboard. No-op if there is no active selection.
+    /// `copy_to_clipboard` always attempts an OSC 52 fallback when
+    /// `arboard` fails (no reliable ack from the terminal either way),
+    /// so a failure here still reports an (optimistic) success message
+    /// rather than "clipboard unavailable" — spec 0131 §G2's "safest
+    /// default."
     fn copy_selection_to_clipboard(&mut self) {
         let Some((count, text)) = self.selected_text() else {
             return;
         };
         self.message = match copy_to_clipboard(&text) {
             Ok(()) => format!("{count} line(s) copied to clipboard"),
-            Err(e) => format!("clipboard unavailable: {e}"),
+            Err(_) => format!("{count} line(s) copied to clipboard (OSC 52 fallback)"),
         };
+    }
+
+    /// Spec 0131 §G1: `Ctrl-C` — copies the active drag-selection if one
+    /// exists (unchanged `selected_text`/`copy_selection_to_clipboard`
+    /// logic), else falls back to the cursor's own current line, treated
+    /// as a length-1 selection so the existing range-based copy logic
+    /// applies unchanged.
+    fn copy_current_selection_or_line(&mut self) {
+        if self.select_anchor.is_none() {
+            let line_idx = self.visible_rows[self.cursor_display_row()];
+            self.select_anchor = Some(line_idx);
+            self.select_end = Some(line_idx);
+        }
+        self.copy_selection_to_clipboard();
     }
 
     /// Whether `(col, row)` falls inside `area` (used for mouse hit-
@@ -4284,20 +4531,14 @@ impl App {
                 ))),
                 ManageRow::Entry(idx) => {
                     let text = self.manage_type_line(*idx);
-                    // Spec 0125 §G1: auto-derived entries render plain,
-                    // manual entries bold — same color either way, drawn
-                    // from the existing `SyntaxRole::Type` palette (the
-                    // app's established "type"-flavored color, matching
-                    // theme.rs's dark/light + RGB/ANSI16 resolution)
-                    // rather than a new hardcoded color. The highlighted
-                    // row's `REVERSED` modifier layers on top of either.
+                    // Spec 0130 §G1: auto-derived entries render in
+                    // `Comment`'s muted color, manual entries in
+                    // `Boolean`'s blue — dedicated, `SyntaxRole`-
+                    // independent styling, visually distinct at every
+                    // palette depth. The highlighted row's `REVERSED`
+                    // modifier layers on top of either.
                     let auto = self.overrides.entries()[*idx].auto;
-                    let mut style = theme::style_for(SyntaxRole::Type, self.theme);
-                    style = if auto {
-                        style.remove_modifier(Modifier::BOLD)
-                    } else {
-                        style.add_modifier(Modifier::BOLD)
-                    };
+                    let mut style = theme::manage_entry_style(auto, self.theme);
                     if *idx == self.manage_highlight {
                         style = style.add_modifier(Modifier::REVERSED);
                     }
@@ -4324,6 +4565,7 @@ impl App {
         let block = Block::bordered().title(" Help (j/k scroll, q/Esc/F1 close) ");
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
+        self.help_area = inner;
 
         let visible_height = (inner.height as usize).max(1);
         let max_scroll = HELP_TEXT.len().saturating_sub(visible_height);
@@ -4424,10 +4666,32 @@ fn pan_spans(spans: Vec<Span<'static>>, offset: usize) -> Vec<Span<'static>> {
     result
 }
 
-/// Spec 0129 §G2: write `text` to the real OS clipboard (plain text
-/// only, no ANSI/colors).
+/// Spec 0129 §G2/0131 §G2: write `text` to the real OS clipboard (plain
+/// text only, no ANSI/colors). If `arboard` fails (e.g. no X11/Wayland
+/// clipboard provider available, the common case over plain SSH),
+/// additionally emits an OSC 52 escape sequence to stdout, best-effort —
+/// a terminal-level (not X-server) fallback that many terminal
+/// emulators honor transparently over SSH. The original `arboard`
+/// error is still returned either way, so a caller distinguishing
+/// "confirmed via arboard" from "best-effort via OSC 52" still can.
 fn copy_to_clipboard(text: &str) -> Result<(), arboard::Error> {
-    arboard::Clipboard::new()?.set_text(text)
+    let result = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text));
+    if result.is_err() {
+        emit_osc52_copy(text);
+    }
+    result
+}
+
+/// Spec 0131 §G2: emit `ESC ]52;c;{base64(text)}\x07` to stdout — the
+/// OSC 52 clipboard-set sequence. No error is surfaced from this: there
+/// is no terminal handshake/ack for OSC 52, so whether it was actually
+/// honored can never be confirmed either way.
+fn emit_osc52_copy(text: &str) {
+    use base64::Engine;
+    use std::io::Write;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let _ = write!(std::io::stdout(), "\x1b]52;c;{encoded}\x07");
+    let _ = std::io::stdout().flush();
 }
 
 /// Column where a fold marker is inserted by `App::render_line_content` —
@@ -4779,9 +5043,13 @@ mod tests {
             lines,
             tree: vec![node],
             root_type: "google.protobuf.FileDescriptorProto".to_string(),
-            blob: Vec::new(),
+            // Tag `0x22` = field 4 << 3 | WT_LEN(2), length varint `0x08`
+            // = 8, then 8 zero payload bytes — a real, `raw_range`-
+            // consistent blob, needed since spec 0132's live preview now
+            // splices this node's contents at pane-open time.
+            blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
             wrapper_offset: 0,
-            style_hints: Vec::new(),
+            style_hints: vec![Vec::new(); 2],
         };
         App::new(
             decoded,
@@ -4897,9 +5165,13 @@ mod tests {
             lines,
             tree: vec![node],
             root_type: "google.protobuf.Empty".to_string(),
-            blob: Vec::new(),
+            // Tag `0x0A` = field 1 << 3 | WT_LEN(2), length varint `0x00`
+            // = 0, zero payload bytes — a real, `raw_range`-consistent
+            // blob, needed since spec 0132's live preview now splices
+            // this node's contents at pane-open time.
+            blob: vec![0x0A, 0x00],
             wrapper_offset: 0,
-            style_hints: Vec::new(),
+            style_hints: vec![Vec::new(); 2],
         };
         let mut app = App::new(
             decoded,
@@ -5004,7 +5276,10 @@ mod tests {
             root_type: "test.Scalar".to_string(),
             blob: vec![0x0A, 0x02, b'h', b'i'],
             wrapper_offset: 0,
-            style_hints: Vec::new(),
+            // One entry per `lines` (spec 0132's live preview now
+            // splices this node at pane-open time, which requires
+            // `line_styles` to stay index-aligned with `lines`).
+            style_hints: vec![Vec::new(); 1],
         };
         let mut app = App::new(
             decoded,
@@ -5066,6 +5341,39 @@ mod tests {
         assert_eq!(app.override_target, Some(0));
     }
 
+    /// Regression test (2026-07-15 feedback): `EnableMouseCapture` turns
+    /// on any-motion tracking, so real terminals send a bare `Moved`
+    /// event on essentially every pixel the cursor crosses, with no
+    /// click at all — a pure `Moved` event must not dismiss the splash
+    /// screen (nor clear a status message), unlike every other mouse
+    /// event kind, which legitimately counts as user input (spec 0113
+    /// D28).
+    #[test]
+    fn bare_mouse_move_does_not_dismiss_the_splash_screen() {
+        let mut app = message_node_app();
+        app.main_area = Rect::new(0, 0, 40, 20);
+        assert!(app.splash);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.splash, "a bare mouse move must not dismiss the splash");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(
+            !app.splash,
+            "an actual click must still dismiss the splash, same as before"
+        );
+    }
+
     /// `F1` opens the help overlay; `q`, `Esc`, or `F1` closes it — `?` is
     /// no longer bound to help, since it now belongs to in-pane search.
     #[test]
@@ -5083,6 +5391,58 @@ mod tests {
         assert!(app.help_open);
         app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         assert!(!app.help_open);
+    }
+
+    /// Feedback (2026-07-15): mouse wheel and Shift-wheel scroll the `F1`
+    /// help overlay when the pointer hovers over it, instead of leaking
+    /// through to the main pane drawn underneath.
+    #[test]
+    fn mouse_wheel_scrolls_the_help_overlay_when_hovered() {
+        let mut app = message_node_app();
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+        app.help_open = true;
+        app.help_area = Rect::new(5, 5, 30, 10);
+
+        let cursor_before = app.cursor;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.help_scroll, 1);
+        assert_eq!(
+            app.cursor, cursor_before,
+            "must not also scroll the main pane underneath"
+        );
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 6,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        assert_eq!(app.help_scroll, 2, "Shift-wheel scrolls it too");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.help_scroll, 1);
+
+        // Hovering outside the overlay (but still over the main pane)
+        // must not touch `help_scroll` — it falls through to the pane
+        // underneath instead.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.help_scroll, 1, "unhovered help overlay must not react");
     }
 
     /// Spec 0126 G1: `F1` opens the help overlay regardless of what
@@ -5363,9 +5723,11 @@ mod tests {
         assert!(app.overrides.entries()[new_idx].active);
     }
 
-    /// Spec 0125 §G1: manage-pane entry rows render `auto == true`
-    /// entries plain and `auto == false` entries bold (no `REVERSED` on
-    /// either, since neither is highlighted here).
+    /// Spec 0130 §G1: manage-pane entry rows render `auto == true`
+    /// entries in `manage_entry_style(true, ..)`'s color and
+    /// `auto == false` entries in `manage_entry_style(false, ..)`'s
+    /// distinct color (no `REVERSED` on either, since neither is
+    /// highlighted here).
     #[test]
     fn manage_pane_entries_style_auto_vs_manual_distinctly() {
         let (mut app, items) = repeated_scalar_fixture();
@@ -5406,7 +5768,7 @@ mod tests {
         let inner = Block::bordered().inner(area);
 
         let rows = app.manage_display_rows();
-        let row_is_bold = |entry_idx: usize| {
+        let row_fg = |entry_idx: usize| {
             let row = rows
                 .iter()
                 .position(|r| matches!(r, ManageRow::Entry(i) if *i == entry_idx))
@@ -5416,11 +5778,23 @@ mod tests {
                 .map(|x| &buffer[(x, y)])
                 .find(|c| !c.symbol().trim().is_empty())
                 .expect("row must render some text")
-                .modifier
-                .contains(Modifier::BOLD)
+                .fg
         };
-        assert!(row_is_bold(manual_idx), "manual entry row must be bold");
-        assert!(!row_is_bold(auto_idx), "auto entry row must not be bold");
+        assert_eq!(
+            Some(row_fg(auto_idx)),
+            theme::manage_entry_style(true, app.theme).fg,
+            "auto entry row must use the auto color"
+        );
+        assert_eq!(
+            Some(row_fg(manual_idx)),
+            theme::manage_entry_style(false, app.theme).fg,
+            "manual entry row must use the manual color"
+        );
+        assert_ne!(
+            row_fg(auto_idx),
+            row_fg(manual_idx),
+            "auto and manual entries must be visually distinct"
+        );
     }
 
     /// Spec 0125 §G2: `Delete` on an `auto` entry still "in scope"
@@ -6140,46 +6514,123 @@ mod tests {
             "selection persists after release"
         );
         assert_eq!(app.select_end, Some(3));
-        // Spec 0129 §G2/test plan item 5: no working clipboard provider
-        // exists in this (headless) test environment — the failure path
-        // must produce a message, not panic.
+        // Spec 0131 §G1/test plan item 3: mouse release no longer copies
+        // by itself.
+        assert!(
+            app.message.is_empty(),
+            "unexpected message: {}",
+            app.message
+        );
+
+        // Spec 0131 §G1/test plan item 1: `Ctrl-C` copies the persisted
+        // drag-selection. No working clipboard provider exists in this
+        // (headless) test environment — the OSC 52 fallback path is
+        // exactly what's exercised here, not a panic.
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(
             app.message == "3 line(s) copied to clipboard"
-                || app.message.starts_with("clipboard unavailable: "),
+                || app.message == "3 line(s) copied to clipboard (OSC 52 fallback)",
             "unexpected message: {}",
             app.message
         );
     }
 
-    /// Spec 0129 §G3: a plain click with no drag still produces a
-    /// one-line selection and copies exactly that line.
+    /// Feedback (2026-07-15): a plain click (`Down`+`Up`, no drag, not
+    /// the second half of a double-click) must deselect any active
+    /// selection rather than leave a length-1 selection behind — this
+    /// replaces spec 0129 §G3's original "plain click always selects"
+    /// behavior (superseded; see `double_click_selects_the_clicked_line`
+    /// for the new, explicit way to select a single line by mouse).
     #[test]
-    fn plain_click_selects_and_copies_a_single_line() {
-        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    fn plain_click_with_no_drag_deselects() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
         app.splash = false;
         app.main_area = Rect::new(0, 0, 40, 20);
 
+        // Seed an existing drag-selection first, so this also proves a
+        // later plain click clears a *pre-existing* selection, not just
+        // "never selects in the first place".
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 0,
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(0));
+        assert_eq!(app.select_end, Some(2));
+
+        // A plain click on a different line (no drag) must clear it.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, None, "plain click deselects");
+        assert_eq!(app.select_end, None);
+    }
+
+    /// Feedback (2026-07-15): double-clicking a main-pane line (two
+    /// `Down`+`Up` clicks on the same line, in quick succession)
+    /// explicitly selects that line for copy. Crossterm reports `Down`
+    /// identically for single and double clicks, so this exercises the
+    /// app's own timestamp/position-based disambiguation
+    /// (`App::last_click`/`pending_double_click`).
+    #[test]
+    fn double_click_selects_the_clicked_line_for_copy() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        for _ in 0..2 {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            });
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+
+        assert_eq!(app.select_anchor, Some(0), "double-click selects the line");
+        assert_eq!(app.select_end, Some(0));
+        assert!(
+            app.message.is_empty(),
+            "unexpected message: {}",
+            app.message
+        );
+
         let (count, text) = app.selected_text().expect("selection must be active");
         assert_eq!(count, 1);
         assert_eq!(text, "alpha: 1");
 
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.select_anchor, Some(0));
-        assert_eq!(app.select_end, Some(0));
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(
             app.message == "1 line(s) copied to clipboard"
-                || app.message.starts_with("clipboard unavailable: "),
+                || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
             "unexpected message: {}",
             app.message
         );
@@ -6220,16 +6671,43 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(
+            app.message.is_empty(),
+            "unexpected message: {}",
+            app.message
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(
             app.message == "3 line(s) copied to clipboard"
-                || app.message.starts_with("clipboard unavailable: "),
+                || app.message == "3 line(s) copied to clipboard (OSC 52 fallback)",
             "unexpected message: {}",
             app.message
         );
     }
 
-    /// Spec 0129 §G2/test plan item 5: a clipboard-unavailable
+    /// Spec 0131 §G1/test plan item 2: `Ctrl-C` with no active selection
+    /// copies exactly the cursor's current line.
+    #[test]
+    fn ctrl_c_with_no_selection_copies_cursor_line() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        assert_eq!(app.select_anchor, None, "no selection active yet");
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.select_anchor, Some(0));
+        assert_eq!(app.select_end, Some(0));
+        assert!(
+            app.message == "1 line(s) copied to clipboard"
+                || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
+            "unexpected message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0131 §G2/test plan item 4: a clipboard-unavailable
     /// environment (no provider reachable, as in this headless test
-    /// harness) produces the documented fallback message instead of
+    /// harness) produces the OSC 52 fallback message instead of
     /// panicking.
     #[test]
     fn clipboard_unavailable_shows_fallback_message_without_panicking() {
@@ -6243,17 +6721,12 @@ mod tests {
             row: 0,
             modifiers: KeyModifiers::NONE,
         });
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        });
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         // This sandbox has no reachable clipboard provider, so the
         // failure branch is exactly what's exercised here.
         assert!(
             app.message == "1 line(s) copied to clipboard"
-                || app.message.starts_with("clipboard unavailable: "),
+                || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
             "unexpected message: {}",
             app.message
         );
@@ -7547,6 +8020,60 @@ mod tests {
             "tier-2 auto-expansion must be a real, persisted, active \
              override entry: {:#?}",
             app.overrides.entries()
+        );
+    }
+
+    /// Regression test (spec 0132 §G3 feedback, 2026-07-15): opening the
+    /// override pane on an ancestor of a MessageSet's `Item` group live-
+    /// previews that ancestor's subtree via a bare `splice_override`
+    /// call (§G2 non-goal: "no live nested Any/MessageSet preview"),
+    /// which discards the tier-1/tier-2 auto-expansion of every
+    /// descendant. Cancelling with `Esc` must fully restore it — not
+    /// just re-settle the ancestor node itself back to its own correct
+    /// type, but re-run the whole `render_overrides` recursion so
+    /// `ExtPayload` gets re-expanded too.
+    #[test]
+    fn esc_closing_the_override_pane_restores_nested_message_set_auto_expansion() {
+        let mut app = message_set_fixture();
+        let extensions_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.TestMessageSet"))
+            .expect("extensions field must resolve to TestMessageSet");
+        app.cursor = extensions_idx;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.override_target, Some(extensions_idx));
+        // The live preview's own `splice_override` call rebuilds the
+        // subtree from scratch with no per-descendant overrides applied
+        // (§G2 non-goal) — the rendered text must no longer show the
+        // nested expansion for the duration of the pane being open.
+        // (`splice_override` never removes orphaned descendant entries
+        // from the flat `tree` Vec, only unlinks them — so `app.tree`
+        // itself is not a reliable signal here; `app.lines`, what's
+        // actually displayed, is.)
+        assert!(
+            !app.lines.iter().any(|l| l.contains("label")),
+            "live preview must not still show the nested auto-expansion: {:?}",
+            app.lines
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.override_target, None);
+        assert!(
+            app.tree
+                .iter()
+                .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+            "Esc-cancel must restore the nested MessageSet auto-expansion: {:#?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.contains("label") && l.contains("hi")),
+            "expanded MessageSet extension payload's own field must be back \
+             in the rendered text: {:?}",
+            app.lines
         );
     }
 
