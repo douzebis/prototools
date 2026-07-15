@@ -378,6 +378,65 @@ impl OverrideCollection {
         }
     }
 
+    /// Rotates the origin of the entry at `idx` in place (spec 0124 G2's
+    /// `z` key): installs `new_origin` (the caller is responsible for
+    /// having already rotated the `OverrideKind` and rederived the
+    /// origin — this just installs it) and resets `auto` to `false` (an
+    /// explicit user action pins an entry manual, same rule `activate`/
+    /// `toggle_active` already apply elsewhere). If the entry is
+    /// currently `active`, every *other* entry that now shares its (new)
+    /// origin is deactivated — reusing `activate_impl`'s existing
+    /// per-origin invariant, not new logic; an inactive entry rotating
+    /// onto an origin with an active entry elsewhere leaves that other
+    /// entry untouched (duplicates coexist, spec 0124 G3). Returns the
+    /// entry's post-`sort()` index (same stability argument as
+    /// `duplicate`: the entry is removed then re-pushed last before
+    /// sorting, so it lands last among any group sharing its new sort
+    /// key).
+    pub fn rotate_origin(&mut self, idx: usize, new_origin: OverrideOrigin) -> usize {
+        let mut entry = self.entries.remove(idx);
+        let active = entry.active;
+        entry.origin = new_origin.clone();
+        entry.auto = false;
+        let r#type = entry.r#type.clone();
+        if active {
+            for e in self.entries.iter_mut() {
+                if e.origin == new_origin {
+                    e.active = false;
+                }
+            }
+        }
+        self.entries.push(entry);
+        self.sort();
+        self.entries
+            .iter()
+            .rposition(|e| e.origin == new_origin && e.r#type == r#type)
+            .unwrap_or_else(|| self.entries.len() - 1)
+    }
+
+    /// Duplicates the entry at `idx` (spec 0124 G3's `d` key): pushes a
+    /// raw clone with `active` forced to `false` — bypassing
+    /// `activate_impl`'s `(origin, type)` look-up, which would otherwise
+    /// just reactivate the existing entry instead of adding a new one —
+    /// while keeping `auto`/`name`/`r#type` as-is. Returns the new
+    /// entry's post-`sort()` index: `sort()` (via `Vec::sort_by`) is
+    /// stable and `active`/`name`/`auto` aren't part of the sort key, so
+    /// the pushed clone — originally last in the vec — is guaranteed to
+    /// land as the *last* entry among those sharing its `origin`/`type`
+    /// after sorting.
+    pub fn duplicate(&mut self, idx: usize) -> usize {
+        let mut clone = self.entries[idx].clone();
+        let origin = clone.origin.clone();
+        let r#type = clone.r#type.clone();
+        clone.active = false;
+        self.entries.push(clone);
+        self.sort();
+        self.entries
+            .iter()
+            .rposition(|e| e.origin == origin && e.r#type == r#type)
+            .unwrap_or(idx)
+    }
+
     /// Drops every entry whose origin `resolves` rejects (spec 0117 §4:
     /// silent per-entry drop on restore for origins that no longer match
     /// the current tree/descriptor pool).
@@ -405,35 +464,69 @@ pub struct YamlTarget {
     pub descriptor_set_sha256: String,
 }
 
+/// Spec 0128: no `kind` tag — the three variants are structurally
+/// disjoint (`Path` has only `path`; `PathField` has `path`+`field`;
+/// `FqdnField` has `fqdn`+`field`, no `path` at all), so serde can
+/// already tell them apart from which fields are present. Each variant
+/// wraps its own named struct (rather than an inline struct-variant)
+/// purely so `#[serde(deny_unknown_fields)]` can be applied to it —
+/// serde doesn't support that attribute directly on an enum variant.
+/// It matters here: without it, `untagged` would happily match a
+/// `PathField` mapping (`path`+`field`) against `Path` first (silently
+/// dropping the unrecognized `field` key instead of falling through to
+/// try `PathField`), since `Path`'s own fields are all present/
+/// optional. `deny_unknown_fields` makes that first attempt fail on the
+/// stray `field` key, so serde correctly falls through to `PathField`
+/// instead. A newtype variant over an untagged enum is transparent on
+/// the wire — the inner struct's fields still appear directly in the
+/// YAML mapping, no extra nesting.
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(untagged)]
 enum YamlEntry {
-    Path {
-        path: String,
-        r#type: Option<String>,
-        #[serde(default, skip_serializing_if = "is_false")]
-        active: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    PathField {
-        path: String,
-        field: u64,
-        r#type: Option<String>,
-        #[serde(default, skip_serializing_if = "is_false")]
-        active: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
-    FqdnField {
-        fqdn: String,
-        field: u64,
-        r#type: Option<String>,
-        #[serde(default, skip_serializing_if = "is_false")]
-        active: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-    },
+    Path(YamlPathEntry),
+    PathField(YamlPathFieldEntry),
+    FqdnField(YamlFqdnFieldEntry),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct YamlPathEntry {
+    path: String,
+    r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    auto: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct YamlPathFieldEntry {
+    path: String,
+    field: u64,
+    r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    auto: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct YamlFqdnFieldEntry {
+    fqdn: String,
+    field: u64,
+    r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    auto: bool,
 }
 
 /// SHA-256 hex digest of `bytes` (spec 0117 §4's `blob_sha256`/
@@ -449,26 +542,33 @@ impl OverrideCollection {
             .entries
             .iter()
             .map(|e| match &e.origin {
-                OverrideOrigin::Path { path } => YamlEntry::Path {
+                OverrideOrigin::Path { path } => YamlEntry::Path(YamlPathEntry {
                     path: path.clone(),
                     r#type: e.r#type.clone(),
                     active: e.active,
                     name: e.name.clone(),
-                },
-                OverrideOrigin::PathField { path, field } => YamlEntry::PathField {
-                    path: path.clone(),
-                    field: *field,
-                    r#type: e.r#type.clone(),
-                    active: e.active,
-                    name: e.name.clone(),
-                },
-                OverrideOrigin::FqdnField { fqdn, field } => YamlEntry::FqdnField {
-                    fqdn: fqdn.clone(),
-                    field: *field,
-                    r#type: e.r#type.clone(),
-                    active: e.active,
-                    name: e.name.clone(),
-                },
+                    auto: e.auto,
+                }),
+                OverrideOrigin::PathField { path, field } => {
+                    YamlEntry::PathField(YamlPathFieldEntry {
+                        path: path.clone(),
+                        field: *field,
+                        r#type: e.r#type.clone(),
+                        active: e.active,
+                        name: e.name.clone(),
+                        auto: e.auto,
+                    })
+                }
+                OverrideOrigin::FqdnField { fqdn, field } => {
+                    YamlEntry::FqdnField(YamlFqdnFieldEntry {
+                        fqdn: fqdn.clone(),
+                        field: *field,
+                        r#type: e.r#type.clone(),
+                        active: e.active,
+                        name: e.name.clone(),
+                        auto: e.auto,
+                    })
+                }
             })
             .collect();
         let file = YamlFile {
@@ -486,49 +586,57 @@ impl OverrideCollection {
     /// not required — re-sorted here) collection plus the recorded target
     /// hashes for the caller to compare against the currently-loaded blob/
     /// descriptor set.
-    pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), serde_norway::Error> {
-        let file: YamlFile = serde_norway::from_str(text)?;
+    pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget), String> {
+        let file: YamlFile = serde_norway::from_str(text).map_err(|e| {
+            format!(
+                "malformed overrides file (expected a list of path/field/fqdn \
+                 override entries): {e}"
+            )
+        })?;
         let entries = file
             .overrides
             .into_iter()
             .map(|y| match y {
-                YamlEntry::Path {
+                YamlEntry::Path(YamlPathEntry {
                     path,
                     r#type,
                     active,
                     name,
-                } => OverrideEntry {
+                    auto,
+                }) => OverrideEntry {
                     origin: OverrideOrigin::Path { path },
                     r#type,
                     active,
                     name,
-                    auto: false,
+                    auto,
                 },
-                YamlEntry::PathField {
+                YamlEntry::PathField(YamlPathFieldEntry {
                     path,
                     field,
                     r#type,
                     active,
                     name,
-                } => OverrideEntry {
+                    auto,
+                }) => OverrideEntry {
                     origin: OverrideOrigin::PathField { path, field },
                     r#type,
                     active,
                     name,
-                    auto: false,
+                    auto,
                 },
-                YamlEntry::FqdnField {
+                YamlEntry::FqdnField(YamlFqdnFieldEntry {
                     fqdn,
                     field,
                     r#type,
                     active,
                     name,
-                } => OverrideEntry {
+                    auto,
+                }) => OverrideEntry {
                     origin: OverrideOrigin::FqdnField { fqdn, field },
                     r#type,
                     active,
                     name,
-                    auto: false,
+                    auto,
                 },
             })
             .collect();

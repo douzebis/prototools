@@ -254,13 +254,11 @@ target:
   blob_sha256: "{}"
   descriptor_set_sha256: "{}"
 overrides:
-  - kind: path
-    path: "/1/1"
+  - path: "/1/1"
     type: protolens_internal.MessageSetItem
     active: true
     name: Item
-  - kind: path
-    path: "/1/1/2"
+  - path: "/1/1/2"
     type: ms_test.ExtPayload
     active: true
 "#,

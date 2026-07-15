@@ -181,8 +181,8 @@ const HELP_TEXT: &[&str] = &[
     "Movement",
     "  j / Down         next node (document order)",
     "  k / Up           previous node",
-    "  J                next sibling",
-    "  K                previous sibling",
+    "  J / Shift-Down   next sibling",
+    "  K / Shift-Up     previous sibling",
     "  h / Left         close node, or move to parent",
     "  l / Right        open node, or move to first child",
     "  Home / gg        jump to first node",
@@ -191,6 +191,11 @@ const HELP_TEXT: &[&str] = &[
     "  PageUp           scroll up one page",
     "  Ctrl-Left        pan main pane left",
     "  Ctrl-Right       pan main pane right",
+    "  Shift+wheel / native horizontal scroll",
+    "                   pan whichever pane (main, override, manage, or",
+    "                   the command bar) the mouse is hovering",
+    "  drag (main pane) select whole lines; release copies them to the",
+    "                   OS clipboard; Esc clears the selection",
     "",
     "Fold / unfold",
     "  z / Space        toggle fold on the node under the cursor",
@@ -247,9 +252,20 @@ const HELP_TEXT: &[&str] = &[
     "  Tab              move focus between the main pane and the",
     "                   management pane (while it is open)",
     "  j/k, PageUp/Down, Home/End   move the highlighted entry",
+    "  Left/Right       move the main-pane cursor to the prev/next field",
+    "                   affected by the highlighted entry (wraps around)",
     "  /  ?  n          search / search backward / repeat",
     "  a                toggle the highlighted entry active/inactive",
+    "  z                rotate the highlighted entry's origin kind: path,",
+    "                   path-field, fqdn-field (main-pane cursor must be",
+    "                   on a field the entry currently affects)",
+    "  d                duplicate the highlighted entry (the copy starts",
+    "                   inactive)",
     "  Delete/Backspace remove the highlighted entry from the collection",
+    "                   (an auto-derived entry still in scope is",
+    "                   deactivated instead, since deleting it would",
+    "                   just recreate it)",
+    "  entry rows: auto-derived entries are plain, manual entries bold",
     "  s                pre-fill \":save-overrides <default path>\"",
     "  r                pre-fill \":restore-overrides \"",
     "  :save-overrides <path>",
@@ -320,6 +336,15 @@ pub struct App {
     /// own opening line.
     footer_line_to_node: HashMap<usize, usize>,
     cursor: usize,
+    /// Mouse-driven whole-line selection in the main pane (spec 0129
+    /// §G1) — `line_idx` of the row a drag started on; `None` when no
+    /// selection is active. Never affects `self.cursor`, which only ever
+    /// moves via the initial `Down` click (`handle_click`, unchanged).
+    select_anchor: Option<usize>,
+    /// `line_idx` of the row the drag is currently over (or ended on);
+    /// `None`/`None` together with `select_anchor` means no selection.
+    /// Equal to `select_anchor` for a plain click with no drag.
+    select_end: Option<usize>,
     folded: HashSet<usize>,
     /// Rows currently visible (line indices in `lines`, folded-away lines
     /// excluded) — rebuilt only on fold-state changes, not every frame.
@@ -330,6 +355,23 @@ pub struct App {
     /// pans together, the simplest of the layout options the spec left
     /// open.
     pan_offset: usize,
+    /// Horizontal scroll offset (in characters) for the override
+    /// selection pane's rows (spec 0127 §G1) — reset to `0` whenever the
+    /// pane (re)opens or its candidate list is recomputed, mirroring how
+    /// `override_scroll` (vertical) is already reset at those points.
+    override_pan_offset: usize,
+    /// Horizontal scroll offset (in characters) for the override
+    /// management pane's rows (spec 0127 §G1) — reset to `0` whenever the
+    /// pane (re)opens or its entry list changes in a way that already
+    /// resets `manage_scroll` (vertical).
+    manage_pan_offset: usize,
+    /// Horizontal scroll offset (in characters) for the bottom command/
+    /// message bar (spec 0127 §G1) — while a command/search/rename buffer
+    /// is being typed, `render` auto-adjusts this to keep the cursor
+    /// visible (mirroring the main pane's cursor-follow vertical scroll);
+    /// otherwise it only changes via Shift+wheel/native horizontal-scroll
+    /// pan on the hovered command bar.
+    command_pan_offset: usize,
     /// `Some(node_idx)` while the override pane is open, holding the
     /// message/group node whose byte range it targets (spec 0114 §1/§2);
     /// `None` when closed.
@@ -484,6 +526,11 @@ pub struct App {
     /// suffices since the two panes are mutually exclusive
     /// (`override_target.is_some()` XOR `manage_open`).
     side_area: Rect,
+    /// Bottom command/message bar's inner (bordered-away) `Rect` as of
+    /// the last `render()` call, `None` when the bar isn't shown at all
+    /// (spec 0127 §G2) — used to hit-test mouse hover for Shift+wheel/
+    /// native horizontal pan the same way `main_area`/`side_area` do.
+    cmd_area: Option<Rect>,
     pub message: String,
     pub should_quit: bool,
     /// `true` right after a first `q` press asks for confirmation; a
@@ -550,10 +597,15 @@ impl App {
             line_to_node,
             footer_line_to_node,
             cursor,
+            select_anchor: None,
+            select_end: None,
             folded: HashSet::new(),
             visible_rows: Vec::new(),
             scroll_offset: 0,
             pan_offset: 0,
+            override_pan_offset: 0,
+            manage_pan_offset: 0,
+            command_pan_offset: 0,
             override_target: None,
             override_focus: false,
             ctx,
@@ -596,6 +648,7 @@ impl App {
             header,
             main_area: Rect::default(),
             side_area: Rect::default(),
+            cmd_area: None,
             message: String::new(),
             should_quit: false,
             quit_confirm: false,
@@ -711,6 +764,30 @@ impl App {
     fn move_up(&mut self) {
         if let Some(prev) = self.prev_visible(self.cursor) {
             self.cursor = prev;
+        }
+    }
+
+    /// Sibling-skip move (`J` / Shift-Down, spec 0126 G2): moves to the
+    /// cursor's next sibling, or leaves it in place with a message if
+    /// there isn't one.
+    fn next_sibling_move(&mut self) {
+        if let Some(next) = self.tree[self.cursor].next_sibling {
+            self.record_jump(self.cursor);
+            self.cursor = next;
+        } else {
+            self.message = "no next sibling".to_string();
+        }
+    }
+
+    /// Sibling-skip move (`K` / Shift-Up, spec 0126 G2): moves to the
+    /// cursor's previous sibling, or leaves it in place with a message if
+    /// there isn't one.
+    fn prev_sibling_move(&mut self) {
+        if let Some(prev) = self.tree[self.cursor].prev_sibling {
+            self.record_jump(self.cursor);
+            self.cursor = prev;
+        } else {
+            self.message = "no previous sibling".to_string();
         }
     }
 
@@ -947,6 +1024,7 @@ impl App {
         self.override_target = Some(self.cursor);
         self.override_focus = true;
         self.override_scroll = 0;
+        self.override_pan_offset = 0;
         self.recompute_override_candidates();
     }
 
@@ -974,6 +1052,7 @@ impl App {
         self.manage_focus = true;
         self.manage_highlight = 0;
         self.manage_scroll = 0;
+        self.manage_pan_offset = 0;
     }
 
     /// Close the override management pane (spec 0117 §3).
@@ -1135,6 +1214,7 @@ impl App {
         };
         self.override_highlight = usize::from(!self.override_candidates.is_empty());
         self.override_scroll = 0;
+        self.override_pan_offset = 0;
     }
 
     /// Recompute the complete ranked list for `active_override_range`
@@ -1549,6 +1629,28 @@ impl App {
             .map(|e| e.r#type.clone())
     }
 
+    /// Whether `entry` (assumed `auto == true`) would still be re-derived
+    /// with the same `r#type` if `render_overrides` visited its node
+    /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
+    /// Factored out of `render_overrides`'s own staleness/demotion check
+    /// (spec 0120) so `handle_manage_key`'s `Delete` handling can reuse
+    /// the same predicate instead of duplicating it. Lives on `App`
+    /// (not `OverrideCollection`) because it needs `auto_expand_type`,
+    /// which resolves against the live tree/descriptor pool, not just
+    /// the override collection itself. Auto-seeded entries only ever
+    /// have a `Path` origin (`render_overrides` always calls
+    /// `activate_auto` with `OverrideOrigin::Path`), so a single
+    /// `resolve_path` lookup suffices.
+    fn auto_entry_in_scope(&mut self, entry: &override_pane::OverrideEntry) -> bool {
+        let OverrideOrigin::Path { path } = &entry.origin else {
+            return false;
+        };
+        let Some(idx) = self.resolve_path(path) else {
+            return false;
+        };
+        self.auto_expand_type(idx) == entry.r#type
+    }
+
     /// Recursive override-driven rendering pass (spec 0118 §3): resolves
     /// `idx`'s applicable override and splices a fresh render whenever the
     /// resolved target no longer matches what's currently displayed
@@ -1640,9 +1742,9 @@ impl App {
         let stale_auto_entry = self
             .resolve_active_override_entry(idx)
             .filter(|e| e.auto)
-            .map(|e| e.r#type.clone());
+            .cloned();
         let target = match stale_auto_entry {
-            Some(entry_type) if self.auto_expand_type(idx) != entry_type => None,
+            Some(entry) if !self.auto_entry_in_scope(&entry) => None,
             _ => self.resolve_active_override(idx),
         };
         let field_name = self.field_name_for(idx);
@@ -2053,11 +2155,20 @@ impl App {
     }
 
     /// Origin for the currently-selected `override_kind`, targeting node
-    /// `idx` (spec 0117 §2). `PathField`/`FqdnField` error out when `idx`
-    /// is the wrapper root (no parent) or, for `FqdnField`, when the
-    /// parent's `type_fqdn` is unresolved.
+    /// `idx` (spec 0117 §2). Delegates to `origin_for_kind`.
     fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
-        match self.override_kind {
+        self.origin_for_kind(idx, self.override_kind)
+    }
+
+    /// Origin for an arbitrary `kind`, targeting node `idx` (spec 0117
+    /// §2's derivation rules, generalized in spec 0124 G2 so the
+    /// manage-pane `z` key can rederive an origin under a rotated kind
+    /// without touching `self.override_kind`, which is a separate,
+    /// selection-pane-only piece of state). `PathField`/`FqdnField` error
+    /// out when `idx` is the wrapper root (no parent) or, for
+    /// `FqdnField`, when the parent's `type_fqdn` is unresolved.
+    fn origin_for_kind(&self, idx: usize, kind: OverrideKind) -> Result<OverrideOrigin, String> {
+        match kind {
             OverrideKind::Path => Ok(OverrideOrigin::Path {
                 path: self.positional_path(idx),
             }),
@@ -2083,6 +2194,48 @@ impl App {
                     fqdn,
                     field: self.tree[idx].span.field_number,
                 })
+            }
+        }
+    }
+
+    /// Document-order list of main-pane node indices whose origin
+    /// matches `origin` exactly (spec 0124 G1, also reused by G2's `z`
+    /// membership test). `Path` has at most one match, via
+    /// `resolve_path`; `PathField` scans the one parent's children;
+    /// `FqdnField` has no shortcut — a message type of a given FQDN can
+    /// recur anywhere in the tree, so this is a full document-order walk.
+    fn manage_affected_nodes(&self, origin: &OverrideOrigin) -> Vec<usize> {
+        match origin {
+            OverrideOrigin::Path { path } => self.resolve_path(path).into_iter().collect(),
+            OverrideOrigin::PathField { path, field } => {
+                let Some(parent) = self.resolve_path(path) else {
+                    return Vec::new();
+                };
+                let mut result = Vec::new();
+                let mut child = self.tree[parent].first_child;
+                while let Some(c) = child {
+                    if self.tree[c].span.field_number == *field {
+                        result.push(c);
+                    }
+                    child = self.tree[c].next_sibling;
+                }
+                result
+            }
+            OverrideOrigin::FqdnField { fqdn, field } => {
+                let mut result = Vec::new();
+                let mut cur = Some(self.first_node);
+                while let Some(c) = cur {
+                    let parent_fqdn = self.tree[c]
+                        .parent
+                        .and_then(|p| self.tree[p].span.type_fqdn.as_deref());
+                    if self.tree[c].span.field_number == *field
+                        && parent_fqdn == Some(fqdn.as_str())
+                    {
+                        result.push(c);
+                    }
+                    cur = self.tree[c].doc_next;
+                }
+                result
             }
         }
     }
@@ -2222,6 +2375,7 @@ impl App {
                 self.manage_focus = true;
                 self.manage_highlight = target_highlight.unwrap_or(0);
                 self.manage_scroll = 0;
+                self.manage_pan_offset = 0;
             }
             _ => {}
         }
@@ -2298,6 +2452,29 @@ impl App {
             KeyCode::End => {
                 self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
             }
+            // Spec 0124 G1: circulate the main-pane cursor among the
+            // fields the highlighted entry's origin currently matches,
+            // without touching focus. No-op on zero matches; if the
+            // cursor isn't currently one of the matches, jumps to the
+            // first (Right) or last (Left) match.
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
+                    let origin = entry.origin.clone();
+                    let affected = self.manage_affected_nodes(&origin);
+                    if !affected.is_empty() {
+                        let next = match affected.iter().position(|&i| i == self.cursor) {
+                            Some(pos) if key.code == KeyCode::Right => {
+                                affected[(pos + 1) % affected.len()]
+                            }
+                            Some(pos) => affected[(pos + affected.len() - 1) % affected.len()],
+                            None if key.code == KeyCode::Right => affected[0],
+                            None => affected[affected.len() - 1],
+                        };
+                        self.record_jump(self.cursor);
+                        self.cursor = next;
+                    }
+                }
+            }
             KeyCode::Char('/') => {
                 self.manage_search = Some(OverrideSearch {
                     dir: SearchDir::Forward,
@@ -2336,19 +2513,70 @@ impl App {
                     self.render_overrides(self.first_node);
                 }
             }
-            KeyCode::Delete | KeyCode::Backspace => {
-                if !self.overrides.entries().is_empty() {
-                    // Spec 0118 §6: only re-render when the removed entry
-                    // was active — removing an inactive entry cannot
-                    // change any node's resolved override.
-                    let was_active = self.overrides.entries()[self.manage_highlight].active;
-                    self.overrides.remove(self.manage_highlight);
-                    let len = self.overrides.entries().len();
-                    if self.manage_highlight >= len {
-                        self.manage_highlight = len.saturating_sub(1);
+            // Spec 0124 G2: rotate the highlighted entry's origin kind,
+            // rederived from the main-pane cursor's current position —
+            // only when the cursor sits on a field the entry currently
+            // affects.
+            KeyCode::Char('z') => {
+                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
+                    let origin = entry.origin.clone();
+                    let was_active = entry.active;
+                    if !self.manage_affected_nodes(&origin).contains(&self.cursor) {
+                        self.message = "z: main-pane cursor is not on a field affected by \
+                            the selected override"
+                            .to_string();
+                    } else {
+                        match self.origin_for_kind(self.cursor, origin.kind().next()) {
+                            Ok(new_origin) => {
+                                self.manage_highlight = self
+                                    .overrides
+                                    .rotate_origin(self.manage_highlight, new_origin);
+                                if was_active {
+                                    self.render_overrides(self.first_node);
+                                }
+                            }
+                            Err(e) => {
+                                self.message = format!("z: {e}");
+                            }
+                        }
                     }
-                    if was_active {
-                        self.render_overrides(self.first_node);
+                }
+            }
+            // Spec 0124 G3: duplicate the highlighted entry as a new,
+            // always-inactive copy.
+            KeyCode::Char('d') => {
+                if !self.overrides.entries().is_empty() {
+                    self.manage_highlight = self.overrides.duplicate(self.manage_highlight);
+                    self.render_overrides(self.first_node);
+                }
+            }
+            // Spec 0125 §G2: an in-scope `auto` entry is deactivated
+            // instead of removed — deleting it would just make
+            // `render_overrides`'s next pass re-seed an identical entry.
+            KeyCode::Delete | KeyCode::Backspace => {
+                if let Some(entry) = self.overrides.entries().get(self.manage_highlight).cloned() {
+                    if entry.auto && self.auto_entry_in_scope(&entry) {
+                        if entry.active {
+                            self.overrides.toggle_active(self.manage_highlight);
+                            self.render_overrides(self.first_node);
+                        }
+                        self.message = "auto-derived override deactivated (still in scope \
+                            — delete would just recreate it; use 'a' or wait for it to go \
+                            out of scope)"
+                            .to_string();
+                    } else {
+                        // Spec 0118 §6: only re-render when the removed
+                        // entry was active — removing an inactive entry
+                        // cannot change any node's resolved override.
+                        let was_active = entry.active;
+                        self.overrides.remove(self.manage_highlight);
+                        let len = self.overrides.entries().len();
+                        if self.manage_highlight >= len {
+                            self.manage_highlight = len.saturating_sub(1);
+                        }
+                        if was_active {
+                            self.render_overrides(self.first_node);
+                        }
                     }
                 }
             }
@@ -2458,6 +2686,18 @@ impl App {
             return;
         }
 
+        // `F1` opens the help overlay regardless of current focus (spec
+        // 0126 G1) — checked centrally here, same tier as `Ctrl-Z`/
+        // `quit_confirm` above, ahead of every focus-specific dispatch.
+        // Closing it again is still handled by `handle_help_key`'s own
+        // `F1` arm below (`self.help_open` branch), which fires first
+        // once help is open, so this only ever needs to *open* it.
+        if !self.help_open && key.code == KeyCode::F(1) {
+            self.help_open = true;
+            self.help_scroll = 0;
+            return;
+        }
+
         if self.help_open {
             self.handle_help_key(key);
             return;
@@ -2488,10 +2728,6 @@ impl App {
                     self.command_buffer = Some(String::new());
                     self.command_cursor = 0;
                 }
-                KeyCode::F(1) => {
-                    self.help_open = true;
-                    self.help_scroll = 0;
-                }
                 _ => {}
             }
             return;
@@ -2514,6 +2750,17 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.request_quit(),
 
+            // Sibling-skip move (spec 0126 G2: Shift-Down/Shift-Up alias
+            // `J`/`K` — checked before the plain Down/Up arms below, same
+            // "modifier-guard first" convention as Ctrl/Shift-Left/Right
+            // above).
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.next_sibling_move()
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.prev_sibling_move(),
+            KeyCode::Char('J') => self.next_sibling_move(),
+            KeyCode::Char('K') => self.prev_sibling_move(),
+
             // Document-order move.
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.move_up(),
@@ -2525,24 +2772,6 @@ impl App {
             // Page move.
             KeyCode::PageDown => self.move_page_down(),
             KeyCode::PageUp => self.move_page_up(),
-
-            // Sibling-skip move.
-            KeyCode::Char('J') => {
-                if let Some(next) = self.tree[self.cursor].next_sibling {
-                    self.record_jump(self.cursor);
-                    self.cursor = next;
-                } else {
-                    self.message = "no next sibling".to_string();
-                }
-            }
-            KeyCode::Char('K') => {
-                if let Some(prev) = self.tree[self.cursor].prev_sibling {
-                    self.record_jump(self.cursor);
-                    self.cursor = prev;
-                } else {
-                    self.message = "no previous sibling".to_string();
-                }
-            }
 
             // Horizontal pan (spec 0113 D24). Checked before the
             // Shift-guarded and plain Left/Right arms below, since `Ctrl`
@@ -2666,6 +2895,12 @@ impl App {
             // of focus" treatment as `t`.
             KeyCode::Char('t') => self.toggle_override(),
             KeyCode::Esc if self.override_target.is_some() => self.close_override(),
+            // Spec 0129 §G3: `Esc` clears an active main-pane line
+            // selection, alongside whatever else it already clears above.
+            KeyCode::Esc => {
+                self.select_anchor = None;
+                self.select_end = None;
+            }
             KeyCode::Tab if self.override_target.is_some() => self.override_focus = true,
 
             // Override management pane (spec 0117 §3): `o` opens/closes
@@ -2675,13 +2910,6 @@ impl App {
             // closing the pane — `handle_mouse`, 2026-07-14 feedback).
             KeyCode::Char('o') => self.toggle_manage_pane(),
             KeyCode::Tab if self.manage_open => self.manage_focus = true,
-
-            // Help overlay. `F1`, not `?` — `?` is owned by in-pane search
-            // (spec 0114 §4-style, extended to the main pane).
-            KeyCode::F(1) => {
-                self.help_open = true;
-                self.help_scroll = 0;
-            }
 
             _ => {}
         }
@@ -3234,8 +3462,7 @@ impl App {
     /// G4) treats it as a hard error.
     pub(crate) fn load_overrides(&mut self, path: &str) -> Result<Vec<&'static str>, String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let (mut collection, target) =
-            override_pane::OverrideCollection::from_yaml(&text).map_err(|e| e.to_string())?;
+        let (mut collection, target) = override_pane::OverrideCollection::from_yaml(&text)?;
         collection.retain_resolvable(|origin| self.origin_resolves(origin));
         let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
         let mut warnings = Vec::new();
@@ -3273,6 +3500,7 @@ impl App {
         self.render_overrides(self.first_node);
         self.manage_highlight = 0;
         self.manage_scroll = 0;
+        self.manage_pan_offset = 0;
         Ok(warnings)
     }
 
@@ -3308,6 +3536,49 @@ impl App {
         let side_open = self.manage_open || self.override_target.is_some();
         let over_side = side_open && Self::rect_contains(self.side_area, event.column, event.row);
         let over_main = Self::rect_contains(self.main_area, event.column, event.row);
+        let over_cmd = self
+            .cmd_area
+            .is_some_and(|area| Self::rect_contains(area, event.column, event.row));
+
+        // Spec 0127 §G2: Shift+wheel and native ScrollLeft/ScrollRight pan
+        // whichever pane is under the pointer, instead of the vertical
+        // scroll the plain wheel dispatches to below — checked first so
+        // it takes priority over the vertical-scroll branch.
+        let shift = event.modifiers.contains(KeyModifiers::SHIFT);
+        let (pan_left, pan_right) = match event.kind {
+            MouseEventKind::ScrollLeft => (true, false),
+            MouseEventKind::ScrollRight => (false, true),
+            MouseEventKind::ScrollUp if shift => (true, false),
+            MouseEventKind::ScrollDown if shift => (false, true),
+            _ => (false, false),
+        };
+        if pan_left || pan_right {
+            if over_side {
+                let offset = if self.manage_open {
+                    &mut self.manage_pan_offset
+                } else {
+                    &mut self.override_pan_offset
+                };
+                *offset = if pan_left {
+                    offset.saturating_sub(PAN_STEP)
+                } else {
+                    offset.saturating_add(PAN_STEP)
+                };
+            } else if over_main {
+                if pan_left {
+                    self.pan_left();
+                } else {
+                    self.pan_right();
+                }
+            } else if over_cmd {
+                self.command_pan_offset = if pan_left {
+                    self.command_pan_offset.saturating_sub(PAN_STEP)
+                } else {
+                    self.command_pan_offset.saturating_add(PAN_STEP)
+                };
+            }
+            return;
+        }
 
         // Wheel scroll routes to whichever pane the mouse is currently
         // hovering, independent of keyboard focus (2026-07-14 feedback,
@@ -3345,6 +3616,11 @@ impl App {
                 self.override_focus = false;
                 self.manage_focus = false;
                 self.handle_click(event.column, event.row);
+                // Spec 0129 §G1: a click also starts a fresh whole-line
+                // selection, replacing any previous one.
+                let line_idx = self.main_pane_line_idx(event.column, event.row);
+                self.select_anchor = line_idx;
+                self.select_end = line_idx;
             } else if over_side {
                 // Symmetric with the main-pane case above: clicking the
                 // side pane (re-)claims keyboard focus for it too.
@@ -3356,7 +3632,61 @@ impl App {
                     self.handle_override_click(event.column, event.row);
                 }
             }
+            return;
         }
+
+        if over_main {
+            match event.kind {
+                // Spec 0129 §G1: dragging extends the selection's end to
+                // the row under the pointer; clamped to the pane's
+                // currently-visible rows (no auto-scroll past the top/
+                // bottom edge in this first cut — an out-of-bounds drag
+                // position simply leaves `select_end` where it was).
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if let Some(line_idx) = self.main_pane_line_idx(event.column, event.row) {
+                        self.select_end = Some(line_idx);
+                    }
+                }
+                // Spec 0129 §G2: release copies the selected lines' full
+                // text to the OS clipboard; `select_anchor`/`select_end`
+                // are left untouched so the highlight persists (§G3).
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.copy_selection_to_clipboard();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Spec 0129 §G2: the currently-selected main-pane lines' full
+    /// (untruncated) text, one `render_line_content` per line in
+    /// `min(select_anchor, select_end)..=max(...)`, joined with `\n`,
+    /// alongside the line count — `None` if there is no active
+    /// selection. Split out from `copy_selection_to_clipboard` so the
+    /// text-building logic is testable independent of real OS clipboard
+    /// access (unavailable e.g. in headless/CI environments).
+    fn selected_text(&self) -> Option<(usize, String)> {
+        let (Some(anchor), Some(end)) = (self.select_anchor, self.select_end) else {
+            return None;
+        };
+        let (start, stop) = (anchor.min(end), anchor.max(end));
+        let text = (start..=stop)
+            .map(|i| self.render_line_content(i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some((stop - start + 1, text))
+    }
+
+    /// Spec 0129 §G2: copy the currently-selected main-pane lines to the
+    /// OS clipboard. No-op if there is no active selection.
+    fn copy_selection_to_clipboard(&mut self) {
+        let Some((count, text)) = self.selected_text() else {
+            return;
+        };
+        self.message = match copy_to_clipboard(&text) {
+            Ok(()) => format!("{count} line(s) copied to clipboard"),
+            Err(e) => format!("clipboard unavailable: {e}"),
+        };
     }
 
     /// Whether `(col, row)` falls inside `area` (used for mouse hit-
@@ -3430,14 +3760,22 @@ impl App {
         }
     }
 
-    fn handle_click(&mut self, col: u16, row: u16) {
+    /// `line_idx` of the main-pane row under `(col, row)`, or `None` if
+    /// the position is outside `main_area` or past the last visible row
+    /// (spec 0129 §G1) — shared by `handle_click` and the drag-select
+    /// tracking in `handle_mouse`.
+    fn main_pane_line_idx(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.main_area;
         if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
         {
-            return;
+            return None;
         }
         let rel_row = (row - area.y) as usize;
-        let Some(&line_idx) = self.visible_rows.get(self.scroll_offset + rel_row) else {
+        self.visible_rows.get(self.scroll_offset + rel_row).copied()
+    }
+
+    fn handle_click(&mut self, col: u16, row: u16) {
+        let Some(line_idx) = self.main_pane_line_idx(col, row) else {
             return;
         };
         let Some(&idx) = self.line_to_node.get(&line_idx) else {
@@ -3450,6 +3788,7 @@ impl App {
         }
 
         if self.has_children(idx) {
+            let area = self.main_area;
             let rel_col = col - area.x;
             if rel_col == marker_column(&self.lines[line_idx]) {
                 self.toggle_fold(idx);
@@ -3655,6 +3994,15 @@ impl App {
         let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
         let window = &self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end];
 
+        // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
+        // the same `REVERSED` treatment as the single cursor row below —
+        // the two can coexist harmlessly since `REVERSED` on an already-
+        // `REVERSED` span is a no-op.
+        let selection_range = match (self.select_anchor, self.select_end) {
+            (Some(a), Some(b)) => Some(a.min(b)..=a.max(b)),
+            _ => None,
+        };
+
         let text_lines: Vec<Line> = window
             .iter()
             .enumerate()
@@ -3665,7 +4013,10 @@ impl App {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
                 }
-                if self.scroll_offset + row == cursor_row {
+                let selected = selection_range
+                    .as_ref()
+                    .is_some_and(|r| r.contains(&line_idx));
+                if self.scroll_offset + row == cursor_row || selected {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::REVERSED);
                     }
@@ -3706,6 +4057,7 @@ impl App {
             },
         };
         let status_outer = if cmd_text.is_empty() {
+            self.cmd_area = None;
             chunks[1]
         } else {
             let bottom = Layout::default()
@@ -3716,18 +4068,35 @@ impl App {
             let cmd_block = Block::bordered();
             let cmd_inner = cmd_block.inner(bottom[0]);
             frame.render_widget(cmd_block, bottom[0]);
-            frame.render_widget(Paragraph::new(cmd_text), cmd_inner);
-            if self.command_buffer.is_some() {
-                // Show a real terminal cursor at the edit position (":"
-                // plus `command_cursor` chars into the buffer) — without
-                // this the user can't tell where they're typing.
-                let x = cmd_inner.x + 1 + self.command_cursor as u16;
-                frame.set_cursor_position((x, cmd_inner.y));
-            } else if let Some(buf) = &self.manage_rename {
-                // Rename has no separate cursor-position state — always
-                // appending/popping at the buffer's end, so the cursor
-                // always sits right after the last character typed.
-                let x = cmd_inner.x + RENAME_PREFIX.len() as u16 + buf.chars().count() as u16;
+            self.cmd_area = Some(cmd_inner);
+
+            // Spec 0127 §G1: cursor char position (including the leading
+            // "prefix"/"name: " char(s)) within `cmd_text`, `None` while
+            // just displaying a plain message (no active edit, so no
+            // cursor to keep visible).
+            let cursor_pos = if self.command_buffer.is_some() {
+                Some(1 + self.command_cursor)
+            } else {
+                self.manage_rename
+                    .as_ref()
+                    .map(|buf| RENAME_PREFIX.chars().count() + buf.chars().count())
+            };
+            let width = cmd_inner.width as usize;
+            if let Some(pos) = cursor_pos {
+                // Auto-follow the cursor while typing (mirrors the main
+                // pane's cursor-follow vertical scroll) — coexists with,
+                // rather than replaces, manual Shift+wheel/native
+                // horizontal-scroll pan on this same field.
+                if pos < self.command_pan_offset {
+                    self.command_pan_offset = pos;
+                } else if width > 0 && pos >= self.command_pan_offset + width {
+                    self.command_pan_offset = pos + 1 - width;
+                }
+            }
+            let spans = pan_spans(vec![Span::raw(cmd_text)], self.command_pan_offset);
+            frame.render_widget(Paragraph::new(Line::from(spans)), cmd_inner);
+            if let Some(pos) = cursor_pos {
+                let x = cmd_inner.x + (pos - self.command_pan_offset) as u16;
                 frame.set_cursor_position((x, cmd_inner.y));
             }
             bottom[1]
@@ -3838,17 +4207,23 @@ impl App {
                     None => fqdn.clone(),
                 }
             };
-            if row == self.override_highlight {
-                lines.push(Line::from(Span::styled(
-                    text,
-                    Style::default().add_modifier(Modifier::REVERSED),
-                )));
+            let style = if row == self.override_highlight {
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
-                lines.push(Line::from(text));
-            }
+                Style::default()
+            };
+            // Spec 0127 §G1: pan the override pane's own rows
+            // independently of the main pane's `pan_offset`.
+            lines.push(Line::from(pan_spans(
+                vec![Span::styled(text, style)],
+                self.override_pan_offset,
+            )));
         }
         if let Some(search_line) = search_line {
-            lines.push(Line::from(search_line));
+            lines.push(Line::from(pan_spans(
+                vec![Span::raw(search_line)],
+                self.override_pan_offset,
+            )));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -3901,22 +4276,43 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for row in &rows[start..end] {
             match row {
-                ManageRow::Header(label) => lines.push(Line::from(label.clone())),
+                // Spec 0127 §G1: pan the manage pane's own rows
+                // independently of the main pane's `pan_offset`.
+                ManageRow::Header(label) => lines.push(Line::from(pan_spans(
+                    vec![Span::raw(label.clone())],
+                    self.manage_pan_offset,
+                ))),
                 ManageRow::Entry(idx) => {
                     let text = self.manage_type_line(*idx);
-                    if *idx == self.manage_highlight {
-                        lines.push(Line::from(Span::styled(
-                            text,
-                            Style::default().add_modifier(Modifier::REVERSED),
-                        )));
+                    // Spec 0125 §G1: auto-derived entries render plain,
+                    // manual entries bold — same color either way, drawn
+                    // from the existing `SyntaxRole::Type` palette (the
+                    // app's established "type"-flavored color, matching
+                    // theme.rs's dark/light + RGB/ANSI16 resolution)
+                    // rather than a new hardcoded color. The highlighted
+                    // row's `REVERSED` modifier layers on top of either.
+                    let auto = self.overrides.entries()[*idx].auto;
+                    let mut style = theme::style_for(SyntaxRole::Type, self.theme);
+                    style = if auto {
+                        style.remove_modifier(Modifier::BOLD)
                     } else {
-                        lines.push(Line::from(text));
+                        style.add_modifier(Modifier::BOLD)
+                    };
+                    if *idx == self.manage_highlight {
+                        style = style.add_modifier(Modifier::REVERSED);
                     }
+                    lines.push(Line::from(pan_spans(
+                        vec![Span::styled(text, style)],
+                        self.manage_pan_offset,
+                    )));
                 }
             }
         }
         if let Some(search_line) = search_line {
-            lines.push(Line::from(search_line));
+            lines.push(Line::from(pan_spans(
+                vec![Span::raw(search_line)],
+                self.manage_pan_offset,
+            )));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -4026,6 +4422,12 @@ fn pan_spans(spans: Vec<Span<'static>>, offset: usize) -> Vec<Span<'static>> {
         result.push(Span::styled(trimmed, span.style));
     }
     result
+}
+
+/// Spec 0129 §G2: write `text` to the real OS clipboard (plain text
+/// only, no ANSI/colors).
+fn copy_to_clipboard(text: &str) -> Result<(), arboard::Error> {
+    arboard::Clipboard::new()?.set_text(text)
 }
 
 /// Column where a fold marker is inserted by `App::render_line_content` —
@@ -4683,6 +5085,485 @@ mod tests {
         assert!(!app.help_open);
     }
 
+    /// Spec 0126 G1: `F1` opens the help overlay regardless of what
+    /// currently has focus — `manage_focus`, `override_focus`, and an
+    /// open `command_buffer` all used to swallow it before reaching the
+    /// main match arm's own `F1` handling.
+    #[test]
+    fn f1_opens_help_regardless_of_focus() {
+        let mut app = message_node_app();
+        app.splash = false;
+
+        app.manage_focus = true;
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.help_open);
+        app.help_open = false;
+
+        app.override_focus = true;
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.help_open);
+        app.help_open = false;
+        app.override_focus = false;
+
+        app.command_buffer = Some(String::new());
+        app.handle_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.help_open);
+    }
+
+    /// Spec 0126 G2: Shift-Down/Shift-Up alias `J`/`K`'s sibling-skip
+    /// move, no-op-with-message on a childless-of-siblings node either
+    /// way.
+    #[test]
+    fn shift_down_up_alias_sibling_skip_move() {
+        let mut app = message_node_app();
+        app.splash = false;
+
+        let start = app.cursor;
+        app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE));
+        let via_j = app.cursor;
+
+        app.cursor = start;
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        assert_eq!(app.cursor, via_j, "Shift-Down must match J's result");
+
+        app.cursor = via_j;
+        app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE));
+        let via_k = app.cursor;
+
+        app.cursor = via_j;
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+        assert_eq!(app.cursor, via_k, "Shift-Up must match K's result");
+    }
+
+    /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
+    /// 7`), document order — spec 0124's shared fixture: gives a
+    /// `PathField`/`FqdnField` origin (parent path `/`, field `1`) 3
+    /// matches, and a `Path` origin (e.g. `/2`) exactly 1 match. Uses a
+    /// packed *scalar* repeated field (one `NodeSpan` per element, spec
+    /// 0115) rather than a repeated message field, to keep the fixture's
+    /// tree shape simple (no nested-message decode involved).
+    fn repeated_scalar_fixture() -> (App, Vec<usize>) {
+        use prost::Message as _;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        use crate::decode::{decode, DescriptorContext};
+
+        let outer_desc = DescriptorProto {
+            name: Some("Outer".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("vals".to_string()),
+                number: Some(1),
+                label: Some(Label::Repeated as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("test_repeated_scalar.proto".to_string()),
+            package: Some("test".to_string()),
+            message_type: vec![outer_desc],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let descriptor_path =
+            std::env::temp_dir().join(format!("protolens-tui-repeated-scalar-descriptor-{n}.pb"));
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
+        // [0x05, 0x06, 0x07] (three one-byte varint elements).
+        let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        let mut items: Vec<usize> = app
+            .tree
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.span.packed_record_start.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        items.sort_by_key(|&i| app.positional_path(i));
+        assert_eq!(items.len(), 3, "fixture must contain 3 packed elements");
+        (app, items)
+    }
+
+    /// Spec 0124 G1: Left/Right in the manage pane circulate the
+    /// main-pane cursor among the fields the highlighted entry's origin
+    /// matches, with wraparound, never touching focus; a zero-match
+    /// origin is a no-op.
+    #[test]
+    fn manage_pane_left_right_circulate_affected_fields() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        // `PathField` origin: parent `/`, field `1` -> all 3 elements.
+        let origin = OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        };
+        app.overrides.activate(origin, None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+
+        app.cursor = items[0];
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.cursor, items[1]);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.cursor, items[2]);
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.cursor, items[0], "Right must wrap around");
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.cursor, items[2], "Left must wrap around");
+        assert!(app.manage_focus, "focus must not change");
+
+        // Zero-match origin: no-op.
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field: 99,
+            },
+            None,
+        );
+        app.manage_highlight = app.overrides.entries().len() - 1;
+        let before = app.cursor;
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.cursor, before, "zero matches must be a no-op");
+    }
+
+    /// Spec 0124 G2: `z` rotates the highlighted entry's origin kind,
+    /// rederived from the main-pane cursor — no-op-with-message when the
+    /// cursor isn't on an affected field; when it is and the entry is
+    /// active, rotating onto a colliding origin deactivates the other
+    /// entry (existing `activate`-style invariant, reused unchanged).
+    #[test]
+    fn manage_pane_z_rotates_entry_kind_from_cursor_position() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let path_origin = OverrideOrigin::Path {
+            path: app.positional_path(items[0]),
+        };
+        app.overrides.activate(path_origin.clone(), None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+
+        // Cursor elsewhere -> error, entry/origin unchanged.
+        app.cursor = items[1];
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(
+            app.message,
+            "z: main-pane cursor is not on a field affected by the selected override"
+        );
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            path_origin
+        );
+
+        // Also seed a colliding PathField entry (parent `/`, field `1`),
+        // active, so the rotation-collision path is exercised.
+        let collide_origin = OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        };
+        app.overrides.activate(collide_origin.clone(), None);
+        let collide_idx = app.overrides.entries().len() - 1;
+        assert!(app.overrides.entries()[collide_idx].active);
+
+        // Cursor on the affected field -> rotates Path -> PathField,
+        // colliding with (and deactivating) the entry just seeded above.
+        app.cursor = items[0];
+        let entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| e.origin == path_origin)
+            .expect("original Path entry must still exist");
+        app.manage_highlight = entry_idx;
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        // `handle_key` leaves `manage_highlight` on the rotated entry
+        // (spec 0124 G2) — look it up by index, not by origin: two
+        // entries now share `collide_origin` (the rotated one and the
+        // pre-existing one it collided with), so origin alone is
+        // ambiguous.
+        let rotated = &app.overrides.entries()[app.manage_highlight];
+        assert_eq!(rotated.origin, collide_origin);
+        assert!(rotated.active, "rotated entry must stay active");
+        assert!(!rotated.auto, "rotation always resets auto to false");
+        let other = app
+            .overrides
+            .entries()
+            .iter()
+            .filter(|e| e.origin == collide_origin)
+            .count();
+        assert_eq!(other, 2, "duplicates now coexist under the same origin");
+        assert_eq!(
+            app.overrides
+                .entries()
+                .iter()
+                .filter(|e| e.origin == collide_origin && e.active)
+                .count(),
+            1,
+            "only one entry per origin stays active"
+        );
+    }
+
+    /// Spec 0124 G3: `d` duplicates the highlighted entry as a new,
+    /// always-inactive copy; the original and the copy coexist.
+    #[test]
+    fn manage_pane_d_duplicates_highlighted_entry_as_inactive() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(items[0]),
+        };
+        app.overrides.activate(origin.clone(), None);
+        let orig_idx = app.overrides.entries().len() - 1;
+        app.manage_highlight = orig_idx;
+
+        let before_len = app.overrides.entries().len();
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(app.overrides.entries().len(), before_len + 1);
+        let new_idx = app.manage_highlight;
+        assert!(!app.overrides.entries()[new_idx].active, "copy is inactive");
+        assert_eq!(app.overrides.entries()[new_idx].origin, origin);
+
+        // Activating the copy deactivates the original (existing
+        // invariant, not new code).
+        app.overrides.toggle_active(new_idx);
+        let active_count = app
+            .overrides
+            .entries()
+            .iter()
+            .filter(|e| e.origin == origin && e.active)
+            .count();
+        assert_eq!(active_count, 1, "still at most one active entry per origin");
+        assert!(app.overrides.entries()[new_idx].active);
+    }
+
+    /// Spec 0125 §G1: manage-pane entry rows render `auto == true`
+    /// entries plain and `auto == false` entries bold (no `REVERSED` on
+    /// either, since neither is highlighted here).
+    #[test]
+    fn manage_pane_entries_style_auto_vs_manual_distinctly() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        app.overrides.activate(
+            OverrideOrigin::Path {
+                path: app.positional_path(items[0]),
+            },
+            None,
+        );
+        let manual_idx = app.overrides.entries().len() - 1;
+        app.overrides.activate_auto(
+            OverrideOrigin::Path {
+                path: app.positional_path(items[1]),
+            },
+            Some("auto.Type".to_string()),
+        );
+        let auto_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| e.auto)
+            .expect("auto entry must exist");
+        assert_ne!(manual_idx, auto_idx);
+        // Neither entry is highlighted, so `REVERSED` doesn't interfere
+        // with the bold/plain assertion below.
+        app.manage_highlight = app.overrides.entries().len();
+
+        let area = Rect::new(0, 0, 120, 40);
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("terminal");
+        terminal
+            .draw(|frame| app.render_manage_pane(frame, area))
+            .expect("render must not panic");
+        let buffer = terminal.backend().buffer().clone();
+        let inner = Block::bordered().inner(area);
+
+        let rows = app.manage_display_rows();
+        let row_is_bold = |entry_idx: usize| {
+            let row = rows
+                .iter()
+                .position(|r| matches!(r, ManageRow::Entry(i) if *i == entry_idx))
+                .expect("row must exist");
+            let y = inner.y + row as u16;
+            (inner.x..inner.x + inner.width)
+                .map(|x| &buffer[(x, y)])
+                .find(|c| !c.symbol().trim().is_empty())
+                .expect("row must render some text")
+                .modifier
+                .contains(Modifier::BOLD)
+        };
+        assert!(row_is_bold(manual_idx), "manual entry row must be bold");
+        assert!(!row_is_bold(auto_idx), "auto entry row must not be bold");
+    }
+
+    /// Spec 0125 §G2: `Delete` on an `auto` entry still "in scope"
+    /// deactivates it instead of removing it, and shows the explanatory
+    /// message; `Delete` on an `auto` entry that has gone out of scope
+    /// (its ancestor's own override changed) actually removes it, same
+    /// as a manual entry.
+    #[test]
+    fn manage_pane_delete_deactivates_in_scope_auto_but_removes_out_of_scope_auto() {
+        let mut app = message_set_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let item_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+            .expect("Item group must be spliced to the synthetic MessageSetItem type");
+        let item_path = app.positional_path(item_idx);
+        let item_entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+            .expect("tier-1 entry must exist");
+        assert!(app.overrides.entries()[item_entry_idx].auto);
+        assert!(app.overrides.entries()[item_entry_idx].active);
+
+        let message_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+            .expect("message field must resolve to ExtPayload");
+        let message_path = app.positional_path(message_idx);
+        let message_entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(
+                |e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == message_path),
+            )
+            .expect("tier-2 entry must exist");
+        assert!(app.overrides.entries()[message_entry_idx].auto);
+
+        // In-scope: `Delete` on the tier-1 entry deactivates, does not
+        // remove.
+        let before_len = app.overrides.entries().len();
+        app.manage_highlight = item_entry_idx;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(
+            app.overrides.entries().len(),
+            before_len,
+            "in-scope auto entry must not be removed"
+        );
+        assert!(
+            !app.overrides.entries()[item_entry_idx].active,
+            "in-scope auto entry must be deactivated"
+        );
+        assert_eq!(
+            app.message,
+            "auto-derived override deactivated (still in scope — delete would \
+             just recreate it; use 'a' or wait for it to go out of scope)"
+        );
+
+        // Deactivating tier-1 makes tier-2 no longer "in scope" (spec
+        // 0120's demotion): `Delete` on the tier-2 entry now actually
+        // removes it, same as a manual entry.
+        assert!(!app.auto_entry_in_scope(&app.overrides.entries()[message_entry_idx].clone()));
+        let before_len = app.overrides.entries().len();
+        app.manage_highlight = message_entry_idx;
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(
+            app.overrides.entries().len(),
+            before_len - 1,
+            "out-of-scope auto entry must be removed like a manual entry"
+        );
+    }
+
+    /// Spec 0125 §G2: `Delete` on a manual (`auto == false`) entry is
+    /// unchanged — removes it outright, no special message.
+    #[test]
+    fn manage_pane_delete_removes_manual_entry_unchanged() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        app.overrides.activate(
+            OverrideOrigin::Path {
+                path: app.positional_path(items[0]),
+            },
+            None,
+        );
+        let idx = app.overrides.entries().len() - 1;
+        assert!(!app.overrides.entries()[idx].auto);
+        app.manage_highlight = idx;
+
+        let before_len = app.overrides.entries().len();
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.overrides.entries().len(), before_len - 1);
+        assert!(
+            !app.message.contains("auto-derived"),
+            "manual delete must not show the auto-entry message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0125 §G3: `:save-overrides` then `:restore-overrides`
+    /// round-trips an `auto: true` entry's `auto` flag exactly, and a
+    /// pre-existing YAML file with no `auto` key still loads fine
+    /// (defaults to `false`).
+    #[test]
+    fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
+        let mut collection = override_pane::OverrideCollection::new();
+        collection.activate_auto(
+            OverrideOrigin::Path {
+                path: "/".to_string(),
+            },
+            Some("pkg.Type".to_string()),
+        );
+        let yaml = collection.to_yaml("blobsha".to_string(), "descsha".to_string());
+        assert!(
+            yaml.contains("auto: true"),
+            "auto: true must round-trip: {yaml}"
+        );
+        let (restored, _target) =
+            override_pane::OverrideCollection::from_yaml(&yaml).expect("must parse");
+        assert!(
+            restored.entries()[0].auto,
+            "restored entry must keep auto: true"
+        );
+
+        // Pre-existing file with no `auto` key at all.
+        let legacy_yaml = "version: 1\n\
+             target:\n  blob_sha256: blobsha\n  descriptor_set_sha256: descsha\n\
+             overrides:\n  - path: /\n    type: pkg.Type\n    active: true\n";
+        let (legacy, _target) =
+            override_pane::OverrideCollection::from_yaml(legacy_yaml).expect("must parse legacy");
+        assert!(
+            !legacy.entries()[0].auto,
+            "legacy file with no auto key must default to auto: false"
+        );
+    }
+
     /// Spec 0114 §3.2: `j`/`k` move the highlight, clamped to
     /// `0..=candidates.len()` — row `0` is the pinned raw entry.
     #[test]
@@ -5063,6 +5944,366 @@ mod tests {
             app.override_highlight, 1,
             "hovering the side pane must scroll it"
         );
+    }
+
+    /// Spec 0127 §G2: Shift+wheel pans whichever pane the mouse is
+    /// hovering; plain wheel (no Shift) keeps scrolling vertically as
+    /// before.
+    #[test]
+    fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.main_area = Rect::new(0, 0, 5, 20);
+        app.side_area = Rect::new(60, 0, 40, 20);
+
+        let cursor_before = app.cursor;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        assert_eq!(
+            app.cursor, cursor_before,
+            "Shift+wheel must pan, not move the cursor"
+        );
+        assert_eq!(app.pan_offset, PAN_STEP, "Shift+ScrollDown must pan right");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        assert_eq!(app.pan_offset, 0, "Shift+ScrollUp must pan left");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_ne!(
+            app.cursor, cursor_before,
+            "plain wheel (no Shift) must still scroll vertically"
+        );
+        assert_eq!(app.pan_offset, 0, "plain wheel must not pan");
+    }
+
+    /// Spec 0127 §G2: native `ScrollLeft`/`ScrollRight` pan the hovered
+    /// pane without needing Shift.
+    #[test]
+    fn native_scroll_left_right_pans_without_shift() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.main_area = Rect::new(0, 0, 5, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.pan_offset, PAN_STEP, "ScrollRight must pan right");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.pan_offset, 0, "ScrollLeft must pan left");
+    }
+
+    /// Spec 0127 §G1: the override pane and the manage pane each carry
+    /// their own `pan_offset`, independent of the main pane's and of each
+    /// other's.
+    #[test]
+    fn override_and_manage_panes_pan_independently_of_the_main_pane() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.main_area = Rect::new(0, 0, 40, 20);
+        app.side_area = Rect::new(60, 0, 5, 20);
+
+        app.manage_open = true;
+        app.overrides.activate(
+            OverrideOrigin::Path {
+                path: app.positional_path(items[0]),
+            },
+            None,
+        );
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 62,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.manage_pan_offset, PAN_STEP);
+        assert_eq!(
+            app.pan_offset, 0,
+            "the main pane's pan_offset must be untouched"
+        );
+
+        app.manage_open = false;
+        app.override_target = Some(items[0]);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 62,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.override_pan_offset, PAN_STEP);
+        assert_eq!(
+            app.manage_pan_offset, PAN_STEP,
+            "unrelated to the override pane's own offset"
+        );
+    }
+
+    /// Spec 0127 §G1: a long `:command` buffer becomes pannable — typing
+    /// past the visible width auto-follows the cursor instead of clipping
+    /// it off-screen, and the same offset can also be panned manually via
+    /// hover + Shift+wheel/native horizontal scroll.
+    #[test]
+    fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.splash = false;
+        app.command_buffer = Some("a".repeat(80));
+        app.command_cursor = 80;
+
+        let backend = TestBackend::new(60, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let cmd_area = app
+            .cmd_area
+            .expect("command bar must be shown while typing");
+        assert!(
+            app.command_pan_offset > 0,
+            "auto-follow must have panned to keep the cursor visible"
+        );
+        let cursor_x = cmd_area.x + (1 + app.command_cursor - app.command_pan_offset) as u16;
+        assert!(
+            cursor_x < cmd_area.x + cmd_area.width,
+            "the cursor must stay within the visible command bar"
+        );
+
+        let offset_before = app.command_pan_offset;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            column: cmd_area.x,
+            row: cmd_area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(
+            app.command_pan_offset < offset_before,
+            "hovering + ScrollLeft must pan the command bar left"
+        );
+    }
+
+    /// Spec 0129 §G1/§G3: click-drag across N main-pane rows, release —
+    /// selects the whole `[start, end]` range in document order, and
+    /// `render` highlights every row in that range with `REVERSED`.
+    #[test]
+    fn drag_select_spans_multiple_main_pane_rows() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "delta: 4"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(1));
+        assert_eq!(app.select_end, Some(1));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 0,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(1));
+        assert_eq!(app.select_end, Some(3));
+
+        let (count, text) = app.selected_text().expect("selection must be active");
+        assert_eq!(count, 3);
+        assert_eq!(text, "beta: 2\ngamma: 3\ndelta: 4");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.select_anchor,
+            Some(1),
+            "selection persists after release"
+        );
+        assert_eq!(app.select_end, Some(3));
+        // Spec 0129 §G2/test plan item 5: no working clipboard provider
+        // exists in this (headless) test environment — the failure path
+        // must produce a message, not panic.
+        assert!(
+            app.message == "3 line(s) copied to clipboard"
+                || app.message.starts_with("clipboard unavailable: "),
+            "unexpected message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0129 §G3: a plain click with no drag still produces a
+    /// one-line selection and copies exactly that line.
+    #[test]
+    fn plain_click_selects_and_copies_a_single_line() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        let (count, text) = app.selected_text().expect("selection must be active");
+        assert_eq!(count, 1);
+        assert_eq!(text, "alpha: 1");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(0));
+        assert_eq!(app.select_end, Some(0));
+        assert!(
+            app.message == "1 line(s) copied to clipboard"
+                || app.message.starts_with("clipboard unavailable: "),
+            "unexpected message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0129 §G1/test plan item 3: dragging upward (end row above
+    /// start row) still copies the correct range in top-to-bottom
+    /// document order, not reversed.
+    #[test]
+    fn drag_select_upward_still_copies_top_to_bottom() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(2));
+        assert_eq!(app.select_end, Some(0));
+
+        let (count, text) = app.selected_text().expect("selection must be active");
+        assert_eq!(count, 3, "top-to-bottom order, not reversed");
+        assert_eq!(text, "alpha: 1\nbeta: 2\ngamma: 3");
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(
+            app.message == "3 line(s) copied to clipboard"
+                || app.message.starts_with("clipboard unavailable: "),
+            "unexpected message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0129 §G2/test plan item 5: a clipboard-unavailable
+    /// environment (no provider reachable, as in this headless test
+    /// harness) produces the documented fallback message instead of
+    /// panicking.
+    #[test]
+    fn clipboard_unavailable_shows_fallback_message_without_panicking() {
+        let mut app = sibling_leaves_app(&["alpha: 1"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        // This sandbox has no reachable clipboard provider, so the
+        // failure branch is exactly what's exercised here.
+        assert!(
+            app.message == "1 line(s) copied to clipboard"
+                || app.message.starts_with("clipboard unavailable: "),
+            "unexpected message: {}",
+            app.message
+        );
+    }
+
+    /// Spec 0129 §G3: a fresh click starts a new selection, replacing
+    /// the old one; `Esc` clears an existing selection's highlight too.
+    #[test]
+    fn fresh_click_replaces_selection_esc_clears_it() {
+        let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3"]);
+        app.splash = false;
+        app.main_area = Rect::new(0, 0, 40, 20);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 0,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.select_anchor, Some(0));
+        assert_eq!(app.select_end, Some(2));
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.select_anchor,
+            Some(1),
+            "a fresh click replaces the old selection"
+        );
+        assert_eq!(app.select_end, Some(1));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.select_anchor, None, "Esc clears the selection");
+        assert_eq!(app.select_end, None);
     }
 
     /// `Esc` closes the override pane regardless of which pane currently
@@ -6345,13 +7586,11 @@ mod tests {
              \x20 blob_sha256: \"{blob_sha256}\"\n\
              \x20 descriptor_set_sha256: \"{descriptor_set_sha256}\"\n\
              overrides:\n\
-             \x20 - kind: path\n\
-             \x20   path: \"/1/1\"\n\
+             \x20 - path: \"/1/1\"\n\
              \x20   type: protolens_internal.MessageSetItem\n\
              \x20   active: true\n\
              \x20   name: Item\n\
-             \x20 - kind: path\n\
-             \x20   path: \"/1/1/2\"\n\
+             \x20 - path: \"/1/1/2\"\n\
              \x20   type: ms_test.ExtPayload\n\
              \x20   active: true\n"
         );
