@@ -60,7 +60,7 @@ impl SchemaHandle {
     /// handle and the capsule are collected.
     fn schema_capsule<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
         let arc: Arc<ParsedSchema> = Arc::clone(&self.inner);
-        PyCapsule::new(py, arc, Some(SCHEMA_CAPSULE_NAME.to_owned()))
+        PyCapsule::new_with_value(py, arc, SCHEMA_CAPSULE_NAME)
     }
 }
 
@@ -73,34 +73,29 @@ impl SchemaHandle {
     ///
     /// # Safety
     ///
-    /// `unsafe` is required here because `PyCapsuleMethods::reference::<T>()`
-    /// is an unsafe function: PyO3 cannot verify at compile time that the `T`
-    /// stored in the capsule matches the `T` we request.  The correctness
-    /// argument is:
+    /// `unsafe` is required here because the pointer returned by
+    /// `PyCapsuleMethods::pointer_checked()` is an untyped `NonNull<c_void>`:
+    /// PyO3 cannot verify at compile time that the `T` stored in the capsule
+    /// matches the `T` we cast it to. The correctness argument is:
     ///   1. The capsule was created by `schema_capsule()` above, which stored
     ///      an `Arc<ParsedSchema>` — the exact type we read back.
-    ///   2. The name tag (`SCHEMA_CAPSULE_NAME`) provides a runtime identity
-    ///      check that guards against accidentally passing an unrelated capsule.
+    ///   2. `pointer_checked()`'s name check (`SCHEMA_CAPSULE_NAME`) provides a
+    ///      runtime identity check that guards against accidentally passing an
+    ///      unrelated capsule.
     ///   3. The `Arc` inside the capsule is still live (the capsule holds a
     ///      strong reference), so the pointer is valid for the duration of this
     ///      call.
     ///   4. We clone the `Arc` (incrementing the refcount) rather than moving
     ///      it out, so the capsule's own refcount is not disturbed.
     pub fn from_capsule(capsule: &Bound<'_, PyCapsule>) -> PyResult<SchemaHandle> {
-        let name = capsule.name()?.unwrap_or(c"");
-        if name != SCHEMA_CAPSULE_NAME {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected capsule name {:?}, got {:?}",
-                SCHEMA_CAPSULE_NAME, name,
-            )));
-        }
-        // SAFETY: the name check above confirms this capsule was produced by
-        // `schema_capsule()`, which stored an `Arc<ParsedSchema>`.  The Arc is
-        // still alive because the capsule holds it.  We borrow the reference
-        // only long enough to clone the Arc; the capsule continues to own the
-        // original.
+        let ptr = capsule.pointer_checked(Some(SCHEMA_CAPSULE_NAME))?;
+        // SAFETY: the name check inside `pointer_checked()` above confirms this
+        // capsule was produced by `schema_capsule()`, which stored an
+        // `Arc<ParsedSchema>`. The Arc is still alive because the capsule holds
+        // it. We borrow the reference only long enough to clone the Arc; the
+        // capsule continues to own the original.
         let arc: Arc<ParsedSchema> =
-            unsafe { Arc::clone(capsule.reference::<Arc<ParsedSchema>>()) };
+            unsafe { Arc::clone(&*(ptr.as_ptr() as *const Arc<ParsedSchema>)) };
         Ok(SchemaHandle { inner: arc })
     }
 
