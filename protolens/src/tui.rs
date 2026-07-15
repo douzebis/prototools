@@ -1726,7 +1726,7 @@ impl App {
         // previews on; a hit skips both `decode_and_render_indexed` and
         // the colorize pass.
         let cache_key = (payload_range.clone(), target.clone(), field_name.clone());
-        let (new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
+        let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
                 let wrapper_desc = match &target_desc {
@@ -1755,40 +1755,8 @@ impl App {
                 };
                 let (new_text, new_spans) =
                     decode_and_render_indexed(&wrapped, wrapper_desc.as_ref(), opts);
-                let mut new_text = String::from_utf8(new_text)
+                let new_text = String::from_utf8(new_text)
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
-                // Mirrors `decode()`'s own root-header stripping: `"0"` is
-                // `field_name_for`'s sentinel for the true document root
-                // with no G4 name override set (never a real field name),
-                // so drop it from the freshly-spliced header line too.
-                // `parent.is_none()` narrows this to the true root only —
-                // `field_name == "0"` alone would also match a MessageSet/
-                // Any virtual container node (`field_number: 0`, spec
-                // 0110's `NodeSpan::field_number` doc), which has a real
-                // parent and must keep its `"0"` token.
-                //
-                // Which literal token actually got rendered depends on
-                // whether a schema was resolved: with `wrapper_desc`
-                // (`register_wrapper` was called with `field_name` as the
-                // synthetic field's proto name), the header shows that
-                // `field_name` verbatim (`"0 "`); with no schema (a raw/
-                // no-type root override, or de-activating back to it),
-                // `decode_and_render_indexed` has no field name to fall
-                // back to at all and instead prints the literal wrapping
-                // `field_number` (always `1` for the root, spec 0114
-                // §1.1) — strip whichever one actually appears (2026-07-14
-                // interactive-testing feedback: the raw-override case was
-                // previously left unstripped, still showing e.g. `"1 {"`).
-                if self.tree[idx].parent.is_none() && field_name == "0" {
-                    let stale_prefix = if wrapper_desc.is_some() {
-                        "0 ".to_string()
-                    } else {
-                        format!("{field_number} ")
-                    };
-                    if let Some(stripped) = new_text.strip_prefix(&stale_prefix) {
-                        new_text = stripped.to_string();
-                    }
-                }
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
                 let new_style_hints = colorize::colorize(&new_text);
                 let value = (new_lines, new_spans, new_style_hints);
@@ -1796,7 +1764,119 @@ impl App {
                 value
             }
         };
-        let new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
+
+        // Build this node's own header line (spec 0122 §2): patch
+        // `old_span`'s own natural annotation with the freshly-resolved
+        // type-declaration token, rather than reusing the synthetic
+        // wrapper's own header line wholesale (which lost group framing
+        // on override — the original bug).
+        let root_name = if self.tree[idx].parent.is_none() {
+            // The document root has no real field name of its own —
+            // `field_name_for`'s `"0"` sentinel (spec 0114 §1.1) must
+            // never leak into the header line.
+            String::new()
+        } else {
+            field_name.clone()
+        };
+        let brace_prefix = if root_name.is_empty() {
+            "{".to_string()
+        } else {
+            format!("{root_name} {{")
+        };
+        // `None` iff annotations are disabled (step 2, spec 0122 §2) —
+        // stored below into the new self-span's own `natural_annotation`
+        // too (not just used to build `new_lines[0]`), so a *later*
+        // splice on this same node patches from the correct base text
+        // instead of the synthetic wrapper's own unpatched rendering.
+        let patched_annotation: Option<String> = if !self.annotations {
+            None
+        } else {
+            let new_ann = new_spans
+                .last()
+                .and_then(|s| s.natural_annotation.as_deref())
+                .expect(
+                    "annotations enabled: synthetic wrapper root always has a natural_annotation",
+                );
+            // Step 3: under `wrap_blob`'s hardcoded `WT_LEN` framing this
+            // is always token 0 of the synthetic root's own annotation.
+            let new_token = new_ann
+                .strip_prefix("#@ ")
+                .unwrap_or(new_ann)
+                .split("; ")
+                .next()
+                .unwrap_or("");
+            let patched = match &old_span.natural_annotation {
+                Some(base_ann) => {
+                    // Steps 5-6: locate the type-decl/wire-type-
+                    // placeholder token slot within the base text and
+                    // replace only it — every other token (leading
+                    // `group`, any anomaly modifier) is copied through
+                    // verbatim, unexamined.
+                    let base_content = base_ann.strip_prefix("#@ ").unwrap_or(base_ann);
+                    let mut tokens: Vec<&str> = base_content.split("; ").collect();
+                    if tokens.first() == Some(&"group") {
+                        let has_slot = tokens
+                            .get(1)
+                            .is_some_and(|t| *t == "TYPE_MISMATCH" || t.contains('='));
+                        // `"message"` is `wrap_blob`'s synthetic
+                        // Message-kind "unknown schema" placeholder — it
+                        // has no equivalent in Group-kind's own native
+                        // convention, which simply omits the decl/
+                        // mismatch slot entirely when unresolved. Treat
+                        // it as "no token" here rather than leaking it
+                        // into the group's header (spec 0122).
+                        if new_token == "message" {
+                            if has_slot {
+                                tokens.remove(1);
+                            }
+                        } else if has_slot {
+                            tokens[1] = new_token;
+                        } else {
+                            tokens.insert(1, new_token);
+                        }
+                    } else {
+                        tokens[0] = new_token;
+                    }
+                    tokens.join("; ")
+                }
+                // Step 4 fallback: `old_span` was itself a scalar-origin
+                // node (`natural_annotation` is unconditionally `None`
+                // for scalars) — no base text to patch, and none needed:
+                // by G4 a scalar's `wire_type` never becomes
+                // `WT_START_GROUP`, so no `group;` prefix is ever
+                // required here.
+                None => new_token.to_string(),
+            };
+            Some(patched)
+        };
+        // The synthetic wrapper's own header line (still in `new_lines[0]`
+        // at this point) was rendered by `decode_and_render_indexed` with
+        // `initial_level: old_span.level`, so its leading whitespace is
+        // already this node's correct indentation — preserve it, since
+        // `brace_prefix` itself carries none (it's built from bare
+        // `field_name`/`"{"`, spec 0122 §2).
+        let indent_width = new_lines[0].len() - new_lines[0].trim_start().len();
+        let indent = &new_lines[0][..indent_width];
+        let patched_first_line = match &patched_annotation {
+            Some(patched) => format!("{indent}{brace_prefix}  #@ {patched}"),
+            None => format!("{indent}{brace_prefix}"),
+        };
+
+        // `new_style_hints`'s byte offsets are relative to the CACHED
+        // render's own (unpatched) header line, not `patched_first_line`
+        // — bucket by line using `new_lines` while it still carries that
+        // cached header, or a header-length delta would silently shift
+        // every subsequent line's colors (2026-07-15 regression: colors
+        // drifted right after the first `#@ group;` header whenever the
+        // patched header's length differed from the cached one). Only
+        // line 0's own bucket is stale afterwards, since nothing in
+        // `queries/highlights.scm` spans a rendered newline (`colorize`
+        // doc comment) — recolor it in isolation once the header is
+        // swapped in for display.
+        let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
+        new_lines[0] = patched_first_line;
+        new_line_styles[0] =
+            colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0])).remove(0);
 
         let delta = new_lines.len() as isize
             - (old_span.text_range.end - old_span.text_range.start) as isize;
@@ -1903,6 +1983,14 @@ impl App {
         // previously-spliced node as `WT_LEN` from its second splice
         // onward.
         new_self_span.wire_type = old_span.wire_type;
+        // The synthetic wrap-rendered span's own `natural_annotation`
+        // (always `Message`-kind, per `wrap_blob`'s hardcoded `WT_LEN`
+        // framing — same caveat as `wire_type` above) is not what a
+        // *later* splice on this node should patch from; the header text
+        // actually patched onto `new_lines[0]` above is (spec 0122 §2) —
+        // stored back here so it becomes `old_span.natural_annotation`
+        // next time.
+        new_self_span.natural_annotation = patched_annotation.map(|p| format!("#@ {p}"));
         self.tree[idx].span = new_self_span;
         self.tree[idx].first_child = self.tree[new_self_idx].first_child;
         self.tree[idx].last_child = self.tree[new_self_idx].last_child;
@@ -3019,6 +3107,14 @@ impl App {
         }
     }
 
+    /// `idx`'s extracted rendering, in the requested format — the
+    /// byte-vector counterpart to `run_extract`'s file-writing TUI
+    /// command, for a caller with no `Path` to write to (spec 0123's
+    /// batch mode, writing to stdout or an explicit `-o`/`--output`).
+    pub(crate) fn extract_bytes(&self, idx: usize, format: ExtractFormat) -> Vec<u8> {
+        extract::extract_bytes(format, &self.blob, &self.lines, &self.tree[idx])
+    }
+
     /// Propose a default `:save-overrides` path — same directory/stem as
     /// the target blob, `.yaml` extension (spec 0117 §4, mirroring
     /// `default_extract_path`).
@@ -3061,8 +3157,9 @@ impl App {
     /// path (or bare `/` for the wrapper root) back to a tree index.
     /// `None` if any segment doesn't parse as a 1-based position, or
     /// doesn't resolve against the current tree (spec 0117 §4 restore-time
-    /// validation).
-    fn resolve_path(&self, path: &str) -> Option<usize> {
+    /// validation). `pub(crate)`: also reused by `main.rs`'s batch `extract`
+    /// subcommand (spec 0123) to resolve its `path` argument.
+    pub(crate) fn resolve_path(&self, path: &str) -> Option<usize> {
         let root = self.tree.iter().position(|n| n.parent.is_none())?;
         if path == "/" {
             return Some(root);
@@ -3122,30 +3219,23 @@ impl App {
         }
     }
 
-    /// `restore-overrides <path>` (spec 0117 §4): replaces the collection
-    /// wholesale with `<path>`'s contents, silently dropping any entry
-    /// that doesn't resolve against the current tree/descriptor pool, and
-    /// warning (without blocking) on a target-hash mismatch.
-    fn run_restore_overrides(&mut self, args: Vec<&str>) {
-        if args.is_empty() {
-            self.message = "restore-overrides: missing path".to_string();
-            return;
-        }
-        let path = args.join(" ");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => {
-                self.message = format!("restore-overrides error: {e}");
-                return;
-            }
-        };
-        let (mut collection, target) = match override_pane::OverrideCollection::from_yaml(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                self.message = format!("restore-overrides error: {e}");
-                return;
-            }
-        };
+    /// Shared core of `restore-overrides`/batch `--load-overrides` (spec
+    /// 0117 §4, spec 0123 G4): loads and parses the YAML override
+    /// collection at `path`, silently drops any entry that doesn't
+    /// resolve against the current tree/descriptor pool, then replaces
+    /// `self.overrides` wholesale and re-renders (spec 0118 §6:
+    /// replacing the whole collection can change the resolved override
+    /// for any node). Returns the list of non-blocking hash-mismatch
+    /// warnings (empty if none) on success — a hash mismatch alone is
+    /// never a failure — or `Err(diagnostic)` if the file couldn't be
+    /// read or parsed as valid YAML in the first place, which the two
+    /// callers (`run_restore_overrides`, batch mode) treat differently:
+    /// the TUI just displays it and keeps running; batch mode (spec 0123
+    /// G4) treats it as a hard error.
+    pub(crate) fn load_overrides(&mut self, path: &str) -> Result<Vec<&'static str>, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let (mut collection, target) =
+            override_pane::OverrideCollection::from_yaml(&text).map_err(|e| e.to_string())?;
         collection.retain_resolvable(|origin| self.origin_resolves(origin));
         let (blob_sha256, descriptor_set_sha256) = self.target_hashes();
         let mut warnings = Vec::new();
@@ -3155,19 +3245,52 @@ impl App {
         if target.descriptor_set_sha256 != descriptor_set_sha256 {
             warnings.push("descriptor-set hash mismatch");
         }
+        // The document root's own type is external input (CLI `--type`,
+        // auto-inference, or an interactive retype) — unlike every other
+        // node, it's never re-derivable from the schema once lost, since
+        // `natural_type` infers a node's type by walking up to its
+        // *parent's* resolved field descriptor, and root has no parent.
+        // It must therefore survive a wholesale collection replace as a
+        // persistent baseline entry, same as `App::new`'s own initial
+        // `seed_root` call — otherwise root (and, transitively, every
+        // schema-typed descendant whose own `natural_type` walks back up
+        // through it) silently reverts to raw rendering, even though the
+        // loaded file's own explicit overrides are all individually
+        // intact. Preserve the currently-resolved root type unless the
+        // loaded file defines its own active root entry.
+        let root_origin = OverrideOrigin::Path {
+            path: "/".to_string(),
+        };
+        let has_root_entry = collection
+            .entries()
+            .iter()
+            .any(|e| e.active && e.origin == root_origin);
+        let current_root_type = self.resolve_active_override(self.first_node).flatten();
         self.overrides = collection;
-        // Spec 0118 §6: replacing the whole collection can change the
-        // resolved override for any node, so always re-render.
+        if !has_root_entry {
+            self.overrides.seed_root(current_root_type);
+        }
         self.render_overrides(self.first_node);
         self.manage_highlight = 0;
         self.manage_scroll = 0;
-        self.message = if warnings.is_empty() {
-            format!("restored overrides from {path}")
-        } else {
-            format!(
+        Ok(warnings)
+    }
+
+    /// `restore-overrides <path>` (spec 0117 §4): replaces the collection
+    /// wholesale with `<path>`'s contents — see `load_overrides`.
+    fn run_restore_overrides(&mut self, args: Vec<&str>) {
+        if args.is_empty() {
+            self.message = "restore-overrides: missing path".to_string();
+            return;
+        }
+        let path = args.join(" ");
+        self.message = match self.load_overrides(&path) {
+            Ok(warnings) if warnings.is_empty() => format!("restored overrides from {path}"),
+            Ok(warnings) => format!(
                 "restored overrides from {path} (warning: {})",
                 warnings.join(", ")
-            )
+            ),
+            Err(e) => format!("restore-overrides error: {e}"),
         };
     }
 
@@ -4239,6 +4362,7 @@ mod tests {
                 is_message: true,
                 packed_record_start: None,
                 wire_type: WT_LEN,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -4287,6 +4411,7 @@ mod tests {
                     is_message: false,
                     packed_record_start: None,
                     wire_type: WT_VARINT,
+                    natural_annotation: None,
                 },
                 parent: None,
                 first_child: None,
@@ -4355,6 +4480,7 @@ mod tests {
                 is_message: true,
                 packed_record_start: None,
                 wire_type: WT_LEN,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -4405,6 +4531,7 @@ mod tests {
                 is_message: false,
                 packed_record_start: None,
                 wire_type: WT_VARINT,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -4458,6 +4585,7 @@ mod tests {
                 is_message: false,
                 packed_record_start: None,
                 wire_type: WT_LEN,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -5562,6 +5690,241 @@ mod tests {
         (app, inner_idx, id_idx)
     }
 
+    /// `Outer2 { grp: MyGroup { id: 5 } }`, with `grp` declared as a
+    /// genuine schema wire-group field (`Type::Group`) — unlike
+    /// `message_set_fixture`'s auto-expanded MessageSet group items,
+    /// this is directly schema-resolved from the start. Also registers
+    /// a same-shaped sibling type `NewGroup` to override `grp` into
+    /// (spec 0122 Test Plan item 2).
+    fn group_type_fixture() -> (App, usize) {
+        // START_GROUP(5), id=5, END_GROUP(5) — minimal tag encoding.
+        group_type_fixture_with_blob(&[0x2Bu8, 0x08, 0x05, 0x2Cu8])
+    }
+
+    /// Same schema as `group_type_fixture`, but with `grp`'s `START_GROUP`
+    /// tag encoded with one overhang byte (non-minimal varint: `0xAB, 0x00`
+    /// instead of the minimal `0x2B`) — exercises the `tag_ohb: 1` anomaly
+    /// modifier (spec 0122 Test Plan item 2, 3rd bullet).
+    fn group_type_fixture_with_tag_ohb() -> (App, usize) {
+        group_type_fixture_with_blob(&[0xABu8, 0x00, 0x08, 0x05, 0x2Cu8])
+    }
+
+    fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
+        use prost::Message as _;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        use crate::decode::{decode, DescriptorContext};
+
+        let my_group_desc = DescriptorProto {
+            name: Some("MyGroup".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let new_group_desc = DescriptorProto {
+            name: Some("NewGroup".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("value".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let outer_desc = DescriptorProto {
+            name: Some("Outer2".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("grp".to_string()),
+                number: Some(5),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Group as i32),
+                type_name: Some(".test.MyGroup".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("test_group_type.proto".to_string()),
+            package: Some("test".to_string()),
+            syntax: Some("proto2".to_string()),
+            message_type: vec![outer_desc, my_group_desc, new_group_desc],
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+
+        // Unique per call (this fixture is shared by several tests that
+        // may run concurrently) to avoid one test's cleanup racing
+        // another's read of the same path.
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let descriptor_path =
+            std::env::temp_dir().join(format!("protolens-tui-group-type-descriptor-{n}.pb"));
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        let grp_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.type_fqdn.as_deref() == Some("test.MyGroup"))
+            .expect("tree must contain the MyGroup submessage");
+        (app, grp_idx)
+    }
+
+    /// Overriding a group field to a resolvable type must keep the
+    /// `group;` prefix in the header (spec 0122 Test Plan item 2, 1st
+    /// bullet).
+    #[test]
+    fn splice_override_on_a_group_field_keeps_the_group_prefix() {
+        let (mut app, grp_idx) = group_type_fixture();
+        app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+            .unwrap();
+        let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+        assert!(
+            header.contains("#@ group; NewGroup = 5"),
+            "expected group; NewGroup = 5 in header, got: {header:?}"
+        );
+    }
+
+    /// The header-line patch (spec 0122 §2) usually changes the header's
+    /// byte length (e.g. bare `#@ group` growing into `#@ group; NewGroup
+    /// = 5`) — `line_styles`' per-line color buckets must stay aligned
+    /// with `self.lines`' actual text for every line *after* the header,
+    /// not just the header itself (2026-07-15 regression: colors drifted
+    /// starting right after the first patched `#@ group;` header,
+    /// because `hints_by_line` was bucketing hints computed against the
+    /// *cached* (unpatched) header length using the *patched* line
+    /// array's lengths).
+    #[test]
+    fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
+        let (mut app, grp_idx) = group_type_fixture();
+        app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+            .unwrap();
+        let value_idx = app.tree[grp_idx]
+            .first_child
+            .expect("NewGroup has at least one child");
+        let line_idx = app.tree[value_idx].span.text_range.start;
+        let line = &app.lines[line_idx];
+        let value_pos = line
+            .find('5')
+            .expect("value line must contain the scalar 5");
+        assert!(
+            app.line_styles[line_idx]
+                .iter()
+                .any(|(range, role)| *role == SyntaxRole::Number && range.contains(&value_pos)),
+            "expected a Number-colored span covering the '5' in {line:?}, got {:?}",
+            app.line_styles[line_idx]
+        );
+    }
+
+    /// A group field carrying a `tag_ohb` anomaly modifier keeps that
+    /// modifier verbatim after being overridden to a different type (spec
+    /// 0122 Test Plan item 2, 3rd bullet).
+    #[test]
+    fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
+        let (mut app, grp_idx) = group_type_fixture_with_tag_ohb();
+        let header_before = app.lines[app.tree[grp_idx].span.text_range.start].clone();
+        assert!(
+            header_before.contains("tag_ohb: 1"),
+            "fixture must exercise the anomaly modifier, got: {header_before:?}"
+        );
+        app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+            .unwrap();
+        let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+        assert!(
+            header.contains("#@ group; NewGroup = 5; tag_ohb: 1"),
+            "expected group; NewGroup = 5; tag_ohb: 1 in header, got: {header:?}"
+        );
+    }
+
+    /// Overriding a `WT_LEN` (non-group) field to a resolvable type must
+    /// NOT show a `group;` prefix (spec 0122 Test Plan item 2, 2nd
+    /// bullet).
+    #[test]
+    fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        app.splice_override(inner_idx, Some("test.Outer".to_string()))
+            .unwrap();
+        let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+        assert!(
+            header.contains("#@ Outer = 1"),
+            "expected Outer = 1 in header, got: {header:?}"
+        );
+        assert!(
+            !header.contains("group;"),
+            "WT_LEN field override must not show group;: {header:?}"
+        );
+    }
+
+    /// A nested (non-root) field's header line must keep its leading
+    /// indentation after `splice_override` — the spec 0122 header-patching
+    /// rewrite of `new_lines[0]` must not drop the indentation the
+    /// synthetic wrapper's own render already computed via
+    /// `initial_level` (2026-07-15 regression: header lines of overridden
+    /// nested nodes lost their indentation while sibling/interior lines
+    /// stayed correctly indented).
+    #[test]
+    fn splice_override_preserves_the_header_line_indentation() {
+        let (mut app, inner_idx, _) = type_as_fixture();
+        let start = app.tree[inner_idx].span.text_range.start;
+        let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
+        app.splice_override(inner_idx, Some("test.Outer".to_string()))
+            .unwrap();
+        let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+        let indent_after = header.len() - header.trim_start().len();
+        assert!(
+            indent_after > 0,
+            "fixture must exercise a nested (indented) field"
+        );
+        assert_eq!(
+            indent_after, indent_before,
+            "header line lost its indentation after splice_override: {header:?}"
+        );
+    }
+
+    /// Reverting a group field's override (`target: None`) must restore
+    /// bare `#@ group` — the synthetic wrapper's `"message"` placeholder
+    /// must not leak into the header (spec 0122 Test Plan item 2, 4th
+    /// bullet; user-approved fix, 2026-07-15).
+    #[test]
+    fn splice_override_reverting_a_group_field_restores_bare_group() {
+        let (mut app, grp_idx) = group_type_fixture();
+        app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+            .unwrap();
+        app.splice_override(grp_idx, None).unwrap();
+        let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+        assert!(
+            header.contains("#@ group"),
+            "expected bare group in header, got: {header:?}"
+        );
+        assert!(
+            !header.contains("message"),
+            "reverted group header must not leak the synthetic \"message\" placeholder: {header:?}"
+        );
+    }
+
     /// The document root has no real field name of its own — a
     /// `splice_override`-driven re-render of the root (any retype, not
     /// just the initial `decode()` paint) must keep omitting
@@ -5943,6 +6306,103 @@ mod tests {
             "tier-2 auto-expansion must be a real, persisted, active \
              override entry: {:#?}",
             app.overrides.entries()
+        );
+    }
+
+    /// Regression test for a bug found while implementing spec 0123's
+    /// test plan: `load_overrides` (`:restore-overrides`/batch
+    /// `--load-overrides`) wholesale-replaces `self.overrides` (spec
+    /// 0117 §4), which used to silently drop the document root's own
+    /// `seed_root` entry whenever the loaded file didn't carry one
+    /// itself (the normal case — nobody manually saves a `path: "/"`
+    /// override). Root's type is external input (CLI `--type`/auto-
+    /// inference) with no schema-derived fallback (`natural_type` has no
+    /// parent field descriptor to consult for the root), so losing it
+    /// reverted root to raw rendering — which cascaded: every ordinary,
+    /// never-explicitly-overridden descendant's own `natural_type` walks
+    /// up through its parent's *resolved* type to find its field's
+    /// schema type, so the whole document (not just root) went raw, and
+    /// spec 0120's tier-2 MessageSet auto-expansion candidacy gate
+    /// (which needs its un-overridden grandparent to still resolve as
+    /// MessageSet-typed) silently stopped firing even when its own
+    /// override entry was present, correct, and active. Fixed by
+    /// preserving the currently-resolved root type across the replace
+    /// when the loaded file doesn't define its own.
+    #[test]
+    fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
+        let mut app = message_set_fixture();
+        let (blob_sha256, descriptor_set_sha256) = app.target_hashes();
+
+        // Deliberately omits any `path: "/"` entry — exactly the shape a
+        // real `:save-overrides` produces is *not* what's being tested
+        // here (that's covered by `save_and_restore_overrides_round_trips
+        // _and_drops_unresolvable_entries`); this reproduces a
+        // hand-authored/edited file, or any file saved before root ever
+        // carried a resolved type.
+        let yaml = format!(
+            "version: 1\n\
+             target:\n\
+             \x20 blob_sha256: \"{blob_sha256}\"\n\
+             \x20 descriptor_set_sha256: \"{descriptor_set_sha256}\"\n\
+             overrides:\n\
+             \x20 - kind: path\n\
+             \x20   path: \"/1/1\"\n\
+             \x20   type: protolens_internal.MessageSetItem\n\
+             \x20   active: true\n\
+             \x20   name: Item\n\
+             \x20 - kind: path\n\
+             \x20   path: \"/1/1/2\"\n\
+             \x20   type: ms_test.ExtPayload\n\
+             \x20   active: true\n"
+        );
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir()
+            .join(format!("protolens-tui-load-overrides-no-root-{n}.yaml"))
+            .to_string_lossy()
+            .into_owned();
+        std::fs::write(&path, &yaml).unwrap();
+        let warnings = app.load_overrides(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            app.tree[app.first_node].span.type_fqdn.as_deref() == Some("ms_test.Container"),
+            "root must keep its resolved type across a wholesale \
+             override-collection replace, even though the loaded file \
+             defines no root entry of its own: {:#?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.contains("label") && l.contains("hi")),
+            "tier-2 MessageSet auto-expansion must still take effect \
+             after --load-overrides, not just tier-1: {:#?}",
+            app.lines
+        );
+    }
+
+    /// Round-trip regression test (spec 0122 Test Plan item 3 — the
+    /// original reported bug's exact scenario): decode a MessageSet
+    /// fixture, let `App::new`'s automatic Any/MessageSet overrides
+    /// (spec 0120) apply, extract the root as `#@ prototext` text (spec
+    /// 0123's batch-mode rendering), `encode_text_to_binary` it back to
+    /// binary, and assert byte-for-byte equality with the original blob.
+    /// Before spec 0122's fix, `splice_override`'s synthetic `WT_LEN`-only
+    /// re-decode dropped the MessageSet `Item` group's `#@ group`
+    /// annotation, so re-encoding lost the group's wire framing entirely.
+    #[test]
+    fn round_trip_extract_and_encode_preserves_message_set_group_framing() {
+        let app = message_set_fixture();
+        let root_idx = app.resolve_path("/").expect("tree must have a root");
+        let text = app.extract_bytes(root_idx, ExtractFormat::Text);
+        let reencoded = prototext_core::serialize::encode_text::encode_text_to_binary(&text);
+        let original = &app.blob[app.wrapper_offset..];
+        assert_eq!(
+            reencoded, original,
+            "round-trip through extract+encode must byte-for-byte match \
+             the original blob"
         );
     }
 

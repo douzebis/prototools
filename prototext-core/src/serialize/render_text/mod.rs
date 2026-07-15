@@ -735,4 +735,211 @@ mod tests {
         assert!(!text.starts_with("1 {"), "got: {text}");
         assert!(text.starts_with("1: \""), "got: {text}");
     }
+
+    // ── `NodeSpan::natural_annotation` (spec 0122 Test Plan item 1) ────────
+
+    /// Build a one-file `ParsedSchema` from the given message descriptors,
+    /// rooted at `root_msg_name`. Mirrors `schema.rs`'s own test-fixture
+    /// convention.
+    fn build_schema(
+        message_type: Vec<prost_types::DescriptorProto>,
+        root_msg_name: &str,
+    ) -> crate::schema::ParsedSchema {
+        use prost::Message as ProstMessage;
+        let file = prost_types::FileDescriptorProto {
+            name: Some("test_natural_annotation.proto".into()),
+            syntax: Some("proto2".into()),
+            message_type,
+            ..Default::default()
+        };
+        let fds = prost_types::FileDescriptorSet { file: vec![file] };
+        let mut buf = Vec::new();
+        fds.encode(&mut buf).unwrap();
+        crate::schema::parse_schema(&buf, root_msg_name).unwrap()
+    }
+
+    fn int32_field(name: &str, number: i32) -> prost_types::FieldDescriptorProto {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        prost_types::FieldDescriptorProto {
+            name: Some(name.into()),
+            number: Some(number),
+            r#type: Some(Type::Int32 as i32),
+            label: Some(Label::Optional as i32),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn natural_annotation_captures_a_plain_message_field_decl() {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{DescriptorProto, FieldDescriptorProto};
+
+        let inner = DescriptorProto {
+            name: Some("Inner".into()),
+            field: vec![int32_field("x", 1)],
+            ..Default::default()
+        };
+        let outer = DescriptorProto {
+            name: Some("Outer".into()),
+            field: vec![FieldDescriptorProto {
+                name: Some("inner".into()),
+                number: Some(1),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".Inner".into()),
+                label: Some(Label::Optional as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let schema = build_schema(vec![outer, inner], "Outer");
+        let root = schema.root_descriptor().unwrap();
+
+        // Outer { inner: Inner { x: 1 } } — field 1 (LEN), payload = field 1
+        // (varint) = 1.
+        let buf = [0x0A, 0x02, 0x08, 0x01];
+        let (_, spans) = decode_and_render_indexed(
+            &buf,
+            Some(&root),
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let span = spans
+            .iter()
+            .find(|s| s.type_fqdn.as_deref() == Some("Inner"))
+            .expect("Inner span must exist");
+        assert_eq!(span.natural_annotation.as_deref(), Some("#@ Inner = 1"));
+    }
+
+    #[test]
+    fn natural_annotation_captures_a_resolvable_group_field_decl() {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{DescriptorProto, FieldDescriptorProto};
+
+        let my_group = DescriptorProto {
+            name: Some("MyGroup".into()),
+            field: vec![int32_field("id", 1)],
+            ..Default::default()
+        };
+        let outer = DescriptorProto {
+            name: Some("Outer".into()),
+            field: vec![FieldDescriptorProto {
+                name: Some("grp".into()),
+                number: Some(5),
+                r#type: Some(Type::Group as i32),
+                type_name: Some(".MyGroup".into()),
+                label: Some(Label::Optional as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let schema = build_schema(vec![outer, my_group], "Outer");
+        let root = schema.root_descriptor().unwrap();
+
+        // START_GROUP(5), id=7, END_GROUP(5).
+        let buf = [0x2B, 0x08, 0x07, 0x2C];
+        let (_, spans) = decode_and_render_indexed(
+            &buf,
+            Some(&root),
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let span = spans
+            .iter()
+            .find(|s| s.type_fqdn.as_deref() == Some("MyGroup"))
+            .expect("MyGroup span must exist");
+        assert_eq!(
+            span.natural_annotation.as_deref(),
+            Some("#@ group; MyGroup = 5")
+        );
+    }
+
+    #[test]
+    fn natural_annotation_captures_a_bare_group_with_no_schema() {
+        // No schema at all — field 5 is entirely unknown.
+        // START_GROUP(5), id=7, END_GROUP(5).
+        let buf = [0x2B, 0x08, 0x07, 0x2C];
+        let (_, spans) = decode_and_render_indexed(
+            &buf,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let span = spans
+            .iter()
+            .find(|s| s.is_message)
+            .expect("group span must exist");
+        assert_eq!(span.natural_annotation.as_deref(), Some("#@ group"));
+    }
+
+    #[test]
+    fn natural_annotation_preserves_a_tag_overhang_modifier() {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{DescriptorProto, FieldDescriptorProto};
+
+        let my_group = DescriptorProto {
+            name: Some("MyGroup".into()),
+            field: vec![int32_field("id", 1)],
+            ..Default::default()
+        };
+        let outer = DescriptorProto {
+            name: Some("Outer".into()),
+            field: vec![FieldDescriptorProto {
+                name: Some("grp".into()),
+                number: Some(5),
+                r#type: Some(Type::Group as i32),
+                type_name: Some(".MyGroup".into()),
+                label: Some(Label::Optional as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let schema = build_schema(vec![outer, my_group], "Outer");
+        let root = schema.root_descriptor().unwrap();
+
+        // START_GROUP(5) encoded with one overhang byte: 0x2B's minimal
+        // varint (0x2B) re-encoded as a 2-byte non-minimal varint
+        // (0xAB, 0x00) — same value, tag_ohb: 1. Then id=7, END_GROUP(5).
+        let buf = [0xAB, 0x00, 0x08, 0x07, 0x2C];
+        let (_, spans) = decode_and_render_indexed(
+            &buf,
+            Some(&root),
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        let span = spans
+            .iter()
+            .find(|s| s.type_fqdn.as_deref() == Some("MyGroup"))
+            .expect("MyGroup span must exist");
+        assert_eq!(
+            span.natural_annotation.as_deref(),
+            Some("#@ group; MyGroup = 5; tag_ohb: 1")
+        );
+    }
+
+    #[test]
+    fn natural_annotation_is_none_for_a_scalar_field() {
+        let (_, spans) = decode_and_render_indexed(
+            &VARINT_FIELD,
+            None,
+            DecodeRenderOpts {
+                annotations: true,
+                indent_size: 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].natural_annotation, None);
+    }
 }

@@ -29,6 +29,11 @@ use prototext_core::{render_as_bytes, RenderOpts};
 #[derive(Parser)]
 #[command(name = "protolens", version, about)]
 struct Cli {
+    /// Batch action to perform and exit. If omitted, protolens launches
+    /// the interactive TUI (spec 0123).
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// FileDescriptorSet for root-type determination and type resolution.
     /// May be a raw binary FileDescriptorSet or a `#@ prototext`-format
     /// FileDescriptorSet.
@@ -66,6 +71,59 @@ struct Cli {
     blob: PathBuf,
 }
 
+/// Batch (non-interactive) subcommands (spec 0123).
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Extract one node's rendering and exit, without entering the
+    /// interactive TUI.
+    Extract {
+        /// Field path of the node to extract, in positional-path
+        /// notation (`/` = document root; `/1/2` = root's 1st child's
+        /// 2nd child — same notation the TUI's status line displays per
+        /// node).
+        path: String,
+
+        /// Previously-saved override collection (spec 0117 §4 YAML, the
+        /// same file `:save-overrides` writes) to apply before
+        /// extraction. A target-hash mismatch against the loaded blob/
+        /// descriptor-set is a warning (to stderr), not a hard error —
+        /// same policy as the `:restore-overrides` TUI command. A
+        /// missing file or malformed YAML, unlike the TUI, is a hard
+        /// error.
+        #[arg(long = "load-overrides")]
+        load_overrides: Option<PathBuf>,
+
+        /// Output format. Defaults to `text`, or to `binary` when
+        /// `--no-annotations` is set — text output with no `#@`
+        /// annotations cannot be losslessly round-tripped back to
+        /// binary. Explicitly passing `text` together with
+        /// `--no-annotations` is a startup error.
+        #[arg(long = "format", value_enum)]
+        format: Option<ExtractFormatArg>,
+
+        /// Write to this file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
+}
+
+/// Mirrors `extract::ExtractFormat`'s two variants — a separate type
+/// since `ExtractFormat` itself has no `clap::ValueEnum` derive.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ExtractFormatArg {
+    Text,
+    Binary,
+}
+
+impl From<ExtractFormatArg> for extract::ExtractFormat {
+    fn from(f: ExtractFormatArg) -> Self {
+        match f {
+            ExtractFormatArg::Text => extract::ExtractFormat::Text,
+            ExtractFormatArg::Binary => extract::ExtractFormat::Binary,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     // Dynamic shell completion — same model as Cargo/prototext. When
     // PROTOLENS_COMPLETE=<shell> is set, print the completion script and
@@ -75,6 +133,19 @@ fn main() -> ExitCode {
         .complete();
 
     let cli = Cli::parse();
+
+    // Spec 0123 G3: a static, purely argument-driven inconsistency,
+    // checked before any decoding even starts.
+    if let Some(Command::Extract {
+        format: Some(ExtractFormatArg::Text),
+        ..
+    }) = &cli.command
+    {
+        if cli.no_annotations {
+            eprintln!("error: --format text is incompatible with --no-annotations");
+            return ExitCode::FAILURE;
+        }
+    }
 
     let Some(descriptor_set) = cli.descriptor_set.as_deref() else {
         eprintln!(
@@ -132,16 +203,25 @@ fn main() -> ExitCode {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| cli.blob.display().to_string());
 
-    // Resolved exactly once, before any rendering (spec 0116 §9) — no
-    // live re-detection while running.
-    let theme = match cli.theme {
-        theme::ThemeKind::System => theme::resolve_system(),
-        resolved => resolved,
+    // Theme/color resolution is irrelevant to batch mode's plain stdout/
+    // file output (spec 0123 Non-goals) — only resolved, and only probes
+    // the terminal, when actually about to enter the TUI.
+    let theme = match &cli.command {
+        None => {
+            // Resolved exactly once, before any rendering (spec 0116 §9)
+            // — no live re-detection while running.
+            let theme = match cli.theme {
+                theme::ThemeKind::System => theme::resolve_system(),
+                resolved => resolved,
+            };
+            // Primes the XTGETTCAP RGB probe now, before `tui::run` takes
+            // over the terminal with its own crossterm event loop (see
+            // `prime_supports_rgb` doc comment).
+            theme::prime_supports_rgb();
+            theme
+        }
+        Some(_) => theme::ThemeKind::Dark,
     };
-    // Primes the XTGETTCAP RGB probe now, before `tui::run` takes over the
-    // terminal with its own crossterm event loop (see `prime_supports_rgb`
-    // doc comment).
-    theme::prime_supports_rgb();
 
     let mut app = tui::App::new(
         decoded,
@@ -152,10 +232,66 @@ fn main() -> ExitCode {
         ctx,
         theme,
     );
-    if let Err(e) = tui::run(&mut app) {
-        eprintln!("error: {e}");
-        return ExitCode::FAILURE;
-    }
 
-    ExitCode::SUCCESS
+    match cli.command {
+        Some(Command::Extract {
+            path,
+            load_overrides,
+            format,
+            output,
+        }) => {
+            if let Some(overrides_path) = &load_overrides {
+                match app.load_overrides(&overrides_path.to_string_lossy()) {
+                    Ok(warnings) => {
+                        for w in warnings {
+                            eprintln!("warning: --load-overrides: {w}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "error: --load-overrides '{}': {e}",
+                            overrides_path.display()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+
+            let format = match format {
+                Some(f) => f.into(),
+                None if cli.no_annotations => extract::ExtractFormat::Binary,
+                None => extract::ExtractFormat::Text,
+            };
+
+            let Some(idx) = app.resolve_path(&path) else {
+                eprintln!("error: extract path '{path}' does not resolve");
+                return ExitCode::FAILURE;
+            };
+
+            let bytes = app.extract_bytes(idx, format);
+            match output {
+                Some(out_path) => {
+                    if let Err(e) = std::fs::write(&out_path, &bytes) {
+                        eprintln!("error: cannot write '{}': {e}", out_path.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
+                None => {
+                    use std::io::Write as _;
+                    if let Err(e) = std::io::stdout().write_all(&bytes) {
+                        eprintln!("error: writing to stdout: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        None => {
+            if let Err(e) = tui::run(&mut app) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+            ExitCode::SUCCESS
+        }
+    }
 }

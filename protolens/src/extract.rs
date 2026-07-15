@@ -156,20 +156,21 @@ pub fn dedent(lines: &[String]) -> String {
         .join("\n")
 }
 
-/// Extract `node` (the cursor's current node) from `blob`/`lines` to
-/// `path`, in the requested format.
-pub fn extract(
-    path: &Path,
+/// Render `node` (any tree node, not just the cursor's) from `blob`/
+/// `lines` to a self-contained byte vector, in the requested format — the
+/// same bytes `extract` writes to a file, factored out so a caller with
+/// no `Path` to write to (spec 0123's batch mode, writing to stdout) can
+/// reuse the exact same rendering.
+pub fn extract_bytes(
     format: ExtractFormat,
     blob: &[u8],
     lines: &[String],
     node: &TreeNode,
-) -> io::Result<()> {
+) -> Vec<u8> {
     match format {
         ExtractFormat::Binary => {
             let is_message = node.span.is_message;
-            let bytes = extract_binary(blob, &node.span.raw_range, is_message);
-            std::fs::write(path, bytes)
+            extract_binary(blob, &node.span.raw_range, is_message).to_vec()
         }
         ExtractFormat::Text => {
             let is_message = node.span.is_message;
@@ -180,10 +181,21 @@ pub fn extract(
                 r.clone()
             };
             let end = r.end.min(lines.len());
-            let text = format!("{PROTOTEXT_HEADER}{}", dedent(&lines[r.start..end]));
-            std::fs::write(path, text)
+            format!("{PROTOTEXT_HEADER}{}", dedent(&lines[r.start..end])).into_bytes()
         }
     }
+}
+
+/// Extract `node` (the cursor's current node) from `blob`/`lines` to
+/// `path`, in the requested format.
+pub fn extract(
+    path: &Path,
+    format: ExtractFormat,
+    blob: &[u8],
+    lines: &[String],
+    node: &TreeNode,
+) -> io::Result<()> {
+    std::fs::write(path, extract_bytes(format, blob, lines, node))
 }
 
 #[cfg(test)]
@@ -355,6 +367,7 @@ mod tests {
                 is_message: false,
                 packed_record_start: None,
                 wire_type: WT_LEN,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -397,6 +410,7 @@ mod tests {
                 is_message: true,
                 packed_record_start: None,
                 wire_type: WT_LEN,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
@@ -442,6 +456,7 @@ mod tests {
                 is_message: true,
                 packed_record_start: None,
                 wire_type: WT_START_GROUP,
+                natural_annotation: None,
             },
             parent: None,
             first_child: None,
