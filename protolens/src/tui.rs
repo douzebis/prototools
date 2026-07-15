@@ -4718,7 +4718,10 @@ fn restore_terminal() {
 /// terminal's actual contents are unknown after a suspend/resume cycle
 /// (another program may have used the same terminal in between).
 #[cfg(unix)]
-fn suspend<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+fn suspend<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     restore_terminal();
     // SAFETY: raising a signal on our own process is always sound.
     unsafe {
@@ -4726,7 +4729,8 @@ fn suspend<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     }
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-    terminal.clear()
+    terminal.clear()?;
+    Ok(())
 }
 
 /// Run the interactive TUI loop against a real terminal.
@@ -4756,7 +4760,10 @@ pub fn run(app: &mut App) -> io::Result<()> {
     result
 }
 
-fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     loop {
         terminal.draw(|frame| app.render(frame))?;
         match event::read()? {
