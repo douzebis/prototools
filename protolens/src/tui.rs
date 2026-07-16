@@ -2465,8 +2465,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.request_quit(),
-            KeyCode::Tab => self.override_focus = false,
+            KeyCode::Char('q') | KeyCode::Tab => self.override_focus = false,
             KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
@@ -2626,8 +2625,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => self.request_quit(),
-            KeyCode::Tab => self.manage_focus = false,
+            KeyCode::Char('q') | KeyCode::Tab => self.manage_focus = false,
             KeyCode::Esc | KeyCode::Char('o') => self.close_manage_pane(),
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
