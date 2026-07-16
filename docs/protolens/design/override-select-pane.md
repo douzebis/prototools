@@ -1,0 +1,81 @@
+<!--
+SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+
+SPDX-License-Identifier: MIT
+-->
+
+# Pane: override selection pane
+
+*last verified: 2026-07-16*
+
+## Executive summary
+
+The override selection pane (`t`) is where the user picks a type for the
+node under the cursor. It offers a ranked list of plausible candidates —
+either scored by the inference graph or sorted alphabetically — plus a
+permanently pinned "raw / no type" option, and, distinctively, shows the
+effect of each highlighted candidate *live* in the main pane before the
+user commits to it. Committing (`Enter`) is the one action in this pane
+that actually writes to the [override collection](override-collection.md);
+everything else — sorting, scrolling, live preview — is provisional and
+freely discardable via `Esc`.
+
+## Technical detail
+
+### Ranking is a thin UI layer over `descriptor-context.md`'s scoring
+
+This pane does no scoring itself. It asks the scoring graph (via
+`descriptor-context.md`) for a ranked `(type, score)` list for the
+cursor's own byte range, consults the [candidate
+cache](caches.md) first, and falls back to lexicographic-only ranking
+(every known type FQDN, alphabetically) whenever no scoring graph is
+loaded at all. The pinned raw entry is always row 0, deliberately never
+the pane's default highlight on open — the default highlight instead
+prefers, in order: whatever type is already active for this node (so
+reopening the pane on an already-typed node doesn't lose the user's
+place), then the top-ranked inferred candidate, then raw only as a last
+resort.
+
+### Live preview: cheap, provisional, and self-reverting
+
+Every time the highlighted row changes, the pane immediately splices the
+highlighted candidate into the main pane using the same
+[`splice_override`](document-tree.md) primitive a real commit would use —
+but deliberately does *not* touch the override collection, and
+deliberately *invalidates* (rather than sets) the node's own `rendered_as`
+provenance after each preview splice. That second detail is what makes
+`Esc` able to cleanly revert: because a preview splice never claims to be
+the node's real resolved state, a later real render pass never
+mistakenly concludes "nothing changed, no need to re-splice" just because
+a previewed row happened to coincide with the node's actual effective
+type. Closing the pane (by any route — `Enter`, `Esc`, or toggling `t`
+again) always ends with one real `render_overrides` pass from the target
+node, which is what actually settles the display back to the collection's
+true state, live-preview history notwithstanding.
+
+Live preview intentionally does not extend into nested Any/MessageSet
+auto-expansion within the previewed subtree — a preview shows the
+directly-retyped node's own new shape, not a full recursive re-resolution
+of everything beneath it. This is a documented scope limit, not an
+oversight: a complete-preview mode was considered and deferred, along
+with a "cancel in-flight, latest wins" debounce design for if/when scoring
+or rendering a full nested preview ever becomes expensive enough to need
+one.
+
+### Capped vs. complete candidate lists
+
+Reopening the pane on a range that's only ever been seen as someone
+else's [capped candidate-cache preview](caches.md) initially shows just
+that capped list. Scrolling (or jumping via `Home`/`End`) past what's
+cached transparently triggers a one-time upgrade to the complete,
+freshly-scored list — the user never has to explicitly ask for "show me
+more"; the pane notices it's about to run out of cached rows and fetches
+the rest first.
+
+### Search operates on the FQDN, not the score
+
+The pane's own `/`/`?`/`n` search matches candidate FQDNs
+case-insensitively, independent of whichever sort mode is currently
+active — searching works the same whether the list is inferred-order or
+alphabetical, since it's a text match over the same underlying strings
+either way.
