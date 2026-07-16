@@ -1,0 +1,501 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+use super::super::*;
+use super::support::*;
+
+#[test]
+fn resolve_command_prefix_and_exact_match() {
+    assert_eq!(resolve_command("extract"), Ok("extract"));
+    assert_eq!(resolve_command("e"), Ok("extract"));
+    assert!(resolve_command("zzz").is_err());
+    // "type-as" is itself a prefix of "type-as-raw" — exact match
+    // must still win (spec 0114 §7).
+    assert_eq!(resolve_command("type-as"), Ok("type-as"));
+    assert_eq!(resolve_command("type-as-raw"), Ok("type-as-raw"));
+    assert!(resolve_command("type-a").is_err());
+}
+
+#[test]
+fn longest_common_prefix_examples() {
+    assert_eq!(longest_common_prefix(&["extract", "extra"]), "extra");
+    assert_eq!(longest_common_prefix(&["extract"]), "extract");
+    assert_eq!(longest_common_prefix(&[]), "");
+    assert_eq!(longest_common_prefix(&["abc", "xyz"]), "");
+}
+
+/// Spec 0113 D26: `Tab` on a unique-matching command-name prefix
+/// completes it in full.
+#[test]
+fn tab_completes_the_unique_command_name() {
+    let mut app = empty_app();
+    app.splash = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.command_buffer.as_deref(), Some("extract"));
+    assert_eq!(app.command_cursor, "extract".chars().count());
+}
+
+/// Spec 0113 D26: once a space precedes the cursor, `Tab` is a silent
+/// no-op for commands with no argument completion — `:extract` has
+/// none (spec 0114 §7 only adds argument completion for `:type-as`'s
+/// FQDN argument, exercised separately).
+#[test]
+fn tab_is_a_no_op_once_past_the_first_space() {
+    let mut app = empty_app();
+    app.splash = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in "extract ".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.command_buffer.as_deref(), Some("extract "));
+}
+
+/// Spec 0113 D26: repeated `Tab` cycles forward through a multi-
+/// candidate list, wrapping around; `Shift-Tab` (`BackTab`) cycles
+/// backward. Exercised directly against `handle_tab_key`/a synthetic
+/// `CompletionState` (real multi-candidate cycling is also reachable
+/// end-to-end via `:type-as`/`:type-as-raw`, spec 0114 §7 — see
+/// `resolve_command_prefix_and_exact_match` and the `type_as_command_*`
+/// tests below).
+#[test]
+fn tab_cycles_forward_and_shift_tab_cycles_backward() {
+    let mut app = empty_app();
+    app.command_buffer = Some("xy".to_string());
+    app.command_cursor = 2;
+    app.completion = Some(CompletionState {
+        token_start: 0,
+        suffix: String::new(),
+        candidates: vec![
+            "xyalpha".to_string(),
+            "xybeta".to_string(),
+            "xygamma".to_string(),
+        ],
+        index: None,
+    });
+    app.handle_tab_key(true);
+    assert_eq!(app.command_buffer.as_deref(), Some("xyalpha"));
+    app.handle_tab_key(true);
+    assert_eq!(app.command_buffer.as_deref(), Some("xybeta"));
+    app.handle_tab_key(false);
+    assert_eq!(app.command_buffer.as_deref(), Some("xyalpha"));
+    // Wraps backward past the start.
+    app.handle_tab_key(false);
+    assert_eq!(app.command_buffer.as_deref(), Some("xygamma"));
+}
+
+/// Spec 0125 §G3: `:save-overrides` then `:restore-overrides`
+/// round-trips an `auto: true` entry's `auto` flag exactly, and a
+/// pre-existing YAML file with no `auto` key still loads fine
+/// (defaults to `false`).
+#[test]
+fn yaml_round_trips_auto_flag_and_defaults_false_when_absent() {
+    let mut collection = override_pane::OverrideCollection::new();
+    collection.activate_auto(
+        OverrideOrigin::Path {
+            path: "/".to_string(),
+        },
+        Some("pkg.Type".to_string()),
+    );
+    let yaml = collection.to_yaml("blobsha".to_string(), "descsha".to_string());
+    assert!(
+        yaml.contains("auto: true"),
+        "auto: true must round-trip: {yaml}"
+    );
+    let (restored, _target) =
+        override_pane::OverrideCollection::from_yaml(&yaml).expect("must parse");
+    assert!(
+        restored.entries()[0].auto,
+        "restored entry must keep auto: true"
+    );
+
+    // Pre-existing file with no `auto` key at all.
+    let legacy_yaml = "version: 1\n\
+         target:\n  blob_sha256: blobsha\n  descriptor_set_sha256: descsha\n\
+         overrides:\n  - path: /\n    type: pkg.Type\n    active: true\n";
+    let (legacy, _target) =
+        override_pane::OverrideCollection::from_yaml(legacy_yaml).expect("must parse legacy");
+    assert!(
+        !legacy.entries()[0].auto,
+        "legacy file with no auto key must default to auto: false"
+    );
+}
+
+/// Spec 0127 §G1: a long `:command` buffer becomes pannable — typing
+/// past the visible width auto-follows the cursor instead of clipping
+/// it off-screen, and the same offset can also be panned manually via
+/// hover + Shift+wheel/native horizontal scroll.
+#[test]
+fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
+    let (mut app, _items) = repeated_scalar_fixture();
+    app.splash = false;
+    app.command_buffer = Some("a".repeat(80));
+    app.command_cursor = 80;
+
+    let backend = TestBackend::new(60, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let cmd_area = app
+        .cmd_area
+        .expect("command bar must be shown while typing");
+    assert!(
+        app.command_pan_offset > 0,
+        "auto-follow must have panned to keep the cursor visible"
+    );
+    let cursor_x = cmd_area.x + (1 + app.command_cursor - app.command_pan_offset) as u16;
+    assert!(
+        cursor_x < cmd_area.x + cmd_area.width,
+        "the cursor must stay within the visible command bar"
+    );
+
+    let offset_before = app.command_pan_offset;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollLeft,
+        column: cmd_area.x,
+        row: cmd_area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        app.command_pan_offset < offset_before,
+        "hovering + ScrollLeft must pan the command bar left"
+    );
+}
+
+/// Regression test for a bug found while implementing spec 0123's
+/// test plan: `load_overrides` (`:restore-overrides`/batch
+/// `--load-overrides`) wholesale-replaces `self.overrides` (spec
+/// 0117 §4), which used to silently drop the document root's own
+/// `seed_root` entry whenever the loaded file didn't carry one
+/// itself (the normal case — nobody manually saves a `path: "/"`
+/// override). Root's type is external input (CLI `--type`/auto-
+/// inference) with no schema-derived fallback (`natural_type` has no
+/// parent field descriptor to consult for the root), so losing it
+/// reverted root to raw rendering — which cascaded: every ordinary,
+/// never-explicitly-overridden descendant's own `natural_type` walks
+/// up through its parent's *resolved* type to find its field's
+/// schema type, so the whole document (not just root) went raw, and
+/// spec 0120's tier-2 MessageSet auto-expansion candidacy gate
+/// (which needs its un-overridden grandparent to still resolve as
+/// MessageSet-typed) silently stopped firing even when its own
+/// override entry was present, correct, and active. Fixed by
+/// preserving the currently-resolved root type across the replace
+/// when the loaded file doesn't define its own.
+#[test]
+fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
+    let mut app = message_set_fixture();
+    let (blob_sha256, descriptor_set_sha256) = app.target_hashes();
+
+    // Deliberately omits any `path: "/"` entry — exactly the shape a
+    // real `:save-overrides` produces is *not* what's being tested
+    // here (that's covered by `save_and_restore_overrides_round_trips
+    // _and_drops_unresolvable_entries`); this reproduces a
+    // hand-authored/edited file, or any file saved before root ever
+    // carried a resolved type.
+    let yaml = format!(
+        "version: 1\n\
+         target:\n\
+         \x20 blob_sha256: \"{blob_sha256}\"\n\
+         \x20 descriptor_set_sha256: \"{descriptor_set_sha256}\"\n\
+         overrides:\n\
+         \x20 - path: \"/1/1\"\n\
+         \x20   type: protolens_internal.MessageSetItem\n\
+         \x20   active: true\n\
+         \x20   name: Item\n\
+         \x20 - path: \"/1/1/2\"\n\
+         \x20   type: ms_test.ExtPayload\n\
+         \x20   active: true\n"
+    );
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir()
+        .join(format!("protolens-tui-load-overrides-no-root-{n}.yaml"))
+        .to_string_lossy()
+        .into_owned();
+    std::fs::write(&path, &yaml).unwrap();
+    let warnings = app.load_overrides(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(
+        app.tree[app.first_node].span.type_fqdn.as_deref() == Some("ms_test.Container"),
+        "root must keep its resolved type across a wholesale \
+         override-collection replace, even though the loaded file \
+         defines no root entry of its own: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hi")),
+        "tier-2 MessageSet auto-expansion must still take effect \
+         after --load-overrides, not just tier-1: {:#?}",
+        app.lines
+    );
+}
+
+/// Round-trip regression test (spec 0122 Test Plan item 3 — the
+/// original reported bug's exact scenario): decode a MessageSet
+/// fixture, let `App::new`'s automatic Any/MessageSet overrides
+/// (spec 0120) apply, extract the root as `#@ prototext` text (spec
+/// 0123's batch-mode rendering), `encode_text_to_binary` it back to
+/// binary, and assert byte-for-byte equality with the original blob.
+/// Before spec 0122's fix, `splice_override`'s synthetic `WT_LEN`-only
+/// re-decode dropped the MessageSet `Item` group's `#@ group`
+/// annotation, so re-encoding lost the group's wire framing entirely.
+#[test]
+fn round_trip_extract_and_encode_preserves_message_set_group_framing() {
+    let app = message_set_fixture();
+    let root_idx = app.resolve_path("/").expect("tree must have a root");
+    let text = app.extract_bytes(root_idx, ExtractFormat::Text);
+    let reencoded = prototext_core::serialize::encode_text::encode_text_to_binary(&text);
+    let original = &app.blob[app.wrapper_offset..];
+    assert_eq!(
+        reencoded, original,
+        "round-trip through extract+encode must byte-for-byte match \
+         the original blob"
+    );
+}
+
+/// Spec 0114 §7: `:type-as <FQDN>` applies the override directly to
+/// the cursor node, bypassing the override pane entirely — it must
+/// never open (`override_target` stays `None` throughout).
+#[test]
+fn type_as_command_applies_override_bypassing_pane() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.run_command("type-as test.Inner");
+    assert!(
+        app.override_target.is_none(),
+        "the pane must never open for :type-as"
+    );
+    assert_eq!(
+        app.tree[inner_idx].span.type_fqdn.as_deref(),
+        Some("test.Inner")
+    );
+    assert!(app.message.contains("test.Inner"));
+}
+
+/// Spec 0114 §7: `:type-as-raw` marks the cursor node's range as
+/// explicitly raw, bypassing the pane.
+#[test]
+fn type_as_raw_command_marks_raw() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.run_command("type-as-raw");
+    assert!(app.override_target.is_none());
+    assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
+}
+
+/// Spec 0114 §7/§5 step 1: `:type-as` on an ineligible node (neither
+/// message/group nor length-delimited scalar) is refused with the
+/// same message `t` gives.
+#[test]
+fn type_as_command_rejects_non_message_node() {
+    let (mut app, _, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+    app.run_command("type-as test.Inner");
+    assert!(
+        app.message
+            .contains("cannot override: not a message/group or length-delimited field"),
+        "unexpected message: {}",
+        app.message
+    );
+}
+
+/// Spec 0114 §7: once the command-name token has unambiguously
+/// resolved to `type-as`, `Tab` completes its FQDN argument against
+/// `all_type_fqdns`.
+#[test]
+fn tab_completes_type_as_fqdn_argument() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in "type-as test.In".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.command_buffer.as_deref(), Some("type-as test.Inner"));
+}
+
+/// Spec 0117 §4: `resolve_path` is the inverse of `positional_path`
+/// for every node reachable from the root, and `None` for a path that
+/// doesn't resolve against the current tree.
+#[test]
+fn resolve_path_is_the_inverse_of_positional_path() {
+    let (app, inner_idx, id_idx) = type_as_fixture();
+    let outer_idx = app
+        .tree
+        .iter()
+        .position(|n| n.parent.is_none())
+        .expect("tree must have a wrapper root");
+    assert_eq!(
+        app.resolve_path(&app.positional_path(outer_idx)),
+        Some(outer_idx)
+    );
+    assert_eq!(
+        app.resolve_path(&app.positional_path(inner_idx)),
+        Some(inner_idx)
+    );
+    assert_eq!(app.resolve_path(&app.positional_path(id_idx)), Some(id_idx));
+    assert_eq!(app.resolve_path("/99"), None);
+}
+
+/// Spec 0117 §4's restore-time validation: `origin_resolves` checks
+/// each of the three origin kinds against the current tree/descriptor
+/// pool.
+#[test]
+fn origin_resolves_checks_path_field_and_fqdn_field_origins() {
+    let (app, inner_idx, _) = type_as_fixture();
+    let inner_path = app.positional_path(inner_idx);
+
+    assert!(app.origin_resolves(&OverrideOrigin::Path {
+        path: inner_path.clone()
+    }));
+    assert!(!app.origin_resolves(&OverrideOrigin::Path {
+        path: "/99".to_string()
+    }));
+
+    assert!(app.origin_resolves(&OverrideOrigin::PathField {
+        path: inner_path.clone(),
+        field: 1,
+    }));
+    assert!(!app.origin_resolves(&OverrideOrigin::PathField {
+        path: inner_path,
+        field: 99,
+    }));
+
+    assert!(app.origin_resolves(&OverrideOrigin::FqdnField {
+        fqdn: "test.Inner".to_string(),
+        field: 1,
+    }));
+    assert!(!app.origin_resolves(&OverrideOrigin::FqdnField {
+        fqdn: "test.Inner".to_string(),
+        field: 99,
+    }));
+    assert!(!app.origin_resolves(&OverrideOrigin::FqdnField {
+        fqdn: "test.NoSuchType".to_string(),
+        field: 1,
+    }));
+}
+
+/// Spec 0117 §4: `default_save_overrides_path` mirrors
+/// `default_extract_path`'s directory/stem derivation, but always
+/// with a `.yaml` extension.
+#[test]
+fn default_save_overrides_path_uses_blob_stem_with_yaml_extension() {
+    let (mut app, _, _) = type_as_fixture();
+    app.blob_path = PathBuf::from("/tmp/some/target.pb");
+    assert_eq!(app.default_save_overrides_path(), "/tmp/some/target.yaml");
+}
+
+/// Spec 0117 §4: `:save-overrides`/`:restore-overrides` round-trip the
+/// collection through YAML, and restore silently drops an entry whose
+/// origin no longer resolves against the current tree.
+#[test]
+fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.overrides.activate(
+        OverrideOrigin::PathField {
+            path: app.positional_path(inner_idx),
+            field: 1,
+        },
+        Some("test.Inner".to_string()),
+    );
+    // Doesn't resolve against this tree — must be dropped on restore.
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/99".to_string(),
+        },
+        None,
+    );
+    assert_eq!(app.overrides.entries().len(), 3); // root + the two above
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir()
+        .join(format!("protolens-tui-save-restore-{n}.yaml"))
+        .to_string_lossy()
+        .into_owned();
+
+    app.run_save_overrides(vec![&path]);
+    assert!(
+        app.message.starts_with("saved overrides to"),
+        "unexpected message: {}",
+        app.message
+    );
+
+    app.overrides = override_pane::OverrideCollection::new();
+    app.run_restore_overrides(vec![&path]);
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(
+        app.message.starts_with("restored overrides from"),
+        "unexpected message: {}",
+        app.message
+    );
+    assert!(
+        !app.message.contains("warning"),
+        "unexpected warning: {}",
+        app.message
+    );
+    assert_eq!(app.overrides.entries().len(), 2); // "/99" silently dropped
+    assert!(!app
+        .overrides
+        .entries()
+        .iter()
+        .any(|e| matches!(&e.origin, OverrideOrigin::Path { path } if path == "/99")));
+}
+
+/// Spec 0117 §4: a target-hash mismatch on restore warns in the
+/// message line but does not block the restore.
+#[test]
+fn restore_overrides_warns_on_hash_mismatch_without_blocking() {
+    let (mut app, _, _) = type_as_fixture();
+    let yaml = app
+        .overrides
+        .to_yaml("deadbeef".to_string(), "deadbeef".to_string());
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir()
+        .join(format!("protolens-tui-restore-hash-mismatch-{n}.yaml"))
+        .to_string_lossy()
+        .into_owned();
+    std::fs::write(&path, &yaml).unwrap();
+
+    app.run_restore_overrides(vec![&path]);
+    std::fs::remove_file(&path).unwrap();
+
+    assert!(app.message.contains("warning"), "{}", app.message);
+    assert!(app.message.contains("blob hash mismatch"));
+    assert!(app.message.contains("descriptor-set hash mismatch"));
+    assert_eq!(app.overrides.entries().len(), 1); // restore still applied
+}
+
+/// Spec 0117 §4: `Tab` completes `:save-overrides`/`:restore-overrides`'s
+/// path argument against real directory entries, cycling on the
+/// longest common prefix — no `!arg_prefix.contains(' ')` restriction,
+/// unlike `:type-as`'s FQDN completer.
+#[test]
+fn tab_completes_filesystem_path_for_save_overrides_argument() {
+    let (mut app, _, _) = type_as_fixture();
+    let dir =
+        std::env::temp_dir().join(format!("protolens-tui-fs-complete-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("alpha.yaml"), b"").unwrap();
+    std::fs::write(dir.join("alphabet.yaml"), b"").unwrap();
+
+    let prefix = format!("save-overrides {}/al", dir.to_string_lossy());
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in prefix.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let expected = format!("save-overrides {}/alpha", dir.to_string_lossy());
+    assert_eq!(app.command_buffer.as_deref(), Some(expected.as_str()));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

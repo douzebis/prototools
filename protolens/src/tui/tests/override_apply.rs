@@ -1,0 +1,717 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+use super::super::*;
+use super::support::*;
+
+/// Spec 0118 §4: `splice_override` regenerates a whole node (not just
+/// its interior) into `self.lines`/`self.tree`, repeatable on the
+/// same node (the design's key risk: post-order array contiguity does
+/// not survive a *second* override of the same node, since the first
+/// override's new nodes are appended at the array's end —
+/// `splice_override` must never rely on it).
+#[test]
+fn apply_override_splices_tree_and_lines_repeatedly() {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let leaf_desc = DescriptorProto {
+        name: Some("Leaf".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("val".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let node_desc = DescriptorProto {
+        name: Some("Node".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("a".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".test.Leaf".to_string()),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("b".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("inner".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".test.Node".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_apply_override.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, node_desc, leaf_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    let descriptor_path = std::env::temp_dir().join("protolens-tui-apply-override-descriptor.pb");
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Node payload: a = Leaf { val: 9 } (message, field 1), b = 42
+    // (varint, field 2).
+    let leaf_bytes = [0x08u8, 0x09];
+    let node_payload = [0x0Au8, 0x02, leaf_bytes[0], leaf_bytes[1], 0x10, 0x2A];
+    // Outer wraps Node as field 1 (LEN).
+    let mut blob = vec![0x0Au8, node_payload.len() as u8];
+    blob.extend_from_slice(&node_payload);
+
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+
+    let node_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Node"))
+        .expect("tree must contain the Node submessage");
+    let node_level = app.tree[node_idx].span.level;
+
+    // Fold the "a" child before overriding, to verify the stale-fold
+    // scrubbing (`collect_descendants` cleanup).
+    let a_idx_before = app.tree[node_idx]
+        .first_child
+        .expect("Node has at least one child");
+    app.folded.insert(a_idx_before);
+
+    let assert_children = |app: &App, tag: &str| {
+        let mut children = Vec::new();
+        let mut cur = app.tree[node_idx].first_child;
+        while let Some(c) = cur {
+            children.push(c);
+            cur = app.tree[c].next_sibling;
+        }
+        assert_eq!(children.len(), 2, "{tag}: expected two children (a, b)");
+        for &c in &children {
+            assert_eq!(
+                app.tree[c].span.level,
+                node_level + 1,
+                "{tag}: child level must match pre-override nesting"
+            );
+        }
+        assert_eq!(
+            app.tree[children[0]].span.type_fqdn.as_deref(),
+            Some("test.Leaf"),
+            "{tag}: first child must resolve to test.Leaf"
+        );
+    };
+
+    app.override_target = Some(node_idx);
+
+    // 1) Re-typed as itself: idempotent structural round-trip.
+    app.splice_override(node_idx, Some("test.Node".to_string()))
+        .expect("re-typing as the same type must succeed");
+    assert_children(&app, "re-typed as itself");
+    assert_eq!(
+        app.tree[node_idx].span.type_fqdn.as_deref(),
+        Some("test.Node")
+    );
+    assert!(
+        !app.folded.contains(&a_idx_before),
+        "orphaned old child must be scrubbed from `folded`"
+    );
+
+    // 2) Raw override (no schema).
+    app.splice_override(node_idx, None)
+        .expect("raw override must succeed");
+    assert_eq!(app.tree[node_idx].span.type_fqdn, None);
+
+    // 3) Re-typed again, on top of two prior overrides — exercises
+    // repeated overrides of the same node.
+    app.splice_override(node_idx, Some("test.Node".to_string()))
+        .expect("third override must still succeed");
+    assert_children(&app, "re-typed a third time");
+
+    // `line_to_node` must stay fully consistent with the doc chain:
+    // every reachable node via `doc_next` from `first_node`, and
+    // nothing else.
+    let mut expected = HashMap::new();
+    let mut cur = Some(app.first_node);
+    let mut count = 0;
+    while let Some(c) = cur {
+        expected.insert(app.tree[c].span.text_range.start, c);
+        count += 1;
+        assert!(count <= app.tree.len(), "doc chain must not cycle");
+        cur = app.tree[c].doc_next;
+    }
+    assert_eq!(app.line_to_node, expected);
+}
+
+/// Overriding a plain scalar (string) field into an incompatible
+/// message type must not panic — it should apply the override and
+/// surface the mismatch as ordinary `TYPE_MISMATCH`/`INVALID_*`
+/// annotations in the interior, exactly like any other malformed
+/// nested-message re-decode (feedback, 2026-07-16: `t` used to
+/// panic on `natural_annotation`'s `.expect()`).
+#[test]
+fn splice_override_on_an_incompatible_scalar_does_not_panic() {
+    use crate::decode::{decode, DescriptorContext};
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    let str_msg = DescriptorProto {
+        name: Some("StrHolder".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("s".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::String as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let target_msg = DescriptorProto {
+        name: Some("Target".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("id".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("incompat.proto".to_string()),
+        package: Some("incompat".to_string()),
+        message_type: vec![str_msg, target_msg],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-incompat-override-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // StrHolder { s: "hello" }
+    let label = b"hello";
+    let mut blob = vec![0x0Au8, label.len() as u8];
+    blob.extend_from_slice(label);
+    let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let s_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.field_number == 1)
+        .expect("must find field 1");
+    assert!(
+        app.can_override(s_idx),
+        "a WT_LEN scalar must be overridable"
+    );
+
+    app.splice_override(s_idx, Some("incompat.Target".to_string()))
+        .expect("override onto an incompatible type must still succeed");
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("INVALID") || l.contains("TYPE_MISMATCH")),
+        "mismatch must surface as an inline annotation, not a panic: {:?}",
+        app.lines
+    );
+}
+
+/// Overriding a group field to a resolvable type must keep the
+/// `group;` prefix in the header (spec 0122 Test Plan item 2, 1st
+/// bullet).
+#[test]
+fn splice_override_on_a_group_field_keeps_the_group_prefix() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+        .unwrap();
+    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    assert!(
+        header.contains("#@ group; NewGroup = 5"),
+        "expected group; NewGroup = 5 in header, got: {header:?}"
+    );
+}
+
+/// The header-line patch (spec 0122 §2) usually changes the header's
+/// byte length (e.g. bare `#@ group` growing into `#@ group; NewGroup
+/// = 5`) — `line_styles`' per-line color buckets must stay aligned
+/// with `self.lines`' actual text for every line *after* the header,
+/// not just the header itself (2026-07-15 regression: colors drifted
+/// starting right after the first patched `#@ group;` header,
+/// because `hints_by_line` was bucketing hints computed against the
+/// *cached* (unpatched) header length using the *patched* line
+/// array's lengths).
+#[test]
+fn splice_override_keeps_colors_aligned_after_a_header_length_change() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+        .unwrap();
+    let value_idx = app.tree[grp_idx]
+        .first_child
+        .expect("NewGroup has at least one child");
+    let line_idx = app.tree[value_idx].span.text_range.start;
+    let line = &app.lines[line_idx];
+    let value_pos = line
+        .find('5')
+        .expect("value line must contain the scalar 5");
+    assert!(
+        app.line_styles[line_idx]
+            .iter()
+            .any(|(range, role)| *role == SyntaxRole::Number && range.contains(&value_pos)),
+        "expected a Number-colored span covering the '5' in {line:?}, got {:?}",
+        app.line_styles[line_idx]
+    );
+}
+
+/// A group field carrying a `tag_ohb` anomaly modifier keeps that
+/// modifier verbatim after being overridden to a different type (spec
+/// 0122 Test Plan item 2, 3rd bullet).
+#[test]
+fn splice_override_on_a_group_field_keeps_the_tag_ohb_modifier() {
+    let (mut app, grp_idx) = group_type_fixture_with_tag_ohb();
+    let header_before = app.lines[app.tree[grp_idx].span.text_range.start].clone();
+    assert!(
+        header_before.contains("tag_ohb: 1"),
+        "fixture must exercise the anomaly modifier, got: {header_before:?}"
+    );
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+        .unwrap();
+    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    assert!(
+        header.contains("#@ group; NewGroup = 5; tag_ohb: 1"),
+        "expected group; NewGroup = 5; tag_ohb: 1 in header, got: {header:?}"
+    );
+}
+
+/// Overriding a `WT_LEN` (non-group) field to a resolvable type must
+/// NOT show a `group;` prefix (spec 0122 Test Plan item 2, 2nd
+/// bullet).
+#[test]
+fn splice_override_on_a_wt_len_field_has_no_group_prefix() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.splice_override(inner_idx, Some("test.Outer".to_string()))
+        .unwrap();
+    let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+    assert!(
+        header.contains("#@ Outer = 1"),
+        "expected Outer = 1 in header, got: {header:?}"
+    );
+    assert!(
+        !header.contains("group;"),
+        "WT_LEN field override must not show group;: {header:?}"
+    );
+}
+
+/// A nested (non-root) field's header line must keep its leading
+/// indentation after `splice_override` — the spec 0122 header-patching
+/// rewrite of `new_lines[0]` must not drop the indentation the
+/// synthetic wrapper's own render already computed via
+/// `initial_level` (2026-07-15 regression: header lines of overridden
+/// nested nodes lost their indentation while sibling/interior lines
+/// stayed correctly indented).
+#[test]
+fn splice_override_preserves_the_header_line_indentation() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    let start = app.tree[inner_idx].span.text_range.start;
+    let indent_before = app.lines[start].len() - app.lines[start].trim_start().len();
+    app.splice_override(inner_idx, Some("test.Outer".to_string()))
+        .unwrap();
+    let header = &app.lines[app.tree[inner_idx].span.text_range.start];
+    let indent_after = header.len() - header.trim_start().len();
+    assert!(
+        indent_after > 0,
+        "fixture must exercise a nested (indented) field"
+    );
+    assert_eq!(
+        indent_after, indent_before,
+        "header line lost its indentation after splice_override: {header:?}"
+    );
+}
+
+/// Reverting a group field's override (`target: None`) must restore
+/// bare `#@ group` — the synthetic wrapper's `"message"` placeholder
+/// must not leak into the header (spec 0122 Test Plan item 2, 4th
+/// bullet; user-approved fix, 2026-07-15).
+#[test]
+fn splice_override_reverting_a_group_field_restores_bare_group() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splice_override(grp_idx, Some("test.NewGroup".to_string()))
+        .unwrap();
+    app.splice_override(grp_idx, None).unwrap();
+    let header = &app.lines[app.tree[grp_idx].span.text_range.start];
+    assert!(
+        header.contains("#@ group"),
+        "expected bare group in header, got: {header:?}"
+    );
+    assert!(
+        !header.contains("message"),
+        "reverted group header must not leak the synthetic \"message\" placeholder: {header:?}"
+    );
+}
+
+/// The document root is field number 1 of the virtual encompassing
+/// message — a `splice_override`-driven re-render of the root (any
+/// retype, not just the initial `decode()` paint) must keep showing
+/// its field number in the header line, same as
+/// `decode_shows_the_root_field_number_in_the_header_line`
+/// (`decode.rs`) covers for the initial paint.
+#[test]
+fn splice_override_shows_the_root_field_number_in_the_header_line() {
+    let (mut app, _, _) = type_as_fixture();
+    app.splice_override(app.first_node, Some("test.Outer".to_string()))
+        .unwrap();
+    assert!(
+        app.lines[0].starts_with("1 "),
+        "root header line must show the root field number: {:?}",
+        app.lines[0]
+    );
+}
+
+/// Retyping the document root *raw* (no schema, `target: None`) must
+/// also keep showing its field number in the header line — the root
+/// is not special-cased regardless of `target`.
+#[test]
+fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
+    let (mut app, _, _) = type_as_fixture();
+    app.splice_override(app.first_node, None).unwrap();
+    assert!(
+        app.lines[0].starts_with("1 "),
+        "raw root header line must show the field number: {:?}",
+        app.lines[0]
+    );
+}
+
+/// Reproduces interactive-testing feedback (2026-07-14, post-D34): a
+/// root node retyped raw (`None`) then retyped back to a real schema
+/// must still expand its `Any` descendants — a bare re-splice of the
+/// root shouldn't lose `Any` expansion the *initial* `render_overrides`
+/// pass (spec 0120) got right. Fixture mirrors `decode.rs`'s own
+/// `decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans`.
+#[test]
+fn splice_override_reactivating_root_type_still_expands_any_fields() {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let any_msg = DescriptorProto {
+        name: Some("Any".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("type_url".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("value".to_string()),
+                number: Some(2),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Bytes as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let any_file = FileDescriptorProto {
+        name: Some("google/protobuf/any.proto".to_string()),
+        syntax: Some("proto3".to_string()),
+        package: Some("google.protobuf".to_string()),
+        message_type: vec![any_msg],
+        ..Default::default()
+    };
+
+    let payload_msg = DescriptorProto {
+        name: Some("Payload".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("label".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::String as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let container_msg = DescriptorProto {
+        name: Some("Container".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("payload".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".google.protobuf.Any".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let acme_file = FileDescriptorProto {
+        name: Some("acme.proto".to_string()),
+        syntax: Some("proto2".to_string()),
+        package: Some("acme".to_string()),
+        dependency: vec!["google/protobuf/any.proto".to_string()],
+        message_type: vec![payload_msg, container_msg],
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet {
+        file: vec![any_file, acme_file],
+    };
+
+    let descriptor_path =
+        std::env::temp_dir().join("protolens-tui-splice-any-reactivate-descriptor.pb");
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Container { payload: Any { type_url:
+    // "type.googleapis.com/acme.Payload", value: Payload { label:
+    // "hello" } } }.
+    let label = b"hello";
+    let mut payload_bytes = vec![0x0au8, label.len() as u8];
+    payload_bytes.extend_from_slice(label);
+    let type_url = b"type.googleapis.com/acme.Payload";
+    let mut any_bytes = vec![0x0au8, type_url.len() as u8];
+    any_bytes.extend_from_slice(type_url);
+    any_bytes.push(0x12);
+    any_bytes.push(payload_bytes.len() as u8);
+    any_bytes.extend_from_slice(&payload_bytes);
+    let mut blob = vec![0x0au8, any_bytes.len() as u8];
+    blob.extend_from_slice(&any_bytes);
+
+    let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    // 1) retype the root raw (no schema) — mirrors the interactive
+    //    "override / with raw/no-type" step, driven through the same
+    //    `overrides.activate` + `render_overrides` path the `Enter`
+    //    key handler uses in the override pane (not a bare
+    //    `splice_override` call, which bypasses the recursive pass
+    //    entirely and would miss this bug).
+    let root_origin = override_pane::OverrideOrigin::Path {
+        path: "/".to_string(),
+    };
+    app.overrides.activate(root_origin.clone(), None);
+    app.render_overrides(app.first_node);
+    // 2) retype the root back to the real schema — mirrors
+    //    reactivating `acme.Container` in the management pane.
+    app.overrides
+        .activate(root_origin, Some("acme.Container".to_string()));
+    app.render_overrides(app.first_node);
+
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some("acme.Payload")),
+        "Any field must still expand after retyping the root away and \
+         back: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hello")),
+        "expanded Any payload's own field must appear in the \
+         re-spliced text: {:?}",
+        app.lines
+    );
+}
+
+/// Regression test (spec 0120 §G2, post-bugfix): a MessageSet's
+/// group-wire "Item" entries (field 1, `WT_START_GROUP`) must be
+/// decomposed via the two-tier auto-expansion (tier 1: synthetic
+/// `protolens_internal.MessageSetItem`; tier 2: the specific
+/// extension type resolved from `type_id`) through `render_overrides`
+/// — not corrupted into a flat raw scalar, which is what happened
+/// before the fix (`render_overrides`'s `is_message` recursion gate
+/// unconditionally spliced the group node with no matching tier,
+/// poisoning the render via `extract::message_payload_range`'s
+/// documented "leaves the trailing END_GROUP tag" behavior for
+/// `WT_START_GROUP`). Also asserts both tiers land as real,
+/// persisted, active `OverrideEntry` rows (spec 0120 redesign: no
+/// longer a silent dynamic fallback).
+#[test]
+fn message_set_group_items_auto_expand_through_render_overrides() {
+    let app = message_set_fixture();
+
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        "MessageSet Item's message must auto-expand to the resolved \
+         extension type: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hi")),
+        "expanded MessageSet extension payload's own field must appear \
+         in the spliced text: {:?}",
+        app.lines
+    );
+
+    let item_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+        .expect("Item group must be spliced to the synthetic MessageSetItem type");
+    let item_path = app.positional_path(item_idx);
+    assert!(
+        app.overrides.entries().iter().any(|e| {
+            e.active
+                && matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path)
+                && e.r#type.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
+        }),
+        "tier-1 auto-expansion must be a real, persisted, active \
+         override entry: {:#?}",
+        app.overrides.entries()
+    );
+    assert!(
+        app.overrides.entries().iter().any(|e| {
+            matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path)
+                && e.name.as_deref() == Some("Item")
+        }),
+        "tier-1 auto-expansion must be seeded with the display name \
+         \"Item\" (mirroring prototext-core's native MessageSet \
+         rendering), not the bare field number: {:#?}",
+        app.overrides.entries()
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("Item {")),
+        "the Item wrapper must render under the name \"Item\", not \
+         its field number: {:?}",
+        app.lines
+    );
+
+    let message_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload"))
+        .expect("message field must resolve to ExtPayload");
+    let message_path = app.positional_path(message_idx);
+    assert!(
+        app.overrides.entries().iter().any(|e| {
+            e.active
+                && matches!(&e.origin, OverrideOrigin::Path { path } if *path == message_path)
+                && e.r#type.as_deref() == Some("ms_test.ExtPayload")
+        }),
+        "tier-2 auto-expansion must be a real, persisted, active \
+         override entry: {:#?}",
+        app.overrides.entries()
+    );
+}
+
+/// Regression test (spec 0132 §G3 feedback, 2026-07-15): opening the
+/// override pane on an ancestor of a MessageSet's `Item` group live-
+/// previews that ancestor's subtree via a bare `splice_override`
+/// call (§G2 non-goal: "no live nested Any/MessageSet preview"),
+/// which discards the tier-1/tier-2 auto-expansion of every
+/// descendant. Cancelling with `Esc` must fully restore it — not
+/// just re-settle the ancestor node itself back to its own correct
+/// type, but re-run the whole `render_overrides` recursion so
+/// `ExtPayload` gets re-expanded too.
+#[test]
+fn esc_closing_the_override_pane_restores_nested_message_set_auto_expansion() {
+    let mut app = message_set_fixture();
+    let extensions_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("ms_test.TestMessageSet"))
+        .expect("extensions field must resolve to TestMessageSet");
+    app.cursor = extensions_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_target, Some(extensions_idx));
+    // The live preview's own `splice_override` call rebuilds the
+    // subtree from scratch with no per-descendant overrides applied
+    // (§G2 non-goal) — the rendered text must no longer show the
+    // nested expansion for the duration of the pane being open.
+    // (`splice_override` never removes orphaned descendant entries
+    // from the flat `tree` Vec, only unlinks them — so `app.tree`
+    // itself is not a reliable signal here; `app.lines`, what's
+    // actually displayed, is.)
+    assert!(
+        !app.lines.iter().any(|l| l.contains("label")),
+        "live preview must not still show the nested auto-expansion: {:?}",
+        app.lines
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.override_target, None);
+    assert!(
+        app.tree
+            .iter()
+            .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
+        "Esc-cancel must restore the nested MessageSet auto-expansion: {:#?}",
+        app.lines
+    );
+    assert!(
+        app.lines
+            .iter()
+            .any(|l| l.contains("label") && l.contains("hi")),
+        "expanded MessageSet extension payload's own field must be back \
+         in the rendered text: {:?}",
+        app.lines
+    );
+}
