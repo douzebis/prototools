@@ -480,7 +480,7 @@ pub struct App {
     manage_scroll: usize,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
-    /// `Some` while `e` in the management pane is editing the highlighted
+    /// `Some` while `f` in the management pane is editing the highlighted
     /// entry's display-name override (spec 0119 G4) — pre-filled with its
     /// current `name` (empty if `None`), mutually exclusive with an
     /// in-progress `command_buffer` search.
@@ -2615,7 +2615,7 @@ impl App {
             // Spec 0119 §G4: edit the highlighted entry's display-name
             // override, pre-filled with its current value (empty when
             // unset).
-            KeyCode::Char('e') => {
+            KeyCode::Char('f') => {
                 if !self.overrides.entries().is_empty() {
                     let current = self.overrides.entries()[self.manage_highlight]
                         .name
@@ -4393,7 +4393,7 @@ impl App {
         // there — which is most of the time in ordinary navigation, since
         // `self.message` is cleared on every normal-mode keypress before
         // its handler runs.
-        // The management pane's rename buffer (spec 0119 §G4's `e` key)
+        // The management pane's rename buffer (spec 0119 §G4's `f` key)
         // shares this same bottom bar rather than being appended inside
         // the side pane's own line list (2026-07-14 interactive
         // feedback): unlike `:command`/`/`-search, that side-pane-local
@@ -7857,7 +7857,7 @@ mod tests {
         );
     }
 
-    /// Spec 0119 §G4: `e` in the management pane opens a rename buffer
+    /// Spec 0119 §G4: `f` in the management pane opens a rename buffer
     /// pre-filled from the highlighted entry's current name; `Enter`
     /// confirms, mutating the entry in place and — since the entry is
     /// active — triggering a re-render whose header line picks up the
@@ -7882,7 +7882,7 @@ mod tests {
             .expect("type-as must have created an active entry for test.Inner");
         app.manage_highlight = entry_idx;
 
-        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
         assert!(app.manage_rename.is_some());
         for c in "custom_name".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
