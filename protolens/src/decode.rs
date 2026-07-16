@@ -484,7 +484,7 @@ pub fn decode(
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
             desc.full_name().to_string(),
-            Some(register_wrapper(&mut ctx.pool, 1, "0", desc)?),
+            Some(register_wrapper(&mut ctx.pool, 1, "1", desc)?),
         ),
         None => ("<raw / no type>".to_string(), None),
     };
@@ -512,24 +512,8 @@ pub fn decode(
     };
     let (text, spans) = decode_and_render_indexed(&wrapped_blob, wrapper_desc.as_ref(), opts);
 
-    let mut text = String::from_utf8(text)
+    let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
-    // The document root has no real field name of its own — `"0"` is
-    // just `register_wrapper`'s synthetic placeholder (spec 0114 §1.1),
-    // never meant to be shown. Strip it from the root's own header line
-    // (its first two bytes, unconditionally, since nothing precedes it —
-    // `emit_header` is left `false` here) whenever a schema was resolved
-    // (`wrapper_desc.is_some()`; the raw/no-type case never emits a `"0"`
-    // token at all, since `render_message` falls back to the field
-    // number, not a field name, when `root_desc` is `None`). Done here,
-    // before splitting into lines/colorizing, since `NodeSpan::text_range`
-    // is line-indexed, not byte-indexed (spec 0110), so shortening line 0
-    // in place can't desync anything downstream.
-    if wrapper_desc.is_some() {
-        if let Some(stripped) = text.strip_prefix("0 ") {
-            text = stripped.to_string();
-        }
-    }
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
     let tree = build_tree(spans);
@@ -612,12 +596,11 @@ mod tests {
         assert_eq!(wrapper.span.type_fqdn, None);
     }
 
-    /// The document root has no real field name of its own —
-    /// `register_wrapper`'s synthetic `"0"` placeholder (spec 0114 §1.1)
-    /// must never leak into the rendered header line when no G4 name
-    /// override applies (there is none yet at initial `decode()` time).
+    /// The document root is field number 1 of the virtual encompassing
+    /// message, and its field number is always shown, same as any other
+    /// unnamed field — the root is not special-cased.
     #[test]
-    fn decode_omits_the_synthetic_root_field_name_from_the_header_line() {
+    fn decode_shows_the_root_field_number_in_the_header_line() {
         let msg_desc = DescriptorProto {
             name: Some("Msg".to_string()),
             field: vec![FieldDescriptorProto {
@@ -646,11 +629,10 @@ mod tests {
         let blob = [0x08u8, 0x05];
         let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2).unwrap();
         assert!(
-            !decoded.lines[0].starts_with("0 "),
-            "root header line must not show the synthetic \"0\" field name: {:?}",
+            decoded.lines[0].starts_with("1 "),
+            "root header line must show the root field number: {:?}",
             decoded.lines[0]
         );
-        assert!(decoded.lines[0].starts_with('{'));
     }
 
     /// Spec 0120: `decode()` disables `expand_any`/`expand_message_set`,

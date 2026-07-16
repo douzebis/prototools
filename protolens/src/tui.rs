@@ -695,11 +695,12 @@ impl App {
         // needlessly re-splice the entire tree (which would invalidate
         // every already-computed node index: `cursor`, `folded`, etc.).
         if let Some(node) = app.tree.get_mut(cursor) {
-            // The root's own field name is always "0" (decode()'s own
-            // sentinel — mirrors `field_name_for`'s no-parent case), and
-            // can't yet carry a §G4 name override at this point (the
-            // collection was just seeded, nothing has been renamed).
-            node.rendered_as = Some((Some(root_override_type), "0".to_string()));
+            // The root's own field name is always "1" (its field number
+            // in the virtual encompassing message — mirrors
+            // `field_name_for`'s no-parent case), and can't yet carry a
+            // §G4 name override at this point (the collection was just
+            // seeded, nothing has been renamed).
+            node.rendered_as = Some((Some(root_override_type), "1".to_string()));
         }
         // Spec 0120: Any/MessageSet auto-expansion is computed by
         // `render_overrides` itself (`auto_expand_type`), not by
@@ -1678,10 +1679,11 @@ impl App {
     /// `splice_override` (spec 0119 §G2, extended by §G4): the resolved
     /// active override entry's own `name` override when set (§G4 takes
     /// priority); otherwise `idx`'s real field name when resolvable from
-    /// the parent's schema; `"0"` for the true document root (no parent
-    /// at all — mirrors `decode()`'s own sentinel); otherwise `idx`'s
-    /// field number as a string (protobuf field names can never be
-    /// all-digits, so this can't collide with a real name).
+    /// the parent's schema; otherwise `idx`'s field number as a string
+    /// (protobuf field names can never be all-digits, so this can't
+    /// collide with a real name) — the document root is not special-
+    /// cased: it's always field number 1 of the virtual encompassing
+    /// message, so it falls through to this same field-number case.
     fn field_name_for(&self, idx: usize) -> String {
         if let Some(name) = self
             .resolve_active_override_entry(idx)
@@ -1691,8 +1693,6 @@ impl App {
         }
         if let Some(field) = self.parent_field(idx) {
             field.name().to_string()
-        } else if self.tree[idx].parent.is_none() {
-            "0".to_string()
         } else {
             self.tree[idx].span.field_number.to_string()
         }
@@ -2027,19 +2027,7 @@ impl App {
         // type-declaration token, rather than reusing the synthetic
         // wrapper's own header line wholesale (which lost group framing
         // on override — the original bug).
-        let root_name = if self.tree[idx].parent.is_none() {
-            // The document root has no real field name of its own —
-            // `field_name_for`'s `"0"` sentinel (spec 0114 §1.1) must
-            // never leak into the header line.
-            String::new()
-        } else {
-            field_name.clone()
-        };
-        let brace_prefix = if root_name.is_empty() {
-            "{".to_string()
-        } else {
-            format!("{root_name} {{")
-        };
+        let brace_prefix = format!("{field_name} {{");
         // Unconditionally computed (spec 0133: annotations are always on
         // at the decode/splice level now) — stored below into the new
         // self-span's own `natural_annotation` too (not just used to
@@ -8125,44 +8113,36 @@ mod tests {
         );
     }
 
-    /// The document root has no real field name of its own — a
-    /// `splice_override`-driven re-render of the root (any retype, not
-    /// just the initial `decode()` paint) must keep omitting
-    /// `field_name_for`'s synthetic `"0"` sentinel from the header line,
-    /// same as `decode_omits_the_synthetic_root_field_name_from_the_header_line`
+    /// The document root is field number 1 of the virtual encompassing
+    /// message — a `splice_override`-driven re-render of the root (any
+    /// retype, not just the initial `decode()` paint) must keep showing
+    /// its field number in the header line, same as
+    /// `decode_shows_the_root_field_number_in_the_header_line`
     /// (`decode.rs`) covers for the initial paint.
     #[test]
-    fn splice_override_omits_the_synthetic_root_field_name_from_the_header_line() {
+    fn splice_override_shows_the_root_field_number_in_the_header_line() {
         let (mut app, _, _) = type_as_fixture();
         app.splice_override(app.first_node, Some("test.Outer".to_string()))
             .unwrap();
         assert!(
-            !app.lines[0].starts_with("0 "),
-            "root header line must not show the synthetic \"0\" field name: {:?}",
+            app.lines[0].starts_with("1 "),
+            "root header line must show the root field number: {:?}",
             app.lines[0]
         );
-        assert!(app.lines[0].starts_with('{'));
     }
 
-    /// Reproduces interactive-testing feedback (2026-07-14): retyping the
-    /// document root *raw* (no schema, `target: None`) must also omit a
-    /// stale numeric field-number token from the header line. Before this
-    /// fix, `splice_override`'s stale-prefix-stripping only recognized the
-    /// schema-resolved case's literal `"0 "` prefix (`register_wrapper`'s
-    /// synthetic field name) — with no schema resolved,
-    /// `decode_and_render_indexed` instead falls back to printing the
-    /// literal wrapping `field_number` (always `1` for the root, spec
-    /// 0114 §1.1), which went unstripped and showed as `"1 {"`.
+    /// Retyping the document root *raw* (no schema, `target: None`) must
+    /// also keep showing its field number in the header line — the root
+    /// is not special-cased regardless of `target`.
     #[test]
-    fn splice_override_raw_root_omits_the_stale_field_number_from_the_header_line() {
+    fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
         let (mut app, _, _) = type_as_fixture();
         app.splice_override(app.first_node, None).unwrap();
         assert!(
-            !app.lines[0].starts_with("1 "),
-            "raw root header line must not show the stale field number: {:?}",
+            app.lines[0].starts_with("1 "),
+            "raw root header line must show the field number: {:?}",
             app.lines[0]
         );
-        assert!(app.lines[0].starts_with('{'));
     }
 
     /// Reproduces interactive-testing feedback (2026-07-14, post-D34): a
