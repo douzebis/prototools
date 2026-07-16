@@ -148,8 +148,9 @@ impl CandidateCache {
 // ── Override collection (spec 0117) ─────────────────────────────────────────
 
 /// One of the three override scopes (spec 0117 §1), in increasing-priority
-/// order — also the collection's primary sort key (declaration order,
-/// `derive(Ord)`).
+/// order. Not used for the collection's sort order (which sorts by origin
+/// label as a plain string — see `OverrideCollection::sort`; feedback,
+/// 2026-07-16), only for `next`/`prev` rotation (`z`/`Z`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OverrideKind {
     Path,
@@ -217,16 +218,6 @@ impl OverrideOrigin {
             OverrideOrigin::FqdnField { fqdn, field } => format!("{fqdn}:{field}"),
         }
     }
-
-    /// Secondary sort key within a kind: origin string, then field number
-    /// where applicable (spec 0117 §1).
-    fn sort_key(&self) -> (&str, Option<u64>) {
-        match self {
-            OverrideOrigin::Path { path } => (path.as_str(), None),
-            OverrideOrigin::PathField { path, field } => (path.as_str(), Some(*field)),
-            OverrideOrigin::FqdnField { fqdn, field } => (fqdn.as_str(), Some(*field)),
-        }
-    }
 }
 
 /// One entry of the collection: an origin, its candidate type (`None` =
@@ -259,8 +250,11 @@ pub struct OverrideEntry {
 }
 
 /// The persistent collection of overrides (spec 0117 §1). Always kept
-/// sorted by kind, then origin, then type (`None` first) — the same order
-/// used for the management pane's listing and the YAML file's entry order.
+/// sorted lexicographically by origin label (`OverrideOrigin::label`:
+/// `path`, `path:field`, or `fqdn:field`), then type (`None` first) — the
+/// same order used for the management pane's listing and the YAML file's
+/// entry order (feedback, 2026-07-16: sort by origin path as a plain
+/// string, not by kind first).
 #[derive(Debug, Default)]
 pub struct OverrideCollection {
     entries: Vec<OverrideEntry>,
@@ -280,9 +274,8 @@ impl OverrideCollection {
     fn sort(&mut self) {
         self.entries.sort_by(|a, b| {
             a.origin
-                .kind()
-                .cmp(&b.origin.kind())
-                .then_with(|| a.origin.sort_key().cmp(&b.origin.sort_key()))
+                .label()
+                .cmp(&b.origin.label())
                 .then_with(|| a.r#type.cmp(&b.r#type))
         });
     }
@@ -778,6 +771,43 @@ mod tests {
                 .find(|e| e.r#type.as_deref() == Some("pkg.B"))
                 .unwrap()
                 .active
+        );
+    }
+
+    #[test]
+    fn entries_are_sorted_lexicographically_by_origin_path_not_by_kind_first() {
+        // A `PathField` origin ("/1") sorts before a `Path` origin ("/2")
+        // that is lexicographically later, even though `Path < PathField`
+        // by kind — proving kind is no longer the primary sort key
+        // (feedback, 2026-07-16).
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/2".to_string(),
+            },
+            Some("pkg.B".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::PathField {
+                path: "/1".to_string(),
+                field: 3,
+            },
+            Some("pkg.A".to_string()),
+        );
+        let entries = collection.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].origin,
+            OverrideOrigin::PathField {
+                path: "/1".to_string(),
+                field: 3
+            }
+        );
+        assert_eq!(
+            entries[1].origin,
+            OverrideOrigin::Path {
+                path: "/2".to_string()
+            }
         );
     }
 
