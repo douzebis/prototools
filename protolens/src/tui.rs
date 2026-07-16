@@ -54,6 +54,13 @@ const MIN_OVERRIDE_WIDTH: u16 = 100;
 /// timestamps/positions (`App::last_click`).
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 
+/// How long a passive status message stays visible in the shared bottom
+/// command/message bar before `track_message_timeout` auto-dismisses it
+/// — doesn't apply while that bar is actively serving as a text-entry
+/// prompt or a pending `q` quit confirmation (see that function's doc
+/// comment).
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(4);
+
 /// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
 /// for a short-lived interactive session: at a rough ~50-70 bytes per
 /// cached `(fqdn, score)` entry, this comfortably holds capped previews for
@@ -554,6 +561,18 @@ pub struct App {
     /// native horizontal pan the same way `main_area`/`side_area` do.
     cmd_area: Option<Rect>,
     pub message: String,
+    /// Mirrors `self.message` as of the last `track_message_timeout()`
+    /// call — used to detect a freshly-set message (`self.message` has
+    /// no dedicated setter; it's assigned directly all over this file),
+    /// so `message_deadline` gets (re)armed exactly once per message,
+    /// not on every frame.
+    last_message_seen: String,
+    /// Wall-clock time at which the current `self.message` should be
+    /// auto-dismissed, `None` while `self.message` is empty. Consulted
+    /// (and cleared) only by `track_message_timeout`, which never fires
+    /// while a text-entry prompt (`command_buffer`/`manage_rename`) or a
+    /// pending `q` quit confirmation is actively awaiting a keypress.
+    message_deadline: Option<Instant>,
     pub should_quit: bool,
     /// `true` right after a first `q` press asks for confirmation; a
     /// second `q` press (any mode) actually quits, any other key cancels.
@@ -674,6 +693,8 @@ impl App {
             side_area: Rect::default(),
             cmd_area: None,
             message: String::new(),
+            last_message_seen: String::new(),
+            message_deadline: None,
             should_quit: false,
             quit_confirm: false,
             should_suspend: false,
@@ -4292,7 +4313,42 @@ impl App {
         }
     }
 
+    /// Auto-dismiss `self.message` after `MESSAGE_TIMEOUT` of it staying
+    /// unchanged — otherwise a passive status/error notice (e.g. "pattern
+    /// not found") stays on screen indefinitely once set, even while the
+    /// user is just navigating a side pane with nothing left to say about
+    /// it. `self.message` has no dedicated setter (assigned directly all
+    /// over this file), so a freshly-set message is detected here by
+    /// comparing against `last_message_seen` rather than at each
+    /// assignment site. Never dismissed while `command_buffer`/
+    /// `manage_rename` is `Some` (the bottom bar renders those instead of
+    /// `self.message` while either is active — see `render`'s `cmd_text`)
+    /// or while `quit_confirm` is armed (both are actively awaiting a
+    /// keypress, unlike a plain notice). Called once per `render()`.
+    fn track_message_timeout(&mut self) {
+        if self.message != self.last_message_seen {
+            self.last_message_seen = self.message.clone();
+            self.message_deadline = if self.message.is_empty() {
+                None
+            } else {
+                Some(Instant::now() + MESSAGE_TIMEOUT)
+            };
+            return;
+        }
+        if self.command_buffer.is_some() || self.manage_rename.is_some() || self.quit_confirm {
+            return;
+        }
+        if let Some(deadline) = self.message_deadline {
+            if Instant::now() >= deadline {
+                self.message.clear();
+                self.last_message_seen.clear();
+                self.message_deadline = None;
+            }
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame) {
+        self.track_message_timeout();
         let area = frame.area();
         self.term_width = area.width;
         let chunks = Layout::default()
@@ -4882,9 +4938,27 @@ where
 {
     loop {
         terminal.draw(|frame| app.render(frame))?;
-        match event::read()? {
-            Event::Key(key) => app.handle_key(key),
-            Event::Mouse(mouse) => app.handle_mouse(mouse),
+        // While a status message is pending auto-dismissal
+        // (`message_deadline`, `track_message_timeout`), poll with a
+        // timeout instead of blocking indefinitely on `event::read()`,
+        // so the next `render()` (which actually clears an expired
+        // message) runs even with no further keypress. No behavior
+        // change — same indefinite block as before — while no message
+        // is pending, which is most of the time in ordinary navigation.
+        let event = match app.message_deadline {
+            Some(deadline) => {
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                if event::poll(timeout)? {
+                    Some(event::read()?)
+                } else {
+                    None
+                }
+            }
+            None => Some(event::read()?),
+        };
+        match event {
+            Some(Event::Key(key)) => app.handle_key(key),
+            Some(Event::Mouse(mouse)) => app.handle_mouse(mouse),
             _ => {}
         }
         if app.should_quit {
@@ -5028,6 +5102,63 @@ mod tests {
         assert!(
             app.quit_confirm,
             "Ctrl-Z must not disturb a pending quit confirmation"
+        );
+    }
+
+    /// A passive status message auto-dismisses once `MESSAGE_TIMEOUT` has
+    /// elapsed since it was set — detected by `track_message_timeout`
+    /// (called from `render`) noticing an expired `message_deadline`.
+    #[test]
+    fn message_auto_dismisses_after_timeout() {
+        let mut app = empty_app();
+        app.splash = false;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        app.message = "pattern not found: xyz".to_string();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(app.message_deadline.is_some());
+        assert_eq!(app.message, "pattern not found: xyz");
+
+        // Not yet expired: still showing on a later render.
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.message, "pattern not found: xyz");
+
+        // Force expiry (real time never actually elapses in a unit test).
+        app.message_deadline = Some(Instant::now() - Duration::from_millis(1));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(app.message.is_empty());
+        assert!(app.message_deadline.is_none());
+    }
+
+    /// A message never auto-dismisses while the bottom bar is actively
+    /// serving as a text-entry prompt (`command_buffer`) or a pending `q`
+    /// quit confirmation — both are actively awaiting a keypress, unlike
+    /// a plain notice.
+    #[test]
+    fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
+        let mut app = empty_app();
+        app.splash = false;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        app.message = "some notice".to_string();
+        app.command_buffer = Some(String::new());
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        app.message_deadline = Some(Instant::now() - Duration::from_millis(1));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(
+            app.message, "some notice",
+            "prompt active: must not dismiss"
+        );
+
+        app.command_buffer = None;
+        app.quit_confirm = true;
+        app.message_deadline = Some(Instant::now() - Duration::from_millis(1));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(
+            app.message, "some notice",
+            "quit_confirm active: must not dismiss"
         );
     }
 
