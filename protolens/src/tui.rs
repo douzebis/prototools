@@ -241,9 +241,6 @@ const HELP_TEXT: &[&str] = &[
     "                   group node under the cursor",
     "  Tab              move focus between the main pane and the",
     "                   override pane (while it is open)",
-    "  z / Z            rotate the override's target kind forward/",
-    "                   backward: path, path-field, fqdn-field (pane",
-    "                   focused; skips kinds that don't apply)",
     "  a                toggle candidate sort: inferred score (default)",
     "                   or alphanumeric",
     "  /  ?  n          search / search backward / repeat (pane focused)",
@@ -269,9 +266,12 @@ const HELP_TEXT: &[&str] = &[
     "  /  ?  n          search / search backward / repeat",
     "  a                toggle the highlighted entry active/inactive",
     "  z / Z            rotate the highlighted entry's origin kind",
-    "                   forward/backward: path, path-field, fqdn-field",
-    "                   (main-pane cursor must be on a field the entry",
-    "                   currently affects; skips kinds that don't apply)",
+    "                   forward/backward: path, path-field, fqdn-field;",
+    "                   auto-resolves from the fields the entry affects,",
+    "                   falling back to the main-pane cursor/message line",
+    "                   when ambiguous; repeating z/Z with the cursor",
+    "                   unchanged advances to the next kind instead of",
+    "                   getting stuck",
     "  d                duplicate the highlighted entry (the copy starts",
     "                   inactive)",
     "  Delete/Backspace remove the highlighted entry from the collection",
@@ -475,10 +475,6 @@ pub struct App {
     /// and unrelated to, the one-shot `apply_override` splice-render
     /// mechanism above; see spec 0117's Non-goals.
     overrides: override_pane::OverrideCollection,
-    /// Override selection pane's current target kind (spec 0117 §2),
-    /// rotated by `z`; persists across successive `t` invocations for the
-    /// session, mirroring `override_sort`.
-    override_kind: OverrideKind,
     /// `true` while the override management pane (spec 0117 §3, `o`) is
     /// open. Mutually exclusive with `override_target.is_some()`.
     manage_open: bool,
@@ -502,6 +498,15 @@ pub struct App {
     /// current `name` (empty if `None`), mutually exclusive with
     /// `manage_search`.
     manage_rename: Option<String>,
+    /// `Some((origin, kind, cursor))` while a `z`/`Z` attempt in the
+    /// management pane is unresolved (spec 0134 G2/G3): `origin` is the
+    /// highlighted entry's origin at the time of that attempt, `kind` is
+    /// the `OverrideKind` it evaluated, and `cursor` is `self.cursor`'s
+    /// value at that time. A same-direction `z`/`Z` press with an
+    /// unchanged cursor advances past `kind`; with a changed cursor, it
+    /// retries `kind`. Cleared on every successful rotation and whenever
+    /// `manage_highlight` moves to a different entry.
+    manage_pending_kind: Option<(OverrideOrigin, OverrideKind, usize)>,
     /// Management pane's visible row count as of the last
     /// `render_manage_pane()` call — basis for `PageUp`/`PageDown`.
     manage_list_height: usize,
@@ -657,7 +662,6 @@ impl App {
             override_inferred_raw: Vec::new(),
             override_candidates_complete: false,
             overrides,
-            override_kind: OverrideKind::Path,
             manage_open: false,
             manage_focus: false,
             manage_highlight: 0,
@@ -665,6 +669,7 @@ impl App {
             manage_search: None,
             last_manage_search: None,
             manage_rename: None,
+            manage_pending_kind: None,
             manage_list_height: 0,
             back_stack: Vec::new(),
             fwd_stack: Vec::new(),
@@ -1114,6 +1119,7 @@ impl App {
         self.manage_highlight = 0;
         self.manage_scroll = 0;
         self.manage_pan_offset = 0;
+        self.manage_pending_kind = None;
     }
 
     /// Close the override management pane (spec 0117 §3).
@@ -1128,10 +1134,12 @@ impl App {
         let len = self.overrides.entries().len();
         if len == 0 {
             self.manage_highlight = 0;
+            self.manage_pending_kind = None;
             return;
         }
         let current = self.manage_highlight as isize;
         self.manage_highlight = (current + delta).clamp(0, len as isize - 1) as usize;
+        self.manage_pending_kind = None;
     }
 
     /// The management pane's grouped-by-origin display rows (spec 0117
@@ -1194,6 +1202,7 @@ impl App {
         for i in order {
             if self.manage_search_text(i).to_lowercase().contains(&needle) {
                 self.manage_highlight = i;
+                self.manage_pending_kind = None;
                 return;
             }
         }
@@ -2301,19 +2310,19 @@ impl App {
         Ok(())
     }
 
-    /// Origin for the currently-selected `override_kind`, targeting node
-    /// `idx` (spec 0117 §2). Delegates to `origin_for_kind`.
+    /// Origin for a brand-new override, targeting node `idx` — always
+    /// created as kind `Path` (spec 0134 G1). Delegates to
+    /// `origin_for_kind`.
     fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
-        self.origin_for_kind(idx, self.override_kind)
+        self.origin_for_kind(idx, OverrideKind::Path)
     }
 
     /// Origin for an arbitrary `kind`, targeting node `idx` (spec 0117
     /// §2's derivation rules, generalized in spec 0124 G2 so the
-    /// manage-pane `z` key can rederive an origin under a rotated kind
-    /// without touching `self.override_kind`, which is a separate,
-    /// selection-pane-only piece of state). `PathField`/`FqdnField` error
-    /// out when `idx` is the wrapper root (no parent) or, for
-    /// `FqdnField`, when the parent's `type_fqdn` is unresolved.
+    /// manage-pane `z` key can rederive an origin under a rotated kind).
+    /// `PathField`/`FqdnField` error out when `idx` is the wrapper root
+    /// (no parent) or, for `FqdnField`, when the parent's `type_fqdn` is
+    /// unresolved.
     fn origin_for_kind(&self, idx: usize, kind: OverrideKind) -> Result<OverrideOrigin, String> {
         match kind {
             OverrideKind::Path => Ok(OverrideOrigin::Path {
@@ -2345,26 +2354,36 @@ impl App {
         }
     }
 
-    /// Rotates `kind` towards `to_next`/`to_prev` (per `reverse`), skipping
-    /// over kinds that don't apply at `idx` — e.g. `FqdnField` when the
-    /// parent's type is unresolved — instead of getting stuck returning the
-    /// same failing kind on every subsequent press (feedback, 2026-07-16).
-    /// Since there are only 3 kinds, trying the other 2 in rotation order
-    /// is exhaustive; errors only if none of them applies either.
-    fn next_valid_origin(
+    /// Third `OverrideKind` — the one that is neither `a` nor `b` (spec
+    /// 0134 G2 step 5's `other_kind`; there are only 3 kinds total).
+    fn third_kind(a: OverrideKind, b: OverrideKind) -> OverrideKind {
+        [
+            OverrideKind::Path,
+            OverrideKind::PathField,
+            OverrideKind::FqdnField,
+        ]
+        .into_iter()
+        .find(|k| *k != a && *k != b)
+        .expect("3 kinds total, 2 excluded, 1 remains")
+    }
+
+    /// Origins derivable under `kind` from every node in `affected`, in
+    /// document order, deduplicated by `OverrideOrigin` equality (spec
+    /// 0134 G2 step 4).
+    fn manage_kind_candidates(
         &self,
-        idx: usize,
-        from: OverrideKind,
-        reverse: bool,
-    ) -> Result<OverrideOrigin, String> {
-        let mut kind = from;
-        for _ in 0..2 {
-            kind = if reverse { kind.prev() } else { kind.next() };
-            if let Ok(origin) = self.origin_for_kind(idx, kind) {
-                return Ok(origin);
+        affected: &[usize],
+        kind: OverrideKind,
+    ) -> Vec<OverrideOrigin> {
+        let mut result: Vec<OverrideOrigin> = Vec::new();
+        for &node in affected {
+            if let Ok(origin) = self.origin_for_kind(node, kind) {
+                if !result.contains(&origin) {
+                    result.push(origin);
+                }
             }
         }
-        Err("no other override kind applies to this field".to_string())
+        result
     }
 
     /// Document-order list of main-pane node indices whose origin
@@ -2474,19 +2493,6 @@ impl App {
                     SortMode::Inferred => SortMode::Lexicographic,
                 };
                 self.recompute_override_candidates();
-            }
-            // `Z` rotates in reverse; both skip over kinds that don't apply
-            // to `override_target` (e.g. `FqdnField` when its parent's type
-            // is unresolved) instead of getting stuck (feedback,
-            // 2026-07-16).
-            KeyCode::Char('z') | KeyCode::Char('Z') => {
-                if let Some(idx) = self.override_target {
-                    let reverse = key.code == KeyCode::Char('Z');
-                    match self.next_valid_origin(idx, self.override_kind, reverse) {
-                        Ok(origin) => self.override_kind = origin.kind(),
-                        Err(e) => self.message = format!("z: {e}"),
-                    }
-                }
             }
             KeyCode::Char('/') => {
                 self.override_search = Some(OverrideSearch {
@@ -2631,9 +2637,13 @@ impl App {
             KeyCode::PageUp => {
                 self.move_manage_highlight(-(self.manage_list_height.max(1) as isize))
             }
-            KeyCode::Home => self.manage_highlight = 0,
+            KeyCode::Home => {
+                self.manage_highlight = 0;
+                self.manage_pending_kind = None;
+            }
             KeyCode::End => {
                 self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
+                self.manage_pending_kind = None;
             }
             // Spec 0124 G1: circulate the main-pane cursor among the
             // fields the highlighted entry's origin currently matches,
@@ -2696,23 +2706,69 @@ impl App {
                     self.render_overrides(self.first_node);
                 }
             }
-            // Spec 0124 G2: rotate the highlighted entry's origin kind,
-            // rederived from the main-pane cursor's current position —
-            // only when the cursor sits on a field the entry currently
-            // affects. `Z` rotates in reverse (feedback, 2026-07-16).
+            // Spec 0134 G2/G3: forgiving multi-candidate resolution —
+            // works out the mutated origin from every node the entry
+            // currently affects, only falling back to the main-pane
+            // cursor/message line when genuinely ambiguous, and never
+            // gets stuck repeating an unresolvable rotation (advances one
+            // more step down the 3-kind barrel on a same-key retry with
+            // an unchanged cursor). `Z` rotates in reverse.
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
                     let origin = entry.origin.clone();
                     let r#type = entry.r#type.clone();
                     let was_active = entry.active;
+                    let entry_kind = origin.kind();
                     let reverse = key.code == KeyCode::Char('Z');
-                    if !self.manage_affected_nodes(&origin).contains(&self.cursor) {
-                        self.message = "z: main-pane cursor is not on a field affected by \
-                            the selected override"
-                            .to_string();
+                    let affected = self.manage_affected_nodes(&origin);
+
+                    let attempt_kind = match &self.manage_pending_kind {
+                        Some((pending_origin, kind, last_cursor)) if *pending_origin == origin => {
+                            if self.cursor == *last_cursor {
+                                if reverse {
+                                    kind.prev()
+                                } else {
+                                    kind.next()
+                                }
+                            } else {
+                                *kind
+                            }
+                        }
+                        _ => {
+                            if reverse {
+                                entry_kind.prev()
+                            } else {
+                                entry_kind.next()
+                            }
+                        }
+                    };
+
+                    let candidates = self.manage_kind_candidates(&affected, attempt_kind);
+
+                    if candidates.is_empty() {
+                        let other_kind = Self::third_kind(entry_kind, attempt_kind);
+                        let other_candidates = self.manage_kind_candidates(&affected, other_kind);
+                        if other_candidates.is_empty() {
+                            self.message = "z: no override target".to_string();
+                            self.manage_pending_kind = None;
+                        } else {
+                            self.message = format!(
+                                "z: no override target, try again for {}",
+                                other_kind.label()
+                            );
+                            self.manage_pending_kind = Some((origin, attempt_kind, self.cursor));
+                        }
                     } else {
-                        match self.next_valid_origin(self.cursor, origin.kind(), reverse) {
-                            Ok(new_origin) => {
+                        let cursor_origin = if affected.contains(&self.cursor) {
+                            self.origin_for_kind(self.cursor, attempt_kind).ok()
+                        } else {
+                            None
+                        };
+                        let resolved = cursor_origin
+                            .or_else(|| (candidates.len() == 1).then(|| candidates[0].clone()));
+
+                        match resolved {
+                            Some(new_origin) => {
                                 self.manage_highlight = self
                                     .overrides
                                     .rotate_origin(self.manage_highlight, new_origin.clone());
@@ -2736,9 +2792,12 @@ impl App {
                                         self.manage_highlight = idx;
                                     }
                                 }
+                                self.manage_pending_kind = None;
                             }
-                            Err(e) => {
-                                self.message = format!("z: {e}");
+                            None => {
+                                self.message = "z: pick an override target (<-/->)".to_string();
+                                self.manage_pending_kind =
+                                    Some((origin, attempt_kind, self.cursor));
                             }
                         }
                     }
@@ -2749,6 +2808,7 @@ impl App {
             KeyCode::Char('d') => {
                 if !self.overrides.entries().is_empty() {
                     self.manage_highlight = self.overrides.duplicate(self.manage_highlight);
+                    self.manage_pending_kind = None;
                     self.render_overrides(self.first_node);
                 }
             }
@@ -2776,6 +2836,7 @@ impl App {
                         if self.manage_highlight >= len {
                             self.manage_highlight = len.saturating_sub(1);
                         }
+                        self.manage_pending_kind = None;
                         if was_active {
                             self.render_overrides(self.first_node);
                         }
@@ -3707,6 +3768,7 @@ impl App {
         self.manage_highlight = 0;
         self.manage_scroll = 0;
         self.manage_pan_offset = 0;
+        self.manage_pending_kind = None;
         Ok(warnings)
     }
 
@@ -4050,6 +4112,7 @@ impl App {
         let rows = self.manage_display_rows();
         if let Some(ManageRow::Entry(idx)) = rows.get(absolute_row) {
             self.manage_highlight = *idx;
+            self.manage_pending_kind = None;
         }
     }
 
@@ -4500,10 +4563,8 @@ impl App {
             SortMode::Inferred => "inferred",
         };
         let title = format!(
-            " Override — range [{}..{}) — sort: {sort_label} — kind: {} (z to rotate) ",
-            range.start,
-            range.end,
-            self.override_kind.label()
+            " Override — range [{}..{}) — sort: {sort_label} ",
+            range.start, range.end,
         );
         let border_style = if self.override_focus {
             Style::default().add_modifier(Modifier::BOLD)
@@ -5258,6 +5319,37 @@ mod tests {
         assert!(!app.override_focus);
     }
 
+    /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
+    /// kind-rotation key — pressing either is a no-op (no message, no
+    /// panic, pane stays open); `Enter` always creates a `Path`-kind
+    /// origin.
+    #[test]
+    fn override_pane_z_is_a_noop() {
+        let mut app = message_node_app();
+        app.splash = false;
+        app.term_width = 120;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert!(app.override_focus);
+
+        let message_before = app.message.clone();
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, message_before);
+        assert!(app.override_focus, "pane must stay open");
+        app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
+        assert_eq!(app.message, message_before);
+        assert!(app.override_focus, "pane must stay open");
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let entry = app
+            .overrides
+            .entries()
+            .iter()
+            .find(|e| e.active)
+            .expect("Enter must create an active entry");
+        assert!(matches!(entry.origin, OverrideOrigin::Path { .. }));
+    }
+
     /// Spec 0114 §1.2: `t` also opens the pane on a message/group node
     /// whose type wasn't resolved by the schema (`type_fqdn: None`, as
     /// produced by the unknown-LEN-field probe cascade) — this is the bug
@@ -5802,13 +5894,12 @@ mod tests {
         assert_eq!(app.cursor, before, "zero matches must be a no-op");
     }
 
-    /// Spec 0124 G2: `z` rotates the highlighted entry's origin kind,
-    /// rederived from the main-pane cursor — no-op-with-message when the
-    /// cursor isn't on an affected field; when it is and the entry is
-    /// active, rotating onto a colliding origin deactivates the other
-    /// entry (existing `activate`-style invariant, reused unchanged).
+    /// Spec 0134 G2: a single derivable candidate is used even when the
+    /// main-pane cursor isn't on the node that produced it — rotating
+    /// onto a colliding origin deactivates the other entry (existing
+    /// `activate`-style invariant, reused unchanged).
     #[test]
-    fn manage_pane_z_rotates_entry_kind_from_cursor_position() {
+    fn manage_pane_z_single_candidate_resolves_without_cursor_match() {
         let (mut app, items) = repeated_scalar_fixture();
         app.manage_focus = true;
         app.manage_open = true;
@@ -5818,18 +5909,6 @@ mod tests {
         };
         app.overrides.activate(path_origin.clone(), None);
         app.manage_highlight = app.overrides.entries().len() - 1;
-
-        // Cursor elsewhere -> error, entry/origin unchanged.
-        app.cursor = items[1];
-        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(
-            app.message,
-            "z: main-pane cursor is not on a field affected by the selected override"
-        );
-        assert_eq!(
-            app.overrides.entries()[app.manage_highlight].origin,
-            path_origin
-        );
 
         // Also seed a colliding PathField entry (parent `/`, field `1`),
         // active, so the rotation-collision path is exercised.
@@ -5841,9 +5920,11 @@ mod tests {
         let collide_idx = app.overrides.entries().len() - 1;
         assert!(app.overrides.entries()[collide_idx].active);
 
-        // Cursor on the affected field -> rotates Path -> PathField,
-        // colliding with (and deactivating) the entry just seeded above.
-        app.cursor = items[0];
+        // `path_origin` only ever matches `items[0]` itself, so there is
+        // exactly one candidate under `PathField` regardless of where
+        // the cursor sits — put it elsewhere to confirm the single
+        // candidate is used anyway.
+        app.cursor = items[1];
         let entry_idx = app
             .overrides
             .entries()
@@ -5878,6 +5959,132 @@ mod tests {
             1,
             "only one entry per origin stays active"
         );
+        assert!(app.manage_pending_kind.is_none());
+    }
+
+    /// Spec 0134 G2/G3: 2+ distinct candidates with the cursor not on
+    /// any of them prompts instead of resolving; a same-key retry with
+    /// the cursor unchanged advances to the next kind in the barrel
+    /// instead of repeating the identical ambiguous outcome.
+    #[test]
+    fn manage_pane_z_ambiguous_candidates_advance_on_repeated_press() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let fqdn_origin = app
+            .origin_for_kind(items[0], OverrideKind::FqdnField)
+            .expect("field's parent type is known");
+        app.overrides.activate(fqdn_origin.clone(), None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+
+        let outside = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("root node must exist");
+        app.cursor = outside;
+
+        // FqdnField -> Path: all 3 packed elements derive distinct Path
+        // origins, and the cursor isn't on any of them -> ambiguous.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, "z: pick an override target (<-/->)");
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            fqdn_origin,
+            "entry unchanged while ambiguous"
+        );
+        assert!(app.manage_pending_kind.is_some());
+
+        // Same key, cursor still unchanged -> advances Path -> PathField.
+        // All 3 elements share the same parent/field, so PathField
+        // dedups to a single candidate and resolves immediately even
+        // though the cursor still isn't on any of them.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let expected = OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        };
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            expected
+        );
+        assert!(app.manage_pending_kind.is_none());
+    }
+
+    /// Spec 0134 G2/G3: moving the main-pane cursor between two `z`
+    /// attempts retries the same stuck kind (instead of advancing past
+    /// it) and resolves via the cursor-match branch.
+    #[test]
+    fn manage_pane_z_ambiguous_then_resolved_via_cursor_move() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let fqdn_origin = app
+            .origin_for_kind(items[0], OverrideKind::FqdnField)
+            .expect("field's parent type is known");
+        app.overrides.activate(fqdn_origin.clone(), None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+
+        let outside = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("root node must exist");
+        app.cursor = outside;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, "z: pick an override target (<-/->)");
+
+        // Move the cursor onto one of the affected nodes, then retry —
+        // must retry the same `Path` attempt (not advance to
+        // `PathField`) and resolve via the cursor match.
+        app.cursor = items[1];
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        let expected = OverrideOrigin::Path {
+            path: app.positional_path(items[1]),
+        };
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            expected
+        );
+        assert!(app.manage_pending_kind.is_none());
+    }
+
+    /// Spec 0134 G2: when no kind (other than the entry's own) applies
+    /// to any affected node — e.g. the wrapper root, which has no
+    /// parent so `PathField`/`FqdnField` both error — `z` writes "no
+    /// override target", leaves the entry unchanged, and clears the
+    /// pending state; repeating `z` reproduces the identical outcome.
+    #[test]
+    fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let root_idx = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("root node must exist");
+        let root_origin = OverrideOrigin::Path {
+            path: app.positional_path(root_idx),
+        };
+        app.overrides.activate(root_origin.clone(), None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+        app.cursor = root_idx;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, "z: no override target");
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            root_origin
+        );
+        assert!(app.manage_pending_kind.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, "z: no override target");
     }
 
     /// Rotating an *active* entry's origin kind runs `render_overrides`,
