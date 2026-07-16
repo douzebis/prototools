@@ -350,6 +350,14 @@ pub struct App {
     /// own opening line.
     footer_line_to_node: HashMap<usize, usize>,
     cursor: usize,
+    /// Incremented every time `self.cursor` changes (via `set_cursor`),
+    /// regardless of whether the new value differs from any prior one —
+    /// a real "did the cursor move since X" signal (spec-0117-adjacent
+    /// `z`/`Z` rework, 2026-07-16 feedback), since comparing `self.
+    /// cursor`'s current value against a stashed old value alone misses
+    /// a round trip (e.g. Down then Up) that leaves the position
+    /// numerically unchanged but is still a real move.
+    cursor_moves: u64,
     /// Mouse-driven whole-line selection in the main pane (spec 0129
     /// §G1) — `line_idx` of the row a drag started on; `None` when no
     /// selection is active. Never affects `self.cursor`, which only ever
@@ -493,15 +501,18 @@ pub struct App {
     /// current `name` (empty if `None`), mutually exclusive with an
     /// in-progress `command_buffer` search.
     manage_rename: Option<String>,
-    /// `Some((origin, kind, cursor))` while a `z`/`Z` attempt in the
-    /// management pane is unresolved (spec 0134 G2/G3): `origin` is the
-    /// highlighted entry's origin at the time of that attempt, `kind` is
-    /// the `OverrideKind` it evaluated, and `cursor` is `self.cursor`'s
-    /// value at that time. A same-direction `z`/`Z` press with an
-    /// unchanged cursor advances past `kind`; with a changed cursor, it
-    /// retries `kind`. Cleared on every successful rotation and whenever
+    /// `Some((origin, kind, cursor_moves))` while a `z`/`Z` attempt in
+    /// the management pane is unresolved (spec 0134 G2/G3): `origin` is
+    /// the highlighted entry's origin at the time of that attempt,
+    /// `kind` is the `OverrideKind` it evaluated, and `cursor_moves` is
+    /// `self.cursor_moves`'s value at that time. A same-direction `z`/
+    /// `Z` press with `self.cursor_moves` still equal to the stashed
+    /// value (i.e. the cursor genuinely hasn't moved since — not just
+    /// "ended up at the same position," which a Down-then-Up round trip
+    /// would falsely satisfy) advances past `kind`; otherwise it retries
+    /// `kind`. Cleared on every successful rotation and whenever
     /// `manage_highlight` moves to a different entry.
-    manage_pending_kind: Option<(OverrideOrigin, OverrideKind, usize)>,
+    manage_pending_kind: Option<(OverrideOrigin, OverrideKind, u64)>,
     /// Management pane's visible row count as of the last
     /// `render_manage_pane()` call — basis for `PageUp`/`PageDown`.
     manage_list_height: usize,
@@ -640,6 +651,7 @@ impl App {
             line_to_node,
             footer_line_to_node,
             cursor,
+            cursor_moves: 0,
             select_anchor: None,
             select_end: None,
             last_click: None,
@@ -802,15 +814,25 @@ impl App {
         None
     }
 
+    /// Sets `self.cursor` and bumps `cursor_moves` — the sole mutation
+    /// path for `self.cursor`, so every real cursor change (even a
+    /// round trip that lands back on the same node, e.g. Down then Up)
+    /// is observable via `cursor_moves`, unlike comparing `self.
+    /// cursor`'s value alone against a stashed old value.
+    fn set_cursor(&mut self, idx: usize) {
+        self.cursor = idx;
+        self.cursor_moves += 1;
+    }
+
     fn move_down(&mut self) {
         if let Some(next) = self.next_visible(self.cursor) {
-            self.cursor = next;
+            self.set_cursor(next);
         }
     }
 
     fn move_up(&mut self) {
         if let Some(prev) = self.prev_visible(self.cursor) {
-            self.cursor = prev;
+            self.set_cursor(prev);
         }
     }
 
@@ -820,7 +842,7 @@ impl App {
     fn next_sibling_move(&mut self) {
         if let Some(next) = self.tree[self.cursor].next_sibling {
             self.record_jump(self.cursor);
-            self.cursor = next;
+            self.set_cursor(next);
         } else {
             self.message = "no next sibling".to_string();
         }
@@ -832,7 +854,7 @@ impl App {
     fn prev_sibling_move(&mut self) {
         if let Some(prev) = self.tree[self.cursor].prev_sibling {
             self.record_jump(self.cursor);
-            self.cursor = prev;
+            self.set_cursor(prev);
         } else {
             self.message = "no previous sibling".to_string();
         }
@@ -890,7 +912,7 @@ impl App {
     fn move_home(&mut self) {
         if self.cursor != self.first_node {
             self.record_jump(self.cursor);
-            self.cursor = self.first_node;
+            self.set_cursor(self.first_node);
         }
     }
 
@@ -906,7 +928,7 @@ impl App {
         };
         if self.cursor != target {
             self.record_jump(self.cursor);
-            self.cursor = target;
+            self.set_cursor(target);
         }
     }
 
@@ -1473,7 +1495,7 @@ impl App {
             if self.lines[line_idx].to_lowercase().contains(&needle) {
                 if cur != self.cursor {
                     self.record_jump(self.cursor);
-                    self.cursor = cur;
+                    self.set_cursor(cur);
                     self.unfold_ancestors(cur);
                 }
                 return;
@@ -2613,7 +2635,7 @@ impl App {
                             None => affected[affected.len() - 1],
                         };
                         self.record_jump(self.cursor);
-                        self.cursor = next;
+                        self.set_cursor(next);
                     }
                 }
             }
@@ -2675,8 +2697,10 @@ impl App {
                     let affected = self.manage_affected_nodes(&origin);
 
                     let attempt_kind = match &self.manage_pending_kind {
-                        Some((pending_origin, kind, last_cursor)) if *pending_origin == origin => {
-                            if self.cursor == *last_cursor {
+                        Some((pending_origin, kind, last_cursor_moves))
+                            if *pending_origin == origin =>
+                        {
+                            if self.cursor_moves == *last_cursor_moves {
                                 if reverse {
                                     kind.prev()
                                 } else {
@@ -2710,7 +2734,8 @@ impl App {
                                 attempt_kind.label(),
                                 other_kind.label()
                             );
-                            self.manage_pending_kind = Some((origin, attempt_kind, self.cursor));
+                            self.manage_pending_kind =
+                                Some((origin, attempt_kind, self.cursor_moves));
                         }
                     } else {
                         let cursor_origin = if affected.contains(&self.cursor) {
@@ -2751,7 +2776,7 @@ impl App {
                             None => {
                                 self.message = "z: pick an override target (<-/->)".to_string();
                                 self.manage_pending_kind =
-                                    Some((origin, attempt_kind, self.cursor));
+                                    Some((origin, attempt_kind, self.cursor_moves));
                             }
                         }
                     }
@@ -2997,7 +3022,7 @@ impl App {
                     self.toggle_fold(self.cursor);
                 } else if let Some(parent) = self.tree[self.cursor].parent {
                     self.record_jump(self.cursor);
-                    self.cursor = parent;
+                    self.set_cursor(parent);
                 } else {
                     self.fold_all_siblings();
                 }
@@ -3021,7 +3046,7 @@ impl App {
                     self.toggle_fold(self.cursor);
                 } else if let Some(child) = self.tree[self.cursor].first_child {
                     self.record_jump(self.cursor);
-                    self.cursor = child;
+                    self.set_cursor(child);
                 } else {
                     self.message = "no children".to_string();
                 }
@@ -3047,7 +3072,7 @@ impl App {
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pos) = self.back_stack.pop() {
                     self.fwd_stack.push(self.cursor);
-                    self.cursor = pos;
+                    self.set_cursor(pos);
                     self.unfold_ancestors(pos);
                 } else {
                     self.message = "jumplist: at oldest position".to_string();
@@ -3056,7 +3081,7 @@ impl App {
             KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(pos) = self.fwd_stack.pop() {
                     self.back_stack.push(self.cursor);
-                    self.cursor = pos;
+                    self.set_cursor(pos);
                     self.unfold_ancestors(pos);
                 } else {
                     self.message = "jumplist: at newest position".to_string();
@@ -4122,7 +4147,7 @@ impl App {
 
         if idx != self.cursor {
             self.record_jump(self.cursor);
-            self.cursor = idx;
+            self.set_cursor(idx);
         }
 
         if self.has_children(idx) {
@@ -6115,7 +6140,7 @@ mod tests {
             .iter()
             .position(|n| n.parent.is_none())
             .expect("root node must exist");
-        app.cursor = outside;
+        app.set_cursor(outside);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         assert_eq!(app.message, "z: pick an override target (<-/->)");
@@ -6123,7 +6148,7 @@ mod tests {
         // Move the cursor onto one of the affected nodes, then retry —
         // must retry the same `Path` attempt (not advance to
         // `PathField`) and resolve via the cursor match.
-        app.cursor = items[1];
+        app.set_cursor(items[1]);
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         let expected = OverrideOrigin::Path {
             path: app.positional_path(items[1]),
@@ -6133,6 +6158,54 @@ mod tests {
             expected
         );
         assert!(app.manage_pending_kind.is_none());
+    }
+
+    /// 2026-07-16 feedback: a real movement-tracking signal
+    /// (`cursor_moves`), not just comparing the cursor's numeric
+    /// position — a Down-then-Up round trip that lands back on the
+    /// exact same node still counts as movement, so a same-key `z`
+    /// retry afterward retries the same stuck kind instead of wrongly
+    /// treating it as "cursor unchanged" and advancing past it.
+    #[test]
+    fn manage_pane_z_down_then_up_round_trip_counts_as_movement() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        let fqdn_origin = app
+            .origin_for_kind(items[0], OverrideKind::FqdnField)
+            .expect("field's parent type is known");
+        app.overrides.activate(fqdn_origin.clone(), None);
+        app.manage_highlight = app.overrides.entries().len() - 1;
+
+        let outside = app
+            .tree
+            .iter()
+            .position(|n| n.parent.is_none())
+            .expect("root node must exist");
+        app.set_cursor(outside);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.message, "z: pick an override target (<-/->)");
+        assert!(app.manage_pending_kind.is_some());
+
+        // Down then Up returns the cursor to the exact same node — but
+        // it is still a real move, unlike a plain numeric-equality
+        // check on `self.cursor` alone would conclude.
+        app.move_down();
+        app.move_up();
+        assert_eq!(app.cursor, outside, "back at the same position");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(
+            app.message, "z: pick an override target (<-/->)",
+            "must retry the same kind, not advance"
+        );
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight].origin,
+            fqdn_origin,
+            "entry unchanged - still ambiguous on retry"
+        );
     }
 
     /// Spec 0134 G2: when no kind (other than the entry's own) applies
