@@ -2680,7 +2680,7 @@ impl App {
                             self.manage_pending_kind = None;
                         } else {
                             self.message = format!(
-                                "z: no override target, try again for {}",
+                                "z: no override target, try again for {} origin",
                                 other_kind.label()
                             );
                             self.manage_pending_kind = Some((origin, attempt_kind, self.cursor));
