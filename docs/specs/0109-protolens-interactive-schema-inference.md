@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 **Refs:** `docs/specs/0042-schema-score.md`, `docs/specs/0045-reproto-emit-graph.md`,
 `docs/specs/0048-multi-entry-score.md`, `docs/specs/0089-any-expansion.md`,
 `docs/specs/0100-message-set-expansion.md`, `docs/specs/0108-message-set-scoring-tier0.md`,
-`docs/PROST-ISSUES.md`
+`docs/prototext/PROST-ISSUES.md`
 **App:** protolens (new)
 
 ---
@@ -185,7 +185,7 @@ Terminal UI, modeled loosely on tools like `less`/tree-view file managers:
   entries from the base corpus while preserving every option/extension/
   feature the clone doesn't itself touch — a round-trip-fidelity requirement
   that `prost`/`prost-reflect` cannot currently guarantee (see
-  `docs/PROST-ISSUES.md`, particularly the documented `FieldOptions`
+  `docs/prototext/PROST-ISSUES.md`, particularly the documented `FieldOptions`
   round-trip bug). Instead, `protolens` exports the *current* override state
   (ignoring undo history — only the final decisions matter for schema
   construction) to a new `reproto` subcommand, which performs the actual

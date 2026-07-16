@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 
 This directory contains `.proto` source files and their compiled `.pb`
 descriptor-set files used to empirically verify the claims in
-`docs/proto2-proto3-findings.md`.  The compiled descriptors are also intended
+`docs/reproto/proto2-proto3-findings.md`.  The compiled descriptors are also intended
 as regression test fixtures for the reproto proto3-rendering implementation
 (spec `0015-proto3-rendering.md`).
 
@@ -35,7 +35,7 @@ cd docs/mockup
 
 | Script | Purpose |
 |--------|---------|
-| `inspect_all.py` | Master script: inspects all `.pb` files and prints every descriptor field relevant to the rendering spec. Produces the raw data behind `docs/proto2-proto3-findings.md` Parts I–XIII. |
+| `inspect_all.py` | Master script: inspects all `.pb` files and prints every descriptor field relevant to the rendering spec. Produces the raw data behind `docs/reproto/proto2-proto3-findings.md` Parts I–XIII. |
 | `inspect_openitems.py` | Targeted script for the five originally-open items (Parts XVI–XX): `import weak` in editions, `message_set_wire_format` in editions, `deprecated_legacy_json_field_conflicts`, `visibility` field, extension range end semantics. |
 | `test_packed_wire.py` | Wire-level test: encodes a proto3 message with repeated int32 fields and inspects the raw bytes to confirm that `HasField("packed")==False` in proto3 still produces packed wire encoding at runtime. |
 

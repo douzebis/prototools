@@ -398,7 +398,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         - We DO preserve relative order within each category (e.g., nested_type[0]
           stays before nested_type[1])
 
-        See INSIGHTS.md for detailed investigation and proof.
+        See docs/reproto/INSIGHTS.md for detailed investigation and proof.
 
         Special Cases:
         - Map entries (synthetic nested_type) are filtered out and rendered as

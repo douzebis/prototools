@@ -20,7 +20,7 @@ for `prototext list-schemas` to score.
 
 The current implementation uses `prost_reflect::DynamicMessage::encode_to_vec()`
 to serialize generated instances.  Due to a prost-reflect bug (see
-`docs/PROST-ISSUES.md §1`), repeated scalar fields in proto3 messages whose
+`docs/prototext/PROST-ISSUES.md §1`), repeated scalar fields in proto3 messages whose
 `FieldDescriptorProto.options` is present-but-empty (e.g. because an unrelated
 custom option such as `google.api.field_behavior` appears on another field in
 the same message) are encoded as non-packed individual VARINTs rather than as a

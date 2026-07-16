@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Master inspection script: reads all compiled .pb descriptors and prints
-# the raw descriptor state used to produce docs/proto2-proto3-findings.md.
+# the raw descriptor state used to produce docs/reproto/proto2-proto3-findings.md.
 #
 # Run from inside the mockup/ directory (or adjust MOCKUP path):
 #   cd docs/mockup && python3 inspect_all.py 2>&1 | tee inspect_all.log

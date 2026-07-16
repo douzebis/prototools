@@ -24,7 +24,7 @@ This spec extends `reproto --build-schema-db` to also produce a sidecar
 `prototext` loads the index in near-zero time (two `mmap` calls + a
 pointer cast) and decodes FDPs on demand, one per type lookup.
 
-The design follows `docs/lazy_fds_design.md`.  This spec covers the
+The design follows `docs/prototext/lazy_fds_design.md`.  This spec covers the
 **reproto side only** (index building).  The `prototext` runtime
 (`LazyPool`) is a separate spec.
 

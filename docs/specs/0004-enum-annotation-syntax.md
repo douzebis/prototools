@@ -408,7 +408,7 @@ assert wire' == wire
 
 ## References
 
-- [`docs/annotation-format.md`](../annotation-format.md) — annotation grammar
+- [`docs/annotation-format.md`](../prototext/annotation-format.md) — annotation grammar
 - `prototext-core/src/schema.rs` — `FieldInfo`, `MessageSchema`, `ParsedSchema`
 - `prototext-core/src/serialize/render_text/mod.rs` — `AnnWriter`, annotation format
 - `prototext-core/src/serialize/render_text/varint.rs` — `render_varint_field`

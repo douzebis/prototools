@@ -280,5 +280,5 @@ the annotation for lossless round-trip.  In `--no-annotations` mode the
 - `src/google/protobuf/generated_message_reflection.cc` — enum handling
 - `src/google/protobuf/descriptor.cc` — `IsStrictUtf8`, `requires_utf8_validation`
 - `abseil-cpp/absl/strings/escaping.cc` — `CEscape` for string rendering
-- `docs/protoc-decode-compatibility.md` — known divergences between prototext and protoc
+- `docs/prototext/protoc-decode-compatibility.md` — known divergences between prototext and protoc
 - `docs/specs/0010-protoc-compatibility.md` — planned fixes

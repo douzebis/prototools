@@ -8,8 +8,8 @@ SPDX-License-Identifier: MIT
 
 **Status:** implemented
 **Implemented in:** 2026-07-09
-**Refs:** `docs/specs/0097-raw-recursive-lendel.md`, `docs/design.md`,
-`docs/PROST-ISSUES.md`, `docs/protoc-decode-compatibility.md`,
+**Refs:** `docs/specs/0097-raw-recursive-lendel.md`, `docs/prototext/design.md`,
+`docs/prototext/PROST-ISSUES.md`, `docs/prototext/protoc-decode-compatibility.md`,
 `docs/specs/0111-protolens-v1-decode-navigate-extract.md`
 **App:** prototext-core
 
@@ -34,7 +34,7 @@ Both share only the low-level wire-primitive helpers (`parse_varint`,
 is reimplemented independently in each — confirmed by two separate, non-shared
 `packed.rs` files (`decoder/packed.rs`, 227 lines; `render_text/packed.rs`, 361
 lines). This duplication has already produced one confirmed instance of drift:
-`docs/design.md` claims the binary round-trip path (`render_as_bytes`) depends on
+`docs/prototext/design.md` claims the binary round-trip path (`render_as_bytes`) depends on
 `ingest_pb`'s IR — verified false; `serialize/encode_text/mod.rs` uses its own
 independent `Frame`/placeholder-compaction machinery and never references
 `decoder::ingest_pb`/`ProtoTextMessage` at all.
@@ -215,7 +215,7 @@ actual codebase rather than assumed:
   `write_close_brace` after), so every line of every descendant's text
   necessarily falls between those two lines.
 - **One field per rendered line, no wrapping.** Confirmed via
-  `docs/protoc-decode-compatibility.md:30` ("Multi-line mode (default) — one field
+  `docs/prototext/protoc-decode-compatibility.md:30` ("Multi-line mode (default) — one field
   per line, 2-space indentation") — `prototext decode`'s canonical output
   deliberately mirrors `protoc --decode`'s own convention and never wraps a value
   across multiple physical lines, regardless of length. So a node's boundaries
@@ -525,7 +525,7 @@ pub(crate) enum MalformedKind {
 /// buffer) — never applicable to a LEN-delimited nested message, which has
 /// no separate close tag at all. Mirrors, field for field, what
 /// `decoder::parse_message`'s `WT_START_GROUP` arm already computes today
-/// (`decoder/mod.rs`; `docs/design.md`) — minus `open_ended_group`, which is
+/// (`decoder/mod.rs`; `docs/prototext/design.md`) — minus `open_ended_group`, which is
 /// redundant here: `end_nested`'s `close_facts: Option<GroupCloseFacts>`
 /// already encodes "open-ended" via its `None` variant, so a second boolean
 /// saying the same thing would be dead weight (confirmed during
@@ -759,7 +759,7 @@ probe call:
   the same regression coverage (a LEN wire type on a declared-`int32` field must
   still be flagged as malformed/mismatched via whatever the replacement's
   equivalent signal is).
-- Correct `docs/design.md`'s stale claim (lines ~379–382) that `render_as_bytes`
+- Correct `docs/prototext/design.md`'s stale claim (lines ~379–382) that `render_as_bytes`
   depends on `ingest_pb`'s IR, while touching this area regardless.
 
 ---
@@ -821,7 +821,7 @@ touched (§ Files changed) and the module retirement involved (§5).
    `len_field.rs` already calls `ProbeSink` directly);
    `len_wire_type_on_varint_field_sets_type_mismatch_flag` replaced with an
    equivalent `render_as_text`-based assertion on the `TYPE_MISMATCH`
-   annotation; corrected `docs/design.md` (removed the obsolete
+   annotation; corrected `docs/prototext/design.md` (removed the obsolete
    Intermediate-representation/Decode-path sections, the stale
    `render_as_bytes`/`ingest_pb` claim, and the `decoder/` crate-layout
    entry). Full workspace suite zero-diff; clippy shows only the 4
@@ -831,7 +831,7 @@ touched (§ Files changed) and the module retirement involved (§5).
    this spec's `Status` moves to `implemented`.~~ **Done.**
    **Gate**: no wall-clock or structural regression evidence. — met: no
    Criterion bench harness existed anywhere in this repo (the one that
-   produced `docs/performance.md`'s numbers lived only in a sibling private
+   produced `docs/prototext/performance.md`'s numbers lived only in a sibling private
    repo); ported it to `prototext-core/benches/codec.rs` with a new committed
    fixture (`prototext-core/fixtures/descriptor.pb` +
    `descriptor_protoc.txt`). Compared a `b517191` (pre-refactor) worktree
@@ -839,12 +839,12 @@ touched (§ Files changed) and the module retirement involved (§5).
    measurement — the pre-refactor value (415–417 µs) fell inside the
    post-refactor binary's own run-to-run noise band (287–449 µs across 3
    runs; this sandbox is a noisy single virtualised core, see
-   `docs/performance.md`'s environment note). Structurally, `grep -rn "dyn
+   `docs/prototext/performance.md`'s environment note). Structurally, `grep -rn "dyn
    Sink"` across `prototext-core/src` returns no matches — `Sink` is
    consumed exclusively via `<S: Sink>` static generics, monomorphized and
    inlined the same as the pre-refactor direct calls, so there is no vtable
    indirection for the refactor to have introduced. Full writeup:
-   `docs/performance.md` §"Spec 0110 — Sink-based render refactor (zero-cost
+   `docs/prototext/performance.md` §"Spec 0110 — Sink-based render refactor (zero-cost
    checkpoint)". `ProbeSink`-vs-`decoder::parse_message` comparison from
    Open Issue #3's original plan is moot — `decoder::parse_message` no
    longer exists (deleted in Step 6).
@@ -914,17 +914,17 @@ touched (§ Files changed) and the module retirement involved (§5).
    interactively, low volume, by `protolens`). `ProbeSink` may run on a hot
    path (schema-less messages), a secondary but real concern. Resolution: a
    post-implementation checkpoint, not a pre-implementation blocker — re-run
-   the existing `A2 decode_and_render` Criterion bench (`docs/bench-process.md`;
-   current baseline in `docs/performance.md`: 205 µs · 80.4 MiB/s) post-refactor
+   the existing `A2 decode_and_render` Criterion bench (`docs/prototext/bench-process.md`;
+   current baseline in `docs/prototext/performance.md`: 205 µs · 80.4 MiB/s) post-refactor
    and confirm `TextSink` regresses ~0%; add a new bench for `ProbeSink` at the
    `len_field.rs:51` call site and compare against today's `decoder::parse_message`
-   cost there; fall back to an `objdump` spot-check (per `docs/bench-process.md`)
+   cost there; fall back to an `objdump` spot-check (per `docs/prototext/bench-process.md`)
    for stray `call` instructions into `TextSink`-only code (e.g. the
    splice-based backtracking path) if either number regresses unexpectedly.~~
    **Resolved** (Step 7): no wall-clock regression evidence (pre-refactor A2
    falls inside the post-refactor binary's own measurement noise) and no
    structural regression evidence (`Sink` has zero `dyn` call sites — see
-   Step 7's gate note and `docs/performance.md`). The `ProbeSink`-vs-
+   Step 7's gate note and `docs/prototext/performance.md`). The `ProbeSink`-vs-
    `decoder::parse_message` comparison in the original plan is moot:
    `decoder::parse_message` was deleted in Step 6, so there is no longer a
    pre-refactor baseline to compare `ProbeSink` against.
@@ -961,4 +961,4 @@ touched (§ Files changed) and the module retirement involved (§5).
 | `prototext/tests/roundtrip.rs` | Replace `ingest_pb`-based test with `ProbeSink`-based equivalent |
 | `prototext-pyo3/src/lib.rs` | Update both direct `decode_and_render` call sites (`lib.rs:139`, `lib.rs:251`) to pass the two new trailing args (`initial_level: 0`, `emit_header` matching current `annotations` semantics) — mechanical, no Python-facing API change |
 | `prototext-core/src/lib.rs` | Update `render_as_text`'s internal `decode_and_render` call site (`lib.rs:107`) to pass `initial_level: 0, emit_header: opts.include_annotations` — mechanical, no change to `render_as_text`'s own public signature or `RenderOpts` |
-| `docs/design.md` | Correct stale claim re: `ingest_pb`/`render_as_bytes` |
+| `docs/prototext/design.md` | Correct stale claim re: `ingest_pb`/`render_as_bytes` |

@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 
 ## Purpose
 
-Address the findings from the code review documented in `reproto/REVIEW.md`.
+Address the findings from the code review documented in `docs/reproto/REVIEW.md`.
 The work is split into six sequential rounds, ordered so that each round
 creates the preconditions for the next.
 
@@ -156,7 +156,7 @@ whether `re_simple.py`-style re-export shims are kept for each split.
   and an `is None` test.
 - Investigate and fix (or document as intentional) the `shorten_type_name`
   edge case where `do_more=False` from a recursive call does not prevent
-  further prefix stripping (REVIEW.md §6.6).
+  further prefix stripping (docs/reproto/REVIEW.md §6.6).
 
 A dedicated spec must include test cases that pin the intended behaviour
 before any code changes.

@@ -23,7 +23,7 @@ crate-type = ["rlib"]
 # repeated scalar/enum fields when FieldOptions is present-but-empty in the
 # FDS (e.g. because an unrelated custom option is set on the field).
 # Enable this feature until the bug is fixed upstream.
-# See docs/PROST-ISSUES.md §1.
+# See docs/prototext/PROST-ISSUES.md §1.
 prost-bug-workaround = []
 
 [dependencies]

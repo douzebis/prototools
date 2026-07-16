@@ -69,8 +69,10 @@ jobs:
           # reproto/README.md → reproto-readme.md
           inject reproto/README.md website/content/reproto-readme.md
 
-          # docs/*.md (top-level only, not specs/)
-          for f in docs/*.md; do
+          # docs/*.md (workspace-wide docs) plus each app's own docs/<app>/*.md
+          # (not specs/) — flattened into the same website/content/ namespace.
+          for f in docs/*.md docs/prototext/*.md docs/reproto/*.md; do
+            [ -f "$f" ] || continue
             name=$(basename "$f" .md | tr '[:upper:]' '[:lower:]' | tr '_' '-')
             inject "$f" "website/content/${name}.md"
           done

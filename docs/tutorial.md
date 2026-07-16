@@ -644,7 +644,7 @@ Each editions feature is translated to its proto2 equivalent:
 | `default = 42` | `[default = 42]` | preserved |
 
 The output recompiles with `protoc` without errors and is wire-compatible with
-the original editions descriptor.  See `docs/force-proto2-output.md` for the
+the original editions descriptor.  See `docs/reproto/force-proto2-output.md` for the
 complete translation reference.
 
 ---
@@ -673,5 +673,5 @@ approximately one hour end-to-end.
 - `man prototext` — full option reference for `prototext`
 - `reproto --help` — all reproto modes and flags
 - `prototext decode --help`, `prototext list-schemas --help` — per-subcommand help
-- `docs/force-proto2-output.md` — complete reference for `--force-proto2-output` translation rules
+- `docs/reproto/force-proto2-output.md` — complete reference for `--force-proto2-output` translation rules
 - [prototools online docs](https://douzebis.github.io/prototools)

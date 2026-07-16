@@ -118,7 +118,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
     // Determine whether this LEN record encodes a packed repeated field.
     //
     // Normally we trust prost-reflect's precomputed `is_packed()`.  However,
-    // prost-reflect has a bug (see docs/PROST-ISSUES.md §1): for proto3
+    // prost-reflect has a bug (see docs/prototext/PROST-ISSUES.md §1): for proto3
     // repeated scalar/enum fields, `is_packed()` returns false when
     // `FieldOptions` is present-but-empty in the FDS (e.g. because an
     // unrelated custom option such as `google.api.field_behavior` is set on

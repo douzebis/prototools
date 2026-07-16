@@ -61,7 +61,7 @@ Achieving this requires matching the original syntax in the output.
 
 This section catalogues every construct that renders differently between the
 two syntaxes.  It is the authoritative reference for the implementation.
-Full research is in `docs/proto2-proto3-findings.md`.  All items
+Full research is in `docs/reproto/proto2-proto3-findings.md`.  All items
 have been empirically verified.
 
 ### Syntax detection from `FileDescriptorProto`
@@ -282,7 +282,7 @@ No syntax difference.
 
 ### 19. Empirically resolved items
 
-All items below have been verified.  Full details in `docs/proto2-proto3-findings.md`.
+All items below have been verified.  Full details in `docs/reproto/proto2-proto3-findings.md`.
 
 - **`FieldOptions.weak`** — syntax-neutral; accepted in proto2 and proto3
   (findings Part XI).
@@ -529,7 +529,7 @@ warnings when the descriptor's `syntax` field is known to be wrong.
 
 ## Future: editions
 
-`docs/proto2-proto3-findings.md` §III already documents the full edition
+`docs/reproto/proto2-proto3-findings.md` §III already documents the full edition
 feature catalogue (8 core features, per-element inheritance, edition 2023
 defaults, and the mapping to proto2/proto3 semantics).
 
@@ -559,7 +559,7 @@ Implementation sequence (future spec):
 1. **Per-file override**: YAML file or flags?  Deferred to review.
 2. **`json_name` fix scope**: include in this spec (low-risk) or separate?
 3. **Empirical verification complete** — all items in §19 and §4 have been resolved.
-   See `docs/proto2-proto3-findings.md` Parts I–XX.
+   See `docs/reproto/proto2-proto3-findings.md` Parts I–XX.
 
 ---
 

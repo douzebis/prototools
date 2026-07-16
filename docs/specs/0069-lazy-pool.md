@@ -27,7 +27,7 @@ spec wires the index into `prototext` as a `LazyPool` that mmaps both
 files and decodes FDPs on demand, reducing startup to two `mmap` calls +
 a pointer cast.
 
-The design follows `docs/lazy_fds_design.md`.
+The design follows `docs/prototext/lazy_fds_design.md`.
 
 ---
 

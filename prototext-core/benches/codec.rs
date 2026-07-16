@@ -18,7 +18,7 @@
 // Step 7 ("Zero-cost benchmark checkpoint") for context: this bench exists
 // to confirm the Sink-based render refactor (spec 0110) did not regress the
 // `decode_and_render` hot path relative to the pre-refactor baseline
-// recorded in docs/performance.md (205 µs · 80.4 MiB/s on a 17 KB input).
+// recorded in docs/prototext/performance.md (205 µs · 80.4 MiB/s on a 17 KB input).
 //
 // Micro-benchmarks for the varint and encode_varint hot paths are retained
 // for isolation.

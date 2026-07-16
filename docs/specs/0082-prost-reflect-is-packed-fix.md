@@ -39,7 +39,7 @@ option annotation), prost deserializes `FieldOptions` with no `packed` entry.
 returns `self.packed.unwrap_or(false)` — it returns `false` for a missing
 field.  The proto3 default (`true`) is therefore never applied.
 
-This is documented in detail in `docs/PROST-ISSUES.md §1`, with a minimal
+This is documented in detail in `docs/prototext/PROST-ISSUES.md §1`, with a minimal
 two-file reproducer.
 
 ### Upstream repository
@@ -68,7 +68,7 @@ proto3 repeated packable fields:
 ## Goals
 
 1. Open a GitHub issue on `andrewhickman/prost-reflect` describing the bug
-   with the minimal reproducer from `docs/PROST-ISSUES.md §1`.
+   with the minimal reproducer from `docs/prototext/PROST-ISSUES.md §1`.
 2. Submit a pull request with a two-line fix to `resolve.rs`.
 3. Once the fix is released and `prost-reflect` is bumped in this repo,
    remove the `prost-bug-workaround` feature and all associated code.
@@ -78,7 +78,7 @@ proto3 repeated packable fields:
 ## Non-goals
 
 - Fixing the `prost-reflect` editions non-support issue (that is a separate
-  upstream effort tracked by `docs/PROST-ISSUES.md §2` and spec 0057).
+  upstream effort tracked by `docs/prototext/PROST-ISSUES.md §2` and spec 0057).
 - Changing any rendering behaviour: the fix restores the correct proto3
   default; no observable change in behaviour for callers that do not hit the
   bug.
@@ -196,7 +196,7 @@ fn main() {
 Running `cargo run` prints `is_packed: false` and panics on the assertion.
 The expected output is `is_packed: true`.
 
-Include the root-cause explanation from `docs/PROST-ISSUES.md §1` (the
+Include the root-cause explanation from `docs/prototext/PROST-ISSUES.md §1` (the
 `map_or` / `packed()` analysis) and the proposed fix from §82.1.
 
 ### §82.3 Pull request
@@ -233,14 +233,14 @@ Once the fix is merged, tagged, and a new `prost-reflect` version is released:
    `prototext-core/src/serialize/render_text/helpers/len_field.rs` (lines
    74–101), replacing both branches with a single `fs.is_packed()` call.
 6. Run `cargo test` and verify no regressions.
-7. Update `docs/PROST-ISSUES.md §1` to note the fix (version, PR/issue link).
+7. Update `docs/prototext/PROST-ISSUES.md §1` to note the fix (version, PR/issue link).
 8. Update this spec status to `implemented`.
 
 ---
 
 ## References
 
-- `docs/PROST-ISSUES.md §1` — bug description and minimal reproducer.
+- `docs/prototext/PROST-ISSUES.md §1` — bug description and minimal reproducer.
 - `prototext-core/Cargo.toml` lines 22–27 — `prost-bug-workaround` feature declaration.
 - `Cargo.toml` line 31 — workspace feature enablement.
 - `prototext-core/src/serialize/render_text/mod.rs` lines 82–92 — `raw_packed_option` / `parent_file_syntax`.

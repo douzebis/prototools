@@ -481,10 +481,10 @@ Secondary recommendations:
 
 - Repository: `github.com/ThalesGroup/prototools`
 - Tutorial: `docs/tutorial.md`
-- Annotation format reference: `docs/annotation-format.md`
+- Annotation format reference: `docs/prototext/annotation-format.md`
 - Schema matching design: `docs/schema-match.md`
-- Performance benchmarks: `docs/performance.md`
-- Editions-to-proto2 translation: `docs/force-proto2-output.md`
+- Performance benchmarks: `docs/prototext/performance.md`
+- Editions-to-proto2 translation: `docs/reproto/force-proto2-output.md`
 - Online docs: `https://douzebis.github.io/prototools`
 
 ---

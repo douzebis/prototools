@@ -25,12 +25,12 @@ Several features that are now in scope — or naturally arise from the
 protoc-compatibility work — require descriptor information that the hand-rolled
 layer does not capture:
 
-- **Extension fields** (spec 0010 / `docs/protoc-decode-compatibility.md`):
+- **Extension fields** (spec 0010 / `docs/prototext/protoc-decode-compatibility.md`):
   require the fully-qualified extension name, the extendee, and the extension
   range, none of which are stored today.
 - **Proto2 vs proto3 syntax**: currently inferred heuristically; needed
   precisely for correct UTF-8 validation behavior (per
-  `docs/protoc-decode-anomalous-input.md` §2.7) and closed-enum handling (§2.3).
+  `docs/prototext/protoc-decode-anomalous-input.md` §2.7) and closed-enum handling (§2.3).
 - **Package name**: discarded today after use; needed for FQN construction of
   extension names.
 - **OneOf fields**: not stored; needed for correct presence semantics.
@@ -305,7 +305,7 @@ This is made available via `ParsedSchema` or by threading `FileDescriptor`
 references through the relevant code paths.  Immediate uses:
 
 - UTF-8 validation mode for string fields (§2.7 of
-  `docs/protoc-decode-anomalous-input.md`): currently all strings are
+  `docs/prototext/protoc-decode-anomalous-input.md`): currently all strings are
   treated as proto2 (invalid UTF-8 rendered as escaped bytes).  With syntax
   available, proto3 string fields could be flagged when annotations are
   enabled.
@@ -411,7 +411,7 @@ The shim in step 2 ensures `cargo test` passes throughout the migration.
 - `prototext-core/src/serialize/render_text/` — renderer (consumes schema)
 - `prototext-core/src/serialize/encode_text/mod.rs` — encoder (consumes schema)
 - `prototext-core/src/decoder.rs` — wire decoder (consumes schema)
-- `docs/protoc-decode-compatibility.md` — extension field divergence (D6)
-- `docs/protoc-decode-anomalous-input.md` — proto2/proto3 UTF-8 and enum behavior
+- `docs/prototext/protoc-decode-compatibility.md` — extension field divergence (D6)
+- `docs/prototext/protoc-decode-anomalous-input.md` — proto2/proto3 UTF-8 and enum behavior
 - `docs/specs/0010-protoc-compatibility.md` — protoc compatibility work
 - prost-reflect 0.16.3 — https://docs.rs/prost-reflect/latest/prost_reflect/

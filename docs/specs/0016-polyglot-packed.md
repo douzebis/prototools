@@ -63,7 +63,7 @@ path produces, which is wrong for proto3.
 
 ## Background
 
-See `docs/proto2-proto3-findings.md` Parts IV and I for the empirical basis.
+See `docs/reproto/proto2-proto3-findings.md` Parts IV and I for the empirical basis.
 Key facts:
 
 - `fdp.syntax == ""` for all proto2 files; `"proto3"` for proto3.
