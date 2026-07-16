@@ -36,8 +36,10 @@ struct Cli {
 
     /// FileDescriptorSet for root-type determination and type resolution.
     /// May be a raw binary FileDescriptorSet or a `#@ prototext`-format
-    /// FileDescriptorSet.
-    #[arg(long = "descriptor-set", env = "PROTOLENS_DESCRIPTOR_SET")]
+    /// FileDescriptorSet. Shares its env var with `prototext`/`reproto`
+    /// (spec 0090), so a single `PROTOTEXT_DESCRIPTOR_SET` covers the
+    /// whole toolset.
+    #[arg(long = "descriptor-set", env = "PROTOTEXT_DESCRIPTOR_SET")]
     descriptor_set: Option<PathBuf>,
 
     /// Root message type. If omitted, inferred automatically from
