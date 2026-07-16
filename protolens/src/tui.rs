@@ -2714,6 +2714,7 @@ impl App {
             KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
                     let origin = entry.origin.clone();
+                    let r#type = entry.r#type.clone();
                     let was_active = entry.active;
                     let reverse = key.code == KeyCode::Char('Z');
                     if !self.manage_affected_nodes(&origin).contains(&self.cursor) {
@@ -2725,9 +2726,26 @@ impl App {
                             Ok(new_origin) => {
                                 self.manage_highlight = self
                                     .overrides
-                                    .rotate_origin(self.manage_highlight, new_origin);
+                                    .rotate_origin(self.manage_highlight, new_origin.clone());
                                 if was_active {
                                     self.render_overrides(self.first_node);
+                                    // `render_overrides` can auto-seed
+                                    // brand-new entries elsewhere in the
+                                    // tree (Any/MessageSet auto-expansion),
+                                    // which re-sorts the whole collection
+                                    // and can invalidate the index
+                                    // `rotate_origin` just returned above
+                                    // — relocate the rotated entry by
+                                    // identity instead of trusting the
+                                    // pre-render index (feedback,
+                                    // 2026-07-16).
+                                    if let Some(idx) =
+                                        self.overrides.entries().iter().rposition(|e| {
+                                            e.origin == new_origin && e.r#type == r#type
+                                        })
+                                    {
+                                        self.manage_highlight = idx;
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -5769,6 +5787,205 @@ mod tests {
             1,
             "only one entry per origin stays active"
         );
+    }
+
+    /// Rotating an *active* entry's origin kind runs `render_overrides`,
+    /// which can auto-seed a brand-new entry elsewhere in the tree (Any/
+    /// MessageSet auto-expansion) — re-sorting the whole collection out
+    /// from under the index `rotate_origin` already returned.
+    /// `manage_highlight` must still land on the just-rotated entry, not
+    /// whichever row the reshuffle happens to leave at that stale index
+    /// (feedback, 2026-07-16).
+    #[test]
+    fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
+        use prost::Message as _;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        use crate::decode::{decode, DescriptorContext};
+
+        let any_msg = DescriptorProto {
+            name: Some("Any".to_string()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("type_url".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("value".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Bytes as i32),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let any_file = FileDescriptorProto {
+            name: Some("google/protobuf/any.proto".to_string()),
+            syntax: Some("proto3".to_string()),
+            package: Some("google.protobuf".to_string()),
+            message_type: vec![any_msg],
+            ..Default::default()
+        };
+        let payload_msg = DescriptorProto {
+            name: Some("Payload".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("label".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let container_msg = DescriptorProto {
+            name: Some("Container".to_string()),
+            field: vec![
+                FieldDescriptorProto {
+                    name: Some("val".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Int32 as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("payload".to_string()),
+                    number: Some(2),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::Message as i32),
+                    type_name: Some(".google.protobuf.Any".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let acme_file = FileDescriptorProto {
+            name: Some("acme.proto".to_string()),
+            syntax: Some("proto2".to_string()),
+            package: Some("acme".to_string()),
+            dependency: vec!["google/protobuf/any.proto".to_string()],
+            message_type: vec![payload_msg, container_msg],
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet {
+            file: vec![any_file, acme_file],
+        };
+
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let descriptor_path = std::env::temp_dir().join(format!(
+            "protolens-tui-manage-z-reshuffle-descriptor-{n}.pb"
+        ));
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // Container {
+        //   val: 42,
+        //   payload: Any { type_url: "type.googleapis.com/acme.Payload",
+        //                   value: Payload { label: "hi" } },
+        // }
+        let label = b"hi";
+        let mut payload_bytes = vec![0x0au8, label.len() as u8];
+        payload_bytes.extend_from_slice(label);
+        let type_url = b"type.googleapis.com/acme.Payload";
+        let mut any_bytes = vec![0x0au8, type_url.len() as u8];
+        any_bytes.extend_from_slice(type_url);
+        any_bytes.push(0x12);
+        any_bytes.push(payload_bytes.len() as u8);
+        any_bytes.extend_from_slice(&payload_bytes);
+        let mut blob = vec![0x08u8, 0x2A]; // field 1, VARINT, value 42
+        blob.push(0x12); // field 2, LEN
+        blob.push(any_bytes.len() as u8);
+        blob.extend_from_slice(&any_bytes);
+
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        let val_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.field_number == 1)
+            .expect("must find the val node");
+
+        // `App::new` already ran one `render_overrides` pass, which
+        // auto-seeded the Any field's `value` — undo that seeding so it
+        // starts out unexpanded again (no entry for it at all), letting
+        // the `z`-triggered pass below re-seed it as a *fresh* entry and
+        // reshuffle the collection out from under `manage_highlight`.
+        let any_entry_idx = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| e.auto)
+            .expect("Any field must have been auto-seeded by App::new");
+        app.overrides.remove(any_entry_idx);
+
+        // Seed `val` as an explicit, active `Path` override — mirroring
+        // what the override pane would do.
+        let val_origin = override_pane::OverrideOrigin::Path {
+            path: app.positional_path(val_idx),
+        };
+        app.overrides.activate(val_origin.clone(), None);
+        app.manage_highlight = app
+            .overrides
+            .entries()
+            .iter()
+            .position(|e| e.origin == val_origin)
+            .unwrap();
+        app.manage_focus = true;
+        app.manage_open = true;
+        app.cursor = val_idx;
+        assert_eq!(
+            app.overrides.entries().len(),
+            2,
+            "root + val, Any field's auto-expansion not seeded yet: {:#?}",
+            app.overrides.entries()
+        );
+
+        // Rotate: Path -> PathField. Since the rotated entry is active,
+        // `handle_key` also runs `render_overrides`, which (for the
+        // first time) walks into the still-unexpanded Any field and
+        // auto-seeds a brand-new entry for it, reshuffling the whole
+        // sorted collection.
+        app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        assert_eq!(
+            app.overrides.entries().len(),
+            3,
+            "the Any field's auto-expansion must have been re-seeded by \
+             the same render_overrides pass: {:#?}",
+            app.overrides.entries()
+        );
+        let expected_origin = override_pane::OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        };
+        let highlighted = &app.overrides.entries()[app.manage_highlight];
+        assert_eq!(
+            highlighted.origin,
+            expected_origin,
+            "manage_highlight must still point at the just-rotated entry, \
+             not the newly auto-seeded Any entry: {:#?}",
+            app.overrides.entries()
+        );
+        assert!(highlighted.active, "rotated entry must stay active");
     }
 
     /// Spec 0124 G3: `d` duplicates the highlighted entry as a new,
