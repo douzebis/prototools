@@ -4749,6 +4749,12 @@ where
     io::Error: From<B::Error>,
 {
     restore_terminal();
+    // `Terminal::draw()` hides the hardware cursor unless the render
+    // callback calls `Frame::set_cursor_position()` — which protolens never
+    // does — so the last `draw()` call before this suspend left it hidden.
+    // Without this, the shell prompt gets no visible cursor after `fg`
+    // (feedback, 2026-07-16).
+    terminal.show_cursor()?;
     // SAFETY: raising a signal on our own process is always sound.
     unsafe {
         libc::raise(libc::SIGTSTP);
