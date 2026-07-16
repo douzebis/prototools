@@ -145,16 +145,6 @@ enum SearchDir {
     Backward,
 }
 
-/// In-progress `/`/`?` search text for the override pane's candidate list
-/// (spec 0114 §4) — `Some` only while the pattern is being typed, mirroring
-/// `command_buffer`'s own text-entry model but scoped to this one pane and
-/// intentionally simpler (append/backspace only, no cursor movement: a
-/// search pattern is short and typed once, not edited mid-buffer).
-struct OverrideSearch {
-    dir: SearchDir,
-    buffer: String,
-}
-
 /// One row of the override management pane's grouped-by-origin listing:
 /// an origin's own (unindented, non-selectable) header row, or one of its
 /// candidate types (an index into `overrides.entries()`, indented under
@@ -168,11 +158,14 @@ enum ManageRow {
 }
 
 /// What the shared `command_buffer`/`command_cursor` text-entry state
-/// currently represents (spec 0114 §4, extended to the main pane): a
-/// `:`/`x`-triggered ex-command, or an in-pane `/`/`?` search pattern.
-/// They differ only in how `Enter` is interpreted and whether
-/// Tab-completion applies — `Search`'s direction doubles as the direction
-/// the pattern was originally requested in, mirroring `OverrideSearch`.
+/// currently represents (spec 0114 §4, extended to the main pane, override
+/// pane, and management pane): a `:`/`x`-triggered ex-command, or a `/`/`?`
+/// search pattern. They differ only in how `Enter` is interpreted and
+/// whether Tab-completion applies — `Search`'s direction doubles as the
+/// direction the pattern was originally requested in. Which pane's search
+/// a confirmed `Search` pattern actually runs against is determined at
+/// `Enter`-time from `self.override_focus`/`self.manage_focus`, not
+/// carried in this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandLineKind {
     Command,
@@ -430,9 +423,6 @@ pub struct App {
     /// Scroll offset (in rows, the pinned raw entry included) for the
     /// override pane's candidate list.
     override_scroll: usize,
-    /// `Some` while `/`/`?` in-pane search text is being typed (spec 0114
-    /// §4); cleared on `Enter`/`Esc`.
-    override_search: Option<OverrideSearch>,
     /// Last confirmed in-pane search (direction, pattern) — `n` repeats it
     /// in the same direction.
     last_override_search: Option<(SearchDir, String)>,
@@ -488,15 +478,12 @@ pub struct App {
     manage_highlight: usize,
     /// Scroll offset (in rows) for the management pane's listing.
     manage_scroll: usize,
-    /// `Some` while `/`/`?` in-pane search text is being typed in the
-    /// management pane (spec 0117 §3, mirroring `override_search`).
-    manage_search: Option<OverrideSearch>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
     /// `Some` while `e` in the management pane is editing the highlighted
     /// entry's display-name override (spec 0119 G4) — pre-filled with its
-    /// current `name` (empty if `None`), mutually exclusive with
-    /// `manage_search`.
+    /// current `name` (empty if `None`), mutually exclusive with an
+    /// in-progress `command_buffer` search.
     manage_rename: Option<String>,
     /// `Some((origin, kind, cursor))` while a `z`/`Z` attempt in the
     /// management pane is unresolved (spec 0134 G2/G3): `origin` is the
@@ -652,7 +639,6 @@ impl App {
             override_candidates: Vec::new(),
             override_highlight: 0,
             override_scroll: 0,
-            override_search: None,
             last_override_search: None,
             term_width: 0,
             override_list_height: 0,
@@ -666,7 +652,6 @@ impl App {
             manage_focus: false,
             manage_highlight: 0,
             manage_scroll: 0,
-            manage_search: None,
             last_manage_search: None,
             manage_rename: None,
             manage_pending_kind: None,
@@ -1125,7 +1110,6 @@ impl App {
     /// Close the override management pane (spec 0117 §3).
     fn close_manage_pane(&mut self) {
         self.manage_open = false;
-        self.manage_search = None;
     }
 
     /// Move the management pane's highlighted row by `delta`, clamped to
@@ -1243,7 +1227,6 @@ impl App {
         self.override_candidates_complete = false;
         self.override_target = None;
         self.override_focus = false;
-        self.override_search = None;
     }
 
     /// Recompute `override_candidates` for the current `override_target`
@@ -2431,39 +2414,6 @@ impl App {
     /// Handle a keypress while the override pane has focus (spec 0114
     /// §2/§3/§4).
     fn handle_override_key(&mut self, key: KeyEvent) {
-        if let Some(search) = &mut self.override_search {
-            match key.code {
-                KeyCode::Esc => self.override_search = None,
-                KeyCode::Enter => {
-                    let OverrideSearch { dir, buffer } =
-                        self.override_search.take().expect("checked above");
-                    // Vim convention: `/`/`?` confirmed with an empty
-                    // pattern re-uses the last active pattern, searching
-                    // in the newly chosen direction (which may differ
-                    // from the direction that pattern was originally
-                    // searched in — unlike `n`, which always repeats in
-                    // the same direction as last time).
-                    let pattern = if buffer.is_empty() {
-                        self.last_override_search
-                            .as_ref()
-                            .map(|(_, p)| p.clone())
-                            .unwrap_or(buffer)
-                    } else {
-                        buffer
-                    };
-                    self.last_override_search = Some((dir, pattern.clone()));
-                    self.jump_to_override_match(dir, &pattern);
-                }
-                KeyCode::Backspace => {
-                    if search.buffer.pop().is_none() {
-                        self.override_search = None;
-                    }
-                }
-                KeyCode::Char(c) => search.buffer.push(c),
-                _ => {}
-            }
-            return;
-        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Tab => self.override_focus = false,
             KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
@@ -2493,17 +2443,20 @@ impl App {
                 };
                 self.recompute_override_candidates();
             }
+            // In-pane search (spec 0114 §4, spec-0133-adjacent rework):
+            // reuses the shared bottom command/message bar as the search
+            // prompt, same mechanism as the main pane's own `/`/`?`
+            // (`handle_command_key`'s `Enter` arm dispatches to
+            // `jump_to_override_match` while `override_focus` is set).
             KeyCode::Char('/') => {
-                self.override_search = Some(OverrideSearch {
-                    dir: SearchDir::Forward,
-                    buffer: String::new(),
-                });
+                self.command_kind = CommandLineKind::Search(SearchDir::Forward);
+                self.command_buffer = Some(String::new());
+                self.command_cursor = 0;
             }
             KeyCode::Char('?') => {
-                self.override_search = Some(OverrideSearch {
-                    dir: SearchDir::Backward,
-                    buffer: String::new(),
-                });
+                self.command_kind = CommandLineKind::Search(SearchDir::Backward);
+                self.command_buffer = Some(String::new());
+                self.command_cursor = 0;
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_override_search.clone() {
@@ -2597,33 +2550,6 @@ impl App {
             }
             return;
         }
-        if let Some(search) = &mut self.manage_search {
-            match key.code {
-                KeyCode::Esc => self.manage_search = None,
-                KeyCode::Enter => {
-                    let OverrideSearch { dir, buffer } =
-                        self.manage_search.take().expect("checked above");
-                    let pattern = if buffer.is_empty() {
-                        self.last_manage_search
-                            .as_ref()
-                            .map(|(_, p)| p.clone())
-                            .unwrap_or(buffer)
-                    } else {
-                        buffer
-                    };
-                    self.last_manage_search = Some((dir, pattern.clone()));
-                    self.jump_to_manage_match(dir, &pattern);
-                }
-                KeyCode::Backspace => {
-                    if search.buffer.pop().is_none() {
-                        self.manage_search = None;
-                    }
-                }
-                KeyCode::Char(c) => search.buffer.push(c),
-                _ => {}
-            }
-            return;
-        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Tab => self.manage_focus = false,
             KeyCode::Esc | KeyCode::Char('o') => self.close_manage_pane(),
@@ -2666,17 +2592,20 @@ impl App {
                     }
                 }
             }
+            // In-pane search (spec 0117 §3, spec-0133-adjacent rework):
+            // reuses the shared bottom command/message bar as the search
+            // prompt, mirroring the override pane's own `/`/`?`
+            // (`handle_command_key`'s `Enter` arm dispatches to
+            // `jump_to_manage_match` while `manage_open && manage_focus`).
             KeyCode::Char('/') => {
-                self.manage_search = Some(OverrideSearch {
-                    dir: SearchDir::Forward,
-                    buffer: String::new(),
-                });
+                self.command_kind = CommandLineKind::Search(SearchDir::Forward);
+                self.command_buffer = Some(String::new());
+                self.command_cursor = 0;
             }
             KeyCode::Char('?') => {
-                self.manage_search = Some(OverrideSearch {
-                    dir: SearchDir::Backward,
-                    buffer: String::new(),
-                });
+                self.command_kind = CommandLineKind::Search(SearchDir::Backward);
+                self.command_buffer = Some(String::new());
+                self.command_cursor = 0;
             }
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_manage_search.clone() {
@@ -3219,14 +3148,42 @@ impl App {
                 self.command_cursor = 0;
                 match self.command_kind {
                     CommandLineKind::Command => self.run_command(&buf),
+                    // Vim convention: `/`/`?` confirmed with an empty
+                    // pattern re-uses the last active pattern, searching
+                    // in the newly chosen direction (which may differ
+                    // from the direction that pattern was originally
+                    // searched in — unlike `n`, which always repeats in
+                    // the same direction as last time). Which pane's
+                    // search actually runs is determined by whichever
+                    // pane has focus right now — `override_focus`/
+                    // `manage_focus` are untouched by typing into
+                    // `command_buffer` (spec 0114 §4/0117 §3, extended by
+                    // this rework to share the main pane's own bar).
+                    CommandLineKind::Search(dir) if self.override_focus => {
+                        let pattern = if buf.is_empty() {
+                            self.last_override_search
+                                .as_ref()
+                                .map(|(_, p)| p.clone())
+                                .unwrap_or(buf)
+                        } else {
+                            buf
+                        };
+                        self.last_override_search = Some((dir, pattern.clone()));
+                        self.jump_to_override_match(dir, &pattern);
+                    }
+                    CommandLineKind::Search(dir) if self.manage_open && self.manage_focus => {
+                        let pattern = if buf.is_empty() {
+                            self.last_manage_search
+                                .as_ref()
+                                .map(|(_, p)| p.clone())
+                                .unwrap_or(buf)
+                        } else {
+                            buf
+                        };
+                        self.last_manage_search = Some((dir, pattern.clone()));
+                        self.jump_to_manage_match(dir, &pattern);
+                    }
                     CommandLineKind::Search(dir) => {
-                        // Vim convention: `/`/`?` confirmed with an empty
-                        // pattern re-uses the last active pattern,
-                        // searching in the newly chosen direction (which
-                        // may differ from the direction that pattern was
-                        // originally searched in — unlike `n`, which
-                        // always repeats in the same direction as last
-                        // time).
                         let pattern = if buf.is_empty() {
                             self.last_search
                                 .as_ref()
@@ -4548,9 +4505,10 @@ impl App {
     /// target's byte range and sort mode, the pinned `<raw / no type>` row
     /// (§3.1) followed by the ranked/lexicographic candidate list (§3.2)
     /// with the highlighted row reverse-styled, scrolled to keep it
-    /// visible, and (while typing) the in-pane search buffer (§4) on the
-    /// last line. Apply-on-`Enter` (§5) lands in a later implementation
-    /// step.
+    /// visible. The `/`/`?` search buffer (§4) renders in the shared
+    /// bottom command/message bar instead of a row here (spec-0133-
+    /// adjacent rework). Apply-on-`Enter` (§5) lands in a later
+    /// implementation step.
     fn render_override_pane(&mut self, frame: &mut Frame, area: Rect) {
         let Some(idx) = self.override_target else {
             return;
@@ -4574,15 +4532,7 @@ impl App {
         frame.render_widget(block, area);
         self.side_area = inner;
 
-        let search_line = self.override_search.as_ref().map(|s| {
-            let prefix = match s.dir {
-                SearchDir::Forward => '/',
-                SearchDir::Backward => '?',
-            };
-            format!("{prefix}{}", s.buffer)
-        });
-        let list_height =
-            (inner.height as usize).saturating_sub(usize::from(search_line.is_some()));
+        let list_height = inner.height as usize;
         self.override_list_height = list_height;
 
         let total_rows = self.override_candidates.len() + 1;
@@ -4619,12 +4569,6 @@ impl App {
                 self.override_pan_offset,
             )));
         }
-        if let Some(search_line) = search_line {
-            lines.push(Line::from(pan_spans(
-                vec![Span::raw(search_line)],
-                self.override_pan_offset,
-            )));
-        }
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
@@ -4643,18 +4587,11 @@ impl App {
         frame.render_widget(block, area);
         self.side_area = inner;
 
-        // The rename buffer no longer reserves a row here — it renders in
-        // the shared bottom command/message bar instead (`render`,
-        // 2026-07-14 feedback), which also gives it a real cursor.
-        let search_line = self.manage_search.as_ref().map(|s| {
-            let prefix = match s.dir {
-                SearchDir::Forward => '/',
-                SearchDir::Backward => '?',
-            };
-            format!("{prefix}{}", s.buffer)
-        });
-        let list_height =
-            (inner.height as usize).saturating_sub(usize::from(search_line.is_some()));
+        // Neither the rename buffer nor the `/`/`?` search buffer reserves
+        // a row here — both render in the shared bottom command/message
+        // bar instead (`render`, 2026-07-14 feedback / spec-0133-adjacent
+        // rework), which also gives them a real cursor.
+        let list_height = inner.height as usize;
         self.manage_list_height = list_height;
 
         let rows = self.manage_display_rows();
@@ -4701,12 +4638,6 @@ impl App {
                     )));
                 }
             }
-        }
-        if let Some(search_line) = search_line {
-            lines.push(Line::from(pan_spans(
-                vec![Span::raw(search_line)],
-                self.manage_pan_offset,
-            )));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -6579,7 +6510,7 @@ mod tests {
             app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(app.override_search.is_none());
+        assert!(app.command_buffer.is_none());
         assert_eq!(app.override_highlight, 2); // pkg.Beta
 
         // `n` repeats forward, wrapping to the next match.
@@ -6663,13 +6594,59 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.override_search.is_none());
+        assert!(app.command_buffer.is_none());
         assert_eq!(app.override_highlight, 0);
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(app.override_search.is_some());
+        assert!(app.command_buffer.is_some());
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        assert!(app.override_search.is_none());
+        assert!(app.command_buffer.is_none());
+    }
+
+    /// Spec 0117 §3, extended: `/`/`?` in the management pane share the
+    /// same `command_buffer` as main-pane/override-pane search
+    /// (spec-0133-adjacent rework), but `Enter` dispatches to
+    /// `jump_to_manage_match`, moving `manage_highlight` rather than the
+    /// main-pane cursor or the override pane's own highlight.
+    #[test]
+    fn manage_pane_search_forward_and_backward() {
+        let (mut app, items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        for (item, ty) in items.iter().zip(["pkg.Alpha", "pkg.Beta", "pkg.Gamma"]) {
+            let origin = OverrideOrigin::Path {
+                path: app.positional_path(*item),
+            };
+            app.overrides.activate(origin, Some(ty.to_string()));
+        }
+        app.manage_highlight = 0;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(app.command_buffer.is_some());
+        for c in "gamma".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.command_buffer.is_none());
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight]
+                .r#type
+                .as_deref(),
+            Some("pkg.Gamma")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        for c in "alpha".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.overrides.entries()[app.manage_highlight]
+                .r#type
+                .as_deref(),
+            Some("pkg.Alpha")
+        );
     }
 
     /// Spec 0114 §4, extended to the main pane: `/`/`?` open a search
@@ -6768,9 +6745,10 @@ mod tests {
 
     /// Spec 0114 §4's main-pane search directive: "search in main pane
     /// requires main pane to be in focus" — while the override pane has
-    /// focus, `/`/`?`/`n` are the override pane's own in-pane search (spec
-    /// 0114 §4), not main-pane search; the shared `command_buffer` stays
-    /// untouched.
+    /// focus, `/`/`?`/`n` share the same `command_buffer` as main-pane
+    /// search (spec-0133-adjacent rework), but `Enter` dispatches to the
+    /// override pane's own `jump_to_override_match`, not the main pane's
+    /// `jump_to_match` — the main-pane cursor never moves.
     #[test]
     fn main_pane_search_keys_are_inert_while_override_pane_has_focus() {
         let mut app = message_node_app();
@@ -6778,10 +6756,20 @@ mod tests {
         app.term_width = 120;
         app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
         assert!(app.override_focus);
+        let cursor_before = app.cursor;
+
+        app.override_candidates = vec![("pkg.Alpha".to_string(), None)];
+        app.override_highlight = 0;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(app.command_buffer.is_some());
+        for c in "alpha".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.command_buffer.is_none());
-        assert!(app.override_search.is_some());
+        assert_eq!(app.override_highlight, 1); // pkg.Alpha
+        assert_eq!(app.cursor, cursor_before);
     }
 
     /// Spec 0114 §4's main-pane search directive: search matches against
