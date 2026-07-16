@@ -134,6 +134,39 @@ fn search_wrap(
     None
 }
 
+/// Shared clamp arithmetic behind the override- and manage-pane highlight
+/// movement (`move_override_highlight`, `move_manage_highlight`): moves
+/// `current` by `delta`, staying within `0..=max`.
+fn clamp_highlight(current: usize, delta: isize, max: usize) -> usize {
+    (current as isize + delta).clamp(0, max as isize) as usize
+}
+
+/// Shared scroll-to-keep-target-visible arithmetic behind the main,
+/// override, and manage panes' own render passes: nudges `*scroll` by the
+/// minimum amount needed to keep `target` within the `height`-row visible
+/// window. No-op when `height` is `0`.
+fn clamp_scroll_to_visible(scroll: &mut usize, target: usize, height: usize) {
+    if height == 0 {
+        return;
+    }
+    if target < *scroll {
+        *scroll = target;
+    } else if target >= *scroll + height {
+        *scroll = target + 1 - height;
+    }
+}
+
+/// Shared pan-by-one-step arithmetic behind Shift+wheel/native
+/// ScrollLeft/ScrollRight handling in `handle_mouse` — moves `*offset` by
+/// `PAN_STEP`, saturating at `0`.
+fn pan_by_step(offset: &mut usize, left: bool) {
+    *offset = if left {
+        offset.saturating_sub(PAN_STEP)
+    } else {
+        offset.saturating_add(PAN_STEP)
+    };
+}
+
 /// Resolve a typed command `name` against `COMMANDS`, with **exact match
 /// always winning over prefix ambiguity** (spec 0114 §7) — matching vim's
 /// own `:command` abbreviation convention and `argparse`'s prefix-matching:

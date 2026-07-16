@@ -48,8 +48,7 @@ impl App {
             self.manage_pending_kind = None;
             return;
         }
-        let current = self.manage_highlight as isize;
-        self.manage_highlight = (current + delta).clamp(0, len as isize - 1) as usize;
+        self.manage_highlight = clamp_highlight(self.manage_highlight, delta, len - 1);
         self.manage_pending_kind = None;
     }
 
@@ -471,8 +470,7 @@ impl App {
 
     pub(super) fn handle_manage_click(&mut self, col: u16, row: u16) {
         let area = self.side_area;
-        if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
-        {
+        if !Self::rect_contains(area, col, row) {
             return;
         }
         let rel_row = (row - area.y) as usize;
@@ -515,13 +513,7 @@ impl App {
             .iter()
             .position(|r| matches!(r, ManageRow::Entry(idx) if *idx == self.manage_highlight))
             .unwrap_or(0);
-        if list_height > 0 {
-            if highlighted_row < self.manage_scroll {
-                self.manage_scroll = highlighted_row;
-            } else if highlighted_row >= self.manage_scroll + list_height {
-                self.manage_scroll = highlighted_row + 1 - list_height;
-            }
-        }
+        clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
         let end = (self.manage_scroll + list_height).min(total_rows);
         let start = self.manage_scroll.min(total_rows);
 

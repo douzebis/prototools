@@ -268,12 +268,8 @@ impl App {
         } else {
             self.cursor_display_row()
         };
-        if pane_height > 0 && !self.tree.is_empty() {
-            if cursor_row < self.scroll_offset {
-                self.scroll_offset = cursor_row;
-            } else if cursor_row >= self.scroll_offset + pane_height {
-                self.scroll_offset = cursor_row + 1 - pane_height;
-            }
+        if !self.tree.is_empty() {
+            clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
         }
         let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
         let window = &self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end];
@@ -461,13 +457,11 @@ impl App {
         self.override_list_height = list_height;
 
         let total_rows = self.override_candidates.len() + 1;
-        if list_height > 0 {
-            if self.override_highlight < self.override_scroll {
-                self.override_scroll = self.override_highlight;
-            } else if self.override_highlight >= self.override_scroll + list_height {
-                self.override_scroll = self.override_highlight + 1 - list_height;
-            }
-        }
+        clamp_scroll_to_visible(
+            &mut self.override_scroll,
+            self.override_highlight,
+            list_height,
+        );
         let end = (self.override_scroll + list_height).min(total_rows);
         let start = self.override_scroll.min(total_rows);
 

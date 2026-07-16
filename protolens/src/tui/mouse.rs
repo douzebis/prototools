@@ -77,11 +77,7 @@ impl App {
                 } else {
                     &mut self.override_pan_offset
                 };
-                *offset = if pan_left {
-                    offset.saturating_sub(PAN_STEP)
-                } else {
-                    offset.saturating_add(PAN_STEP)
-                };
+                pan_by_step(offset, pan_left);
             } else if over_main {
                 if pan_left {
                     self.pan_left();
@@ -89,11 +85,7 @@ impl App {
                     self.pan_right();
                 }
             } else if over_cmd {
-                self.command_pan_offset = if pan_left {
-                    self.command_pan_offset.saturating_sub(PAN_STEP)
-                } else {
-                    self.command_pan_offset.saturating_add(PAN_STEP)
-                };
+                pan_by_step(&mut self.command_pan_offset, pan_left);
             }
             return;
         }
@@ -283,8 +275,7 @@ impl App {
 
     pub(super) fn handle_override_click(&mut self, col: u16, row: u16) {
         let area = self.side_area;
-        if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
-        {
+        if !Self::rect_contains(area, col, row) {
             return;
         }
         let rel_row = (row - area.y) as usize;
@@ -304,8 +295,7 @@ impl App {
     /// tracking in `handle_mouse`.
     pub(super) fn main_pane_line_idx(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.main_area;
-        if col < area.x || col >= area.x + area.width || row < area.y || row >= area.y + area.height
-        {
+        if !Self::rect_contains(area, col, row) {
             return None;
         }
         let rel_row = (row - area.y) as usize;

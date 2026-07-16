@@ -218,9 +218,11 @@ impl App {
         {
             self.upgrade_active_override_to_complete();
         }
-        let max = self.override_candidates.len();
-        let current = self.override_highlight as isize;
-        self.override_highlight = (current + delta).clamp(0, max as isize) as usize;
+        self.override_highlight = clamp_highlight(
+            self.override_highlight,
+            delta,
+            self.override_candidates.len(),
+        );
         // Spec 0132 §G2: live-preview the newly-highlighted candidate.
         self.preview_override_highlight();
     }
