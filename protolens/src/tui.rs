@@ -2701,11 +2701,13 @@ impl App {
                         let other_kind = Self::third_kind(entry_kind, attempt_kind);
                         let other_candidates = self.manage_kind_candidates(&affected, other_kind);
                         if other_candidates.is_empty() {
-                            self.message = "z: no override target".to_string();
+                            self.message =
+                                format!("z: no {} override target", attempt_kind.label());
                             self.manage_pending_kind = None;
                         } else {
                             self.message = format!(
-                                "z: no override target, try again for {} origin",
+                                "z: no {} override target, try again for {} override",
+                                attempt_kind.label(),
                                 other_kind.label()
                             );
                             self.manage_pending_kind = Some((origin, attempt_kind, self.cursor));
@@ -6136,8 +6138,9 @@ mod tests {
     /// Spec 0134 G2: when no kind (other than the entry's own) applies
     /// to any affected node — e.g. the wrapper root, which has no
     /// parent so `PathField`/`FqdnField` both error — `z` writes "no
-    /// override target", leaves the entry unchanged, and clears the
-    /// pending state; repeating `z` reproduces the identical outcome.
+    /// <kind> override target", leaves the entry unchanged, and clears
+    /// the pending state; repeating `z` reproduces the identical
+    /// outcome.
     #[test]
     fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
         let (mut app, _items) = repeated_scalar_fixture();
@@ -6157,7 +6160,7 @@ mod tests {
         app.cursor = root_idx;
 
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(app.message, "z: no override target");
+        assert_eq!(app.message, "z: no path-field override target");
         assert_eq!(
             app.overrides.entries()[app.manage_highlight].origin,
             root_origin
@@ -6165,7 +6168,7 @@ mod tests {
         assert!(app.manage_pending_kind.is_none());
 
         app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(app.message, "z: no override target");
+        assert_eq!(app.message, "z: no path-field override target");
     }
 
     /// Rotating an *active* entry's origin kind runs `render_overrides`,
