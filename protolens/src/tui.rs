@@ -4702,10 +4702,36 @@ fn marker_column(line: &str) -> u16 {
     indent_len as u16
 }
 
+/// Drain any input events already queued in the terminal's input buffer
+/// before disabling raw mode (feedback, 2026-07-16).
+///
+/// `EnableMouseCapture` always turns on any-motion reporting (crossterm
+/// gives no way to opt out short of hand-rolling the escape sequences — see
+/// the comment on `handle_mouse`'s `Moved` guard), so a mouse move happening
+/// in the split second between the app's last `event::read()` and raw mode
+/// being disabled here would otherwise sit unread in the pty's input queue.
+/// Once cooked-mode echo comes back on, the tty driver echoes those queued
+/// bytes straight to the screen as raw escape-sequence garbage (e.g.
+/// `^[[<35;60;17M`) that the shell then needs an Enter/Ctrl-C to clear.
+/// Reading them here, while raw mode (no echo) is still active, discards
+/// them silently instead.
+fn drain_pending_input() {
+    let deadline = Instant::now() + Duration::from_millis(60);
+    while Instant::now() < deadline {
+        match event::poll(Duration::from_millis(15)) {
+            Ok(true) => {
+                let _ = event::read();
+            }
+            _ => break,
+        }
+    }
+}
+
 /// Restore the terminal to its normal (cooked, main-screen, no mouse
 /// capture) state — shared by `run`'s own cleanup and the panic hook below,
 /// so a panic mid-session doesn't leave the user's terminal unusable.
 fn restore_terminal() {
+    drain_pending_input();
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
