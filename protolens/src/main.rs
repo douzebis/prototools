@@ -55,12 +55,6 @@ struct Cli {
     #[arg(long = "indent", default_value_t = 2)]
     indent: usize,
 
-    /// Suppress inline `#@ ...` annotations (wire type, field decl,
-    /// modifiers). On by default: annotations are important for reversing
-    /// unknown/mismatched wire data to a plausible type.
-    #[arg(long = "no-annotations")]
-    no_annotations: bool,
-
     /// Syntax-highlighting color palette (spec 0116 §9). `system` probes
     /// the terminal's actual background once at startup and resolves to
     /// `dark` or `light`.
@@ -93,11 +87,7 @@ enum Command {
         #[arg(long = "load-overrides")]
         load_overrides: Option<PathBuf>,
 
-        /// Output format. Defaults to `text`, or to `binary` when
-        /// `--no-annotations` is set — text output with no `#@`
-        /// annotations cannot be losslessly round-tripped back to
-        /// binary. Explicitly passing `text` together with
-        /// `--no-annotations` is a startup error.
+        /// Output format. Defaults to `text`.
         #[arg(long = "format", value_enum)]
         format: Option<ExtractFormatArg>,
 
@@ -133,19 +123,6 @@ fn main() -> ExitCode {
         .complete();
 
     let cli = Cli::parse();
-
-    // Spec 0123 G3: a static, purely argument-driven inconsistency,
-    // checked before any decoding even starts.
-    if let Some(Command::Extract {
-        format: Some(ExtractFormatArg::Text),
-        ..
-    }) = &cli.command
-    {
-        if cli.no_annotations {
-            eprintln!("error: --format text is incompatible with --no-annotations");
-            return ExitCode::FAILURE;
-        }
-    }
 
     let Some(descriptor_set) = cli.descriptor_set.as_deref() else {
         eprintln!(
@@ -183,13 +160,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let decoded = match decode::decode(
-        &blob,
-        &mut ctx,
-        cli.r#type.as_deref(),
-        cli.indent,
-        !cli.no_annotations,
-    ) {
+    let decoded = match decode::decode(&blob, &mut ctx, cli.r#type.as_deref(), cli.indent) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {e}");
@@ -227,7 +198,6 @@ fn main() -> ExitCode {
         decoded,
         &blob_label,
         cli.blob.clone(),
-        !cli.no_annotations,
         cli.indent,
         ctx,
         theme,
@@ -257,11 +227,9 @@ fn main() -> ExitCode {
                 }
             }
 
-            let format = match format {
-                Some(f) => f.into(),
-                None if cli.no_annotations => extract::ExtractFormat::Binary,
-                None => extract::ExtractFormat::Text,
-            };
+            let format = format
+                .map(Into::into)
+                .unwrap_or(extract::ExtractFormat::Text);
 
             let Some(idx) = app.resolve_path(&path) else {
                 eprintln!("error: extract path '{path}' does not resolve");

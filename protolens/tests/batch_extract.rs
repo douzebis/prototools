@@ -416,60 +416,6 @@ fn extract_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     );
 }
 
-// ── Item 5: --format text + --no-annotations is a startup error ──────────
-
-#[test]
-fn extract_format_text_with_no_annotations_is_a_startup_error() {
-    let (descriptor, blob) = outer_inner_fixture();
-    let out = run(&[
-        "--descriptor-set",
-        descriptor.path(),
-        "--type",
-        "test.Outer",
-        "--no-annotations",
-        blob.path(),
-        "extract",
-        "/",
-        "--format",
-        "text",
-    ]);
-    assert!(
-        !out.status.success(),
-        "--format text with --no-annotations must be a startup error"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--format text is incompatible with --no-annotations"),
-        "got: {stderr}"
-    );
-}
-
-#[test]
-fn extract_no_annotations_defaults_to_binary_output() {
-    let (descriptor, blob) = outer_inner_fixture();
-    let out = run(&[
-        "--descriptor-set",
-        descriptor.path(),
-        "--type",
-        "test.Outer",
-        "--no-annotations",
-        blob.path(),
-        "extract",
-        "/",
-    ]);
-    assert!(
-        out.status.success(),
-        "extract / --no-annotations must succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !out.stdout.starts_with(b"#@"),
-        "no explicit --format with --no-annotations must default to \
-         binary output (no #@ prototext text header), got: {:?}",
-        out.stdout
-    );
-}
-
 // ── Item 6: round-trip regression, extract + encode == original blob ─────
 
 /// `extract /`'s text output, piped through `prototext encode`'s

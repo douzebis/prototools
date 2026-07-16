@@ -210,6 +210,9 @@ const HELP_TEXT: &[&str] = &[
     "  H / Shift-Left   fold all siblings at this level",
     "  Shift-Right      unfold all siblings at this level",
     "",
+    "Display",
+    "  a                toggle main-pane #@ annotation display",
+    "",
     "Navigation history",
     "  Ctrl-O           jump back",
     "  Ctrl-I           jump forward",
@@ -314,10 +317,10 @@ pub struct App {
     /// Original blob's own path — basis for `default_extract_path()`'s
     /// proposed `:extract`/`x` default path.
     blob_path: PathBuf,
-    /// Whether this session was decoded with `#@ ...` annotations. Without
-    /// them, a `#@ prototext` text extract cannot be round-tripped back to
-    /// binary (`prototext encode` needs the annotations), so the default
-    /// extract format must be binary in that case (0113 D23 amendment).
+    /// Whether the main pane currently shows each line's trailing `#@ ...`
+    /// annotation (spec 0133) — a pure *display* attribute, toggled by the
+    /// `a` key, decoupled from the underlying `lines`/`line_styles`, which
+    /// always carry full annotations regardless of this flag.
     annotations: bool,
     /// Indentation step (spaces per nesting level) this session was decoded
     /// with — reused by `apply_override` (spec 0114 §5) so a splice
@@ -578,7 +581,6 @@ impl App {
         decoded: Decoded,
         blob_label: &str,
         blob_path: PathBuf,
-        annotations: bool,
         indent_size: usize,
         ctx: DescriptorContext,
         theme: ThemeKind,
@@ -615,7 +617,9 @@ impl App {
             blob: decoded.blob,
             wrapper_offset: decoded.wrapper_offset,
             blob_path,
-            annotations,
+            // Always on (spec 0133): a pure main-pane display attribute
+            // from here on, toggled at runtime by the `a` key.
+            annotations: true,
             indent_size,
             lines: decoded.lines,
             line_styles: decoded.style_hints,
@@ -1993,7 +1997,9 @@ impl App {
                     None => None,
                 };
                 let opts = DecodeRenderOpts {
-                    annotations: self.annotations,
+                    // Always on (spec 0133): annotations are a pure
+                    // main-pane display concern, not a decode-time input.
+                    annotations: true,
                     indent_size: self.indent_size,
                     initial_level: old_span.level,
                     emit_header: false,
@@ -2034,14 +2040,13 @@ impl App {
         } else {
             format!("{root_name} {{")
         };
-        // `None` iff annotations are disabled (step 2, spec 0122 §2) —
-        // stored below into the new self-span's own `natural_annotation`
-        // too (not just used to build `new_lines[0]`), so a *later*
-        // splice on this same node patches from the correct base text
-        // instead of the synthetic wrapper's own unpatched rendering.
-        let patched_annotation: Option<String> = if !self.annotations {
-            None
-        } else {
+        // Unconditionally computed (spec 0133: annotations are always on
+        // at the decode/splice level now) — stored below into the new
+        // self-span's own `natural_annotation` too (not just used to
+        // build `new_lines[0]`), so a *later* splice on this same node
+        // patches from the correct base text instead of the synthetic
+        // wrapper's own unpatched rendering.
+        let patched_annotation: String = {
             // A message-kind synthetic wrapper field should always carry a
             // natural annotation (`sink.rs`'s `begin_nested` always writes
             // one when annotations are on) — but forcing an incompatible
@@ -2065,7 +2070,7 @@ impl App {
                 .split("; ")
                 .next()
                 .unwrap_or("");
-            let patched = match &old_span.natural_annotation {
+            match &old_span.natural_annotation {
                 Some(base_ann) => {
                     // Steps 5-6: locate the type-decl/wire-type-
                     // placeholder token slot within the base text and
@@ -2106,8 +2111,7 @@ impl App {
                 // `WT_START_GROUP`, so no `group;` prefix is ever
                 // required here.
                 None => new_token.to_string(),
-            };
-            Some(patched)
+            }
         };
         // The synthetic wrapper's own header line (still in `new_lines[0]`
         // at this point) was rendered by `decode_and_render_indexed` with
@@ -2117,10 +2121,7 @@ impl App {
         // `field_name`/`"{"`, spec 0122 §2).
         let indent_width = new_lines[0].len() - new_lines[0].trim_start().len();
         let indent = &new_lines[0][..indent_width];
-        let patched_first_line = match &patched_annotation {
-            Some(patched) => format!("{indent}{brace_prefix}  #@ {patched}"),
-            None => format!("{indent}{brace_prefix}"),
-        };
+        let patched_first_line = format!("{indent}{brace_prefix}  #@ {patched_annotation}");
 
         // `new_style_hints`'s byte offsets are relative to the CACHED
         // render's own (unpatched) header line, not `patched_first_line`
@@ -2250,7 +2251,7 @@ impl App {
         // actually patched onto `new_lines[0]` above is (spec 0122 §2) —
         // stored back here so it becomes `old_span.natural_annotation`
         // next time.
-        new_self_span.natural_annotation = patched_annotation.map(|p| format!("#@ {p}"));
+        new_self_span.natural_annotation = Some(format!("#@ {patched_annotation}"));
         self.tree[idx].span = new_self_span;
         self.tree[idx].first_child = self.tree[new_self_idx].first_child;
         self.tree[idx].last_child = self.tree[new_self_idx].last_child;
@@ -2844,19 +2845,6 @@ impl App {
         }
     }
 
-    /// Default `:extract`/`x` format: `#@ prototext` text when the session
-    /// was decoded with annotations (it carries more structural
-    /// information and round-trips back to binary via `prototext encode`),
-    /// else raw binary — without annotations, a text extract cannot be
-    /// converted back to binary at all (0113 D23 amendment).
-    fn default_extract_format(&self) -> ExtractFormat {
-        if self.annotations {
-            ExtractFormat::Text
-        } else {
-            ExtractFormat::Binary
-        }
-    }
-
     /// First `q` press: arm `quit_confirm` and prompt; meaningless once
     /// already armed (the top-of-`handle_key` check in that case handles
     /// the second press directly, before dispatch ever reaches here).
@@ -3044,6 +3032,13 @@ impl App {
                     self.message = "not foldable".to_string();
                 }
             }
+
+            // Toggle main-pane annotation display (spec 0133 G3) — a
+            // pure display attribute, distinct from the override pane's
+            // own `a` (candidate sort toggle) and the manage pane's own
+            // `a` (entry active toggle), both gated behind their own
+            // focus checks and unreachable here.
+            KeyCode::Char('a') => self.annotations = !self.annotations,
 
             // Navigation history.
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3533,10 +3528,11 @@ impl App {
     }
 
     /// `extract [--binary|--text] <path>` — default format is `#@ prototext`
-    /// text when annotations are on (0113 D21), else binary (0113 D23
-    /// amendment) — see `default_extract_format`.
+    /// text (0113 D21); the underlying render always carries full
+    /// annotations now (spec 0133), so there's no longer a binary-default
+    /// fallback case.
     fn run_extract(&mut self, args: Vec<&str>) {
-        let mut format = self.default_extract_format();
+        let mut format = ExtractFormat::Text;
         let mut path_parts = Vec::new();
         for a in args {
             match a {
@@ -4113,14 +4109,43 @@ impl App {
             .unwrap_or_else(|i| i)
     }
 
+    /// Byte offset within `self.lines[line_idx]` where that line's
+    /// trailing `#@ ...` annotation starts, if it has one (spec 0133 G4)
+    /// — reuses the tree-sitter `SyntaxRole::Comment` span already
+    /// computed in `self.line_styles` (a comment always spans from `#` to
+    /// end of line, and protolens's own rendered text never otherwise
+    /// contains a bare `#` outside a quoted string, so at most one such
+    /// span exists per line).
+    fn annotation_start(&self, line_idx: usize) -> Option<usize> {
+        self.line_styles
+            .get(line_idx)?
+            .iter()
+            .find(|(_, role)| *role == SyntaxRole::Comment)
+            .map(|(range, _)| range.start)
+    }
+
     /// A foldable node's line, with its fold marker inserted right after
     /// the line's own leading indentation (kept intact — not shortened by
     /// one column to make room) and immediately before the first
     /// non-blank token, with no extra space either side — see
     /// `marker_column`. Lines with no associated foldable node are
     /// returned unchanged.
+    ///
+    /// When `self.annotations` is off, the line's trailing `#@ ...`
+    /// annotation (and the whitespace that used to separate it from the
+    /// value) is hidden — a purely cosmetic, display-time transform (spec
+    /// 0133 G4); the underlying `self.lines` always carries the full
+    /// annotation regardless.
     fn render_line_content(&self, line_idx: usize) -> String {
         let content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
+        let content = if !self.annotations {
+            match self.annotation_start(line_idx) {
+                Some(pos) => content[..pos].trim_end(),
+                None => content,
+            }
+        } else {
+            content
+        };
         let Some(&idx) = self.line_to_node.get(&line_idx) else {
             return content.to_string();
         };
@@ -4149,14 +4174,33 @@ impl App {
     /// via `theme::style_for`, then splices in the same fold-marker /
     /// `" ... }"` collapse-summary text `render_line_content` inserts —
     /// as unstyled spans, so highlighting and folding compose cleanly.
+    ///
+    /// Follows the same display-time annotation-hiding truncation as
+    /// `render_line_content` (spec 0133 G4) — any `self.line_styles`
+    /// hint extending past the truncated length is clipped/dropped
+    /// before `segment_line` runs, since `segment_line` doesn't
+    /// bounds-check hint ranges against `content`.
     fn render_line_spans(&self, line_idx: usize) -> Vec<Span<'static>> {
-        let content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
-        let hints = self
+        let full_content = self.lines.get(line_idx).map(String::as_str).unwrap_or("");
+        let full_hints = self
             .line_styles
             .get(line_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let segments = segment_line(content, hints);
+        let (content, hints): (&str, Vec<(Range<usize>, SyntaxRole)>) =
+            match (!self.annotations, self.annotation_start(line_idx)) {
+                (true, Some(pos)) => {
+                    let truncated = full_content[..pos].trim_end();
+                    let clipped = full_hints
+                        .iter()
+                        .filter(|(r, _)| r.start < truncated.len())
+                        .map(|(r, role)| (r.start..r.end.min(truncated.len()), *role))
+                        .collect();
+                    (truncated, clipped)
+                }
+                _ => (full_content, full_hints.to_vec()),
+            };
+        let segments = segment_line(content, &hints);
 
         let Some(&idx) = self.line_to_node.get(&line_idx) else {
             return self.spans_with_insertions(content, segments, Vec::new());
@@ -4903,7 +4947,6 @@ mod tests {
             decoded,
             "empty.pb",
             PathBuf::from("empty.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -4950,7 +4993,6 @@ mod tests {
             decoded,
             "empty.pb",
             PathBuf::from("empty.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -4993,7 +5035,6 @@ mod tests {
             decoded,
             "empty.pb",
             PathBuf::from("empty.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5045,7 +5086,6 @@ mod tests {
             decoded,
             "empty.pb",
             PathBuf::from("empty.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5156,7 +5196,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5206,7 +5245,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5278,7 +5316,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5329,7 +5366,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5386,7 +5422,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             DescriptorContext::empty_for_test(),
             ThemeKind::Dark,
@@ -5426,6 +5461,75 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.override_sort, SortMode::Inferred);
+    }
+
+    /// Spec 0133 G3/G4: the main-pane `a` key toggles display of each
+    /// line's trailing `#@ ...` annotation, purely at render time — the
+    /// underlying `self.lines`/`self.line_styles` are untouched, so
+    /// toggling `a` twice restores byte-for-byte identical rendering.
+    /// Distinct from the override pane's own `a` (candidate sort,
+    /// exercised above) and the manage pane's own `a` (entry active
+    /// toggle) — this fixture has neither pane open, so only the
+    /// main-pane binding is reachable.
+    #[test]
+    fn a_toggles_the_main_pane_annotation_display() {
+        let line = "  id: 5  #@ int32 = 1".to_string();
+        let comment_start = line.find("#@").unwrap();
+        let node = TreeNode {
+            span: NodeSpan {
+                field_number: 1,
+                raw_range: 0..2,
+                text_range: 0..1,
+                level: 0,
+                type_fqdn: None,
+                is_message: false,
+                packed_record_start: None,
+                wire_type: WT_VARINT,
+                natural_annotation: None,
+            },
+            parent: None,
+            first_child: None,
+            last_child: None,
+            next_sibling: None,
+            prev_sibling: None,
+            doc_next: None,
+            doc_prev: None,
+            rendered_as: None,
+        };
+        let decoded = Decoded {
+            lines: vec![line.clone()],
+            tree: vec![node],
+            root_type: "test.Msg".to_string(),
+            blob: vec![0x08, 0x05],
+            wrapper_offset: 0,
+            style_hints: vec![vec![(comment_start..line.len(), SyntaxRole::Comment)]],
+        };
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            2,
+            DescriptorContext::empty_for_test(),
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+
+        assert!(app.annotations);
+        assert_eq!(app.render_line_content(0), line);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(!app.annotations);
+        assert_eq!(app.render_line_content(0), "  id: 5");
+        let spanned: String = app
+            .render_line_spans(0)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(spanned, "  id: 5");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(app.annotations);
+        assert_eq!(app.render_line_content(0), line);
     }
 
     /// The splash screen is transparent to keyboard input (spec 0113 D22
@@ -5643,12 +5747,11 @@ mod tests {
         // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
         // [0x05, 0x06, 0x07] (three one-byte varint elements).
         let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -5905,12 +6008,11 @@ mod tests {
         blob.push(any_bytes.len() as u8);
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7158,7 +7260,7 @@ mod tests {
         // Outer wraps it as field 1 (LEN): tag (1<<3)|2 = 0x0A, len 2.
         let blob = [0x0Au8, 0x02, inner_bytes[0], inner_bytes[1]];
 
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
         // tag(1 byte) + length-varint(1 byte, blob.len() == 4 fits in 1 byte).
         assert_eq!(decoded.wrapper_offset, 2);
         assert_eq!(decoded.blob.len(), blob.len() + 2);
@@ -7167,7 +7269,6 @@ mod tests {
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7257,12 +7358,11 @@ mod tests {
         // [0x01, 0x02, 0x03] (three varint elements 1, 2, 3).
         let blob = [0x08u8, 0x05, 0x12, 0x03, 0x01, 0x02, 0x03];
 
-        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2).unwrap();
         let app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7381,12 +7481,11 @@ mod tests {
         let mut blob = vec![0x0Au8, node_payload.len() as u8];
         blob.extend_from_slice(&node_payload);
 
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7522,12 +7621,11 @@ mod tests {
 
         // Outer { inner: Inner { id: 5 } }.
         let blob = [0x0Au8, 0x02, 0x08, 0x05];
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7680,12 +7778,11 @@ mod tests {
 
         // Outer { inner: Inner { id: 5 } }.
         let blob = [0x0Au8, 0x02, 0x08, 0x05];
-        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7761,12 +7858,11 @@ mod tests {
         let label = b"hello";
         let mut blob = vec![0x0Au8, label.len() as u8];
         blob.extend_from_slice(label);
-        let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -7877,12 +7973,11 @@ mod tests {
         let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
         std::fs::remove_file(&descriptor_path).unwrap();
 
-        let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2, true).unwrap();
+        let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -8170,12 +8265,11 @@ mod tests {
         let mut blob = vec![0x0au8, any_bytes.len() as u8];
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,
@@ -8312,12 +8406,11 @@ mod tests {
         let mut blob = vec![0x12u8, item_bytes.len() as u8];
         blob.extend_from_slice(&item_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2).unwrap();
         let mut app = App::new(
             decoded,
             "test.pb",
             PathBuf::from("test.pb"),
-            true,
             2,
             ctx,
             ThemeKind::Dark,

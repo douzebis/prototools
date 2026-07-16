@@ -479,7 +479,6 @@ pub fn decode(
     ctx: &mut DescriptorContext,
     type_override: Option<&str>,
     indent_size: usize,
-    annotations: bool,
 ) -> Result<Decoded, DecodeError> {
     let root_desc = determine_root_type(blob, ctx, type_override)?;
     let (root_type, wrapper_desc) = match &root_desc {
@@ -494,7 +493,12 @@ pub fn decode(
     let wrapper_offset = wrapped_blob.len() - blob.len();
 
     let opts = DecodeRenderOpts {
-        annotations,
+        // Always on (spec 0133): annotations are now a pure main-pane
+        // *display* concern (`App.annotations`/`a` key), not a
+        // decode-time input — the underlying render always carries
+        // full `#@ ...` annotations, which the display layer can hide
+        // per line without re-decoding (see `App::annotation_start`).
+        annotations: true,
         indent_size,
         // Any/MessageSet expansion is handled by protolens itself, as
         // automatic overrides (spec 0120), not by prototext-core's own
@@ -595,7 +599,7 @@ mod tests {
         // context has no hopcroft.rkyv, so autoinference is unavailable.
         let blob = [0x08u8, 0x05];
 
-        let decoded = decode(&blob, &mut ctx, None, 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, None, 2).unwrap();
         assert_eq!(decoded.root_type, "<raw / no type>");
         // The wrapper's own top-level field (the "virtual encompassing
         // message", spec 0114 §1.1) — level 0, no type resolved.
@@ -640,7 +644,7 @@ mod tests {
         std::fs::remove_file(&descriptor_path).unwrap();
 
         let blob = [0x08u8, 0x05];
-        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2).unwrap();
         assert!(
             !decoded.lines[0].starts_with("0 "),
             "root header line must not show the synthetic \"0\" field name: {:?}",
@@ -744,7 +748,7 @@ mod tests {
         let mut blob = vec![0x0au8, any_bytes.len() as u8];
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, true).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
         let any_idx = decoded
             .tree
             .iter()
