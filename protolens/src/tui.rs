@@ -2438,8 +2438,8 @@ impl App {
     /// §2/§3/§4).
     fn handle_override_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Tab => self.override_focus = false,
-            KeyCode::Esc | KeyCode::Char('t') => self.close_override(),
+            KeyCode::Tab => self.override_focus = false,
+            KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
             KeyCode::PageDown => {
@@ -2574,8 +2574,10 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Tab => self.manage_focus = false,
-            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Enter => self.close_manage_pane(),
+            KeyCode::Tab => self.manage_focus = false,
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') | KeyCode::Enter => {
+                self.close_manage_pane()
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
             KeyCode::PageDown => {
@@ -5381,6 +5383,23 @@ mod tests {
         assert!(!app.override_focus);
     }
 
+    /// `q` closes the override pane (not just blurs focus, unlike
+    /// `Tab`).
+    #[test]
+    fn override_pane_q_closes_pane() {
+        let mut app = message_node_app();
+        app.splash = false;
+        app.term_width = 120;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.override_target, Some(0));
+        assert!(app.override_focus);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(app.override_target, None);
+        assert!(!app.override_focus);
+    }
+
     /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
     /// kind-rotation key — pressing either is a no-op (no message, no
     /// panic, pane stays open); `Enter` always creates a `Path`-kind
@@ -6391,6 +6410,19 @@ mod tests {
         app.manage_open = true;
 
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.manage_open);
+        assert!(!app.manage_focus);
+    }
+
+    /// `q` closes the management pane (not just blurs focus, unlike
+    /// `Tab`).
+    #[test]
+    fn manage_pane_q_closes_pane() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(!app.manage_open);
         assert!(!app.manage_focus);
     }
