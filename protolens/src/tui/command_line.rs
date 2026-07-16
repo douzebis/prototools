@@ -183,23 +183,8 @@ impl App {
             return;
         }
         matches.sort_unstable();
-        let cursor_byte = self.char_byte_index(self.command_cursor);
-        let buf = self.command_buffer.clone().unwrap_or_default();
-        let suffix = buf[cursor_byte..].to_string();
-        if matches.len() == 1 {
-            self.replace_token(0, &suffix, matches[0]);
-            return;
-        }
-        let lcp = longest_common_prefix(&matches);
-        if lcp.chars().count() > prefix.chars().count() {
-            self.replace_token(0, &suffix, &lcp);
-        }
-        self.completion = Some(CompletionState {
-            token_start: 0,
-            suffix,
-            candidates: matches.into_iter().map(String::from).collect(),
-            index: None,
-        });
+        let candidates: Vec<String> = matches.into_iter().map(String::from).collect();
+        self.apply_completion(0, prefix.chars().count(), candidates);
     }
 
     /// `:type-as <FQDN>`'s argument completion (spec 0114 §7) — candidates
@@ -223,24 +208,7 @@ impl App {
         // `all_type_fqdns` is already sorted; `complete_prefix` preserves
         // that order via its filter, no re-sort needed.
         let token_start = cmd.chars().count() + 1;
-        let cursor_byte = self.char_byte_index(self.command_cursor);
-        let buf = self.command_buffer.clone().unwrap_or_default();
-        let suffix = buf[cursor_byte..].to_string();
-        if matches.len() == 1 {
-            self.replace_token(token_start, &suffix, &matches[0]);
-            return;
-        }
-        let refs: Vec<&str> = matches.iter().map(String::as_str).collect();
-        let lcp = longest_common_prefix(&refs);
-        if lcp.chars().count() > arg_prefix.chars().count() {
-            self.replace_token(token_start, &suffix, &lcp);
-        }
-        self.completion = Some(CompletionState {
-            token_start,
-            suffix,
-            candidates: matches,
-            index: None,
-        });
+        self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
 
     /// `:save-overrides`/`:restore-overrides`'s argument completion (spec
@@ -288,22 +256,33 @@ impl App {
         }
         matches.sort_unstable();
         let token_start = cmd.chars().count() + 1;
+        self.apply_completion(token_start, arg_prefix.chars().count(), matches);
+    }
+
+    /// Shared tail of Tab-completion (spec 0114 §7): `candidates` (already
+    /// filtered/sorted by the caller) either replaces the in-progress
+    /// token outright (a single candidate) or extends it to the longest
+    /// common prefix, stashing `candidates` in `self.completion` for a
+    /// subsequent Tab press to cycle through (spec 0113 D26). `prefix_len`
+    /// is the char length of what the user already typed, used to decide
+    /// whether the LCP actually extends it.
+    fn apply_completion(&mut self, token_start: usize, prefix_len: usize, candidates: Vec<String>) {
         let cursor_byte = self.char_byte_index(self.command_cursor);
         let buf = self.command_buffer.clone().unwrap_or_default();
         let suffix = buf[cursor_byte..].to_string();
-        if matches.len() == 1 {
-            self.replace_token(token_start, &suffix, &matches[0]);
+        if candidates.len() == 1 {
+            self.replace_token(token_start, &suffix, &candidates[0]);
             return;
         }
-        let refs: Vec<&str> = matches.iter().map(String::as_str).collect();
+        let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
         let lcp = longest_common_prefix(&refs);
-        if lcp.chars().count() > arg_prefix.chars().count() {
+        if lcp.chars().count() > prefix_len {
             self.replace_token(token_start, &suffix, &lcp);
         }
         self.completion = Some(CompletionState {
             token_start,
             suffix,
-            candidates: matches,
+            candidates,
             index: None,
         });
     }
