@@ -111,6 +111,29 @@ fn longest_common_prefix(items: &[&str]) -> String {
     first[..end].to_string()
 }
 
+/// Shared wrap-around search order behind the override- and manage-pane
+/// `/`/`?`/`n` commands (`jump_to_override_match`, `jump_to_manage_match`):
+/// checks each of the `n` 0-based indices, starting at `start` and moving
+/// in `dir`, wrapping around exactly once; returns the first index for
+/// which `matches` returns true, or `None` if none did.
+fn search_wrap(
+    n: usize,
+    start: usize,
+    dir: SearchDir,
+    mut matches: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    for d in 0..n {
+        let i = match dir {
+            SearchDir::Forward => (start + d) % n,
+            SearchDir::Backward => (start + n - d) % n,
+        };
+        if matches(i) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Resolve a typed command `name` against `COMMANDS`, with **exact match
 /// always winning over prefix ambiguity** (spec 0114 §7) — matching vim's
 /// own `:command` abbreviation convention and `argparse`'s prefix-matching:

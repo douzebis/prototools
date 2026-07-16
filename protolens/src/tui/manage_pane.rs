@@ -105,19 +105,21 @@ impl App {
             return;
         }
         let needle = pattern.to_lowercase();
-        let start = self.manage_highlight % n;
-        let order: Vec<usize> = match dir {
-            SearchDir::Forward => (1..=n).map(|d| (start + d) % n).collect(),
-            SearchDir::Backward => (1..=n).map(|d| (start + n - d) % n).collect(),
+        // Convert to the 0-based `start` convention `search_wrap` expects
+        // (index to check first, not "current + 1" or "current - 1").
+        let start = match dir {
+            SearchDir::Forward => (self.manage_highlight + 1) % n,
+            SearchDir::Backward => (self.manage_highlight + n - 1) % n,
         };
-        for i in order {
-            if self.manage_search_text(i).to_lowercase().contains(&needle) {
+        match search_wrap(n, start, dir, |i| {
+            self.manage_search_text(i).to_lowercase().contains(&needle)
+        }) {
+            Some(i) => {
                 self.manage_highlight = i;
                 self.manage_pending_kind = None;
-                return;
             }
+            None => self.message = format!("pattern not found: {pattern}"),
         }
-        self.message = format!("pattern not found: {pattern}");
     }
 
     /// Origins derivable under `kind` from every node in `affected`, in

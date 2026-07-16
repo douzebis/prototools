@@ -280,34 +280,25 @@ impl App {
         }
         let needle = pattern.to_lowercase();
         let n = self.override_candidates.len();
-        // Candidate indices (0-based into `override_candidates`), starting
-        // just past the current highlight (row 0 = raw, row i+1 =
-        // candidate i) and wrapping around, in search direction. `row` is
-        // clamped into `0..=n` first since the raw entry (row 0) has no
-        // corresponding candidate index.
+        // Candidate index (0-based into `override_candidates`) to start
+        // just past (row 0 = raw, row i+1 = candidate i) and wrapping
+        // around, in search direction. `row` is clamped into `0..=n`
+        // first since the raw entry (row 0) has no corresponding
+        // candidate index.
         let row = self.override_highlight.min(n);
-        let order: Vec<usize> = match dir {
-            SearchDir::Forward => {
-                let start = row % n;
-                (0..n).map(|d| (start + d) % n).collect()
-            }
-            SearchDir::Backward => {
-                let cur = row.saturating_sub(1);
-                let start = (cur + n - 1) % n;
-                (0..n).map(|d| (start + n - d) % n).collect()
-            }
+        let start = match dir {
+            SearchDir::Forward => row % n,
+            SearchDir::Backward => (row.saturating_sub(1) + n - 1) % n,
         };
-        for i in order {
-            if self.override_candidates[i]
+        match search_wrap(n, start, dir, |i| {
+            self.override_candidates[i]
                 .0
                 .to_lowercase()
                 .contains(&needle)
-            {
-                self.override_highlight = i + 1;
-                return;
-            }
+        }) {
+            Some(i) => self.override_highlight = i + 1,
+            None => self.message = format!("pattern not found: {pattern}"),
         }
-        self.message = format!("pattern not found: {pattern}");
     }
 
     /// Find the next node (walking the whole document-order chain via
