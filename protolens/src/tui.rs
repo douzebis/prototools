@@ -4466,12 +4466,12 @@ impl App {
                 None => String::new(),
             };
             format!(
-                "L{}/{}  bytes[{}..{})  {}  {}",
+                "L{}/{}  {}  bytes[{}..{})  {}",
                 node.text_range.start + 1,
                 self.lines.len(),
+                path,
                 range.start,
                 range.end,
-                path,
                 type_label,
             )
         };
