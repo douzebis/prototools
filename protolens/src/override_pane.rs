@@ -168,6 +168,15 @@ impl OverrideKind {
         }
     }
 
+    /// Rotates `Z` — the reverse of `next()` (feedback, 2026-07-16).
+    pub fn prev(self) -> Self {
+        match self {
+            OverrideKind::Path => OverrideKind::FqdnField,
+            OverrideKind::PathField => OverrideKind::Path,
+            OverrideKind::FqdnField => OverrideKind::PathField,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             OverrideKind::Path => "path",

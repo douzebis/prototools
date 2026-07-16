@@ -238,8 +238,9 @@ const HELP_TEXT: &[&str] = &[
     "                   group node under the cursor",
     "  Tab              move focus between the main pane and the",
     "                   override pane (while it is open)",
-    "  z                rotate the override's target kind: path,",
-    "                   path-field, fqdn-field (pane focused)",
+    "  z / Z            rotate the override's target kind forward/",
+    "                   backward: path, path-field, fqdn-field (pane",
+    "                   focused; skips kinds that don't apply)",
     "  a                toggle candidate sort: inferred score (default)",
     "                   or alphanumeric",
     "  /  ?  n          search / search backward / repeat (pane focused)",
@@ -264,9 +265,10 @@ const HELP_TEXT: &[&str] = &[
     "                   affected by the highlighted entry (wraps around)",
     "  /  ?  n          search / search backward / repeat",
     "  a                toggle the highlighted entry active/inactive",
-    "  z                rotate the highlighted entry's origin kind: path,",
-    "                   path-field, fqdn-field (main-pane cursor must be",
-    "                   on a field the entry currently affects)",
+    "  z / Z            rotate the highlighted entry's origin kind",
+    "                   forward/backward: path, path-field, fqdn-field",
+    "                   (main-pane cursor must be on a field the entry",
+    "                   currently affects; skips kinds that don't apply)",
     "  d                duplicate the highlighted entry (the copy starts",
     "                   inactive)",
     "  Delete/Backspace remove the highlighted entry from the collection",
@@ -2040,17 +2042,26 @@ impl App {
         let patched_annotation: Option<String> = if !self.annotations {
             None
         } else {
-            let new_ann = new_spans
+            // A message-kind synthetic wrapper field should always carry a
+            // natural annotation (`sink.rs`'s `begin_nested` always writes
+            // one when annotations are on) — but forcing an incompatible
+            // override target onto genuinely non-message bytes (e.g. `t`
+            // on a plain string) can defeat that assumption. Rather than
+            // panic and lose the user's cursor position/work, fall back to
+            // the same "unresolved type" placeholder `wrap_blob`'s own
+            // unknown-field cascade already uses elsewhere — the override
+            // still applies, and the mismatch surfaces as ordinary
+            // `TYPE_MISMATCH`/`INVALID_*` annotations in the interior
+            // instead (feedback, 2026-07-16).
+            let new_ann_owned = new_spans
                 .last()
-                .and_then(|s| s.natural_annotation.as_deref())
-                .expect(
-                    "annotations enabled: synthetic wrapper root always has a natural_annotation",
-                );
+                .and_then(|s| s.natural_annotation.clone())
+                .unwrap_or_else(|| "#@ message".to_string());
             // Step 3: under `wrap_blob`'s hardcoded `WT_LEN` framing this
             // is always token 0 of the synthetic root's own annotation.
-            let new_token = new_ann
+            let new_token = new_ann_owned
                 .strip_prefix("#@ ")
-                .unwrap_or(new_ann)
+                .unwrap_or(&new_ann_owned)
                 .split("; ")
                 .next()
                 .unwrap_or("");
@@ -2345,6 +2356,28 @@ impl App {
         }
     }
 
+    /// Rotates `kind` towards `to_next`/`to_prev` (per `reverse`), skipping
+    /// over kinds that don't apply at `idx` — e.g. `FqdnField` when the
+    /// parent's type is unresolved — instead of getting stuck returning the
+    /// same failing kind on every subsequent press (feedback, 2026-07-16).
+    /// Since there are only 3 kinds, trying the other 2 in rotation order
+    /// is exhaustive; errors only if none of them applies either.
+    fn next_valid_origin(
+        &self,
+        idx: usize,
+        from: OverrideKind,
+        reverse: bool,
+    ) -> Result<OverrideOrigin, String> {
+        let mut kind = from;
+        for _ in 0..2 {
+            kind = if reverse { kind.prev() } else { kind.next() };
+            if let Ok(origin) = self.origin_for_kind(idx, kind) {
+                return Ok(origin);
+            }
+        }
+        Err("no other override kind applies to this field".to_string())
+    }
+
     /// Document-order list of main-pane node indices whose origin
     /// matches `origin` exactly (spec 0124 G1, also reused by G2's `z`
     /// membership test). `Path` has at most one match, via
@@ -2453,8 +2486,18 @@ impl App {
                 };
                 self.recompute_override_candidates();
             }
-            KeyCode::Char('z') => {
-                self.override_kind = self.override_kind.next();
+            // `Z` rotates in reverse; both skip over kinds that don't apply
+            // to `override_target` (e.g. `FqdnField` when its parent's type
+            // is unresolved) instead of getting stuck (feedback,
+            // 2026-07-16).
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                if let Some(idx) = self.override_target {
+                    let reverse = key.code == KeyCode::Char('Z');
+                    match self.next_valid_origin(idx, self.override_kind, reverse) {
+                        Ok(origin) => self.override_kind = origin.kind(),
+                        Err(e) => self.message = format!("z: {e}"),
+                    }
+                }
             }
             KeyCode::Char('/') => {
                 self.override_search = Some(OverrideSearch {
@@ -2667,17 +2710,18 @@ impl App {
             // Spec 0124 G2: rotate the highlighted entry's origin kind,
             // rederived from the main-pane cursor's current position —
             // only when the cursor sits on a field the entry currently
-            // affects.
-            KeyCode::Char('z') => {
+            // affects. `Z` rotates in reverse (feedback, 2026-07-16).
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
                     let origin = entry.origin.clone();
                     let was_active = entry.active;
+                    let reverse = key.code == KeyCode::Char('Z');
                     if !self.manage_affected_nodes(&origin).contains(&self.cursor) {
                         self.message = "z: main-pane cursor is not on a field affected by \
                             the selected override"
                             .to_string();
                     } else {
-                        match self.origin_for_kind(self.cursor, origin.kind().next()) {
+                        match self.next_valid_origin(self.cursor, origin.kind(), reverse) {
                             Ok(new_origin) => {
                                 self.manage_highlight = self
                                     .overrides
@@ -7441,6 +7485,97 @@ mod tests {
             .first_child
             .expect("Inner has at least one child");
         (app, inner_idx, id_idx)
+    }
+
+    /// Overriding a plain scalar (string) field into an incompatible
+    /// message type must not panic — it should apply the override and
+    /// surface the mismatch as ordinary `TYPE_MISMATCH`/`INVALID_*`
+    /// annotations in the interior, exactly like any other malformed
+    /// nested-message re-decode (feedback, 2026-07-16: `t` used to
+    /// panic on `natural_annotation`'s `.expect()`).
+    #[test]
+    fn splice_override_on_an_incompatible_scalar_does_not_panic() {
+        use crate::decode::{decode, DescriptorContext};
+        use prost::Message as _;
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        let str_msg = DescriptorProto {
+            name: Some("StrHolder".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("s".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let target_msg = DescriptorProto {
+            name: Some("Target".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("id".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("incompat.proto".to_string()),
+            package: Some("incompat".to_string()),
+            message_type: vec![str_msg, target_msg],
+            syntax: Some("proto3".to_string()),
+            ..Default::default()
+        };
+        let fds = FileDescriptorSet { file: vec![file] };
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let descriptor_path =
+            std::env::temp_dir().join(format!("protolens-tui-incompat-override-{n}.pb"));
+        std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+        let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+        std::fs::remove_file(&descriptor_path).unwrap();
+
+        // StrHolder { s: "hello" }
+        let label = b"hello";
+        let mut blob = vec![0x0Au8, label.len() as u8];
+        blob.extend_from_slice(label);
+        let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2, true).unwrap();
+        let mut app = App::new(
+            decoded,
+            "test.pb",
+            PathBuf::from("test.pb"),
+            true,
+            2,
+            ctx,
+            ThemeKind::Dark,
+        );
+        app.splash = false;
+        app.term_width = 120;
+
+        let s_idx = app
+            .tree
+            .iter()
+            .position(|n| n.span.field_number == 1)
+            .expect("must find field 1");
+        assert!(
+            app.can_override(s_idx),
+            "a WT_LEN scalar must be overridable"
+        );
+
+        app.splice_override(s_idx, Some("incompat.Target".to_string()))
+            .expect("override onto an incompatible type must still succeed");
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.contains("INVALID") || l.contains("TYPE_MISMATCH")),
+            "mismatch must surface as an inline annotation, not a panic: {:?}",
+            app.lines
+        );
     }
 
     /// `Outer2 { grp: MyGroup { id: 5 } }`, with `grp` declared as a
