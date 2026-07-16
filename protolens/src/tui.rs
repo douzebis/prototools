@@ -258,6 +258,7 @@ const HELP_TEXT: &[&str] = &[
     "Override management",
     "  o                open/close the override management pane (closes",
     "                   the override pane, if open)",
+    "  Enter            close the management pane",
     "  Tab              move focus between the main pane and the",
     "                   management pane (while it is open)",
     "  j/k, PageUp/Down, Home/End   move the highlighted entry",
@@ -1131,6 +1132,7 @@ impl App {
     /// Close the override management pane (spec 0117 §3).
     fn close_manage_pane(&mut self) {
         self.manage_open = false;
+        self.manage_focus = false;
     }
 
     /// Move the management pane's highlighted row by `delta`, clamped to
@@ -2573,7 +2575,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Tab => self.manage_focus = false,
-            KeyCode::Esc | KeyCode::Char('o') => self.close_manage_pane(),
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Enter => self.close_manage_pane(),
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
             KeyCode::PageDown => {
@@ -6378,6 +6380,19 @@ mod tests {
             .count();
         assert_eq!(active_count, 1, "still at most one active entry per origin");
         assert!(app.overrides.entries()[new_idx].active);
+    }
+
+    /// `Enter` in the management pane closes it (returning focus to the
+    /// main pane), same as `Esc`/`o`.
+    #[test]
+    fn manage_pane_enter_closes_pane() {
+        let (mut app, _items) = repeated_scalar_fixture();
+        app.manage_focus = true;
+        app.manage_open = true;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.manage_open);
+        assert!(!app.manage_focus);
     }
 
     /// Spec 0130 §G1: manage-pane entry rows render `auto == true`
