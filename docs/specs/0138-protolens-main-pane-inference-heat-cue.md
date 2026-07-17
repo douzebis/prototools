@@ -162,23 +162,87 @@ scoring/caching/gating/color model only.
   best read as *narrowing* G4's gate on ANSI-16 terminals, not as an
   independent presence rule.
 - G8: absent state — no cue is rendered at all (not a 13th color or
-  distinct "level 0" glyph) whenever the gate (G4) is not triggered,
-  including whenever `best_score(range)` itself is unavailable (no
-  scoring graph loaded, or the range produced no non-vetoed
-  candidates).
+  distinct "level 0" glyph) whenever neither gate (G4 or G9) is
+  triggered, including whenever `best_score(range)` itself is
+  unavailable (no scoring graph loaded, or the range produced no
+  non-vetoed candidates).
+- G9 (added 2026-07-17, heat-cue refinements): a second, independent
+  cue variant — the **Tie** cue (blue) — for the case G4's gate leaves
+  unaddressed: the node's current typing already achieves the top
+  score (`current_score == best_score`), but that top score is itself
+  shared by at least one other candidate, so the current typing,
+  though optimal, isn't the *unique* optimum. Gate: `current_score ==
+  best_score` **and** the current type is an actual entry in
+  `candidates` (not merely `current_score`'s `0` default coinciding
+  with a `best_score` of `0`) **and** `tie_count > 1`, where
+  `tie_count` = the number of candidates (including the current type
+  itself) whose score equals `best_score`. G4 (`Mismatch`) and G9
+  (`Tie`) are mutually exclusive by construction — `Mismatch` requires
+  `best > current`, `Tie` requires `best == current` — so a node shows
+  at most one cue, never both.
+- G10: `Tie`'s brightness level reuses G5's `heat_level` bucketing
+  unchanged, applied to the shared top score (`best_score`, which
+  equals `current_score` in this branch) — "the same intensity the
+  `Mismatch` cue would have had if it were present," per the
+  2026-07-17 feedback that introduced G9.
+- G11: true-color 12-stop `Tie` gradient tables — derived from G6's
+  existing `Mismatch` (red) tables by swapping each stop's R and B
+  channels, so the `Tie` gradient carries the exact same luminance
+  progression as `Mismatch`'s, in a blue hue instead of red, rather
+  than an independently-invented palette:
+
+  | Level | Dark (`DARK_BLUE`) | Light (`LIGHT_BLUE`) |
+  |------:|---------------------|------------------------|
+  |   1   | `#20203D`           | `#E4EDFD`              |
+  |   2   | `#20244A`           | `#D0E0FC`               |
+  |   3   | `#222857`           | `#B8D0FB`               |
+  |   4   | `#222E6B`           | `#9CB8F8`               |
+  |   5   | `#20347F`           | `#7E9EF4`               |
+  |   6   | `#1C3996`           | `#6182ED`               |
+  |   7   | `#1840AD`           | `#4967E3`               |
+  |   8   | `#1349C4`           | `#364ED3`               |
+  |   9   | `#0D54DB`           | `#2638BE`               |
+  |  10   | `#0860F0`           | `#1A23A2`               |
+  |  11   | `#047AFF`           | `#101286`               |
+  |  12   | `#06ACFF`           | `#04106E`               |
+
+- G12: `Tie`'s ANSI-16 fallback mirrors G7's structure exactly, on the
+  same `best_score` dimension, substituting blue for red: `best_score
+  <= 3` → absent (no cue, same low-confidence narrowing as G7);
+  `best_score <= 21` → dark blue (`Color::Blue`); `best_score > 21` →
+  bright blue (`Color::LightBlue`). Interaction with the G9 gate is
+  identical to G7's interaction with G4 (§G7's own explanation applies
+  verbatim, substituting `Tie`/G9 for `Mismatch`/G4).
 
 ## Non-goals
 
-- N1 (resolved 2026-07-17): the visual placement is a dedicated
-  leading column (one character wide, always reserved whether or not
-  a cue is present, so node indentation never shifts) showing a
-  single glyph, `●` (U+25CF BLACK CIRCLE), styled per G5/G6/G7's
-  per-node graduated level; plus a trailing
-  ` [<current_score>/<best_score>]` suffix appended to the node's own
-  header line, styled unconditionally in the *brightest* available
-  red (truecolor level 12, or `Color::LightRed` on the ANSI-16
-  fallback) whenever the cue is present at all — the suffix's color
-  is not graduated by level; only the leading glyph is.
+- N1 (resolved 2026-07-17, suffix amended 2026-07-17 for G9's `Tie`
+  cue): the visual placement is a dedicated leading column (one
+  character wide, always reserved whether or not a cue is present, so
+  node indentation never shifts) showing a single glyph, `●` (U+25CF
+  BLACK CIRCLE), styled per G5/G6/G7 (`Mismatch`) or G10/G11/G12
+  (`Tie`)'s per-node graduated level. The trailing suffix differs by
+  cue kind: `Mismatch` appends ` [<current_score>/<best_score>]`,
+  styled unconditionally in the *brightest* available red (truecolor
+  level 12, or `Color::LightRed` on the ANSI-16 fallback) whenever the
+  cue is present at all — not graduated by level, only the leading
+  glyph is. `Tie` appends ` [<tie_count>]` instead, styled identically
+  to a `true`/`false` boolean value (`style_for(SyntaxRole::Boolean,
+  theme)`, reused directly rather than a new dedicated color) — per
+  the 2026-07-17 feedback's explicit request for "the same styling as
+  is currently used for a value `true`."
+- N6 (added 2026-07-17): interaction with startup root-type
+  auto-inference ties. `decode.rs::determine_root_type` already
+  refuses to pick a winner on a top-score tie at startup (pre-existing
+  behavior, unrelated to and unchanged by this spec — same convention
+  the `prototext`/`reproto` CLIs use) — the root node is then decoded
+  with no resolved type (`type_fqdn: None`). This interacts with G4
+  "for free": the root's `current_type_key` resolves to `None`, which
+  never matches any candidate FQDN, so `current_score` defaults to `0`
+  and G4's `Mismatch` gate fires (assuming any non-vetoed candidate
+  exists) — the root node shows a `Mismatch` cue, with no code change
+  needed in either `determine_root_type` or `heat_cue.rs` to produce
+  it.
 - N2: no relation to, or reuse of, the override selection pane's own
   primitive/enum candidate-row styling (spec 0137 §G8). That feature
   colors rows *inside* the override pane's candidate list; this
@@ -229,11 +293,17 @@ fn current_score(candidates: &[(String, i64)], current_type: &str) -> i64 {
 }
 ```
 
-### Gating (amended 2026-07-17, see G4)
+### Gating (amended 2026-07-17, see G4; G9 added 2026-07-17)
 
 ```
-best_score > current_score
+Mismatch: best_score > current_score
+Tie:      best_score == current_score
+          && current type is an actual `candidates` entry
+          && tie_count(best_score) > 1
 ```
+
+Mutually exclusive by construction (`>` vs. `==`) — a node shows at
+most one cue.
 
 ### Brightness bucketing
 
@@ -245,13 +315,16 @@ index whose upper bound is `>= best_score`, or `12` if `best_score >
 
 ### Color lookup
 
-Two new `Color` tables (dark/light), analogous in structure to
+Two new `Color` tables per cue kind (dark/light for `Mismatch`, dark/
+light for `Tie` — added 2026-07-17), analogous in structure to
 `theme.rs`'s existing `dark_rgb`/`light_rgb` modules but *not* placed
 alongside the `SyntaxRole`-driven ones, since this is not a
-`SyntaxRole` — a new, dedicated lookup keyed by `heat_level` (1..=12),
-with the G7 ANSI-16 fallback selected via `theme::supports_rgb`'s
-existing detection chain, exactly as `theme::style_for` already
-branches per-role today.
+`SyntaxRole` — a dedicated lookup keyed by `heat_level` (1..=12) and a
+`HeatHue` selector (`Red`/`Blue`), with the G7/G12 ANSI-16 fallback
+selected via `theme::supports_rgb`'s existing detection chain, exactly
+as `theme::style_for` already branches per-role today. The `Tie`
+suffix's own color needs no such lookup — it reuses
+`style_for(SyntaxRole::Boolean, theme)` directly (G9/N1).
 
 ### Visibility toggle
 
@@ -262,9 +335,30 @@ discarding the cache.
 ## Test plan
 
 Covers: G1's lazy population trigger; G2/G3's absent/default-0 edge
-cases; G4's gate at and around equality (`best_score == current_score`
-must not show a cue, `best_score == current_score + 1` must); G5's
-bucket boundaries at each of the 11 Fibonacci values; G7's ANSI-16
-3-state fallback and its interaction with the gate; the `i` toggle;
-and that the cue never appears in the override pane itself, only the
-main pane.
+cases; G4's `Mismatch` gate around equality (`best_score ==
+current_score` must not show a `Mismatch` cue — though it may still
+show a `Tie` cue, see below — `best_score == current_score + 1` must
+show `Mismatch`); G5's bucket boundaries at each of the 11 Fibonacci
+values; G7's ANSI-16 3-state fallback and its interaction with the
+gate; the `i` toggle; and that the cue never appears in the override
+pane itself, only the main pane.
+
+G9's `Tie` gate (added 2026-07-17): covered by
+`tie_gate_fires_when_current_shares_the_top_score_with_others`
+(two- and three-way ties both produce `HeatCueKind::Tie` with the
+correct `tie_count`, including current) and
+`tie_gate_requires_current_type_to_be_an_actual_candidate` (a
+coincidental `0 == best_score` default, where the current type isn't
+actually in `candidates`, must not produce a `Tie` cue). The
+mutual-exclusivity of G4/G9 is exercised implicitly by every
+`Mismatch`-asserting test continuing to pass unchanged (a genuine
+unique-optimum, no-tie case never trips G9). `render_shows_the_tie_
+count_suffix_when_tied_for_best` covers end-to-end rendering: the
+glyph column and the ` [tie_count]` suffix (not ` [current/best]`)
+appear on a node's header line when its cached candidates tie for the
+top score. G10 (brightness reuse) and G11/G12 (blue palette/ANSI16
+selection) are covered by `theme.rs`'s
+`heat_style_uses_rgb_gradient_when_colorterm_truecolor` and
+`heat_style_ansi16_fallback_thresholds`, both extended to assert that
+`HeatHue::Red` and `HeatHue::Blue` select distinct colors (truecolor
+and ANSI-16 alike) at the same level.

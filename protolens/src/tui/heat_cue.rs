@@ -15,15 +15,22 @@ use super::*;
 /// crate already uses.
 pub(super) const HEAT_GLYPH: char = '●';
 
-/// A node's computed heat cue (spec 0138 G2-G4): present only when `best`
-/// (the top-ranked auto-inference score for the node's byte range)
-/// strictly exceeds `current` (the score `best`'s candidate list assigns
-/// to the node's own currently effective type, `0` if not found).
+/// A node's computed heat cue (spec 0138 G2-G4, G9-G12): either a
+/// `Mismatch` (red — the original gate, `best` strictly exceeds
+/// `current`) or a `Tie` (blue — `current` already equals `best`, but at
+/// least one other candidate shares that same top score, so the current
+/// typing, while optimal, isn't the *unique* optimum).
 pub(super) struct HeatCue {
-    /// Brightness level, 1..=12 (spec 0138 G5), bucketed from `best`.
+    /// Brightness level, 1..=12 (spec 0138 G5), bucketed from `best`
+    /// (`Mismatch`) or from the shared top score (`Tie`) — same
+    /// bucketing function either way.
     pub(super) level: u8,
-    pub(super) current: i64,
-    pub(super) best: i64,
+    pub(super) kind: HeatCueKind,
+}
+
+pub(super) enum HeatCueKind {
+    Mismatch { current: i64, best: i64 },
+    Tie { tie_count: usize },
 }
 
 /// Spec 0138 G5's Fibonacci brightness bucketing: `[1, 2, 3, 5, 8, 13,
@@ -101,23 +108,43 @@ impl App {
 }
 
 /// Pure gate/level computation over an already-fetched candidate list
-/// (spec 0138 G2-G4) — split out from `heat_cue_for` so it's directly
-/// unit-testable without a real scoring graph. `current_key` is `None`
-/// both for a raw/unresolvable current type and for "not found in
+/// (spec 0138 G2-G4, G9) — split out from `heat_cue_for` so it's
+/// directly unit-testable without a real scoring graph. `current_key` is
+/// `None` both for a raw/unresolvable current type and for "not found in
 /// `candidates`" — either way `current_score` defaults to `0` (G3).
 pub(super) fn heat_cue_from_candidates(
     candidates: &[(String, i64)],
     current_key: Option<&str>,
 ) -> Option<HeatCue> {
     let best = candidates.first()?.1;
-    let current = candidates
+    let current_entry = candidates
         .iter()
-        .find(|(fqdn, _)| Some(fqdn.as_str()) == current_key)
-        .map(|(_, score)| *score)
-        .unwrap_or(0);
-    (best > current).then_some(HeatCue {
-        level: heat_level(best),
-        current,
-        best,
-    })
+        .find(|(fqdn, _)| Some(fqdn.as_str()) == current_key);
+    let current = current_entry.map(|(_, score)| *score).unwrap_or(0);
+    if best > current {
+        return Some(HeatCue {
+            level: heat_level(best),
+            kind: HeatCueKind::Mismatch { current, best },
+        });
+    }
+    // G4's original gate didn't trigger: the current typing already
+    // scores at the top (`current == best`, since `current` can never
+    // exceed `best`). G9: if other candidates tie it there, the current
+    // typing isn't a *unique* optimum — flag that ambiguity with a
+    // distinct ("Tie") cue instead of showing nothing. Requires
+    // `current_entry` to be an actual match (not just a coincidental
+    // `0 == best` default) — see G9's own doc in spec 0138.
+    if current_entry.is_some() {
+        let tie_count = candidates
+            .iter()
+            .filter(|(_, score)| *score == best)
+            .count();
+        if tie_count > 1 {
+            return Some(HeatCue {
+                level: heat_level(best),
+                kind: HeatCueKind::Tie { tie_count },
+            });
+        }
+    }
+    None
 }

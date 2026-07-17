@@ -314,24 +314,34 @@ impl App {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
                 }
-                // Leading gutter glyph + trailing `[current/best]` suffix
-                // (spec 0138 N1) — the glyph column is always reserved
-                // (a blank space when absent), so node indentation never
-                // shifts; both are appended/prepended after panning, so
-                // neither is affected by horizontal scroll. `heat_style`
-                // returns `None` on the ANSI-16 fallback for a
-                // low-confidence `best_score` (G7's narrowing of the G4
-                // gate) — in that case no cue shows at all, glyph or
-                // suffix.
-                let glyph_style = cue
-                    .as_ref()
-                    .and_then(|c| theme::heat_style(c.level, self.theme));
+                // Leading gutter glyph + trailing suffix (spec 0138 N1,
+                // G9) — the glyph column is always reserved (a blank
+                // space when absent), so node indentation never shifts;
+                // both are appended/prepended after panning, so neither
+                // is affected by horizontal scroll. `heat_style` returns
+                // `None` on the ANSI-16 fallback for a low-confidence
+                // `best_score` (G7/G12's narrowing of the gate) — in
+                // that case no cue shows at all, glyph or suffix.
+                let glyph_style = cue.as_ref().and_then(|c| {
+                    let hue = match c.kind {
+                        heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
+                        heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
+                    };
+                    theme::heat_style(c.level, hue, self.theme)
+                });
                 match (glyph_style, cue) {
                     (Some(style), Some(c)) => {
-                        spans.push(Span::styled(
-                            format!(" [{}/{}]", c.current, c.best),
-                            theme::heat_suffix_style(self.theme),
-                        ));
+                        let suffix = match c.kind {
+                            heat_cue::HeatCueKind::Mismatch { current, best } => Span::styled(
+                                format!(" [{current}/{best}]"),
+                                theme::heat_suffix_style(self.theme),
+                            ),
+                            heat_cue::HeatCueKind::Tie { tie_count } => Span::styled(
+                                format!(" [{tie_count}]"),
+                                theme::style_for(SyntaxRole::Boolean, self.theme),
+                            ),
+                        };
+                        spans.push(suffix);
                         spans.insert(0, Span::styled(heat_cue::HEAT_GLYPH.to_string(), style));
                     }
                     _ => spans.insert(0, Span::raw(" ")),

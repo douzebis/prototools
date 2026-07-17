@@ -461,47 +461,107 @@ mod heat_rgb {
         Color::Rgb(0x86, 0x12, 0x10),
         Color::Rgb(0x6E, 0x10, 0x04),
     ];
+
+    /// Dark theme, "ice → azure" (spec 0138 G11, the `Tie` cue's hue) —
+    /// derived by swapping the R/B channels of `DARK` above, so it
+    /// carries the exact same luminance progression as the red
+    /// "Mismatch" gradient, in a blue hue rather than red.
+    pub const DARK_BLUE: [Color; 12] = [
+        Color::Rgb(0x20, 0x20, 0x3D),
+        Color::Rgb(0x20, 0x24, 0x4A),
+        Color::Rgb(0x22, 0x28, 0x57),
+        Color::Rgb(0x22, 0x2E, 0x6B),
+        Color::Rgb(0x20, 0x34, 0x7F),
+        Color::Rgb(0x1C, 0x39, 0x96),
+        Color::Rgb(0x18, 0x40, 0xAD),
+        Color::Rgb(0x13, 0x49, 0xC4),
+        Color::Rgb(0x0D, 0x54, 0xDB),
+        Color::Rgb(0x08, 0x60, 0xF0),
+        Color::Rgb(0x04, 0x7A, 0xFF),
+        Color::Rgb(0x06, 0xAC, 0xFF),
+    ];
+
+    /// Light theme, "pale → deep blue" — same R/B-channel-swap
+    /// derivation from `LIGHT` as `DARK_BLUE` is from `DARK`.
+    pub const LIGHT_BLUE: [Color; 12] = [
+        Color::Rgb(0xE4, 0xED, 0xFD),
+        Color::Rgb(0xD0, 0xE0, 0xFC),
+        Color::Rgb(0xB8, 0xD0, 0xFB),
+        Color::Rgb(0x9C, 0xB8, 0xF8),
+        Color::Rgb(0x7E, 0x9E, 0xF4),
+        Color::Rgb(0x61, 0x82, 0xED),
+        Color::Rgb(0x49, 0x67, 0xE3),
+        Color::Rgb(0x36, 0x4E, 0xD3),
+        Color::Rgb(0x26, 0x38, 0xBE),
+        Color::Rgb(0x1A, 0x23, 0xA2),
+        Color::Rgb(0x10, 0x12, 0x86),
+        Color::Rgb(0x04, 0x10, 0x6E),
+    ];
 }
 
-/// Main-pane inference-mismatch heat cue color for the leading glyph
-/// column (spec 0138, item 12 of 2026-07-17 feedback). `level` is 1..=12
-/// (see `tui::heat_cue::heat_level`), already gated present by the
-/// caller (G4: `best_score > current_score`). Returns `None` when the
-/// cue must not be shown at all on this terminal — only possible on the
-/// ANSI-16 fallback, for `level <= 3` (`best_score <= 3`, G7's
-/// low-confidence narrowing of the gate); the truecolor gradient always
-/// shows *some* color once the gate has passed, however dim.
-pub fn heat_style(level: u8, theme: ThemeKind) -> Option<Style> {
+/// Hue selector for the main-pane heat cue (spec 0138 G9-G12): `Red` is
+/// the original `Mismatch` cue ("current type scores below best");
+/// `Blue` is the newer `Tie` cue ("current type ties for best") — both
+/// share the same brightness-level model (`heat_style`'s `level`
+/// parameter), differing only in which 12-stop gradient/ANSI-16 pair is
+/// used.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HeatHue {
+    Red,
+    Blue,
+}
+
+/// Main-pane heat cue color for the leading glyph column (spec 0138,
+/// item 12 of 2026-07-17 feedback; `hue` added for the `Tie` cue, G9-
+/// G12). `level` is 1..=12 (see `tui::heat_cue::heat_level`), already
+/// gated present by the caller (G4 for `Red`/`Mismatch`, G9 for `Blue`/
+/// `Tie`). Returns `None` when the cue must not be shown at all on this
+/// terminal — only possible on the ANSI-16 fallback, for `level <= 3`
+/// (`best_score <= 3`, G7/G12's low-confidence narrowing of the gate);
+/// the truecolor gradient always shows *some* color once the gate has
+/// passed, however dim.
+pub fn heat_style(level: u8, hue: HeatHue, theme: ThemeKind) -> Option<Style> {
     match theme {
         ThemeKind::Dark if supports_rgb() => {
-            Some(Style::default().fg(heat_rgb_color(level, false)))
+            Some(Style::default().fg(heat_rgb_color(level, false, hue)))
         }
         ThemeKind::Light if supports_rgb() => {
-            Some(Style::default().fg(heat_rgb_color(level, true)))
+            Some(Style::default().fg(heat_rgb_color(level, true, hue)))
         }
         ThemeKind::Dark | ThemeKind::Light if level <= 3 => None,
-        ThemeKind::Dark | ThemeKind::Light if level <= 7 => Some(Style::default().fg(Color::Red)),
-        ThemeKind::Dark | ThemeKind::Light => Some(Style::default().fg(Color::LightRed)),
+        ThemeKind::Dark | ThemeKind::Light if level <= 7 => Some(Style::default().fg(match hue {
+            HeatHue::Red => Color::Red,
+            HeatHue::Blue => Color::Blue,
+        })),
+        ThemeKind::Dark | ThemeKind::Light => Some(Style::default().fg(match hue {
+            HeatHue::Red => Color::LightRed,
+            HeatHue::Blue => Color::LightBlue,
+        })),
         ThemeKind::System => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
     }
 }
 
-fn heat_rgb_color(level: u8, light: bool) -> Color {
+fn heat_rgb_color(level: u8, light: bool, hue: HeatHue) -> Color {
     let idx = level.clamp(1, 12) as usize - 1;
-    if light {
-        heat_rgb::LIGHT[idx]
-    } else {
-        heat_rgb::DARK[idx]
+    match (light, hue) {
+        (false, HeatHue::Red) => heat_rgb::DARK[idx],
+        (true, HeatHue::Red) => heat_rgb::LIGHT[idx],
+        (false, HeatHue::Blue) => heat_rgb::DARK_BLUE[idx],
+        (true, HeatHue::Blue) => heat_rgb::LIGHT_BLUE[idx],
     }
 }
 
-/// The heat cue's ` [current/best]` suffix color — always the brightest
-/// available red (truecolor level 12, or `Color::LightRed` on the
-/// ANSI-16 fallback) whenever the cue is present at all, regardless of
-/// `level` (spec 0138 N1) — unlike `heat_style`, which grades the
-/// leading glyph by `level`.
+/// The `Mismatch` heat cue's ` [current/best]` suffix color — always the
+/// brightest available red (truecolor level 12, or `Color::LightRed` on
+/// the ANSI-16 fallback) whenever the cue is present at all, regardless
+/// of `level` (spec 0138 N1) — unlike `heat_style`, which grades the
+/// leading glyph by `level`. The `Tie` cue's own ` [tie_count]` suffix
+/// uses no dedicated function of its own — it's styled with
+/// `style_for(SyntaxRole::Boolean, theme)` directly, i.e. literally the
+/// same styling already used for a `true`/`false` value (spec 0138 G9's
+/// own wording), not a new color.
 pub fn heat_suffix_style(theme: ThemeKind) -> Style {
     match theme {
         ThemeKind::Dark if supports_rgb() => Style::default().fg(heat_rgb::DARK[11]),
@@ -673,14 +733,21 @@ mod tests {
             std::env::set_var("COLORTERM", "truecolor");
         }
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            let level1 = heat_style(1, theme).unwrap();
-            let level12 = heat_style(12, theme).unwrap();
-            assert!(matches!(level1.fg, Some(Color::Rgb(..))));
-            assert!(matches!(level12.fg, Some(Color::Rgb(..))));
-            assert_ne!(level1.fg, level12.fg, "brightness must vary by level");
-            // Out-of-range levels clamp rather than panic.
-            assert_eq!(heat_style(0, theme), heat_style(1, theme));
-            assert_eq!(heat_style(200, theme), heat_style(12, theme));
+            for hue in [HeatHue::Red, HeatHue::Blue] {
+                let level1 = heat_style(1, hue, theme).unwrap();
+                let level12 = heat_style(12, hue, theme).unwrap();
+                assert!(matches!(level1.fg, Some(Color::Rgb(..))));
+                assert!(matches!(level12.fg, Some(Color::Rgb(..))));
+                assert_ne!(level1.fg, level12.fg, "brightness must vary by level");
+                // Out-of-range levels clamp rather than panic.
+                assert_eq!(heat_style(0, hue, theme), heat_style(1, hue, theme));
+                assert_eq!(heat_style(200, hue, theme), heat_style(12, hue, theme));
+            }
+            // Same level, different hue: distinct colors (G11).
+            assert_ne!(
+                heat_style(6, HeatHue::Red, theme),
+                heat_style(6, HeatHue::Blue, theme)
+            );
         }
         unsafe {
             std::env::remove_var("COLORTERM");
@@ -698,14 +765,26 @@ mod tests {
             return;
         }
         for theme in [ThemeKind::Dark, ThemeKind::Light] {
-            // Level 3 == `best_score <= 3` (G7's low-confidence absence).
-            assert_eq!(heat_style(3, theme), None);
-            // Level 7 == `best_score <= 21`: dark red.
-            assert_eq!(heat_style(7, theme), Some(Style::default().fg(Color::Red)));
-            // Level 8 == `best_score > 21`: bright red.
+            // Level 3 == `best_score <= 3` (G7/G12's low-confidence absence).
+            assert_eq!(heat_style(3, HeatHue::Red, theme), None);
+            assert_eq!(heat_style(3, HeatHue::Blue, theme), None);
+            // Level 7 == `best_score <= 21`: dark red / dark blue.
             assert_eq!(
-                heat_style(8, theme),
+                heat_style(7, HeatHue::Red, theme),
+                Some(Style::default().fg(Color::Red))
+            );
+            assert_eq!(
+                heat_style(7, HeatHue::Blue, theme),
+                Some(Style::default().fg(Color::Blue))
+            );
+            // Level 8 == `best_score > 21`: bright red / bright blue.
+            assert_eq!(
+                heat_style(8, HeatHue::Red, theme),
                 Some(Style::default().fg(Color::LightRed))
+            );
+            assert_eq!(
+                heat_style(8, HeatHue::Blue, theme),
+                Some(Style::default().fg(Color::LightBlue))
             );
         }
     }

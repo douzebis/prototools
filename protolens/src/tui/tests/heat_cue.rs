@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::super::heat_cue::{heat_cue_from_candidates, heat_level, HEAT_GLYPH};
+use super::super::heat_cue::{heat_cue_from_candidates, heat_level, HeatCueKind, HEAT_GLYPH};
 use super::super::*;
 use super::support::*;
 
@@ -41,17 +41,27 @@ fn heat_level_bucket_boundaries() {
     }
 }
 
-/// Spec 0138 G4 (amended): the gate is `best > current`, not `best >=
-/// current` — equal scores must not show a cue.
+/// Spec 0138 G4 (amended): the `Mismatch` gate is `best > current`, not
+/// `best >= current` — an equal score never produces a `Mismatch` cue.
+/// (An equal score tied with another candidate instead produces a
+/// `Tie` cue per G9 — see `tie_gate_fires_when_current_shares_the_top_
+/// score_with_others` — so this test's own equal-score case must be a
+/// unique optimum, with no other candidate to tie against, to stay a
+/// true "no cue at all" case.)
 #[test]
 fn gate_requires_best_strictly_greater_than_current() {
-    let candidates = vec![("a.Type".to_string(), 50), ("b.Type".to_string(), 50)];
+    let candidates = vec![("b.Type".to_string(), 50)];
     assert!(heat_cue_from_candidates(&candidates, Some("b.Type")).is_none());
 
     let candidates = vec![("a.Type".to_string(), 51), ("b.Type".to_string(), 50)];
     let cue = heat_cue_from_candidates(&candidates, Some("b.Type")).unwrap();
-    assert_eq!(cue.best, 51);
-    assert_eq!(cue.current, 50);
+    assert!(matches!(
+        cue.kind,
+        HeatCueKind::Mismatch {
+            current: 50,
+            best: 51
+        }
+    ));
 }
 
 /// Spec 0138 G3: a current type absent from the candidate list (raw,
@@ -60,11 +70,57 @@ fn gate_requires_best_strictly_greater_than_current() {
 fn current_score_defaults_to_zero_when_current_type_is_unranked() {
     let candidates = vec![("a.Type".to_string(), 5)];
     let cue = heat_cue_from_candidates(&candidates, Some("not.in.list")).unwrap();
-    assert_eq!(cue.current, 0);
-    assert_eq!(cue.best, 5);
+    assert!(matches!(
+        cue.kind,
+        HeatCueKind::Mismatch {
+            current: 0,
+            best: 5
+        }
+    ));
 
     let cue_none_key = heat_cue_from_candidates(&candidates, None).unwrap();
-    assert_eq!(cue_none_key.current, 0);
+    assert!(matches!(
+        cue_none_key.kind,
+        HeatCueKind::Mismatch { current: 0, .. }
+    ));
+}
+
+/// Spec 0138 G9: when the current type already achieves the top score
+/// but at least one other candidate ties it there, a `Tie` cue fires
+/// instead of no cue at all — `tie_count` counts every candidate
+/// sharing that top score, including the current one.
+#[test]
+fn tie_gate_fires_when_current_shares_the_top_score_with_others() {
+    // Unique optimum (no other candidate ties the top score): no cue,
+    // same as before G9 existed.
+    let candidates = vec![("a.Type".to_string(), 50)];
+    assert!(heat_cue_from_candidates(&candidates, Some("a.Type")).is_none());
+
+    // Two-way tie at the top score, current is one of them.
+    let candidates = vec![("a.Type".to_string(), 50), ("b.Type".to_string(), 50)];
+    let cue = heat_cue_from_candidates(&candidates, Some("a.Type")).unwrap();
+    assert!(matches!(cue.kind, HeatCueKind::Tie { tie_count: 2 }));
+
+    // Three-way tie.
+    let candidates = vec![
+        ("a.Type".to_string(), 50),
+        ("b.Type".to_string(), 50),
+        ("c.Type".to_string(), 50),
+    ];
+    let cue = heat_cue_from_candidates(&candidates, Some("b.Type")).unwrap();
+    assert!(matches!(cue.kind, HeatCueKind::Tie { tie_count: 3 }));
+}
+
+/// Spec 0138 G9: a `current_key` that merely defaults to `0` (not found
+/// in `candidates` at all) must never produce a `Tie` cue, even if `0`
+/// coincidentally equals `best` — `Tie` requires the current type to be
+/// a genuine member of the tied top-scoring group, not a numeric
+/// coincidence.
+#[test]
+fn tie_gate_requires_current_type_to_be_an_actual_candidate() {
+    let candidates = vec![("a.Type".to_string(), 0), ("b.Type".to_string(), 0)];
+    assert!(heat_cue_from_candidates(&candidates, Some("not.in.list")).is_none());
+    assert!(heat_cue_from_candidates(&candidates, None).is_none());
 }
 
 /// Spec 0138 G8: no candidates at all (e.g. every candidate vetoed) is
@@ -113,8 +169,13 @@ fn i_toggles_heat_cues_hidden() {
 
     assert!(!app.heat_cues_hidden);
     let cue = app.heat_cue_for(header_line).expect("cue must be present");
-    assert_eq!(cue.best, 50);
-    assert_eq!(cue.current, 10);
+    assert!(matches!(
+        cue.kind,
+        HeatCueKind::Mismatch {
+            current: 10,
+            best: 50
+        }
+    ));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert!(app.heat_cues_hidden);
@@ -181,6 +242,55 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
     assert!(
         !header_row.contains('/'),
         "no suffix while hidden: {header_row:?}"
+    );
+}
+
+/// End-to-end render check (spec 0138 N1/G9): with a `Tie` cue
+/// pre-cached (current type tied for the top score with one other
+/// candidate), the main pane's header row shows `HEAT_GLYPH` in its own
+/// leading column and a trailing ` [<tie_count>]` suffix — distinct from
+/// the `Mismatch` cue's ` [current/best]` (no `/`).
+#[test]
+fn render_shows_the_tie_count_suffix_when_tied_for_best() {
+    let mut app = message_node_app();
+    app.splash = false;
+    let idx = 0;
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[idx].span.raw_range,
+        app.tree[idx].span.packed_record_start,
+    );
+    app.heat_cache.insert(
+        range,
+        vec![
+            ("google.protobuf.DescriptorProto".to_string(), 50),
+            ("other.Type".to_string(), 50),
+        ],
+    );
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    let inner = Block::bordered().inner(area);
+    fn row_text(buffer: &ratatui::buffer::Buffer, inner: Rect, y: u16) -> String {
+        (inner.x..inner.x + inner.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let header_row = row_text(terminal.backend().buffer(), inner, inner.y);
+    assert_eq!(
+        header_row.chars().next().unwrap(),
+        HEAT_GLYPH,
+        "leading column must show the glyph: {header_row:?}"
+    );
+    assert!(
+        header_row.contains(" [2]"),
+        "must show the tie-count suffix: {header_row:?}"
+    );
+    assert!(
+        !header_row.contains('/'),
+        "the Tie cue's suffix must not look like Mismatch's [current/best]: {header_row:?}"
     );
 }
 
