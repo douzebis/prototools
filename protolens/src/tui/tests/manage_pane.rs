@@ -890,6 +890,55 @@ fn manage_pane_search_forward_and_backward() {
     );
 }
 
+/// `p` repeats the last management-pane search in the opposite
+/// direction (vim's `N` counterpart to `n`).
+#[test]
+fn manage_pane_search_repeat_with_p_reverses_direction() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    for (item, ty) in items.iter().zip(["pkg.Alpha", "pkg.Beta", "pkg.Gamma"]) {
+        let origin = OverrideOrigin::Path {
+            path: app.positional_path(*item),
+        };
+        app.overrides.activate(origin, Some(ty.to_string()));
+    }
+    app.manage_highlight = 0;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "pkg.".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.overrides.entries()[app.manage_highlight]
+            .r#type
+            .as_deref(),
+        Some("pkg.Alpha")
+    );
+
+    // `p` repeats backward (opposite of the forward `/` that landed on
+    // Alpha), wrapping past the root entry to the last `pkg.`-matching
+    // entry.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(
+        app.overrides.entries()[app.manage_highlight]
+            .r#type
+            .as_deref(),
+        Some("pkg.Gamma")
+    );
+
+    // A second `p` continues backward, landing on the entry before it.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(
+        app.overrides.entries()[app.manage_highlight]
+            .r#type
+            .as_deref(),
+        Some("pkg.Beta")
+    );
+}
+
 /// Spec 0119 §G4: `f` in the management pane opens a rename buffer
 /// pre-filled from the highlighted entry's current name; `Enter`
 /// confirms, mutating the entry in place and — since the entry is

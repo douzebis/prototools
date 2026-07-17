@@ -343,6 +343,11 @@ impl App {
                     self.jump_to_manage_match(dir, &pattern);
                 }
             }
+            KeyCode::Char('p') => {
+                if let Some((dir, pattern)) = self.last_manage_search.clone() {
+                    self.jump_to_manage_match(dir.reverse(), &pattern);
+                }
+            }
             // Spec 0119 §G4: edit the highlighted entry's display-name
             // override, pre-filled with its current value (empty when
             // unset).

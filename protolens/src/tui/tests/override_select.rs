@@ -372,6 +372,40 @@ fn override_search_forward_backward_and_repeat_with_n() {
     assert!(app.message.contains("not found"));
 }
 
+/// `p` repeats the last search in the opposite direction (vim's `N`
+/// counterpart to `n`).
+#[test]
+fn override_search_repeat_with_p_reverses_direction() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    app.override_candidates = vec![
+        ("pkg.Alpha".to_string(), None),
+        ("pkg.Beta".to_string(), None),
+        ("pkg.Gamma".to_string(), None),
+        ("pkg.Beta2".to_string(), None),
+    ];
+    app.override_highlight = 0;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "beta".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
+
+    // `p` repeats backward (opposite of the forward `/` that set this
+    // pattern), wrapping to pkg.Beta2.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 3); // pkg.Beta2
+
+    // A second `p` continues backward, wrapping to pkg.Beta.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
+}
+
 /// Spec 0114 §4 (vim convention): confirming `/` or `?` with an empty
 /// pattern re-uses the last active search pattern, searching in
 /// whichever direction the key that opened this prompt requested —
@@ -479,6 +513,29 @@ fn main_pane_search_forward_backward_and_repeat_with_n() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.cursor, 3);
     assert!(app.message.contains("not found"));
+}
+
+/// `p` repeats the last main-pane search in the opposite direction.
+#[test]
+fn main_pane_search_repeat_with_p_reverses_direction() {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2", "gamma: 3", "beta2: 4"]);
+    app.splash = false;
+    app.term_width = 120;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "beta".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.cursor, 1); // beta
+
+    // `p` repeats backward, wrapping to beta2.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(app.cursor, 3); // beta2
+
+    // A second `p` continues backward, wrapping to beta.
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+    assert_eq!(app.cursor, 1); // beta
 }
 
 /// Spec 0114 §4 (vim convention), extended to the main pane:

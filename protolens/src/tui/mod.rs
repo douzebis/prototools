@@ -248,6 +248,17 @@ enum SearchDir {
     Backward,
 }
 
+impl SearchDir {
+    /// The opposite direction — `p` (previous) repeats the last search
+    /// in the reverse direction, vim's `N` counterpart to `n`.
+    fn reverse(self) -> Self {
+        match self {
+            SearchDir::Forward => SearchDir::Backward,
+            SearchDir::Backward => SearchDir::Forward,
+        }
+    }
+}
+
 /// One row of the override management pane's grouped-by-origin listing:
 /// an origin's own (unindented, non-selectable) header row, or one of its
 /// candidate types (an index into `overrides.entries()`, indented under
@@ -330,6 +341,7 @@ const HELP_TEXT: &[&str] = &[
     "                   current, possibly-overridden rendering)",
     "  ?                search backward",
     "  n                repeat the last search, same direction",
+    "  p                repeat the last search, opposite direction",
     "  (confirming / or ? with no typed pattern reuses the last one)",
     "",
     "Override pane",
@@ -339,7 +351,8 @@ const HELP_TEXT: &[&str] = &[
     "                   override pane (while it is open)",
     "  i                toggle candidate sort: inferred score (default)",
     "                   or alphanumeric",
-    "  /  ?  n          search / search backward / repeat (pane focused)",
+    "  /  ?  n  p       search / search backward / repeat / repeat",
+    "                   opposite direction (pane focused)",
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",
     "                   (pane focused)",
     "  Enter            apply the highlighted type (pane focused) and",
@@ -363,7 +376,8 @@ const HELP_TEXT: &[&str] = &[
     "                   other entry sharing its origin)",
     "  Left/Right       move the main-pane cursor to the prev/next field",
     "                   affected by the highlighted entry (wraps around)",
-    "  /  ?  n          search / search backward / repeat",
+    "  /  ?  n  p       search / search backward / repeat / repeat",
+    "                   opposite direction",
     "  a / Space        toggle the highlighted entry active/inactive",
     "  A / Shift-Space  same, but also cascades the new state to every",
     "                   entry whose origin sits at-or-under it (a",

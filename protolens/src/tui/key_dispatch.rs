@@ -57,6 +57,11 @@ impl App {
                     self.jump_to_override_match(dir, &pattern);
                 }
             }
+            KeyCode::Char('p') => {
+                if let Some((dir, pattern)) = self.last_override_search.clone() {
+                    self.jump_to_override_match(dir.reverse(), &pattern);
+                }
+            }
             KeyCode::Enter => {
                 let Some(idx) = self.override_target else {
                     return;
@@ -397,6 +402,11 @@ impl App {
             KeyCode::Char('n') => {
                 if let Some((dir, pattern)) = self.last_search.clone() {
                     self.jump_to_match(dir, &pattern);
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some((dir, pattern)) = self.last_search.clone() {
+                    self.jump_to_match(dir.reverse(), &pattern);
                 }
             }
 
