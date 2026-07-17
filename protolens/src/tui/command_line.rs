@@ -348,6 +348,12 @@ impl App {
         };
         match resolve_command(name) {
             Ok("extract") => self.run_extract(tokens.collect()),
+            // Item 9 (2026-07-17 feedback): `:quit` (or any unambiguous
+            // prefix, e.g. `:q` — no other command starts with `q`)
+            // quits directly, same effect as confirming `q` twice —
+            // typing the full command out is itself the deliberate
+            // action `qq`'s second press otherwise confirms.
+            Ok("quit") => self.should_quit = true,
             Ok("type-as") => self.run_type_as(tokens.collect()),
             Ok("type-as-raw") => self.run_type_as_raw(),
             Ok("save-overrides") => self.run_save_overrides(tokens.collect()),

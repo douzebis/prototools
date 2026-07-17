@@ -17,6 +17,54 @@ fn resolve_command_prefix_and_exact_match() {
     assert!(resolve_command("type-a").is_err());
 }
 
+/// Item 9 (2026-07-17 feedback): `:quit`, and its unambiguous prefix
+/// `:q` (no other command starts with `q`), both quit directly — same
+/// effect as confirming `q` twice.
+#[test]
+fn quit_command_and_its_q_prefix_both_resolve_and_quit() {
+    assert_eq!(resolve_command("quit"), Ok("quit"));
+    assert_eq!(resolve_command("q"), Ok("quit"));
+
+    let mut app = empty_app();
+    app.splash = false;
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.should_quit);
+}
+
+/// Item 9: `:` opens the command line regardless of which pane
+/// currently has keyboard focus — previously unbound (a silent no-op)
+/// while the override or manage pane held focus.
+#[test]
+fn colon_opens_the_command_line_from_override_and_manage_focus() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    assert!(app.command_buffer.is_some());
+    for c in "quit".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.should_quit);
+
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert!(app.manage_focus);
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    assert!(app.command_buffer.is_some());
+    for c in "quit".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.should_quit);
+}
+
 #[test]
 fn longest_common_prefix_examples() {
     assert_eq!(longest_common_prefix(&["extract", "extra"]), "extra");

@@ -101,6 +101,7 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 /// command here is the only step needed for it to get both, automatically.
 const COMMANDS: &[&str] = &[
     "extract",
+    "quit",
     "type-as",
     "type-as-raw",
     "save-overrides",

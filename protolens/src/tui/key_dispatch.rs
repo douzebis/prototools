@@ -216,6 +216,18 @@ impl App {
             self.handle_command_key(key);
             return;
         }
+        // Item 9 (2026-07-17 feedback): `:` opens the command line
+        // regardless of which pane currently has focus — checked
+        // centrally here, ahead of every focus-specific dispatch below,
+        // same tier as `F1`/`Ctrl-Z` above, so `:quit` (and every other
+        // command) is reachable from the override/manage panes too, not
+        // just the main pane.
+        if key.code == KeyCode::Char(':') {
+            self.command_kind = CommandLineKind::Command;
+            self.command_buffer = Some(String::new());
+            self.command_cursor = 0;
+            return;
+        }
         if self.override_focus {
             self.handle_override_key(key);
             return;
@@ -231,14 +243,8 @@ impl App {
         // yields zero fields, see spec 0113) has no cursor node to index
         // into: only allow the keys that don't touch `self.tree`.
         if self.tree.is_empty() {
-            match key.code {
-                KeyCode::Char('q') => self.request_quit(),
-                KeyCode::Char(':') => {
-                    self.command_kind = CommandLineKind::Command;
-                    self.command_buffer = Some(String::new());
-                    self.command_cursor = 0;
-                }
-                _ => {}
+            if key.code == KeyCode::Char('q') {
+                self.request_quit();
             }
             return;
         }
@@ -369,14 +375,10 @@ impl App {
                 }
             }
 
-            // Extract command line (vim-style): `:` opens an empty
-            // ex-command line; `x` is a shortcut that pre-fills it with
-            // "extract " plus a proposed default path (0113 D21).
-            KeyCode::Char(':') => {
-                self.command_kind = CommandLineKind::Command;
-                self.command_buffer = Some(String::new());
-                self.command_cursor = 0;
-            }
+            // `x` is a shortcut that opens the ex-command line
+            // pre-filled with "extract " plus a proposed default path
+            // (0113 D21) — `:` itself is handled centrally above (item
+            // 9), regardless of focus.
             KeyCode::Char('x') => {
                 let buf = format!("extract {}", self.default_extract_path());
                 self.command_kind = CommandLineKind::Command;
