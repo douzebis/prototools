@@ -33,11 +33,42 @@ impl App {
         }
         self.manage_open = true;
         self.manage_focus = true;
-        self.manage_highlight = 0;
+        self.manage_highlight = self.initial_manage_highlight();
         self.manage_scroll = 0;
         self.manage_pan_offset = 0;
         self.manage_pending_kind = None;
         self.last_manage_click = None;
+    }
+
+    /// The manage pane's initial highlight, in priority order (feedback,
+    /// 2026-07-17): (1) an entry already active for the cursor node
+    /// (`resolve_active_override_entry_index`); else (2) the first entry
+    /// — in the pane's own lexicographic display order — whose origin
+    /// would resolve against the cursor node under *some* `OverrideKind`
+    /// (`Path`/`PathField`/`FqdnField`) were it activated, even though
+    /// none currently is; else (3) simply the first entry in the pane.
+    /// `0` (a no-op, since there's nothing to highlight) when the
+    /// collection is empty.
+    fn initial_manage_highlight(&self) -> usize {
+        if self.overrides.entries().is_empty() {
+            return 0;
+        }
+        if let Some(i) = self.resolve_active_override_entry_index(self.cursor) {
+            return i;
+        }
+        let candidates: Vec<OverrideOrigin> = [
+            OverrideKind::Path,
+            OverrideKind::PathField,
+            OverrideKind::FqdnField,
+        ]
+        .into_iter()
+        .filter_map(|k| self.origin_for_kind(self.cursor, k).ok())
+        .collect();
+        self.overrides
+            .entries()
+            .iter()
+            .position(|e| candidates.contains(&e.origin))
+            .unwrap_or(0)
     }
 
     /// Close the override management pane (spec 0117 §3).

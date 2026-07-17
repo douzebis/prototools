@@ -273,44 +273,39 @@ impl App {
         &self,
         idx: usize,
     ) -> Option<&override_pane::OverrideEntry> {
+        self.resolve_active_override_entry_index(idx)
+            .map(|i| &self.overrides.entries()[i])
+    }
+
+    /// Same resolution as `resolve_active_override_entry` (priority
+    /// order `Path` > `PathField` > `FqdnField`, active entries only),
+    /// but returns the entry's index into `self.overrides.entries()`
+    /// rather than a reference — needed wherever a caller must then
+    /// place a cursor/highlight on the entry itself (e.g. the manage
+    /// pane's `o`-key cursor placement), not just read its `r#type`.
+    pub(super) fn resolve_active_override_entry_index(&self, idx: usize) -> Option<usize> {
         let path = self.positional_path(idx);
-        for e in self.overrides.entries() {
-            if e.active {
-                if let OverrideOrigin::Path { path: p } = &e.origin {
-                    if *p == path {
-                        return Some(e);
-                    }
-                }
-            }
+        if let Some(pos) = self.overrides.entries().iter().position(|e| {
+            e.active && matches!(&e.origin, OverrideOrigin::Path { path: p } if *p == path)
+        }) {
+            return Some(pos);
         }
         let parent = self.tree[idx].parent?;
         let field = self.tree[idx].span.field_number;
         let parent_path = self.positional_path(parent);
-        for e in self.overrides.entries() {
-            if e.active {
-                if let OverrideOrigin::PathField { path: p, field: f } = &e.origin {
-                    if *p == parent_path && *f == field {
-                        return Some(e);
-                    }
-                }
-            }
+        if let Some(pos) = self.overrides.entries().iter().position(|e| {
+            e.active
+                && matches!(&e.origin, OverrideOrigin::PathField { path: p, field: f }
+                    if *p == parent_path && *f == field)
+        }) {
+            return Some(pos);
         }
-        if let Some(fqdn) = &self.tree[parent].span.type_fqdn {
-            for e in self.overrides.entries() {
-                if e.active {
-                    if let OverrideOrigin::FqdnField {
-                        fqdn: f,
-                        field: fld,
-                    } = &e.origin
-                    {
-                        if f == fqdn && *fld == field {
-                            return Some(e);
-                        }
-                    }
-                }
-            }
-        }
-        None
+        let fqdn = self.tree[parent].span.type_fqdn.as_ref()?;
+        self.overrides.entries().iter().position(|e| {
+            e.active
+                && matches!(&e.origin, OverrideOrigin::FqdnField { fqdn: f, field: fld }
+                    if f == fqdn && *fld == field)
+        })
     }
 
     /// Resolves to the type (or `None` = raw) that should currently be

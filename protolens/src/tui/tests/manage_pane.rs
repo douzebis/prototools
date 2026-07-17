@@ -1134,3 +1134,125 @@ fn double_click_on_marker_cascades_like_a_single_shift_click() {
          other (which would cancel out and leave it active)"
     );
 }
+
+/// Feedback (2026-07-17), tier 1: `o` places the manage-pane cursor
+/// on the entry currently active for the main-pane cursor's own node,
+/// when one exists.
+#[test]
+fn o_places_the_cursor_on_the_active_entry_for_the_cursor_node() {
+    let (mut app, _, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.term_width = 120;
+
+    // An unrelated active entry, sorted ahead of the real one, so the
+    // test can't pass by accident (e.g. always landing on index 0).
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: "/".to_string(),
+        },
+        None,
+    );
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(id_idx),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("entry must exist");
+
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert_eq!(app.manage_highlight, entry_idx);
+}
+
+/// Feedback (2026-07-17), tier 2: with no active entry for the
+/// cursor node, `o` instead picks the first (lexicographic display
+/// order) entry that would apply to it if activated — not just any
+/// entry, and not necessarily the collection's own first entry.
+#[test]
+fn o_places_the_cursor_on_the_first_inactive_entry_that_would_apply() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.term_width = 120;
+
+    // Unrelated entry (targets `inner`, not `id`) — must be skipped.
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: app.positional_path(inner_idx),
+        },
+        None,
+    );
+
+    // Matching entry, left inactive (`activate` always leaves the
+    // freshly-created entry active — deactivate it right back so this
+    // exercises the "no active entry" tier-2 path, not tier 1).
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(id_idx),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("entry must exist");
+    app.overrides.toggle_active(entry_idx);
+    assert!(!app.overrides.entries()[entry_idx].active);
+
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert_eq!(app.manage_highlight, entry_idx);
+}
+
+/// Feedback (2026-07-17), tier 3: no entry (active or not) applies to
+/// the cursor node at all — `o` falls back to the pane's own first
+/// entry.
+#[test]
+fn o_falls_back_to_the_first_entry_when_none_applies_to_the_cursor() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.term_width = 120;
+
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: app.positional_path(inner_idx),
+        },
+        None,
+    );
+
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert_eq!(app.manage_highlight, 0);
+}
+
+/// Feedback (2026-07-17), subsidiary question: an empty override
+/// collection is not a special case — `o` just opens onto an empty
+/// list, `manage_highlight` at its harmless default of `0`. `App::new`
+/// always seeds a root `Path` entry (spec 0117 §1), so a genuinely
+/// empty collection can't arise from ordinary use, but the code path
+/// is still reachable (e.g. deleting that seeded entry) and must not
+/// panic or misbehave.
+#[test]
+fn o_on_an_empty_override_collection_opens_with_highlight_zero() {
+    let (mut app, _, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.term_width = 120;
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+    assert!(app.overrides.entries().is_empty());
+
+    app.cursor = id_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert_eq!(app.manage_highlight, 0);
+}
