@@ -337,7 +337,7 @@ const HELP_TEXT: &[&str] = &[
     "                   group node under the cursor",
     "  Tab              move focus between the main pane and the",
     "                   override pane (while it is open)",
-    "  a                toggle candidate sort: inferred score (default)",
+    "  i                toggle candidate sort: inferred score (default)",
     "                   or alphanumeric",
     "  /  ?  n          search / search backward / repeat (pane focused)",
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",

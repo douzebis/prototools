@@ -406,6 +406,11 @@ Later amended (spec 0137 implementation feedback): the active sort mode
 no longer persists across successive `t` invocations for the session —
 `t` resets it to the `Inferred` default every time the pane opens.
 
+Later amended (post-0137 feedback): the sort-toggle key changed from
+`a` to `i` (for "inferred"), avoiding ambiguity with the main pane's
+own `a` (annotation-display toggle, spec 0133) and the management
+pane's own `a` (entry active toggle, spec 0119).
+
 
 
 - **Lexicographic**: all message/group types known to the loaded
@@ -559,7 +564,7 @@ Override pane (only meaningful while it has focus, except `Tab`/`t` which work r
 | Key | Action |
 |---|---|
 | `j` / `Down`, `k` / `Up` | Move highlighted candidate (or onto the pinned raw entry) |
-| `a` | Toggle candidate sort: inferred score (default) / lexicographic — resets to `Inferred` every time the pane opens (see amendment below), not persisted across `t` invocations |
+| `i` | Toggle candidate sort: inferred score (default) / lexicographic — resets to `Inferred` every time the pane opens (see amendment below), not persisted across `t` invocations |
 | `/` | Search forward |
 | `?` | Search backward |
 | `n` | Repeat last search |

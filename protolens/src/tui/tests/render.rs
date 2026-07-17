@@ -117,7 +117,7 @@ fn message_is_not_dismissed_while_a_prompt_or_quit_confirm_is_active() {
 /// line's trailing `#@ ...` annotation, purely at render time — the
 /// underlying `self.lines`/`self.line_styles` are untouched, so
 /// toggling `a` twice restores byte-for-byte identical rendering.
-/// Distinct from the override pane's own `a` (candidate sort,
+/// Distinct from the override pane's own `i` (candidate sort,
 /// exercised above) and the manage pane's own `a` (entry active
 /// toggle) — this fixture has neither pane open, so only the
 /// main-pane binding is reachable.

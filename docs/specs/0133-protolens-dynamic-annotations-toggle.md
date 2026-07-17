@@ -91,9 +91,10 @@ rs` behavior no longer applies to *anything* in protolens, since
   No re-render, no cache reset, no other state touched — the next
   frame's `render_line_content`/`render_line_spans` calls (G4) pick it
   up directly.
-- Distinct from the override-selection pane's own `a` (candidate sort
-  toggle) and the manage pane's own `a` (entry active toggle) — both
-  unrelated, unchanged, gated behind their own focus checks already.
+- Distinct from the override-selection pane's own `i` (candidate sort
+  toggle, renamed from `a` — spec 0114 amendment) and the manage
+  pane's own `a` (entry active toggle) — both unrelated, unchanged,
+  gated behind their own focus checks already.
 
 ### G4 — display-time truncation
 

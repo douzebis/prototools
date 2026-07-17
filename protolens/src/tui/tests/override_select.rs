@@ -281,20 +281,20 @@ fn t_refuses_below_the_minimum_terminal_width() {
     assert!(app.message.contains("too narrow"));
 }
 
-/// Spec 0114 §3.2: sort mode defaults to `Inferred` on open, and `a`
+/// Spec 0114 §3.2: sort mode defaults to `Inferred` on open, and `i`
 /// toggles between the two modes.
 #[test]
-fn override_sort_defaults_to_inferred_and_a_toggles_it() {
+fn override_sort_defaults_to_inferred_and_i_toggles_it() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Inferred);
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Lexicographic);
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Inferred);
 }
 

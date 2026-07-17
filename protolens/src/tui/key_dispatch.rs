@@ -30,7 +30,7 @@ impl App {
                 self.override_highlight = self.override_candidates.len().saturating_sub(1);
                 self.preview_override_highlight();
             }
-            KeyCode::Char('a') => {
+            KeyCode::Char('i') => {
                 self.override_sort = match self.override_sort {
                     SortMode::Lexicographic => SortMode::Inferred,
                     SortMode::Inferred => SortMode::Lexicographic,
