@@ -281,21 +281,129 @@ fn t_refuses_below_the_minimum_terminal_width() {
     assert!(app.message.contains("too narrow"));
 }
 
-/// Spec 0114 §3.2: sort mode defaults to `Inferred` on open, and `i`
-/// toggles between the two modes.
+/// Spec 0114 §3.2: `i` toggles between the two sort modes. (Which mode
+/// `t` opens the pane in initially is spec 0139's smart-open logic,
+/// covered by its own tests below — `message_node_app` has no scoring
+/// graph, so `t` opens directly in `Lexicographic` mode, spec 0139
+/// G3.)
 #[test]
-fn override_sort_defaults_to_inferred_and_i_toggles_it() {
+fn override_i_toggles_the_sort_mode() {
     let mut app = message_node_app();
     app.splash = false;
     app.term_width = 120;
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    assert_eq!(app.override_sort, SortMode::Inferred);
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Lexicographic);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert_eq!(app.override_sort, SortMode::Inferred);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+}
+
+/// Spec 0139 Step A + mode-selection rule: an active override whose
+/// type is a primitive keyword can never be present in the inferred
+/// candidate list (by construction — `inferred_candidates` only ever
+/// produces message/enum FQDNs), so `t` must fall through to opening
+/// in `Lexicographic` mode with the highlight on that keyword's row.
+#[test]
+fn t_opens_on_active_primitive_override_in_lexicographic_mode() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+
+    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    app.overrides.activate(origin, Some("fixed32".to_string()));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(app.override_candidates[app.override_highlight].0, "fixed32");
+}
+
+/// Spec 0139 Step A + mode-selection rule: an active override typed
+/// raw (`Option::None`) opens in `Lexicographic` mode with the
+/// highlight on the `None` sentinel row.
+#[test]
+fn t_opens_on_active_raw_override_on_the_none_sentinel_row() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+
+    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    app.overrides.activate(origin, None);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(
+        app.override_candidates[app.override_highlight].0,
+        "protolens_internal.None"
+    );
+}
+
+/// Spec 0139 Step B: no override is active for the cursor node, but
+/// the management list holds an inactive entry whose origin exactly
+/// matches it — `t` picks up that entry's type and applies the same
+/// mode-selection rule as an active override would (spec 0139 §G1
+/// "apply the rules of the preceding point").
+#[test]
+fn t_opens_on_first_inactive_matching_entry_when_none_is_active() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    // Drop the seeded root entry first — it shares this fixture's only
+    // node's origin and would otherwise sort ahead of (or instead of)
+    // the entry this test is specifically about.
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+
+    let origin = app.override_origin_for_kind(app.cursor).unwrap();
+    app.overrides
+        .activate(origin.clone(), Some("int32".to_string()));
+    let idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin && e.r#type.as_deref() == Some("int32"))
+        .unwrap();
+    app.overrides.toggle_active(idx);
+    assert!(!app.overrides.entries()[idx].active, "must be inactive");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(app.override_candidates[app.override_highlight].0, "int32");
+}
+
+/// Spec 0139 Steps C/D + G3: with neither an active nor an
+/// applicable-inactive override, and no scoring graph loaded at all
+/// (`message_node_app`'s fixture), `t` falls straight through to
+/// `Lexicographic` mode (highlight on the `None` sentinel row) without
+/// ever surfacing the "no scoring graph available" message — the
+/// fallback already did what that message would have suggested.
+#[test]
+fn t_falls_back_to_lexicographic_silently_when_no_graph_and_no_match() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.message.clear();
+    // `message_node_app`'s single node is also the seeded root
+    // override's own target — remove it so neither Step A nor Step B
+    // find a match, exercising Steps C/D in isolation.
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(
+        app.override_candidates[app.override_highlight].0,
+        "protolens_internal.None"
+    );
+    assert!(
+        !app.message.contains("no scoring graph"),
+        "message must be suppressed on this auto-fallback path: {}",
+        app.message
+    );
 }
 
 /// Spec 0114 §3.2/spec 0137 §G4: `j`/`k` move the highlight, clamped to

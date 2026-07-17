@@ -59,40 +59,78 @@ impl App {
         if self.manage_open {
             self.close_manage_pane();
         }
-        // Spec 0132 §G1: priority (1) of the default-highlight order —
-        // an already-active override for this node takes precedence
-        // over `recompute_override_candidates`'s own priority (2)/(3)
-        // default (top-inferred candidate, else `<raw / no type>`).
-        // Resolved before `recompute_override_candidates` overwrites
-        // `override_candidates`, per the cursor's node.
-        let active_type = self
-            .resolve_active_override_entry(self.cursor)
-            .map(|e| e.r#type.clone());
         self.override_target = Some(self.cursor);
         self.override_focus = true;
         self.override_scroll = 0;
         self.override_pan_offset = 0;
-        // Sort mode no longer persists across successive `t` invocations
-        // for the session — it resets to the default (`Inferred`) every
-        // time the pane opens.
-        self.override_sort = SortMode::Inferred;
-        self.recompute_override_candidates();
-        if let Some(fqdn_or_raw) = active_type {
-            // Spec 0137 §G4: raw (`Option::None`) maps to the `None`
-            // sentinel string — found (and highlighted) only in
-            // alphabetic mode, where it is always a real candidate; in
-            // inferred mode, raw has no corresponding row, so `position`
-            // finds nothing and the default highlight (recompute's
-            // top-ranked candidate) is left as-is.
-            let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.None".to_string());
-            if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
-                self.override_highlight = row;
-            }
+
+        // Spec 0139: smart initial sort-mode/highlight. Step A: an
+        // active override on the cursor node; else Step B: the first
+        // inactive-but-applicable entry from the management list
+        // (`first_entry_matching_origin_candidates` — by construction,
+        // since Step A found no active match, any entry it returns here
+        // is necessarily inactive).
+        let candidate_type = self
+            .resolve_active_override_entry(self.cursor)
+            .map(|e| e.r#type.clone())
+            .or_else(|| {
+                self.first_entry_matching_origin_candidates(self.cursor)
+                    .map(|i| self.overrides.entries()[i].r#type.clone())
+            });
+
+        match candidate_type {
+            Some(fqdn_or_raw) => self.open_override_on_type(fqdn_or_raw),
+            None => self.open_override_on_default(),
         }
+
         // Spec 0132 §G2: live-preview the initial highlighted row from
         // the very first frame the pane is shown, not just after the
         // first navigation keystroke.
         self.preview_override_highlight();
+    }
+
+    /// Spec 0139's mode-selection rule, shared by Steps A and B: open
+    /// in `Inferred` mode with the highlight on `fqdn_or_raw`'s row if
+    /// that type is present in the node's *complete* inferred candidate
+    /// list (`upgrade_active_override_to_complete` avoids a false
+    /// "not found" from a stale capped `candidate_cache` preview);
+    /// otherwise open in `Lexicographic` mode, whose candidate set is
+    /// the fixed universe of every selectable type and so is guaranteed
+    /// to contain it.
+    fn open_override_on_type(&mut self, fqdn_or_raw: Option<String>) {
+        // Spec 0137 §G4: raw (`Option::None`) maps to the `None`
+        // sentinel string.
+        let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.None".to_string());
+        self.override_sort = SortMode::Inferred;
+        self.recompute_override_candidates();
+        self.upgrade_active_override_to_complete();
+        if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
+            self.override_highlight = row;
+            return;
+        }
+        self.override_sort = SortMode::Lexicographic;
+        self.recompute_override_candidates();
+        if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
+            self.override_highlight = row;
+        }
+    }
+
+    /// Spec 0139 Steps C/D: neither an active nor an applicable-inactive
+    /// override exists for the cursor node — default to `Inferred` mode
+    /// (highlight on the top-scored row) when that list is non-empty;
+    /// otherwise fall back to `Lexicographic` mode (highlight on the
+    /// `None` sentinel row), silently — the "no scoring graph available"
+    /// message `recompute_override_candidates` sets in the no-graph case
+    /// would be redundant here, since this fallback already performs
+    /// exactly what that message suggests.
+    fn open_override_on_default(&mut self) {
+        self.override_sort = SortMode::Inferred;
+        self.recompute_override_candidates();
+        if self.override_candidates.is_empty() {
+            self.message.clear();
+            self.override_sort = SortMode::Lexicographic;
+            self.recompute_override_candidates();
+        }
     }
 
     /// Close the override pane (cancelling — spec 0114 §2), regardless of
@@ -186,7 +224,7 @@ impl App {
                         .collect()
                 }
                 None => {
-                    self.message = "no scoring graph available for inferred order; press 'a' \
+                    self.message = "no scoring graph available for inferred order; press 'i' \
                                      for alphanumeric"
                         .to_string();
                     Vec::new()

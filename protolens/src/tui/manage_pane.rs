@@ -42,13 +42,10 @@ impl App {
 
     /// The manage pane's initial highlight, in priority order (feedback,
     /// 2026-07-17): (1) an entry already active for the cursor node
-    /// (`resolve_active_override_entry_index`); else (2) the first entry
-    /// — in the pane's own lexicographic display order — whose origin
-    /// would resolve against the cursor node under *some* `OverrideKind`
-    /// (`Path`/`PathField`/`FqdnField`) were it activated, even though
-    /// none currently is; else (3) simply the first entry in the pane.
-    /// `0` (a no-op, since there's nothing to highlight) when the
-    /// collection is empty.
+    /// (`resolve_active_override_entry_index`); else (2)
+    /// `first_entry_matching_origin_candidates`'s result; else (3)
+    /// simply the first entry in the pane. `0` (a no-op, since there's
+    /// nothing to highlight) when the collection is empty.
     fn initial_manage_highlight(&self) -> usize {
         if self.overrides.entries().is_empty() {
             return 0;
@@ -56,19 +53,29 @@ impl App {
         if let Some(i) = self.resolve_active_override_entry_index(self.cursor) {
             return i;
         }
+        self.first_entry_matching_origin_candidates(self.cursor)
+            .unwrap_or(0)
+    }
+
+    /// The first entry in `overrides.entries()`'s own display order
+    /// whose origin would resolve against `idx` under *some*
+    /// `OverrideKind` (`Path`/`PathField`/`FqdnField`), regardless of
+    /// whether that entry is currently active. Shared by
+    /// `initial_manage_highlight` (`o` key) and `toggle_override`'s
+    /// smart-open logic (`t` key, spec 0139).
+    pub(super) fn first_entry_matching_origin_candidates(&self, idx: usize) -> Option<usize> {
         let candidates: Vec<OverrideOrigin> = [
             OverrideKind::Path,
             OverrideKind::PathField,
             OverrideKind::FqdnField,
         ]
         .into_iter()
-        .filter_map(|k| self.origin_for_kind(self.cursor, k).ok())
+        .filter_map(|k| self.origin_for_kind(idx, k).ok())
         .collect();
         self.overrides
             .entries()
             .iter()
             .position(|e| candidates.contains(&e.origin))
-            .unwrap_or(0)
     }
 
     /// Close the override management pane (spec 0117 §3).

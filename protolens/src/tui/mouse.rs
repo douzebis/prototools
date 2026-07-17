@@ -285,8 +285,9 @@ impl App {
             return;
         }
         let absolute_row = self.override_scroll + rel_row;
-        let total_rows = self.override_candidates.len() + 1;
-        if absolute_row < total_rows {
+        // Spec 0137's row-0 retirement removed the pinned "raw" row —
+        // `override_candidates` is indexed directly now, no `+ 1`.
+        if absolute_row < self.override_candidates.len() {
             self.override_highlight = absolute_row;
         }
     }
