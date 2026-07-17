@@ -122,22 +122,15 @@ styling per kind.
 - G8: candidate-row styling (rows 1.. in alphabetic mode; inferred-
   mode rows 1.. are always messages/groups, so they render the same
   as before — no visible change there; row 0 is covered separately,
-  also below):
-  - `Empty` (row 0, every sort mode) → `theme::style_for(SyntaxRole::
-    Comment, theme)` — same reuse precedent as `manage_entry_style`'s
-    `auto` color.
-  - A primitive keyword → `theme::style_for(SyntaxRole::
-    PunctuationBracketExtension, theme)` — a warm red/coral RGB
-    ("Alexa" `#D16969` dark, "Dried Burgundy" `#811F3F` light), with a
-    genuinely red ANSI-16 fallback (`Color::LightRed` dark,
-    `Color::Red` light) — corrects the originally-drafted
-    `StringLiteral`, whose ANSI-16 fallback was green, not red.
+  also below) — later simplified, see amendment below:
+  - `Empty` (row 0, every sort mode) → default style.
+  - A primitive keyword → default style.
   - A message/group FQDN → unstyled (`Style::default()`, matching
     today's unstyled rendering).
-  - An enum FQDN → `theme::style_for(SyntaxRole::Attribute, theme)`.
+  - An enum FQDN → `theme::style_for(SyntaxRole::Attribute, theme)`,
+    with an explicit ` [enum]` suffix appended to the displayed FQDN.
   - The existing highlighted-row `Modifier::REVERSED` overlay applies
-    on top of whichever of the above, exactly as today — including row
-    0, which today has no color at all (a new, additive style there).
+    on top of whichever of the above, exactly as today.
 
 ## Non-goals
 
@@ -268,10 +261,10 @@ lowercased still contains `"empty"`.
 ## Test plan
 
 1. Override pane on any override-eligible node, alphabetic mode: index
-   `0` shows `Empty` (`Comment`-styled); indices `1..16` show the 15
-   primitive keywords alphabetically (`PunctuationBracketExtension`-
-   styled); the rest show messages/enums mixed alphabetically
-   (message/group unstyled, enum `Attribute`-styled).
+   `0` shows `Empty` (default style); indices `1..16` show the 15
+   primitive keywords alphabetically (default style); the rest show
+   messages/enums mixed alphabetically (message/group unstyled, enum
+   `Attribute`-styled with a ` [enum]` suffix).
 2. Selecting a primitive keyword and confirming applies it exactly as
    `:type-as <keyword>` already does today (spec 0135) — no behavior
    change to primitive application itself, only to how it's reached.
@@ -308,3 +301,9 @@ lowercased still contains `"empty"`.
     any other malformed decode — no hard error, no pane-level
     rejection.
 12. `cargo fmt --check`, `reuse lint`, full test suite pass.
+
+Later amended (2026-07-17 feedback): G8's row styling simplified —
+primitive types (including `Empty`) now use the default style rather
+than `Comment`/`PunctuationBracketExtension`; enum FQDNs keep their
+blue `Attribute` color but gain an explicit ` [enum]` suffix instead
+of relying on color alone.

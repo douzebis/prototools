@@ -491,21 +491,21 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for row in start..end {
             let (fqdn, score) = &self.override_candidates[row];
+            // Spec 0114/0137 amendment (2026-07-17 feedback): simplify
+            // the lexicographic-mode color scheme — primitive types
+            // (including the `Empty` sentinel) get the default style,
+            // no longer a distinct comment/punctuation color; enums keep
+            // their blue `Attribute` color but gain an explicit
+            // ` [enum]` suffix instead.
             let (display_fqdn, base_style) = if fqdn == "protolens_internal.Empty" {
-                (
-                    "Empty".to_string(),
-                    theme::style_for(SyntaxRole::Comment, self.theme),
-                )
+                ("Empty".to_string(), Style::default())
             } else if decode::primitive_type_for_keyword(fqdn).is_some() {
-                (
-                    fqdn.clone(),
-                    theme::style_for(SyntaxRole::PunctuationBracketExtension, self.theme),
-                )
+                (fqdn.clone(), Style::default())
             } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
                 let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
-                    format!(".{fqdn}")
+                    format!(".{fqdn} [enum]")
                 } else {
-                    fqdn.clone()
+                    format!("{fqdn} [enum]")
                 };
                 (display, theme::style_for(SyntaxRole::Attribute, self.theme))
             } else {
