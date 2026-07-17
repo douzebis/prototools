@@ -600,3 +600,44 @@ fn fresh_click_replaces_selection_esc_clears_it() {
     assert_eq!(app.select_anchor, None, "Esc clears the selection");
     assert_eq!(app.select_end, None);
 }
+
+/// Regression test: clicking a foldable node's `▸`/`▾` marker must
+/// still toggle its fold now that the heat-cue gutter (spec 0138 N1)
+/// permanently occupies column 0 of `main_area`, shifting every line's
+/// own text (and its marker) one column to the right.
+#[test]
+fn clicking_the_fold_marker_toggles_the_node_despite_the_heat_cue_gutter() {
+    let (mut app, grp_idx) = group_type_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 20);
+    assert!(app.has_children(grp_idx));
+    assert!(!app.folded.contains(&grp_idx));
+
+    let line_idx = app.tree[grp_idx].span.text_range.start;
+    let indent_len = (app.lines[line_idx].len() - app.lines[line_idx].trim_start().len()) as u16;
+    // Column 0 is the heat-cue gutter, so the marker itself sits at
+    // column `indent_len + 1`.
+    let marker_col = indent_len + 1;
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: marker_col,
+        row: line_idx as u16,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        app.folded.contains(&grp_idx),
+        "clicking the marker must fold the node"
+    );
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: marker_col,
+        row: line_idx as u16,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        !app.folded.contains(&grp_idx),
+        "clicking the marker again must unfold the node"
+    );
+}

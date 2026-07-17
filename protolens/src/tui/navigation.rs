@@ -159,7 +159,12 @@ impl App {
     }
 
     pub(super) fn pan_right(&mut self) {
-        let width = self.main_area.width as usize;
+        // Column 0 of `main_area` is always the heat-cue gutter (spec
+        // 0138 N1), reserved but never panned — only `width - 1` columns
+        // actually show line text, so the clamp must leave room for that
+        // extra column or panning stops one character short of the
+        // line's true end.
+        let width = (self.main_area.width as usize).saturating_sub(1);
         let max_offset = self.max_visible_line_len().saturating_sub(width);
         self.pan_offset = (self.pan_offset + PAN_STEP).min(max_offset);
     }

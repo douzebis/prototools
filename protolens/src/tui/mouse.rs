@@ -325,7 +325,10 @@ impl App {
         if self.has_children(idx) {
             let area = self.main_area;
             let rel_col = col - area.x;
-            if rel_col == marker_column(&self.lines[line_idx]) {
+            // Column 0 is always the heat-cue gutter (spec 0138 N1: a
+            // glyph or a reserved blank, never part of the line's own
+            // text) — the marker sits one column further right.
+            if rel_col >= 1 && rel_col - 1 == marker_column(&self.lines[line_idx]) {
                 self.toggle_fold(idx);
             }
         }
