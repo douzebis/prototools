@@ -86,7 +86,7 @@ const MESSAGE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Auto-dismiss delay for the startup splash screen (2026-07-17
 /// feedback, item 13), in addition to its existing keypress/mouse
 /// dismissal — mirrors `MESSAGE_TIMEOUT`'s deadline-based approach.
-const SPLASH_TIMEOUT: Duration = Duration::from_secs(1);
+const SPLASH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
 /// for a short-lived interactive session: at a rough ~50-70 bytes per
