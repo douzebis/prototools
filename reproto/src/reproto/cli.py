@@ -150,6 +150,7 @@ _SECTIONS: dict[str, str] = {
     '--desc-root':           'Input',
     '--proto-out':           'Output',
     '--emit-binary':         'Output',
+    '--source-info':         'Output',
     '--dry-run':             'Output',
     '--proto-variant':       'Variant / Schema',
     '--use-variant':         'Variant / Schema',
@@ -312,6 +313,15 @@ class _SectionedCommand(click.Command):
     '-b', '--emit-binary',
     is_flag=True,
     help='Also write binary descriptor files (.pb) alongside .proto output',
+)
+
+@click.option(
+    '--source-info/--no-source-info',
+    'source_info',
+    default=True,
+    help='Embed a SourceCodeInfo synthesized from the reconstructed .proto '
+         'text in binary descriptor output (-b, --schema-db-out). '
+         'On by default.',
 )
 
 @click.option(
@@ -576,6 +586,7 @@ def main(
         proto_out: Path | None,
         output_root_deprecated: Path | None,
         emit_binary: bool,
+        source_info: bool,
         dry_run: bool,
         build_schema_db: Path | None,
         build_schema_db_deprecated: Path | None,
@@ -720,6 +731,7 @@ def main(
 
     options = Options(
         binary=emit_binary,
+        source_info=source_info,
         build_schema_db=build_schema_db,
         emit_scoring_yaml=emit_scoring_yaml,
         force_proto2_output=force_proto2_output,

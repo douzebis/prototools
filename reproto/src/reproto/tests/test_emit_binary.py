@@ -196,9 +196,11 @@ def test_emit_binary_no_translation(fixture_name: str, tmp_path: Path) -> None:
     assert r.returncode == 0, f"reproto failed: {r.stderr}"
     assert emit_pb.exists(), f"emit.pb not created: {emit_pb}"
 
-    # Decode both as annotated prototext; strip source_code_info from orig.
+    # Decode both as annotated prototext; strip source_code_info from both
+    # sides (reproto now synthesizes its own — spec 0141 — which has no
+    # reason to textually match protoc's; only the rest of the FDP does).
     orig_text = _strip_source_code_info(_decode_fdp(orig_fdp_pb))
-    emit_text = _decode_fdp(emit_pb)
+    emit_text = _strip_source_code_info(_decode_fdp(emit_pb))
 
     assert orig_text == emit_text, (
         f"emit.pb differs from orig FDP for {fixture_name}.\n"
@@ -239,7 +241,13 @@ def _run_emit_binary_golden(
     )
     assert r.returncode == 0, f"protoc failed: {r.stderr}"
 
-    cmd = _reproto_cmd(orig_dir, out_dir, [extra_reproto_flag, str(pb_path)])
+    # --no-source-info: these golden .pb files predate spec 0141 and encode
+    # translation behavior (groups, labels, packed options, feature
+    # residuals), not source-info synthesis.
+    cmd = _reproto_cmd(
+        orig_dir, out_dir,
+        [extra_reproto_flag, "--no-source-info", str(pb_path)]
+    )
     r = subprocess.run(cmd, capture_output=True, text=True, env=_build_env())
     assert r.returncode == 0, f"reproto failed: {r.stderr}"
 

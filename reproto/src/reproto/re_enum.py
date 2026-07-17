@@ -21,6 +21,7 @@ from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
 from .globals import ENUM
+from .source_info import closing_line
 from .text import Block, BlockLine
 
 # Import types only for type checking to avoid circular imports
@@ -156,8 +157,21 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
 
     # --- Rendering -----------------------------------------------------------
 
-    def render(self, ctx: Context, depth: int = 0) -> Block:
-        """Reconstruct enum as .proto."""
+    def render(
+        self,
+        ctx: Context,
+        depth: int = 0,
+        sci_path: list[int] | None = None,
+    ) -> Block:
+        """Reconstruct enum as .proto.
+
+        Args:
+            ctx: Rendering context.
+            depth: Indentation depth.
+            sci_path: This enum's own SourceCodeInfo path (spec 0141), as
+                computed by the caller; used as the prefix for its own
+                values' paths. None if source-info synthesis is off.
+        """
         from .re_enum_value import ReEnumValueDescriptorProto
 
         out = Block()
@@ -180,11 +194,22 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
             out.extend(block)
         out.append_div_maybe(depth)
 
-        # --- Enum values -----------------------------------------------------
-        for v in self.value:
+        # --- Enum values -------------------------------------------------------
+        # v_idx (spec 0141): raw enumerate() position, matching the binary
+        # side-channel's own unconditional value-reconstruction loop (below).
+        for v_idx, v in enumerate(self.value):
             assert isinstance(v, EnumValueDescriptorProto)
             value = ReEnumValueDescriptorProto(v, self)
-            out.extend(value.render(ctx, depth+1))
+            val_sci_path: list[int] | None = None
+            if ctx.out_sci is not None and sci_path is not None:
+                val_sci_path = sci_path + [2, v_idx]
+            lines = value.render(ctx, depth+1)
+            if val_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (val_sci_path, lines[0], closing_line(lines))
+                )
+            out.extend(lines)
         if self.reserved_range or self.reserved_name:
             out.append_div_maybe(depth)
 

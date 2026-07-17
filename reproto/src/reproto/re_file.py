@@ -26,10 +26,11 @@ from google.protobuf.message import Message
 
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, SourceCodeInfoOut
 from .fake_types import Prefix, Ref
 from .globals import FILE
 from .mappings import canonize_dependency
+from .source_info import closing_line, resolve_source_code_info_locations
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
 
@@ -296,6 +297,13 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         out = Block()
         inputs = Block()
 
+        # Synthesized SourceCodeInfo (spec 0141): only worth accumulating
+        # markers if a binary descriptor will actually be produced.
+        if ctx.out_desc is not None and ctx.source_info:
+            ctx.out_sci = SourceCodeInfoOut()
+        else:
+            ctx.out_sci = None
+
         # --- File intro -------------------------------------------------------
         out.append(BlockLine(self.name, depth, COMMENT))
         out.append(BlockLine('', depth))
@@ -387,36 +395,74 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- File services ----------------------------------------------------
+        # sci_idx (spec 0141) matches the binary side-channel's own
+        # is_visible() filter below, so indices align with fdp_out.service.
+        sci_svc_idx = 0
         for s in self.service:
             service_proto = cast(ServiceDescriptorProto, s)
             service = ReServiceDescriptorProto(ctx, service_proto, parent=self)
             if not service.is_visible():
                 continue
-            lines, inp = service.render(ctx, depth)
+            svc_sci_path: list[int] | None = None
+            if ctx.out_sci is not None:
+                svc_sci_path = [6, sci_svc_idx]
+            lines, inp = service.render(ctx, depth, sci_path=svc_sci_path)
+            if svc_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (svc_sci_path, lines[0], closing_line(lines))
+                )
+            sci_svc_idx += 1
             out.extend(lines)
             inputs.extend(inp)
         out.append_div_maybe(depth)
 
         # --- File enums -------------------------------------------------------
+        # sci_idx (spec 0141) matches the binary side-channel's own
+        # is_reachable filter below, so indices align with fdp_out.enum_type.
+        sci_enum_idx = 0
         for e in self.enum_type:
             enum_proto = cast(EnumDescriptorProto, e)
             enum = ReEnumDescriptorProto(ctx, enum_proto, parent=self)
             if not enum.is_reachable:
                 continue
-            out.extend(enum.render(ctx, depth))
+            enum_sci_path: list[int] | None = None
+            if ctx.out_sci is not None:
+                enum_sci_path = [5, sci_enum_idx]
+            lines = enum.render(ctx, depth, sci_path=enum_sci_path)
+            if enum_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (enum_sci_path, lines[0], closing_line(lines))
+                )
+            sci_enum_idx += 1
+            out.extend(lines)
         out.append_div_maybe(depth)
 
         # --- File messages ----------------------------------------------------
+        # sci_idx tracks the message's position among (not is_group, is_summoned)
+        # messages, matching the binary side-channel's own filter below — the
+        # position a message ends up at in fdp_out.message_type (spec 0141).
+        sci_idx = 0
         for m in self.message_type:
             msg_proto = cast(DescriptorProto, m)
             message = ReDescriptorProto(ctx, msg_proto, parent=self)
             if message.is_group:
                 continue
-            lines, inp = message.render(ctx)
+            sci_path: list[int] | None = None
+            if ctx.out_sci is not None and message.is_summoned:
+                sci_path = [4, sci_idx]
+            lines, inp = message.render(ctx, sci_path=sci_path)
             lines.insert(0, BlockLine(f'message {message.name} {{', depth))
             if lines[1].text == '}':  # body is empty: collapse to one line
                 lines[0].postpend('}')
                 lines.pop(1)
+            if sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (sci_path, lines[0], closing_line(lines))
+                )
+                sci_idx += 1
             lines.append_div_maybe(depth)
             if not message.is_summoned:
                 lines.abandon()
@@ -443,6 +489,17 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         while out and not out[-1].text:
             out.pop()
 
+        # Synthesized SourceCodeInfo (spec 0141): resolve pending markers
+        # against the now-complete first-pass `out`, then reset ctx.out_sci —
+        # the second (binary) pass below re-invokes the same children's
+        # render() a second time, and leaving it set would double-capture.
+        sci_locations = None
+        if ctx.out_sci is not None:
+            sci_locations = resolve_source_code_info_locations(
+                out, ctx, ctx.out_sci.pending
+            )
+        ctx.out_sci = None
+
         # --- Binary output side-channel (spec 0076) ---------------------------
         if ctx.out_desc is not None:
             from google.protobuf.descriptor_pb2 import FileDescriptorProto as _FDP
@@ -454,8 +511,11 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             fdp_out.name = canonize_dependency(ctx, fdp_out.name)
             for i, dep in enumerate(fdp_out.dependency):
                 fdp_out.dependency[i] = canonize_dependency(ctx, dep)
-            # source_code_info: always omitted
+            # source_code_info: synthesized from the text pass (spec 0141),
+            # or omitted if synthesis is disabled / produced nothing.
             fdp_out.ClearField('source_code_info')
+            if sci_locations:
+                fdp_out.source_code_info.location.extend(sci_locations)
             # syntax / edition: rewrite per ctx.target_syntax
             fdp_out.ClearField('syntax')
             fdp_out.ClearField('edition')

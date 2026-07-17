@@ -22,7 +22,7 @@ from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 from .base import NodeBase
 from .context import Context, Fqdn
-from .source_info import SourceCodeInfoMixin
+from .source_info import SourceCodeInfoMixin, closing_line
 from .fake_types import Ref
 from .globals import MESSAGE
 from .re_field import _resolve_field_features
@@ -36,6 +36,7 @@ def _render_extend_blocks(
     depth: int,
     anomaly_code: str,
     track_orphans: bool,
+    sci_path: list[int] | None = None,
 ) -> Block:
     """Render grouped extend blocks for a file or message owner.
 
@@ -50,13 +51,41 @@ def _render_extend_blocks(
         anomaly_code: Anomaly code for illegal extend blocks ("A5" or "B1").
         track_orphans: When True, check fd.is_summoned and mark unsummoned
                        fields and brackets as ORPHAN. When False, emit CODE.
+        sci_path: The owner message's own SourceCodeInfo path (spec 0141),
+            used as the prefix for its extension fields' own paths. Ignored
+            (an empty prefix is used instead) when owner is a file, since
+            file-level extension fields are already top-level. None if
+            source-info synthesis is off.
     """
     from .anomalies import report
     from .re_field import ReFieldDescriptorProto
+    from .re_file import ReFileDescriptorProto
     from .syntax import allow_extend_block
     from .utils import short_ref
 
     out = Block()
+
+    # --- SourceCodeInfo path index (spec 0141) -----------------------------
+    # File-level extensions (field 7 of FileDescriptorProto): a running
+    # counter over is_summoned entries, matching the file-level binary
+    # side-channel's own `if not fd.is_summoned: continue` filter.
+    # Message-level (nested) extensions (field 6 of DescriptorProto): the
+    # message-level binary side-channel is unconditional, so the raw
+    # enumerate() position is used instead.
+    is_file_owner = isinstance(owner, ReFileDescriptorProto)
+    ext_field_num = 7 if is_file_owner else 6
+    ext_paths: dict[int, list[int]] = {}
+    if ctx.out_sci is not None and (is_file_owner or sci_path is not None):
+        prefix = sci_path if sci_path is not None else []
+        counter = 0
+        for e in extensions:
+            extension_proto = cast(FieldDescriptorProto, e)
+            if is_file_owner:
+                fd = ReFieldDescriptorProto(ctx, extension_proto, parent=owner)
+                if not fd.is_summoned:
+                    continue
+            ext_paths[id(extension_proto)] = prefix + [ext_field_num, counter]
+            counter += 1
 
     # Pass 1: collect distinct extendee short refs in encounter order.
     extendee_refs: list[str] = []
@@ -85,13 +114,24 @@ def _render_extend_blocks(
             if str(short_ref(ctx, Fqdn(f'message:{fd.extendee}'), owner)) != ref:
                 continue
             blk = fd.render(ctx, depth + 1)
+            ext_sci_path = ext_paths.get(id(extension_proto))
             if track_orphans:
                 if fd.is_summoned:
                     is_orphan = False
+                    if ext_sci_path is not None:
+                        assert ctx.out_sci is not None
+                        ctx.out_sci.pending.append(
+                            (ext_sci_path, blk[0], closing_line(blk))
+                        )
                 else:
                     blk.abandon()
             else:
                 is_orphan = False
+                if ext_sci_path is not None:
+                    assert ctx.out_sci is not None
+                    ctx.out_sci.pending.append(
+                        (ext_sci_path, blk[0], closing_line(blk))
+                    )
             block.extend(blk)
         bracket_type = ORPHAN if (track_orphans and is_orphan) else CODE
         block.insert(0, BlockLine(f'extend {ref} {{', depth, type=bracket_type))
@@ -165,7 +205,9 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
     def reserved_range(self) -> RepeatedCompositeFieldContainer:
         return self.this.reserved_range
 
-    def render_extensions(self, ctx: Context, depth: int = 0) -> Block:
+    def render_extensions(
+        self, ctx: Context, depth: int = 0, sci_path: list[int] | None = None,
+    ) -> Block:
         """Render message extensions grouped by extendee."""
         return _render_extend_blocks(
             ctx=ctx,
@@ -174,6 +216,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             depth=depth,
             anomaly_code='B1',
             track_orphans=False,
+            sci_path=sci_path,
         )
 
     def render_reserved(self, ctx: Context, depth: int = 0) -> Block:
@@ -370,7 +413,8 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         self,
         ctx: Context,
         depth: int = 0,
-        force: bool = False
+        force: bool = False,
+        sci_path: list[int] | None = None,
     ) -> tuple[Block, Block]:
         """
         Reconstruct message as .proto.
@@ -411,6 +455,9 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             ctx: Rendering context
             depth: Indentation depth
             force: Force rendering even if node is not reachable
+            sci_path: This message's own SourceCodeInfo path (spec 0141),
+                as computed by the caller; used as the prefix for nested
+                messages' own paths. None if source-info synthesis is off.
 
         Returns:
             Tuple of (output_block, inputs_block) containing rendered proto
@@ -432,7 +479,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             out.append_div_maybe(depth)
 
         # --- Message extensions -----------------------------------------------
-        extensions_block = self.render_extensions(ctx, depth+1)
+        extensions_block = self.render_extensions(ctx, depth+1, sci_path)
         if extensions_block:
             out.extend(extensions_block)
             out.append_div_maybe(depth)
@@ -496,14 +543,26 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         # Track which real oneofs we've already rendered
         is_done: list[bool] = [False] * len(self.oneof_decl)
 
-        for f in self.field:
+        # f_idx (spec 0141): raw enumerate() position over self.field. The
+        # binary side-channel's own field-reconstruction loop (below) is
+        # unconditional, so this matches the resulting msg_out.field index
+        # regardless of oneof grouping/summoned status.
+        for f_idx, f in enumerate(self.field):
             field_proto = cast(FieldDescriptorProto, f)
             fd = ReFieldDescriptorProto(ctx, field_proto, parent=self)
 
             # Non-oneof field (including synthetic-oneof members): render directly
             if (not field_proto.HasField("oneof_index")
                     or fd.oneof_index in synthetic_oneof_indices):
+                field_sci_path: list[int] | None = None
+                if ctx.out_sci is not None and sci_path is not None and fd.is_summoned:
+                    field_sci_path = sci_path + [2, f_idx]
                 field = fd.render(ctx, depth+1)
+                if field_sci_path is not None:
+                    assert ctx.out_sci is not None
+                    ctx.out_sci.pending.append(
+                        (field_sci_path, field[0], closing_line(field))
+                    )
                 if not force and not fd.is_summoned:
                     field.abandon()
                 out.extend(field)
@@ -519,12 +578,21 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             block = Block()
             is_orphan = True
 
-            for f2 in self.field:
+            for f2_idx, f2 in enumerate(self.field):
                 if (f2.HasField("oneof_index")
                     and f2.oneof_index == fd.oneof_index):
                     field_proto2 = cast(FieldDescriptorProto, f2)
                     fd2 = ReFieldDescriptorProto(ctx, field_proto2, parent=self)
+                    field2_sci_path: list[int] | None = None
+                    if (ctx.out_sci is not None and sci_path is not None
+                            and fd2.is_summoned):
+                        field2_sci_path = sci_path + [2, f2_idx]
                     field = fd2.render(ctx, depth+2, is_oneof=True)
+                    if field2_sci_path is not None:
+                        assert ctx.out_sci is not None
+                        ctx.out_sci.pending.append(
+                            (field2_sci_path, field[0], closing_line(field))
+                        )
                     if fd2.is_summoned:
                         is_orphan = False
                     else:
@@ -547,17 +615,30 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- Message nested messages ------------------------------------------
-        for n in self.nested_type:
+        # Path index (spec 0141) is the raw enumerate() position: unlike file-
+        # level messages, the binary side-channel below re-accumulates *every*
+        # self.nested_type entry unconditionally (see the nested-types loop
+        # further down), so no is_group/is_map_entry/is_summoned filtering is
+        # needed to keep indices aligned with the output nested_type list.
+        for n_idx, n in enumerate(self.nested_type):
             nested_proto = cast(DescriptorProto, n)
             nested = ReDescriptorProto(ctx, nested_proto, parent=self)
             # Skip groups (rendered inline) and map entries (rendered as map<K,V>)
             if nested.is_group or nested.is_map_entry:
                 continue
-            text, inp = nested.render(ctx, depth+1)
+            nested_sci_path: list[int] | None = None
+            if ctx.out_sci is not None and nested.is_summoned and sci_path is not None:
+                nested_sci_path = sci_path + [3, n_idx]
+            text, inp = nested.render(ctx, depth+1, sci_path=nested_sci_path)
             text.insert(0, BlockLine(f'message {nested.name} {{', depth+1))
             if text[1].text == '}':  # body is empty: collapse to one line
                 text[0].postpend('}')
                 text.pop(1)
+            if nested_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (nested_sci_path, text[0], closing_line(text))
+                )
             if not nested.is_summoned:
                 text.abandon()
             else:
@@ -566,10 +647,21 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- Message enums ----------------------------------------------------
-        for e in self.enum_type:
+        # e_idx (spec 0141): raw enumerate() position, matching the binary
+        # side-channel's own unconditional enum-reconstruction loop (below).
+        for e_idx, e in enumerate(self.enum_type):
             enum_proto = cast(EnumDescriptorProto, e)
             enum = ReEnumDescriptorProto(ctx, enum_proto, parent=self)
-            out.extend(enum.render(ctx, depth+1))
+            enum_sci_path: list[int] | None = None
+            if ctx.out_sci is not None and sci_path is not None:
+                enum_sci_path = sci_path + [4, e_idx]
+            lines = enum.render(ctx, depth+1, sci_path=enum_sci_path)
+            if enum_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (enum_sci_path, lines[0], closing_line(lines))
+                )
+            out.extend(lines)
         out.append_div_maybe(depth)
 
         # --- Message reserved (extension ranges, reserved ranges, reserved names)

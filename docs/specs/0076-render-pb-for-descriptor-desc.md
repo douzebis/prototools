@@ -71,6 +71,13 @@ the flag actually does.
   existing `render()` path instead.
 - Perfectly round-tripping source code info or comments — those are not
   meaningful in a binary descriptor.
+  [Amended by spec 0141: reproto does not have an *original* protoc-parsed
+  `SourceCodeInfo` to round-trip (input FDPs are typically already
+  stripped), so this Non-goal still holds as originally scoped. Spec 0141
+  instead *synthesizes* a new `SourceCodeInfo` describing reproto's own
+  emitted `.proto` text (line spans, not comment round-tripping), and wires
+  it through the `ClearField("source_code_info")` site below as an
+  optional, conditional step.]
 
 ---
 
@@ -292,7 +299,7 @@ deliberately excluded from binary output.
 | 6 | `service` | children (render) |
 | 7 | `extension` | children (render) |
 | 8 | `options` | copied; `features` cleared if not editions target |
-| 9 | `source_code_info` | omitted (intentional) |
+| 9 | `source_code_info` | omitted (intentional); made conditional by spec 0141 |
 | 10 | `public_dependency` | copied |
 | 11 | `weak_dependency` | copied |
 | 12 | `syntax` | set per `ctx.target_syntax` |
@@ -385,6 +392,10 @@ Each binary block uses a **copy-all-then-fix** approach:
 2. Apply semantic overrides based on `ctx.target_syntax` and the translation
    decisions already computed for the text path:
    - **`source_code_info`**: always cleared (`ClearField("source_code_info")`).
+     [Amended by spec 0141: this clear becomes conditional on the
+     `--no-source-info` flag; when source-info synthesis is enabled
+     (the default), a `SourceCodeInfo` synthesized from reproto's own
+     render pass is set instead of clearing the field.]
    - **`syntax`/`edition`**: rewritten per `ctx.target_syntax`.
    - **`options.features`**: cleared on all messages/fields/enums/etc. if
      `ctx.target_syntax != "editions"`.

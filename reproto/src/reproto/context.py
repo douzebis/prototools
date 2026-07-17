@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from .base import NodeBase
     from .feature_resolution import EditionDefaultTable
     from .re_file import ReFileDescriptorProto
+    from .text import BlockLine
 
     # Public alias: any NodeBase subclass.  Replaces the former exhaustive union
     # of Re* types; NodeBase[Any] is both honest and forward-compatible.
@@ -41,6 +42,22 @@ class DescOut:
     out is None if the node produced no binary descriptor.
     """
     out: Message | None = None
+
+
+@dataclass
+class SourceCodeInfoOut:
+    """Pending SourceCodeInfo markers synthesized during rendering (spec 0141).
+
+    Set via ctx.out_sci (internally, by ReFileDescriptorProto.render()) while
+    the first (text) rendering pass is in progress. Each entry in `pending` is
+    a (path, open_line, close_line) tuple: `path` is the SourceCodeInfo.Location
+    path for the covered node, and `open_line`/`close_line` are the actual
+    BlockLine objects bracketing its rendered text (identity-matched, not
+    positional — see source_info.resolve_source_code_info_locations()).
+    """
+    pending: list[tuple[list[int], 'BlockLine', 'BlockLine']] = field(
+        default_factory=list
+    )
 
 
 def _default_variant_root() -> Traversable:
@@ -78,6 +95,11 @@ class Options:
     quiet: bool = False
     redact_comments: bool = False
     redact_orphans: bool = False
+    # Synthesized SourceCodeInfo (spec 0141): when True (default), binary
+    # descriptor output (-b/--emit-binary, --schema-db-out) carries a
+    # SourceCodeInfo synthesized from reproto's own render pass instead of
+    # an empty one.
+    source_info: bool = True
     phase2_plugin: CodeType | None = None
     force_proto2_output: bool = False
     force_proto2_for_editions: bool = False
@@ -129,6 +151,12 @@ class Context(Options):
         # render() additionally populates out_desc.out with the binary descriptor
         # counterpart. None (the default) means text-only output.
         self.out_desc: DescOut | None = None
+
+        # Synthesized SourceCodeInfo side-channel (spec 0141). Set internally
+        # by ReFileDescriptorProto.render() at the start of its first (text)
+        # pass, and reset to None before its second (binary) pass begins.
+        # None outside of a file render() call, or when synthesis is disabled.
+        self.out_sci: SourceCodeInfoOut | None = None
 
         # FDPs collected by _phase7_output for --build-schema-db (spec 0076 §7).
         # Populated in topological order during the phase 7 render loop when

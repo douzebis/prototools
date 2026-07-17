@@ -6,9 +6,12 @@ SPDX-License-Identifier: MIT
 
 # 0112 — reproto: synthesize `SourceCodeInfo` during decompilation
 
-**Status:** draft
+**Status:** superseded by spec 0141
 **Refs:** `docs/specs/0111-protolens-v1-decode-navigate-extract.md` (Open
-Issue 5, Phase 5 — "Type definition assistance")
+Issue 5, Phase 5 — "Type definition assistance"),
+`docs/specs/0141-reproto-embed-source-code-info.md` (supersedes this spec —
+absorbs the feasibility investigation and `ctx.out_sci` design sketch below;
+this document is kept as a historical record and is no longer maintained)
 **App:** reproto
 
 ---

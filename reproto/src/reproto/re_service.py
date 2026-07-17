@@ -18,6 +18,7 @@ from .base import NodeBase
 from .context import Context, Fqdn
 from .fake_types import Ref
 from .globals import SERVICE
+from .source_info import closing_line
 from .text import Block, BlockLine
 
 
@@ -65,8 +66,23 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
             method = ReMethodDescriptorProto(ctx, method_proto, parent=self)
             self.targets.add(method)
     
-    def render(self, ctx: Context, depth: int = 0, group: bool = False) -> tuple[Block, Block]:
-        """Reconstruct service as .proto."""
+    def render(
+        self,
+        ctx: Context,
+        depth: int = 0,
+        group: bool = False,
+        sci_path: list[int] | None = None,
+    ) -> tuple[Block, Block]:
+        """Reconstruct service as .proto.
+
+        Args:
+            ctx: Rendering context.
+            depth: Indentation depth.
+            group: When True, omit the enclosing `service Name {` line.
+            sci_path: This service's own SourceCodeInfo path (spec 0141), as
+                computed by the caller; used as the prefix for its own
+                methods' paths. None if source-info synthesis is off.
+        """
         from .re_method import ReMethodDescriptorProto
 
         assert isinstance(depth, int)
@@ -97,12 +113,24 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
             out.append_div_maybe(depth)
 
         # --- Service methods --------------------------------------------------
+        # sci_idx (spec 0141) matches the binary side-channel's own
+        # is_visible() filter below, so indices align with svc_out.method.
+        sci_method_idx = 0
         for m in self.method:
             method_proto = cast(MethodDescriptorProto, m)
             method = ReMethodDescriptorProto(ctx, method_proto, parent=self)
             if not method.is_visible():
                 continue
+            method_sci_path: list[int] | None = None
+            if ctx.out_sci is not None and sci_path is not None:
+                method_sci_path = sci_path + [2, sci_method_idx]
             lines, inp = method.render(ctx, depth+1)
+            if method_sci_path is not None:
+                assert ctx.out_sci is not None
+                ctx.out_sci.pending.append(
+                    (method_sci_path, lines[0], closing_line(lines))
+                )
+            sci_method_idx += 1
             lines.append_div_maybe(depth)
             out.extend(lines)
             inputs.extend(inp)
