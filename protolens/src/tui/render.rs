@@ -318,7 +318,7 @@ impl App {
         // spot never got a real terminal cursor, making it unclear where
         // typing lands — this bar already solves that for the main pane's
         // own command/search input, so reusing it fixes both at once.
-        const RENAME_PREFIX: &str = "name: ";
+        const RENAME_PREFIX: &str = "field name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
                 let prefix = match self.command_kind {
@@ -348,7 +348,7 @@ impl App {
             self.cmd_area = Some(cmd_inner);
 
             // Spec 0127 §G1: cursor char position (including the leading
-            // "prefix"/"name: " char(s)) within `cmd_text`, `None` while
+            // "prefix"/"field name: " char(s)) within `cmd_text`, `None` while
             // just displaying a plain message (no active edit, so no
             // cursor to keep visible).
             let cursor_pos = if self.command_buffer.is_some() {
