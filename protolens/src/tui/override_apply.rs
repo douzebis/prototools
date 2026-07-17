@@ -4,6 +4,8 @@
 
 use super::*;
 
+use prost_reflect::prost_types::field_descriptor_proto::Type;
+
 impl App {
     /// Recursively collect every current descendant of `idx` (any depth),
     /// via `first_child`/`next_sibling` pointer traversal — never array
@@ -175,7 +177,7 @@ impl App {
 
         // MessageSet tier 1: the "Item" group wrapper (field 1,
         // `WT_START_GROUP`) auto-derives to the synthetic, globally
-        // shared `protolens_internal.MessageSetItem` shape (`type_id` +
+        // shared `protolens_internal.Item` shape (`type_id` +
         // `message`) — registered once per pool and reused across every
         // MessageSet occurrence in the document.
         if field_number == 1
@@ -188,9 +190,9 @@ impl App {
         }
 
         // MessageSet tier 2: "message" (field 3) of an Item already
-        // retyped (tier 1) to `MessageSetItem` — extension type resolved
-        // from the sibling `type_id` (field 2), keyed against the
-        // MessageSet container's (idx's grandparent) own extensions.
+        // retyped (tier 1) to `protolens_internal.Item` — extension type
+        // resolved from the sibling `type_id` (field 2), keyed against
+        // the MessageSet container's (idx's grandparent) own extensions.
         if field_number == 3
             && self.tree[parent].span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN)
         {
@@ -447,74 +449,147 @@ impl App {
             // spec 0119 bug this same gate was introduced to fix
             // (`natural_type` demoting an ordinary string/bytes field to
             // a raw record dump) — `is_auto_expand_candidate` is
-            // deliberately narrow, matching only these two shapes.
-            if self.tree[c].span.is_message || self.is_auto_expand_candidate(c) {
+            // deliberately narrow, matching only these two shapes. Also
+            // recurse into any child carrying its own active override
+            // entry (spec 0135 §G3 gap, found post-implementation): a
+            // primitive override on a plain scalar leaf is exactly such
+            // a node — not `is_message`, not an auto-expand candidate —
+            // and would otherwise never actually get spliced by
+            // `:type-as` (which, unlike the override pane's live
+            // preview, applies solely through this recursive walk). Also
+            // recurse into any child already carrying a `rendered_as`
+            // (spec 0135 follow-up, found post-implementation): once a
+            // plain scalar leaf has been spliced under an override at
+            // least once, it must keep being revisited on every future
+            // pass, even after that override is deactivated — otherwise
+            // `resolve_active_override_entry(c)` above goes back to
+            // `None` (deactivated) the moment the gate condition it
+            // relies on stops holding, permanently orphaning the node
+            // before `resettle_node` gets a chance to fall it back to
+            // its natural type.
+            if self.tree[c].span.is_message
+                || self.is_auto_expand_candidate(c)
+                || self.resolve_active_override_entry(c).is_some()
+                || self.tree[c].rendered_as.is_some()
+            {
                 self.render_overrides(c);
             }
             child = self.tree[c].next_sibling;
         }
     }
 
-    /// Unified splice mechanic (spec 0118 §4): regenerates the *whole*
-    /// rendering of `idx` — header, interior, and footer alike — under
-    /// `target` (`None` = revert to raw, `Some(fqdn)` = retype/promote).
-    /// No existing rendering of `idx` is ever reused verbatim: generalizes
-    /// `register_wrapper`/`wrap_blob` (spec 0114 §1.1, previously
-    /// hardcoded to field number `1` for the document root) to `idx`'s own
-    /// real field number, wrapping its payload with a real tag+length and
-    /// decoding it as if it were the sole field of a synthetic one-field
-    /// message — exactly the trick the root's own initial paint already
-    /// used, generalized to every node. This is what fixes task #34 (a
-    /// stale `#@` type annotation surviving a retype) as a byproduct, for
-    /// every node.
+    /// Unified splice mechanic (spec 0118 §4, reworked spec 0135 G1):
+    /// regenerates the *whole* rendering of `idx` — header, interior, and
+    /// footer alike — under `target` (`None` = revert to raw, `Some(fqdn)`
+    /// = retype/promote to a message FQDN, `Some(keyword)` = retype to a
+    /// wire-compatible primitive type, G3/G4). No existing rendering of
+    /// `idx` is ever reused verbatim: decodes `idx`'s own real tag+payload
+    /// bytes (`old_span.raw_range`) directly against a synthetic one-field
+    /// descriptor (`decode::register_wrapper`) whose sole field has `idx`'s
+    /// own real field number and the target's declared type — the node's
+    /// real wire framing (message/group/scalar) is reproduced by
+    /// `TextSink` for free, no header patching needed (spec 0135
+    /// Background). This is what fixes task #34 (a stale `#@` type
+    /// annotation surviving a retype) as a byproduct, for every node.
     ///
     /// `idx` keeps its own tree-array identity (so `cursor`/`folded`/
     /// back-jump state referencing it stays valid) — only its `span`
     /// (`raw_range` excepted: the underlying bytes haven't moved) and its
     /// children (old ones orphaned via `collect_descendants`, new ones
     /// appended and stitched in) are replaced.
+    ///
+    /// For a packed-repeated element (`packed_record_start.is_some()`),
+    /// `idx` is first reassigned to `siblings[0]` — the packed run's own
+    /// receiving node (spec 0135 G1's "sibling merge"): every sibling
+    /// element sharing the same packed record is collapsed into this one
+    /// node, regardless of which specific element the caller invoked the
+    /// override on.
     pub(super) fn splice_override(
         &mut self,
-        idx: usize,
+        mut idx: usize,
         target: Option<String>,
     ) -> Result<(), String> {
-        let target_desc = match &target {
-            Some(fqdn) => Some(
-                self.ctx
-                    .pool()
-                    .get_message_by_name(fqdn)
-                    .ok_or_else(|| format!("type '{fqdn}' not found in descriptor set"))?,
-            ),
-            None => None,
-        };
+        let mut old_span = self.tree[idx].span.clone();
+        let is_packed = old_span.packed_record_start.is_some();
 
-        let old_span = self.tree[idx].span.clone();
+        // Packed-record reconstruction + sibling merge (spec 0135 G1):
+        // collapse every sibling element of the same packed record into
+        // `siblings[0]` before proceeding through the ordinary path below.
+        let mut packed_next_sibling_of_run = None;
+        let mut packed_seam_after = None;
+        let mut packed_run_is_last_child = false;
+        let mut packed_orphans: Vec<usize> = Vec::new();
+        if is_packed {
+            let siblings = self.packed_record_siblings(idx);
+            let last = *siblings
+                .last()
+                .expect("packed_record_siblings always returns at least idx itself");
+            let (raw_range, text_range) = self.packed_record_extent(&siblings);
+            idx = siblings[0];
+            old_span = self.tree[idx].span.clone();
+            old_span.raw_range = raw_range;
+            old_span.text_range = text_range;
+
+            packed_next_sibling_of_run = self.tree[last].next_sibling;
+            packed_seam_after = self.tree[last].doc_next;
+            if let Some(parent) = self.tree[idx].parent {
+                packed_run_is_last_child = self.tree[parent].last_child == Some(last);
+            }
+            for &s in &siblings[1..] {
+                packed_orphans.push(s);
+                self.collect_descendants(s, &mut packed_orphans);
+            }
+        }
+
         let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
-        let payload_range = extract::message_payload_range(
-            &self.blob,
-            &old_span.raw_range,
-            old_span.packed_record_start,
-        );
-        let payload_bytes = self.blob[payload_range.clone()].to_vec();
-        let wrapped = decode::wrap_blob(field_number, &payload_bytes);
-        let wrapper_width = wrapped.len() - payload_bytes.len();
 
-        // Render-cache lookup (spec 0116 §8/0118 §5) — same
-        // `payload_range`/type key `candidate_cache` already keys
-        // previews on; a hit skips both `decode_and_render_indexed` and
-        // the colorize pass.
-        let cache_key = (payload_range.clone(), target.clone(), field_name.clone());
+        // Resolve `target` into the synthetic field's declared `Type`
+        // (spec 0135 G1's "second subtlety" + G3): a message FQDN yields
+        // `Type::Group` only when the node's real wire framing is
+        // `WT_START_GROUP`, else `Type::Message`; a primitive keyword
+        // yields the matching primitive `Type` directly; `None` (raw)
+        // yields no synthetic field at all.
+        let (target_desc, field_type) = match &target {
+            None => (None, None),
+            Some(name) => {
+                if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
+                    let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
+                        Type::Group
+                    } else {
+                        Type::Message
+                    };
+                    (Some(desc), Some(ft))
+                } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
+                    (None, Some(prim))
+                } else {
+                    return Err(format!("type '{name}' not found in descriptor set"));
+                }
+            }
+        };
+
+        // Decode `idx`'s own real tag+payload bytes directly (spec 0135
+        // G1) — no synthetic tag prepended.
+        let field_bytes = self.blob[old_span.raw_range.clone()].to_vec();
+
+        // Render-cache key: `(interior_range, target)` — no longer
+        // `field_name` (G2 makes the cached render field-name-invariant).
+        // `interior_range` is the same "interior" quantity the cache
+        // already keyed on before this spec, just computed from the
+        // resolved `raw_range`, with `packed_record_start` always `None`
+        // (the packed case has already been normalized above).
+        let interior_range = extract::message_payload_range(&self.blob, &old_span.raw_range, None);
+        let cache_key = (interior_range, target.clone());
         let (mut new_lines, new_spans, new_style_hints) = match self.render_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
-                let wrapper_desc = match &target_desc {
-                    Some(desc) => Some(
+                let wrapper_desc = match field_type {
+                    Some(ft) => Some(
                         decode::register_wrapper(
                             self.ctx.pool_mut(),
                             field_number,
-                            &field_name,
-                            desc,
+                            ft,
+                            target_desc.as_ref(),
                         )
                         .map_err(|e| e.to_string())?,
                     ),
@@ -535,7 +610,7 @@ impl App {
                     ..Default::default()
                 };
                 let (new_text, new_spans) =
-                    decode_and_render_indexed(&wrapped, wrapper_desc.as_ref(), opts);
+                    decode_and_render_indexed(&field_bytes, wrapper_desc.as_ref(), opts);
                 let new_text = String::from_utf8(new_text)
                     .map_err(|e| format!("rendered text is not valid UTF-8: {e}"))?;
                 let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
@@ -546,110 +621,29 @@ impl App {
             }
         };
 
-        // Build this node's own header line (spec 0122 §2): patch
-        // `old_span`'s own natural annotation with the freshly-resolved
-        // type-declaration token, rather than reusing the synthetic
-        // wrapper's own header line wholesale (which lost group framing
-        // on override — the original bug).
-        let brace_prefix = format!("{field_name} {{");
-        // Unconditionally computed (spec 0133: annotations are always on
-        // at the decode/splice level now) — stored below into the new
-        // self-span's own `natural_annotation` too (not just used to
-        // build `new_lines[0]`), so a *later* splice on this same node
-        // patches from the correct base text instead of the synthetic
-        // wrapper's own unpatched rendering.
-        let patched_annotation: String = {
-            // A message-kind synthetic wrapper field should always carry a
-            // natural annotation (`sink.rs`'s `begin_nested` always writes
-            // one when annotations are on) — but forcing an incompatible
-            // override target onto genuinely non-message bytes (e.g. `t`
-            // on a plain string) can defeat that assumption. Rather than
-            // panic and lose the user's cursor position/work, fall back to
-            // the same "unresolved type" placeholder `wrap_blob`'s own
-            // unknown-field cascade already uses elsewhere — the override
-            // still applies, and the mismatch surfaces as ordinary
-            // `TYPE_MISMATCH`/`INVALID_*` annotations in the interior
-            // instead (feedback, 2026-07-16).
-            let new_ann_owned = new_spans
-                .last()
-                .and_then(|s| s.natural_annotation.clone())
-                .unwrap_or_else(|| "#@ message".to_string());
-            // Step 3: under `wrap_blob`'s hardcoded `WT_LEN` framing this
-            // is always token 0 of the synthetic root's own annotation.
-            let new_token = new_ann_owned
-                .strip_prefix("#@ ")
-                .unwrap_or(&new_ann_owned)
-                .split("; ")
-                .next()
-                .unwrap_or("");
-            match &old_span.natural_annotation {
-                Some(base_ann) => {
-                    // Steps 5-6: locate the type-decl/wire-type-
-                    // placeholder token slot within the base text and
-                    // replace only it — every other token (leading
-                    // `group`, any anomaly modifier) is copied through
-                    // verbatim, unexamined.
-                    let base_content = base_ann.strip_prefix("#@ ").unwrap_or(base_ann);
-                    let mut tokens: Vec<&str> = base_content.split("; ").collect();
-                    if tokens.first() == Some(&"group") {
-                        let has_slot = tokens
-                            .get(1)
-                            .is_some_and(|t| *t == "TYPE_MISMATCH" || t.contains('='));
-                        // `"message"` is `wrap_blob`'s synthetic
-                        // Message-kind "unknown schema" placeholder — it
-                        // has no equivalent in Group-kind's own native
-                        // convention, which simply omits the decl/
-                        // mismatch slot entirely when unresolved. Treat
-                        // it as "no token" here rather than leaking it
-                        // into the group's header (spec 0122).
-                        if new_token == "message" {
-                            if has_slot {
-                                tokens.remove(1);
-                            }
-                        } else if has_slot {
-                            tokens[1] = new_token;
-                        } else {
-                            tokens.insert(1, new_token);
-                        }
-                    } else {
-                        tokens[0] = new_token;
-                    }
-                    tokens.join("; ")
-                }
-                // Step 4 fallback: `old_span` was itself a scalar-origin
-                // node (`natural_annotation` is unconditionally `None`
-                // for scalars) — no base text to patch, and none needed:
-                // by G4 a scalar's `wire_type` never becomes
-                // `WT_START_GROUP`, so no `group;` prefix is ever
-                // required here.
-                None => new_token.to_string(),
-            }
-        };
-        // The synthetic wrapper's own header line (still in `new_lines[0]`
-        // at this point) was rendered by `decode_and_render_indexed` with
-        // `initial_level: old_span.level`, so its leading whitespace is
-        // already this node's correct indentation — preserve it, since
-        // `brace_prefix` itself carries none (it's built from bare
-        // `field_name`/`"{"`, spec 0122 §2).
-        let indent_width = new_lines[0].len() - new_lines[0].trim_start().len();
-        let indent = &new_lines[0][..indent_width];
-        let patched_first_line = format!("{indent}{brace_prefix}  #@ {patched_annotation}");
-
-        // `new_style_hints`'s byte offsets are relative to the CACHED
-        // render's own (unpatched) header line, not `patched_first_line`
-        // — bucket by line using `new_lines` while it still carries that
-        // cached header, or a header-length delta would silently shift
-        // every subsequent line's colors (2026-07-15 regression: colors
-        // drifted right after the first `#@ group;` header whenever the
-        // patched header's length differed from the cached one). Only
-        // line 0's own bucket is stale afterwards, since nothing in
-        // `queries/highlights.scm` spans a rendered newline (`colorize`
-        // doc comment) — recolor it in isolation once the header is
-        // swapped in for display.
+        // G2: the only remaining header patch is a plain substring
+        // replacement of the synthetic field's placeholder name (`"_"`,
+        // `register_wrapper`'s fixed literal) with the real display name
+        // — the header line itself is otherwise already correct (spec
+        // 0135 G1). No patch is needed at all for the raw (`target:
+        // None`) case, since there is no synthetic field/placeholder
+        // there. Nor for `Type::Group`: `TextSink::begin_nested` labels a
+        // group header with the group's own message type name, never the
+        // field's declared name — standard proto2 group text-format
+        // convention — so the `"_"` placeholder is never actually
+        // present there. Any group target that needs a display name
+        // other than its own type name must instead be named that way
+        // at the source (e.g. `register_message_set_item`'s synthetic
+        // shape is itself named `Item`, matching `prototext-core`'s own
+        // native MessageSet rendering convention) rather than patched
+        // here after the fact.
         let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
-        new_lines[0] = patched_first_line;
-        new_line_styles[0] =
-            colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0])).remove(0);
+        if matches!(field_type, Some(ft) if ft != Type::Group) {
+            new_lines[0] = new_lines[0].replacen('_', &field_name, 1);
+            new_line_styles[0] =
+                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
+                    .remove(0);
+        }
 
         let delta = new_lines.len() as isize
             - (old_span.text_range.end - old_span.text_range.start) as isize;
@@ -659,9 +653,12 @@ impl App {
         // `rebuild_visible_rows` could read their now-meaningless stale
         // `text_range` and hide unrelated post-splice content. `idx`
         // itself is deliberately left in `folded` untouched (spec 0118
-        // §7 — fold state on `idx` survives its own retype).
+        // §7 — fold state on `idx` survives its own retype). For a
+        // packed sibling merge, `packed_orphans` (siblings[1..] and their
+        // own descendants) are unioned in too (spec 0135 G1).
         let mut old_descendants = Vec::new();
         self.collect_descendants(idx, &mut old_descendants);
+        old_descendants.extend(packed_orphans);
         for d in &old_descendants {
             self.folded.remove(d);
         }
@@ -669,8 +666,14 @@ impl App {
 
         // The live node immediately following the *whole* old subtree in
         // document order — the seam the new subtree must be spliced back
-        // into.
-        let mut after = self.tree[idx].doc_next;
+        // into. For a packed sibling merge this is `siblings.last()`'s
+        // own `doc_next`, not `idx`'s (spec 0135 G1) — `idx` is now
+        // `siblings[0]`, but the whole run is being replaced.
+        let mut after = if is_packed {
+            packed_seam_after
+        } else {
+            self.tree[idx].doc_next
+        };
         while let Some(a) = after {
             if old_descendants.contains(&a) {
                 after = self.tree[a].doc_next;
@@ -691,14 +694,14 @@ impl App {
             new_line_styles,
         );
 
-        // Translate the freshly built local tree (wrapped-buffer-relative
+        // Translate the freshly built local tree (raw_range-relative
         // coordinates) into this document's global coordinates and append
         // it at the array's end. `build_tree` always emits a container's
         // own span last (post-order) — the local tree's final entry is
-        // always idx's *new* self (the wrapped field, whatever shape it
+        // always idx's *new* self (the decoded field, whatever shape it
         // turned out to be); everything else is its descendants.
         let base = self.tree.len();
-        let byte_offset = payload_range.start as isize - wrapper_width as isize;
+        let byte_offset = old_span.raw_range.start as isize;
         let local_len = new_spans.len();
         let local_root_idx = local_len - 1;
         let local_tree = decode::build_tree(new_spans);
@@ -738,35 +741,30 @@ impl App {
         // pattern already used for old descendants.
         let new_self_idx = base + local_root_idx;
         let mut new_self_span = self.tree[new_self_idx].span.clone();
+        // Defensive restatement: byte-offset translation above already
+        // reproduces `old_span.raw_range` exactly, since `field_bytes` is
+        // `idx`'s complete original tag+payload span decoded as-is (spec
+        // 0135 G1) — no synthetic tag ever separates the two.
         new_self_span.raw_range = old_span.raw_range.clone();
-        // `wrap_blob` always wraps `idx`'s payload as a fresh `WT_LEN`
-        // tag (spec 0120 follow-up) regardless of `idx`'s true original
-        // wire type in the document — so the freshly-decoded wrapper
-        // span's own `wire_type` is generic wrapping metadata, not a
-        // faithful re-derivation of what's actually at `raw_range` in
-        // `self.blob`. Preserved here alongside `raw_range` (both
-        // describe the *real* underlying bytes, unaffected by how this
-        // splice chose to reinterpret them) so a later pass can still
-        // tell, e.g., that `idx` is really a `WT_START_GROUP` node even
-        // after one or more splices — `extract::message_payload_range`
-        // sidesteps this by re-parsing the tag from `blob` directly
-        // rather than trusting `span.wire_type`, but `auto_expand_type`'s
-        // structural candidacy checks read `span.wire_type` straight
-        // from the tree and would otherwise wrongly see every
-        // previously-spliced node as `WT_LEN` from its second splice
-        // onward.
-        new_self_span.wire_type = old_span.wire_type;
-        // The synthetic wrap-rendered span's own `natural_annotation`
-        // (always `Message`-kind, per `wrap_blob`'s hardcoded `WT_LEN`
-        // framing — same caveat as `wire_type` above) is not what a
-        // *later* splice on this node should patch from; the header text
-        // actually patched onto `new_lines[0]` above is (spec 0122 §2) —
-        // stored back here so it becomes `old_span.natural_annotation`
-        // next time.
-        new_self_span.natural_annotation = Some(format!("#@ {patched_annotation}"));
         self.tree[idx].span = new_self_span;
         self.tree[idx].first_child = self.tree[new_self_idx].first_child;
         self.tree[idx].last_child = self.tree[new_self_idx].last_child;
+
+        // Packed sibling-merge pointer repair (spec 0135 G1): skip
+        // `idx`'s sibling linkage past the absorbed run. `idx`'s own
+        // `prev_sibling` and the parent's `first_child` need no change —
+        // the run's leading edge is unaffected by absorbing what follows.
+        if is_packed {
+            self.tree[idx].next_sibling = packed_next_sibling_of_run;
+            if let Some(next) = packed_next_sibling_of_run {
+                self.tree[next].prev_sibling = Some(idx);
+            }
+            if packed_run_is_last_child {
+                if let Some(parent) = self.tree[idx].parent {
+                    self.tree[parent].last_child = Some(idx);
+                }
+            }
+        }
 
         if local_len > 1 {
             let first_new = self.tree[new_self_idx].doc_next;
@@ -823,6 +821,48 @@ impl App {
         self.rebuild_visible_rows();
 
         Ok(())
+    }
+
+    /// Every current sibling of `idx` that shares the same
+    /// `packed_record_start` (spec 0135 G1) — i.e. every element of the
+    /// same packed-repeated record, in document order. Always returns at
+    /// least `idx` itself, even when `idx` has no parent.
+    pub(super) fn packed_record_siblings(&self, idx: usize) -> Vec<usize> {
+        let target = self.tree[idx].span.packed_record_start;
+        let Some(parent) = self.tree[idx].parent else {
+            return vec![idx];
+        };
+        let mut out = Vec::new();
+        let mut c = self.tree[parent].first_child;
+        while let Some(ci) = c {
+            if self.tree[ci].span.packed_record_start == target {
+                out.push(ci);
+            }
+            c = self.tree[ci].next_sibling;
+        }
+        out
+    }
+
+    /// The raw-byte and text-line extent of a packed record's whole run
+    /// (spec 0135 G1), re-parsing the record's real tag+length from
+    /// `packed_record_start` (mirroring `extract::message_payload_range`'s
+    /// own packed-record handling). `siblings` must be non-empty and in
+    /// document order, as returned by `packed_record_siblings`.
+    pub(super) fn packed_record_extent(
+        &self,
+        siblings: &[usize],
+    ) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+        let start = self.tree[siblings[0]]
+            .span
+            .packed_record_start
+            .expect("packed_record_extent called with non-packed siblings");
+        let tag = prototext_core::helpers::parse_wiretag(&self.blob, start);
+        let len = prototext_core::helpers::parse_varint(&self.blob, tag.next_pos);
+        let raw_end = len.next_pos + len.varint.unwrap_or(0) as usize;
+        let last = *siblings.last().expect("siblings never empty");
+        let text_range =
+            self.tree[siblings[0]].span.text_range.start..self.tree[last].span.text_range.end;
+        (start..raw_end, text_range)
     }
 
     /// Origin for a brand-new override, targeting node `idx` — always

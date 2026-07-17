@@ -190,23 +190,34 @@ impl App {
     /// `:type-as <FQDN>`'s argument completion (spec 0114 §7) — candidates
     /// are `all_type_fqdns` (the same session-global, lexicographically-
     /// sorted list §3.2/§6 already compute and cache), reused here rather
-    /// than recomputed.
+    /// than recomputed, plus (spec 0135 §G4) the primitive type keywords
+    /// wire-compatible with the cursor node's current wire type (a packed
+    /// element's own effective wire type is always `WT_LEN`, per its
+    /// reconstructed record — spec 0135 §G1).
     pub(super) fn complete_type_as_fqdn(&mut self, cmd: &str, arg_prefix: &str) {
+        let span = &self.tree[self.cursor].span;
+        let wire_type = if span.packed_record_start.is_some() {
+            prototext_core::helpers::WT_LEN
+        } else {
+            span.wire_type
+        };
         // Collected into owned `String`s upfront (rather than borrowing
         // `self.all_type_fqdns` for `matches`'s lifetime) so the
         // subsequent `self.replace_token`/`self.completion = ...` calls
         // below aren't blocked by a live immutable borrow of `self`.
-        let matches: Vec<String> =
-            complete_prefix(arg_prefix, self.all_type_fqdns.iter().map(String::as_str))
-                .into_iter()
-                .map(String::from)
-                .collect();
+        let candidates = decode::primitive_keywords_for_wire_type(wire_type)
+            .iter()
+            .copied()
+            .chain(self.all_type_fqdns.iter().map(String::as_str));
+        let mut matches: Vec<String> = complete_prefix(arg_prefix, candidates)
+            .into_iter()
+            .map(String::from)
+            .collect();
         if matches.is_empty() {
             self.message = format!("no type matches '{arg_prefix}'");
             return;
         }
-        // `all_type_fqdns` is already sorted; `complete_prefix` preserves
-        // that order via its filter, no re-sort needed.
+        matches.sort_unstable();
         let token_start = cmd.chars().count() + 1;
         self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
@@ -377,11 +388,36 @@ impl App {
     /// runs the recursive `render_overrides` pass (§4/§6), without ever
     /// opening the override pane. Unlike the old `apply_override`-based
     /// one-shot splice, this persists the override in the collection.
+    ///
+    /// A primitive type keyword (spec 0135 §G3/§G4) is rejected upfront,
+    /// before `render_overrides` runs, when it isn't wire-compatible with
+    /// the cursor node's current wire type (a packed element's own
+    /// effective wire type is always `WT_LEN`, per its reconstructed
+    /// record — spec 0135 §G1) — mirroring today's "type not found"
+    /// failure shape, but caught early so it surfaces as a clear
+    /// message-line error rather than being masked by `run_type_as`'s
+    /// own success message. A message-FQDN target falls back to today's
+    /// (unchanged) deferred resolution inside `splice_override`.
     pub(super) fn type_as(&mut self, new_fqdn: Option<&str>) -> Result<(), String> {
         if !self.can_override(self.cursor) {
             return Err(
                 "cannot override: not a message/group or length-delimited field".to_string(),
             );
+        }
+        if let Some(name) = new_fqdn {
+            if decode::primitive_type_for_keyword(name).is_some() {
+                let span = &self.tree[self.cursor].span;
+                let wire_type = if span.packed_record_start.is_some() {
+                    prototext_core::helpers::WT_LEN
+                } else {
+                    span.wire_type
+                };
+                if !decode::primitive_keywords_for_wire_type(wire_type).contains(&name) {
+                    return Err(format!(
+                        "type '{name}' not wire-compatible with this node's wire type"
+                    ));
+                }
+            }
         }
         let origin = OverrideOrigin::Path {
             path: self.positional_path(self.cursor),

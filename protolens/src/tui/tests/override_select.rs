@@ -130,10 +130,12 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
     assert!(app.override_focus);
 }
 
-/// Spec 0114 §1: `t` on a scalar/leaf node (no `type_fqdn`) is a
-/// no-op with a status-line message, no pane opens.
+/// Spec 0135 §G3 (test plan item 12): `can_override`/`t` now accept a
+/// plain `WT_VARINT` scalar node too — a wire-compatible primitive
+/// override target (`:type-as sint32`, etc.) is available for it, so it
+/// is no longer treated as ineligible the way it was pre-0135.
 #[test]
-fn t_is_a_no_op_on_a_scalar_node() {
+fn t_opens_the_override_pane_on_a_varint_scalar_field() {
     let lines: Vec<String> = vec!["value: 1".to_string()];
     let node = TreeNode {
         span: NodeSpan {
@@ -160,9 +162,13 @@ fn t_is_a_no_op_on_a_scalar_node() {
         lines,
         tree: vec![node],
         root_type: "test.Scalar".to_string(),
-        blob: Vec::new(),
+        // Tag `0x08` = field 1 << 3 | WT_VARINT(0), value varint `0x01`
+        // — a real, `raw_range`-consistent blob, needed since spec 0132's
+        // live preview now splices this node's contents at pane-open
+        // time.
+        blob: vec![0x08, 0x01],
         wrapper_offset: 0,
-        style_hints: Vec::new(),
+        style_hints: vec![Vec::new()],
     };
     let mut app = App::new(
         decoded,
@@ -176,8 +182,8 @@ fn t_is_a_no_op_on_a_scalar_node() {
     app.term_width = 120;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
-    assert_eq!(app.override_target, None);
-    assert!(app.message.contains("not a message/group"));
+    assert_eq!(app.override_target, Some(0));
+    assert!(app.override_focus);
 }
 
 /// 2026-07-14 feedback: `t` must not refuse a plain string/bytes

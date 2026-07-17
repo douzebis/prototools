@@ -202,7 +202,7 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
          \x20 descriptor_set_sha256: \"{descriptor_set_sha256}\"\n\
          overrides:\n\
          \x20 - path: \"/1/1\"\n\
-         \x20   type: protolens_internal.MessageSetItem\n\
+         \x20   type: protolens_internal.Item\n\
          \x20   active: true\n\
          \x20   name: Item\n\
          \x20 - path: \"/1/1/2\"\n\
@@ -290,19 +290,76 @@ fn type_as_raw_command_marks_raw() {
     assert_eq!(app.tree[inner_idx].span.type_fqdn, None);
 }
 
-/// Spec 0114 §7/§5 step 1: `:type-as` on an ineligible node (neither
-/// message/group nor length-delimited scalar) is refused with the
-/// same message `t` gives.
+/// Spec 0135 §G4 (test plan item 13): `:type-as sint32` on a
+/// `WT_VARINT` node succeeds and renders a zigzag-decoded value;
+/// `:type-as float` on the same node — wire-incompatible (`WT_VARINT`
+/// vs. `float`'s `WT_I32`) — fails with a clear message-line error,
+/// rather than silently applying.
 #[test]
-fn type_as_command_rejects_non_message_node() {
+fn type_as_command_rejects_a_wire_incompatible_primitive_keyword() {
     let (mut app, _, id_idx) = type_as_fixture();
     app.cursor = id_idx;
-    app.run_command("type-as test.Inner");
+
+    app.run_command("type-as sint32");
     assert!(
-        app.message
-            .contains("cannot override: not a message/group or length-delimited field"),
+        app.message.contains("overridden as sint32"),
         "unexpected message: {}",
         app.message
+    );
+    let line = &app.lines[app.tree[id_idx].span.text_range.start];
+    assert!(
+        line.contains("sint32"),
+        "expected zigzag-decoded sint32 rendering, got: {line:?}"
+    );
+
+    app.run_command("type-as float");
+    assert!(
+        app.message.contains("not wire-compatible"),
+        "unexpected message: {}",
+        app.message
+    );
+}
+
+/// Regression test (spec 0135 follow-up, 2026-07-17): deactivating a
+/// `:type-as`-created primitive override (via the manage pane's `a`/
+/// Space key, i.e. `OverrideCollection::toggle_active`) must actually
+/// revert the field's main-pane rendering back to its natural type —
+/// not get silently stuck at the last-applied override, which is what
+/// happened when `render_overrides`'s child-recursion gate relied
+/// solely on `resolve_active_override_entry` (which goes back to
+/// `None` the instant the entry is deactivated, orphaning the plain
+/// scalar leaf before `resettle_node` could ever run on it again).
+#[test]
+fn deactivating_a_primitive_type_as_override_reverts_the_main_pane_rendering() {
+    let (mut app, _, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+
+    app.run_command("type-as sint32");
+    let line = app.lines[app.tree[id_idx].span.text_range.start].clone();
+    assert!(
+        line.contains("sint32"),
+        "expected zigzag-decoded sint32 rendering, got: {line:?}"
+    );
+
+    let id_path = app.positional_path(id_idx);
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == id_path))
+        .expect("type-as must have created an entry for the id field");
+
+    app.overrides.toggle_active(entry_idx);
+    app.render_overrides(app.first_node);
+    assert!(
+        !app.overrides.entries()[entry_idx].active,
+        "deactivating must stick across a render pass"
+    );
+    let line = &app.lines[app.tree[id_idx].span.text_range.start];
+    assert!(
+        !line.contains("sint32"),
+        "expected the field to revert to its natural (int32) \
+         rendering once the override is deactivated, got: {line:?}"
     );
 }
 

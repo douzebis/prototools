@@ -24,6 +24,7 @@ use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
     score_all, ScoringOpts,
 };
+use sha2::{Digest, Sha256};
 
 use crate::colorize::{self, SyntaxRole};
 
@@ -345,56 +346,75 @@ pub struct Decoded {
     pub style_hints: Vec<Vec<(std::ops::Range<usize>, SyntaxRole)>>,
 }
 
+/// Deterministic short name for a synthetic one-field wrapper descriptor
+/// (spec 0135 §G2): `protolens_internal.x<32 lowercase hex chars>`, the
+/// hex being the first 16 bytes (128 bits) of `SHA-256(format!(
+/// "{field_number}:{type_str}:{type_name}"))`. `type_str` is `field_type.
+/// as_str_name()` (prost's canonical accessor, e.g. `"TYPE_MESSAGE"`) —
+/// deliberately not `{:?}` Debug formatting. Leading `x` (not `_`):
+/// the `.proto` identifier grammar requires the first character to be a
+/// letter. Generic over any `Type`/`type_name` pair — including
+/// `Type::Enum`, though this spec never constructs that case (Non-goals).
+fn synthetic_wrapper_name(field_number: u64, field_type: Type, type_name: &str) -> String {
+    let key = format!("{field_number}:{}:{type_name}", field_type.as_str_name());
+    let digest = Sha256::digest(key.as_bytes());
+    let mut hex = String::with_capacity(32);
+    for byte in &digest[..16] {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    format!("protolens_internal.x{hex}")
+}
+
 /// Build (or reuse, if already registered) a synthetic one-field message
-/// descriptor `protolens_internal.Wrapper_<field_number>_<sanitized
-/// target_fqdn>` whose sole field `field_number` is message-typed,
-/// referencing `target_desc` — the virtual encompassing protobuf of spec
-/// 0114 §1.1, generalized (spec 0118 §4) to an arbitrary field number so
-/// `splice_override` can wrap any node's own field, not just the document
-/// root (always field `1`). Named per-`(field_number, target_fqdn)` so
-/// that registering wrappers for different targets on the same pool (as
-/// happens across repeated `decode()`/`splice_override` calls) never
-/// collides. `pub(crate)`: also called from `tui.rs`'s `splice_override`.
+/// descriptor whose sole field `field_number` has type `field_type`
+/// (message/group/primitive, spec 0135 §G3) and, for a message/group
+/// target, references `target_desc` — the virtual encompassing protobuf
+/// of spec 0114 §1.1, generalized (spec 0118 §4) to an arbitrary field
+/// number so `splice_override` can wrap any node's own field, not just
+/// the document root (always field `1`), and (spec 0135 §G3) to primitive
+/// wire types, not just message/group. The field's own name is always
+/// the fixed placeholder `"_"` (spec 0135 §G2) — the real display name
+/// is patched in as a post-render substring replacement, so it's no
+/// longer part of the descriptor's identity. `target_desc` is `None` for
+/// a primitive target; `Some` for a message/group target, supplying both
+/// `type_name` (`.{fqdn}`) and the `dependency` file entry.
+/// `pub(crate)`: also called from `tui.rs`'s `splice_override`.
 pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
     field_number: u64,
-    field_name: &str,
-    target_desc: &MessageDescriptor,
+    field_type: Type,
+    target_desc: Option<&MessageDescriptor>,
 ) -> Result<MessageDescriptor, DecodeError> {
-    let target_fqdn = target_desc.full_name();
-    // `field_name` is part of the cache/registration key, not just
-    // `field_number`+`target_fqdn` (spec 0119 §G2): two nodes can share
-    // the same field number and override target while having different
-    // real field names (e.g. field 1 named differently in two distinct
-    // parent messages) — without this, the second registration would
-    // silently reuse the first one's field name via `get_message_by_name`
-    // returning the cached descriptor unchanged.
-    let suffix = format!(
-        "{field_number}_{field_name}_{}",
-        target_fqdn.replace('.', "_")
-    );
-    let full_name = format!("protolens_internal.Wrapper_{suffix}");
+    let type_name = target_desc.map(|d| format!(".{}", d.full_name()));
+    let full_name =
+        synthetic_wrapper_name(field_number, field_type, type_name.as_deref().unwrap_or(""));
     if let Some(existing) = pool.get_message_by_name(&full_name) {
         return Ok(existing);
     }
+    let short_name = full_name
+        .strip_prefix("protolens_internal.")
+        .expect("synthetic_wrapper_name always returns a protolens_internal.-prefixed name");
 
     let field = FieldDescriptorProto {
-        name: Some(field_name.to_string()),
+        name: Some("_".to_string()),
         number: Some(field_number as i32),
         label: Some(Label::Optional as i32),
-        r#type: Some(Type::Message as i32),
-        type_name: Some(format!(".{target_fqdn}")),
+        r#type: Some(field_type as i32),
+        type_name,
         ..Default::default()
     };
     let message = DescriptorProto {
-        name: Some(format!("Wrapper_{suffix}")),
+        name: Some(short_name.to_string()),
         field: vec![field],
         ..Default::default()
     };
+    let dependency = target_desc
+        .map(|d| vec![d.parent_file().name().to_string()])
+        .unwrap_or_default();
     let file = FileDescriptorProto {
-        name: Some(format!("protolens_internal/wrapper_{suffix}.proto")),
+        name: Some(format!("protolens_internal/{short_name}.proto")),
         package: Some("protolens_internal".to_string()),
-        dependency: vec![target_desc.parent_file().name().to_string()],
+        dependency,
         syntax: Some("proto2".to_string()),
         message_type: vec![message],
         ..Default::default()
@@ -405,17 +425,74 @@ pub(crate) fn register_wrapper(
         .ok_or_else(|| DecodeError::Schema("wrapper descriptor registered but not found".into()))
 }
 
+/// Resolve a `:type-as` primitive type keyword (spec 0135 §G3/§G4) to its
+/// `Type`. Covers exactly the fifteen keywords listed in G4 — `string`/
+/// `bytes` included, even though they share `WT_LEN` framing with
+/// `message`/`group` targets (which are resolved separately, via FQDN
+/// lookup, not through this function). Returns `None` for anything else
+/// (including message FQDNs and unrecognized text), so callers can fall
+/// through to their own FQDN lookup.
+pub(crate) fn primitive_type_for_keyword(keyword: &str) -> Option<Type> {
+    Some(match keyword {
+        "int32" => Type::Int32,
+        "sint32" => Type::Sint32,
+        "uint32" => Type::Uint32,
+        "int64" => Type::Int64,
+        "sint64" => Type::Sint64,
+        "uint64" => Type::Uint64,
+        "fixed32" => Type::Fixed32,
+        "sfixed32" => Type::Sfixed32,
+        "float" => Type::Float,
+        "fixed64" => Type::Fixed64,
+        "sfixed64" => Type::Sfixed64,
+        "double" => Type::Double,
+        "bool" => Type::Bool,
+        "string" => Type::String,
+        "bytes" => Type::Bytes,
+        _ => return None,
+    })
+}
+
+/// Every primitive keyword (spec 0135 §G3/§G4) wire-compatible with
+/// `wire_type` — the reverse direction of `primitive_type_for_keyword`,
+/// used for `:type-as` wire-compatibility rejection and tab-completion.
+/// `WT_START_GROUP` yields no primitives at all (Background): group
+/// framing can never be validly reinterpreted as a primitive scalar, only
+/// as a message/group FQDN target (resolved separately). `enum` is
+/// deliberately absent from the `WT_VARINT` list — recorded in G3's
+/// compatibility rule for a future spec, but this spec wires up no enum
+/// target path anywhere (Non-goals).
+pub(crate) fn primitive_keywords_for_wire_type(wire_type: u32) -> &'static [&'static str] {
+    use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_START_GROUP, WT_VARINT};
+    match wire_type {
+        WT_VARINT => &[
+            "int32", "int64", "uint32", "uint64", "sint32", "sint64", "bool",
+        ],
+        WT_I32 => &["fixed32", "sfixed32", "float"],
+        WT_I64 => &["fixed64", "sfixed64", "double"],
+        WT_LEN => &["string", "bytes"],
+        WT_START_GROUP => &[],
+        _ => &[],
+    }
+}
+
 /// FQDN of the synthetic, globally-shared "Item" shape used to represent
 /// a MessageSet group entry generically — `type_id` (field 2) and
 /// `message` (field 3, raw bytes) — before the specific extension type
-/// is known (spec 0120 §G2 tier 1).  Registered once per pool
+/// is known (spec 0120 §G2 tier 1). Registered once per pool
 /// (`register_message_set_item`), reused by every MessageSet occurrence
 /// in the document: the shape is always identical, independent of any
-/// particular extendee.
-pub(crate) const MESSAGE_SET_ITEM_FQDN: &str = "protolens_internal.MessageSetItem";
+/// particular extendee. Named `Item` (not, say, `MessageSetItem`) so
+/// that its short name — `TextSink::begin_nested`'s group-header label
+/// (spec 0135 G1: always the group's message type name, never the
+/// field's own name) — already reads `Item {`, matching
+/// `prototext-core`'s own native MessageSet rendering convention
+/// (`message_set_field.rs`'s hardcoded `"Item"` virtual-node label) with
+/// no post-render header patch needed (spec 0135, 2026-07-17 review).
+pub(crate) const MESSAGE_SET_ITEM_FQDN: &str = "protolens_internal.Item";
 
 /// Build (or reuse, if already registered) the synthetic
-/// `protolens_internal.MessageSetItem` descriptor: `type_id: int32 = 2`,
+/// `protolens_internal.Item` descriptor: `type_id: int32 = 2`,
 /// `message: bytes = 3` — the generic tier-1 shape for a MessageSet
 /// group entry (spec 0120 §G2). Unlike `register_wrapper`, this has no
 /// per-target parameters: the shape never varies, so it's registered
@@ -442,7 +519,7 @@ pub(crate) fn register_message_set_item(
         ..Default::default()
     };
     let message = DescriptorProto {
-        name: Some("MessageSetItem".to_string()),
+        name: Some("Item".to_string()),
         field: vec![type_id_field, message_field],
         ..Default::default()
     };
@@ -484,7 +561,12 @@ pub fn decode(
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
             desc.full_name().to_string(),
-            Some(register_wrapper(&mut ctx.pool, 1, "1", desc)?),
+            Some(register_wrapper(
+                &mut ctx.pool,
+                1,
+                Type::Message,
+                Some(desc),
+            )?),
         ),
         None => ("<raw / no type>".to_string(), None),
     };
@@ -514,8 +596,18 @@ pub fn decode(
 
     let text = String::from_utf8(text)
         .map_err(|e| DecodeError::Schema(format!("rendered text is not valid UTF-8: {e}")))?;
-    let lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut style_hints = colorize::hints_by_line(&lines, &colorize::colorize(&text));
+    // Spec 0135 §G2: `register_wrapper`'s sole field is always named the
+    // fixed placeholder `"_"` — patch in the real display name (the root
+    // is always field `1` of the virtual encompassing message, wrapped
+    // via `wrap_blob(1, ..)` above, and has no schema field name of its
+    // own to show instead).
+    if wrapper_desc.is_some() {
+        lines[0] = lines[0].replacen('_', "1", 1);
+        style_hints[0] =
+            colorize::hints_by_line(&lines[..1], &colorize::colorize(&lines[0])).remove(0);
+    }
     let tree = build_tree(spans);
 
     Ok(Decoded {

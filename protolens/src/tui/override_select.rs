@@ -9,18 +9,27 @@ impl App {
     /// `type-as-raw`): a message/group node already (`NodeSpan::
     /// is_message`, spec 0114 §1.2 — *not* `type_fqdn.is_some()`, which is
     /// ambiguous between a scalar and a schema-unresolved message/group),
-    /// or a plain scalar carrying a length-delimited payload (`wire_type
-    /// == WT_LEN` — string, bytes, or an unresolved LEN-wire field) that
-    /// *could* be reinterpreted as an embedded message. Any/MessageSet
+    /// or any scalar with a decodable tag — `wire_type` one of `WT_LEN`
+    /// (string, bytes, or an unresolved LEN-wire field, reinterpretable
+    /// as an embedded message), `WT_VARINT`, `WT_I32`, `WT_I64` (spec
+    /// 0135 §G3: primitive-type overrides, no longer categorically
+    /// excluded). For a packed-repeated element (`packed_record_start.
+    /// is_some()`), eligibility is evaluated against the whole record's
+    /// own reconstructed wire type, always `WT_LEN` (spec 0135 §G1) — not
+    /// the individual element's own `wire_type`. Any/MessageSet
     /// auto-expansion (spec 0120) already reinterprets exactly this kind
     /// of scalar unconditionally; a manual override that turns out to
-    /// target genuinely non-message bytes simply fails to parse and
+    /// target genuinely incompatible bytes simply fails to parse and
     /// `splice_override` reports it — the user is trusted to judge
     /// whether the result is meaningful (2026-07-14 feedback: `t` used
     /// to unconditionally refuse every string/bytes field).
     pub(super) fn can_override(&self, idx: usize) -> bool {
+        use prototext_core::helpers::{WT_I32, WT_I64, WT_LEN, WT_VARINT};
         let span = &self.tree[idx].span;
-        span.is_message || span.wire_type == prototext_core::helpers::WT_LEN
+        if span.packed_record_start.is_some() {
+            return true;
+        }
+        span.is_message || matches!(span.wire_type, WT_LEN | WT_VARINT | WT_I32 | WT_I64)
     }
 
     /// `t`: toggle the override pane for the node under the cursor (spec
