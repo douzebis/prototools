@@ -11,7 +11,7 @@ This document describes non-obvious design choices and tricky implementation det
 ## Table of Contents
 
 1. [Element Ordering in Message Descriptors](#element-ordering-in-message-descriptors)
-2. [Proto3/Editions → Proto2 Decompilation](#proto3editions--proto2-decompilation)
+2. [Proto3/Editions → Proto2 Decompilation](#proto3-editions-proto2-decompilation)
 
 ---
 
