@@ -450,6 +450,25 @@ impl OverrideCollection {
         }
     }
 
+    /// Unconditionally activates the entry at `idx` — unlike
+    /// `toggle_active`, never flips it off — deactivating every other
+    /// entry sharing its origin (same per-origin invariant). The manage
+    /// pane's Shift-Up/Shift-Down (interactive feedback, 2026-07-17):
+    /// moving the highlight and selecting the destination in one
+    /// gesture.
+    pub fn set_active(&mut self, idx: usize) {
+        let Some(entry) = self.entries.get(idx) else {
+            return;
+        };
+        let origin = entry.origin.clone();
+        for e in self.entries.iter_mut() {
+            if e.origin == origin {
+                e.active = false;
+            }
+        }
+        self.entries[idx].active = true;
+    }
+
     /// Removes the entry at `idx` (spec 0117 §3's `Delete`/`Backspace`).
     pub fn remove(&mut self, idx: usize) {
         if idx < self.entries.len() {
@@ -493,21 +512,25 @@ impl OverrideCollection {
             .unwrap_or_else(|| self.entries.len() - 1)
     }
 
-    /// Duplicates the entry at `idx` (spec 0124 G3's `d` key): pushes a
+    /// Duplicates the entry at `idx` (manage pane's `D` key): pushes a
     /// raw clone with `active` forced to `false` — bypassing
     /// `activate_impl`'s `(origin, type)` look-up, which would otherwise
     /// just reactivate the existing entry instead of adding a new one —
-    /// while keeping `auto`/`name`/`r#type` as-is. Returns the new
-    /// entry's post-`sort()` index: `sort()` (via `Vec::sort_by`) is
-    /// stable and `active`/`name`/`auto` aren't part of the sort key, so
-    /// the pushed clone — originally last in the vec — is guaranteed to
-    /// land as the *last* entry among those sharing its `origin`/`type`
-    /// after sorting.
+    /// while keeping `name`/`r#type` as-is. `auto` is forced to `false`
+    /// (feedback, 2026-07-17): a duplicate is always a deliberate manual
+    /// entry, whatever the original's own auto/manual status — same
+    /// rule `activate`/`rotate_origin` already apply to explicit user
+    /// actions. Returns the new entry's post-`sort()` index: `sort()`
+    /// (via `Vec::sort_by`) is stable and `active`/`name`/`auto` aren't
+    /// part of the sort key, so the pushed clone — originally last in
+    /// the vec — is guaranteed to land as the *last* entry among those
+    /// sharing its `origin`/`type` after sorting.
     pub fn duplicate(&mut self, idx: usize) -> usize {
         let mut clone = self.entries[idx].clone();
         let origin = clone.origin.clone();
         let r#type = clone.r#type.clone();
         clone.active = false;
+        clone.auto = false;
         self.entries.push(clone);
         self.sort();
         self.entries

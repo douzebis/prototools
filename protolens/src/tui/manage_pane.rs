@@ -224,6 +224,35 @@ impl App {
             KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') | KeyCode::Enter => {
                 self.close_manage_pane()
             }
+            // Interactive feedback, 2026-07-17: Shift-Up/Shift-Down move
+            // the highlight like Up/Down, but also activate the
+            // destination entry — deactivating any other entry sharing
+            // its origin, per the usual per-origin invariant
+            // (`OverrideCollection::set_active`) — a combined "move and
+            // select" gesture. Unlike Shift-Space, terminals report
+            // Shift-arrow reliably via the modifier bit even without the
+            // Kitty keyboard protocol, so no `KITTY_KEYBOARD_ENHANCED`
+            // gate is needed here. Must precede the plain `Down`/`Up`
+            // arms below, since an unguarded arm there would otherwise
+            // shadow it.
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_manage_highlight(1);
+                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
+                    if !entry.active {
+                        self.overrides.set_active(self.manage_highlight);
+                        self.render_overrides(self.first_node);
+                    }
+                }
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_manage_highlight(-1);
+                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
+                    if !entry.active {
+                        self.overrides.set_active(self.manage_highlight);
+                        self.render_overrides(self.first_node);
+                    }
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
             KeyCode::PageDown => {
@@ -439,8 +468,10 @@ impl App {
                 }
             }
             // Spec 0124 G3: duplicate the highlighted entry as a new,
-            // always-inactive copy.
-            KeyCode::Char('d') => {
+            // always-inactive copy. Bound to `D` (interactive feedback,
+            // 2026-07-17) — `d` now deletes, matching most other
+            // list-oriented tools' convention.
+            KeyCode::Char('D') => {
                 if !self.overrides.entries().is_empty() {
                     self.manage_highlight = self.overrides.duplicate(self.manage_highlight);
                     self.manage_pending_kind = None;
@@ -450,7 +481,10 @@ impl App {
             // Spec 0125 §G2: an in-scope `auto` entry is deactivated
             // instead of removed — deleting it would just make
             // `render_overrides`'s next pass re-seed an identical entry.
-            KeyCode::Delete | KeyCode::Backspace => {
+            // `d` (interactive feedback, 2026-07-17) is an alias for
+            // Delete/Backspace, swapped with the former `d`-as-duplicate
+            // (now `D`).
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                 if let Some(entry) = self.overrides.entries().get(self.manage_highlight).cloned() {
                     if entry.auto && self.auto_entry_in_scope(&entry) {
                         if entry.active {

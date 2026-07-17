@@ -390,7 +390,7 @@ impl App {
                 None => String::new(),
             };
             format!(
-                "L{}/{}  {}  bytes[{}..{})  {}",
+                "L{}/{}  {}  range[{}..{})  {}",
                 node.text_range.start + 1,
                 self.lines.len(),
                 path,

@@ -488,10 +488,12 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
     assert!(highlighted.active, "rotated entry must stay active");
 }
 
-/// Spec 0124 G3: `d` duplicates the highlighted entry as a new,
+/// Spec 0124 G3: `D` duplicates the highlighted entry as a new,
 /// always-inactive copy; the original and the copy coexist.
+/// (Interactive feedback, 2026-07-17: swapped from `d`, which now
+/// deletes — see `manage_pane_d_deletes_highlighted_entry`.)
 #[test]
-fn manage_pane_d_duplicates_highlighted_entry_as_inactive() {
+fn manage_pane_shift_d_duplicates_highlighted_entry_as_inactive() {
     let (mut app, items) = repeated_scalar_fixture();
     app.manage_focus = true;
     app.manage_open = true;
@@ -504,7 +506,7 @@ fn manage_pane_d_duplicates_highlighted_entry_as_inactive() {
     app.manage_highlight = orig_idx;
 
     let before_len = app.overrides.entries().len();
-    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
     assert_eq!(app.overrides.entries().len(), before_len + 1);
     let new_idx = app.manage_highlight;
     assert!(!app.overrides.entries()[new_idx].active, "copy is inactive");
@@ -521,6 +523,124 @@ fn manage_pane_d_duplicates_highlighted_entry_as_inactive() {
         .count();
     assert_eq!(active_count, 1, "still at most one active entry per origin");
     assert!(app.overrides.entries()[new_idx].active);
+}
+
+/// Feedback, 2026-07-17: `D` on an `auto` entry produces a manual
+/// (`auto == false`) copy — a duplicate is always a deliberate
+/// manual entry, regardless of the original's auto/manual status.
+#[test]
+fn manage_pane_shift_d_duplicate_of_auto_entry_is_manual() {
+    let mut app = message_set_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    let item_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+        .expect("Item group must be spliced to the synthetic MessageSetItem type");
+    let item_path = app.positional_path(item_idx);
+    let item_entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+        .expect("tier-1 entry must exist");
+    assert!(app.overrides.entries()[item_entry_idx].auto);
+    app.manage_highlight = item_entry_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+    let new_idx = app.manage_highlight;
+    assert_ne!(new_idx, item_entry_idx);
+    assert!(
+        !app.overrides.entries()[new_idx].auto,
+        "duplicate of an auto entry must itself be manual"
+    );
+    assert!(
+        app.overrides.entries()[item_entry_idx].auto,
+        "original untouched"
+    );
+}
+
+/// Interactive feedback, 2026-07-17: `d` now removes the highlighted
+/// entry (swapped with `D`, see above) — same behavior as
+/// `Delete`/`Backspace`, including the spec-0125 §G2 in-scope-`auto`
+/// special case.
+#[test]
+fn manage_pane_d_deletes_highlighted_entry() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: app.positional_path(items[0]),
+        },
+        None,
+    );
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+
+    let before_len = app.overrides.entries().len();
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_eq!(app.overrides.entries().len(), before_len - 1);
+}
+
+/// Interactive feedback, 2026-07-17: Shift-Down moves the highlight
+/// like `Down`/`j`, and also activates the destination entry —
+/// deactivating any other entry sharing its origin.
+#[test]
+fn manage_pane_shift_down_moves_and_activates_destination() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    // Two distinct, inactive manual entries sharing no origin, so
+    // activating one has no side effect on the other.
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: app.positional_path(items[0]),
+        },
+        None,
+    );
+    app.overrides
+        .toggle_active(app.overrides.entries().len() - 1);
+    let first_idx = app.overrides.entries().len() - 1;
+    app.overrides.activate(
+        OverrideOrigin::Path {
+            path: app.positional_path(items[1]),
+        },
+        None,
+    );
+    let second_idx = app.overrides.entries().len() - 1;
+    app.overrides.toggle_active(second_idx);
+    assert!(!app.overrides.entries()[first_idx].active);
+    assert!(!app.overrides.entries()[second_idx].active);
+
+    let rows = app.manage_display_rows();
+    let row_of = |idx: usize| {
+        rows.iter()
+            .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
+            .expect("row must exist")
+    };
+    let first_row = row_of(first_idx);
+    let second_row = row_of(second_idx);
+    assert!(second_row > first_row, "fixture ordering assumption");
+    app.manage_highlight = first_idx;
+
+    for _ in first_row..second_row {
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    }
+
+    assert_eq!(app.manage_highlight, second_idx);
+    assert!(
+        app.overrides.entries()[second_idx].active,
+        "Shift-Down must activate the destination entry"
+    );
+    assert!(
+        !app.overrides.entries()[first_idx].active,
+        "Shift-Down must not activate any entry other than the destination"
+    );
 }
 
 /// `Enter` in the management pane closes it (returning focus to the
