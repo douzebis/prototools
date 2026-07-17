@@ -372,6 +372,40 @@ fn override_search_forward_backward_and_repeat_with_n() {
     assert!(app.message.contains("not found"));
 }
 
+/// Spec 0132 §G2, extended (2026-07-17 feedback): a search-jump
+/// (`/`/`?`/`n`/`p`) live-previews the reached candidate in the main
+/// pane, same as arrow-key movement — not just silently moving the
+/// highlight. Exercised indirectly: the fake candidate FQDNs used here
+/// don't resolve against an empty descriptor context, so a preview
+/// attempt surfaces as a "cannot preview override" message; before this
+/// fix, a search-jump left the message untouched.
+#[test]
+fn override_search_jump_previews_the_reached_candidate() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    app.override_candidates = vec![
+        ("pkg.Alpha".to_string(), None),
+        ("pkg.Beta".to_string(), None),
+    ];
+    app.override_highlight = 0;
+    app.message.clear();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "beta".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
+    assert!(
+        app.message.contains("cannot preview override"),
+        "search-jump must preview the reached candidate: {}",
+        app.message
+    );
+}
+
 /// `p` repeats the last search in the opposite direction (vim's `N`
 /// counterpart to `n`).
 #[test]

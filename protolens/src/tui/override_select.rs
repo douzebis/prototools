@@ -308,7 +308,14 @@ impl App {
                 .to_lowercase()
                 .contains(&needle)
         }) {
-            Some(i) => self.override_highlight = i,
+            Some(i) => {
+                self.override_highlight = i;
+                // Spec 0132 §G2: live-preview the newly-highlighted
+                // candidate, same as arrow-key movement (2026-07-17
+                // feedback: search-jump landed silently, without a
+                // main-pane preview).
+                self.preview_override_highlight();
+            }
             None => self.message = format!("pattern not found: {pattern}"),
         }
     }
