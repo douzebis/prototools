@@ -48,7 +48,87 @@ fn manage_pane_left_right_circulate_affected_fields() {
     assert_eq!(app.cursor, before, "zero matches must be a no-op");
 }
 
-/// Spec 0134 G2: a single derivable candidate is used even when the
+///// Item 10 (2026-07-17 feedback): clicking an entry that is already
+/// the manage-pane's own highlighted entry (i.e. the "current"
+/// override) — anywhere outside the radio marker column, which keeps
+/// its own toggle-active click behavior — does the same as pressing
+/// `Right`: circulate the main-pane cursor to the next node the
+/// entry's origin matches.
+#[test]
+fn clicking_the_current_override_advances_to_the_next_impacted_node() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.side_area = Rect::new(0, 0, 40, 20);
+    app.manage_list_height = 10;
+    app.manage_scroll = 0;
+    app.manage_pan_offset = 0;
+
+    let origin = OverrideOrigin::PathField {
+        path: "/".to_string(),
+        field: 1,
+    };
+    app.overrides.activate(origin, None);
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+    app.cursor = items[0];
+
+    let row = app
+        .manage_display_rows()
+        .iter()
+        .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
+        .expect("entry must have a display row") as u16;
+
+    // Column 10 is well clear of `MANAGE_MARKER_COL` (2).
+    app.handle_manage_click(10, row, false);
+    assert_eq!(
+        app.manage_highlight, idx,
+        "click must not disturb the highlight"
+    );
+    assert_eq!(app.cursor, items[1]);
+
+    app.handle_manage_click(10, row, false);
+    assert_eq!(app.cursor, items[2]);
+    app.handle_manage_click(10, row, false);
+    assert_eq!(app.cursor, items[0], "must wrap around, same as Right");
+}
+
+/// A click on an entry that is *not* already highlighted only moves
+/// the highlight (existing behavior) — it must not also advance the
+/// main-pane cursor, since the entry just became current rather than
+/// having been clicked while already current.
+#[test]
+fn clicking_a_different_override_only_moves_the_highlight() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.side_area = Rect::new(0, 0, 40, 20);
+    app.manage_list_height = 10;
+    app.manage_scroll = 0;
+    app.manage_pan_offset = 0;
+
+    let origin = OverrideOrigin::PathField {
+        path: "/".to_string(),
+        field: 1,
+    };
+    app.overrides.activate(origin, None);
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = 0;
+    assert_ne!(app.manage_highlight, idx);
+    app.cursor = items[0];
+
+    let row = app
+        .manage_display_rows()
+        .iter()
+        .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
+        .expect("entry must have a display row") as u16;
+
+    app.handle_manage_click(10, row, false);
+    assert_eq!(app.manage_highlight, idx);
+    assert_eq!(app.cursor, items[0], "cursor must not move on first click");
+}
+
+// Spec 0134 G2: a single derivable candidate is used even when the
 /// main-pane cursor isn't on the node that produced it — rotating
 /// onto a colliding origin deactivates the other entry (existing
 /// `activate`-style invariant, reused unchanged).

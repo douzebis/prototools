@@ -312,24 +312,8 @@ impl App {
             // without touching focus. No-op on zero matches; if the
             // cursor isn't currently one of the matches, jumps to the
             // first (Right) or last (Left) match.
-            KeyCode::Left | KeyCode::Right => {
-                if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
-                    let origin = entry.origin.clone();
-                    let affected = self.manage_affected_nodes(&origin);
-                    if !affected.is_empty() {
-                        let next = match affected.iter().position(|&i| i == self.cursor) {
-                            Some(pos) if key.code == KeyCode::Right => {
-                                affected[(pos + 1) % affected.len()]
-                            }
-                            Some(pos) => affected[(pos + affected.len() - 1) % affected.len()],
-                            None if key.code == KeyCode::Right => affected[0],
-                            None => affected[affected.len() - 1],
-                        };
-                        self.record_jump(self.cursor);
-                        self.set_cursor(next);
-                    }
-                }
-            }
+            KeyCode::Left => self.manage_circulate_cursor(false),
+            KeyCode::Right => self.manage_circulate_cursor(true),
             // In-pane search (spec 0117 §3, spec-0133-adjacent rework):
             // reuses the shared bottom command/message bar as the search
             // prompt, mirroring the override pane's own `/`/`?`
@@ -596,6 +580,27 @@ impl App {
         }
     }
 
+    /// Spec 0124 G1's `Left`/`Right` logic, factored out so the
+    /// management pane's own click handler (item 10, 2026-07-17
+    /// feedback) can trigger the same "next/previous impacted node"
+    /// jump that the arrow keys already do.
+    pub(super) fn manage_circulate_cursor(&mut self, forward: bool) {
+        if let Some(entry) = self.overrides.entries().get(self.manage_highlight) {
+            let origin = entry.origin.clone();
+            let affected = self.manage_affected_nodes(&origin);
+            if !affected.is_empty() {
+                let next = match affected.iter().position(|&i| i == self.cursor) {
+                    Some(pos) if forward => affected[(pos + 1) % affected.len()],
+                    Some(pos) => affected[(pos + affected.len() - 1) % affected.len()],
+                    None if forward => affected[0],
+                    None => affected[affected.len() - 1],
+                };
+                self.record_jump(self.cursor);
+                self.set_cursor(next);
+            }
+        }
+    }
+
     pub(super) fn handle_manage_click(&mut self, col: u16, row: u16, shift: bool) {
         let area = self.side_area;
         if !Self::rect_contains(area, col, row) {
@@ -608,6 +613,7 @@ impl App {
         let absolute_row = self.manage_scroll + rel_row;
         let rows = self.manage_display_rows();
         if let Some(&ManageRow::Entry(idx)) = rows.get(absolute_row) {
+            let was_current = idx == self.manage_highlight;
             self.manage_highlight = idx;
             self.manage_pending_kind = None;
             // Content-space column the click landed on, undoing the
@@ -645,6 +651,14 @@ impl App {
                     self.overrides.toggle_active(idx);
                 }
                 self.render_overrides(self.first_node);
+            } else if was_current {
+                // Item 10 (2026-07-17 feedback): clicking the entry that
+                // was already highlighted (anywhere outside the marker
+                // column, which keeps its own toggle-active behavior
+                // above) does the same as pressing `Right` — jump the
+                // main-pane cursor to the next node this override
+                // impacts.
+                self.manage_circulate_cursor(true);
             }
         }
     }
