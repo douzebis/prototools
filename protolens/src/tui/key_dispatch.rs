@@ -11,6 +11,18 @@ impl App {
         match key.code {
             KeyCode::Tab => self.override_focus = false,
             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('q') => self.close_override(),
+            // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
+            // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
+            // and the mouse's Shift-wheel/native horizontal-scroll pan
+            // over this pane (`handle_mouse`) — same `pan_by_step`
+            // helper, unclamped on the right like every other side-pane
+            // pan.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                pan_by_step(&mut self.override_pan_offset, true)
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                pan_by_step(&mut self.override_pan_offset, false)
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
             KeyCode::PageDown => {

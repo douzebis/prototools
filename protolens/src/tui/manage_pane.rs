@@ -316,6 +316,19 @@ impl App {
                 self.manage_highlight = self.overrides.entries().len().saturating_sub(1);
                 self.manage_pending_kind = None;
             }
+            // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
+            // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
+            // and the mouse's Shift-wheel/native horizontal-scroll pan
+            // over this pane (`handle_mouse`) — same `pan_by_step`
+            // helper, unclamped on the right like every other side-pane
+            // pan. Must precede the plain `Left`/`Right` arms below,
+            // since an unguarded arm there would otherwise shadow it.
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                pan_by_step(&mut self.manage_pan_offset, true)
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                pan_by_step(&mut self.manage_pan_offset, false)
+            }
             // Spec 0124 G1: circulate the main-pane cursor among the
             // fields the highlighted entry's origin currently matches,
             // without touching focus. No-op on zero matches; if the

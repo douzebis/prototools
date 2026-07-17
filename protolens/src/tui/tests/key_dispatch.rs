@@ -188,3 +188,33 @@ fn enter_opens_the_override_pane_when_no_override_applies() {
     assert_eq!(app.override_target, Some(0));
     assert!(!app.manage_open);
 }
+
+/// Item 14 (2026-07-17 feedback): `Ctrl-Left`/`Ctrl-Right` pan the
+/// override pane and the manage pane, mirroring the main pane's own
+/// Ctrl-Left/Ctrl-Right (spec 0113 D24) and the mouse's Shift-wheel/
+/// native horizontal-scroll pan already available for these panes
+/// (`mouse.rs`'s
+/// `override_and_manage_panes_pan_independently_of_the_main_pane`).
+#[test]
+fn ctrl_left_right_pan_the_override_and_manage_panes() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.override_pan_offset, PAN_STEP);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.override_pan_offset, 0);
+
+    app.close_override();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_focus);
+
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.manage_pan_offset, PAN_STEP);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.manage_pan_offset, 0);
+}
