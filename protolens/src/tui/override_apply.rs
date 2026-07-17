@@ -43,11 +43,39 @@ impl App {
     /// The type `idx` would naturally have from its parent's schema, used
     /// as the fallback when no active override applies (spec 0119 §G1) —
     /// `None` only when genuinely no type information is available (no
-    /// parent schema, field not declared, or a non-message field kind).
+    /// parent schema, field not declared, or an enum field kind — spec
+    /// 0135's `:type-as` wires up no enum target path, Non-goals).
+    ///
+    /// Every primitive `Kind` (spec 0135 follow-up, 2026-07-17: found
+    /// post-implementation) resolves to its own `:type-as` keyword, not
+    /// `None`: since G3 widened `can_override` to plain scalar leaves, a
+    /// primitive field with no active override is a real, reachable case
+    /// here (e.g. pressing `t` then `Esc` on a plain `int32` field) —
+    /// `None` would make `resettle_node` fall back to raw, wrongly
+    /// discarding the field's own natural decoding, not just "no override
+    /// applies." Message fields already relied on this same "natural
+    /// type, not raw" fallback since spec 0119; primitives now get the
+    /// same treatment via `primitive_type_for_keyword`'s reverse mapping.
     pub(super) fn natural_type(&self, idx: usize) -> Option<String> {
+        use prost_reflect::Kind;
         match self.parent_field(idx)?.kind() {
-            prost_reflect::Kind::Message(desc) => Some(desc.full_name().to_string()),
-            _ => None,
+            Kind::Message(desc) => Some(desc.full_name().to_string()),
+            Kind::Double => Some("double".to_string()),
+            Kind::Float => Some("float".to_string()),
+            Kind::Int32 => Some("int32".to_string()),
+            Kind::Int64 => Some("int64".to_string()),
+            Kind::Uint32 => Some("uint32".to_string()),
+            Kind::Uint64 => Some("uint64".to_string()),
+            Kind::Sint32 => Some("sint32".to_string()),
+            Kind::Sint64 => Some("sint64".to_string()),
+            Kind::Fixed32 => Some("fixed32".to_string()),
+            Kind::Fixed64 => Some("fixed64".to_string()),
+            Kind::Sfixed32 => Some("sfixed32".to_string()),
+            Kind::Sfixed64 => Some("sfixed64".to_string()),
+            Kind::Bool => Some("bool".to_string()),
+            Kind::String => Some("string".to_string()),
+            Kind::Bytes => Some("bytes".to_string()),
+            Kind::Enum(_) => None,
         }
     }
 

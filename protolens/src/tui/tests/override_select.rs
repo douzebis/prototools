@@ -186,6 +186,33 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
     assert!(app.override_focus);
 }
 
+/// Regression test (spec 0135 follow-up, 2026-07-17): pressing `t` on
+/// a plain primitive (non-message) field, then immediately `Esc`
+/// (cancelling, no navigation in between), must leave the main-pane
+/// rendering exactly as it was before `t` was pressed. Root-caused to
+/// `natural_type` returning `None` for every non-message field kind,
+/// which `resettle_node`'s no-active-override fallback treated as
+/// "render raw" rather than "this field's own natural primitive
+/// type" — reachable only once spec 0135 §G3 widened `can_override`
+/// to plain scalar leaves in the first place.
+#[test]
+fn esc_after_t_on_a_primitive_field_restores_its_original_rendering() {
+    let (mut app, _, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+    let line_idx = app.tree[id_idx].span.text_range.start;
+    let original_line = app.lines[line_idx].clone();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_target, Some(id_idx));
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.override_target, None);
+    assert_eq!(
+        app.lines[line_idx], original_line,
+        "the field's rendering must be restored exactly, not left raw"
+    );
+}
+
 /// 2026-07-14 feedback: `t` must not refuse a plain string/bytes
 /// field just because it isn't schema-typed as a message — it's
 /// still `WT_LEN`-wire and may in practice carry an embedded
