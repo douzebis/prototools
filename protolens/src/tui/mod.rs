@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -1148,7 +1148,16 @@ where
             None => Some(event::read()?),
         };
         match event {
-            Some(Event::Key(key)) => app.handle_key(key),
+            // Some Kitty-protocol-aware terminals report a `Release`
+            // event for a keystroke in addition to `Press`, even though
+            // this app only requests `DISAMBIGUATE_ESCAPE_CODES` (not
+            // `REPORT_EVENT_TYPES`). A `Release` event dispatched through
+            // `handle_key` after its matching `Press` already changed
+            // focus (e.g. `t`/`q`/`Esc`/`Tab` closing the override pane)
+            // would land in the *new* focus's handler instead of being a
+            // no-op — surfacing as a keypress "leaking" into both panes.
+            // Ignore anything but `Press`/`Repeat`.
+            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => app.handle_key(key),
             Some(Event::Mouse(mouse)) => app.handle_mouse(mouse),
             _ => {}
         }
