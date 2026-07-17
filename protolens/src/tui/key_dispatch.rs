@@ -416,6 +416,11 @@ impl App {
             // checked earlier in `handle_key`) — same "works regardless
             // of focus" treatment as `t`.
             KeyCode::Char('t') => self.toggle_override(),
+
+            // `Enter` on a main-pane node (item 3, spec 0139 follow-up):
+            // a smart proxy for `t`/`o`, mirroring double-click's own
+            // behavior below in `handle_mouse`.
+            KeyCode::Enter => self.open_smart_override_or_manage(),
             KeyCode::Esc if self.override_target.is_some() => self.close_override(),
             // Spec 0129 §G3: `Esc` clears an active main-pane line
             // selection, alongside whatever else it already clears above.

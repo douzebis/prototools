@@ -403,12 +403,20 @@ fn plain_click_with_no_drag_deselects() {
 /// explicitly selects that line for copy. Crossterm reports `Down`
 /// identically for single and double clicks, so this exercises the
 /// app's own timestamp/position-based disambiguation
-/// (`App::last_click`/`pending_double_click`).
+/// (`App::last_click`/`pending_double_click`). Since item 3 (spec
+/// 0139 follow-up), the same double-click also acts as the `t`/`o`
+/// smart proxy — this fixture's cursor node is the seeded root
+/// override's own target (active by construction), so the second
+/// click also opens the management pane; the copy check below uses
+/// `copy_selection_to_clipboard` directly rather than dispatching
+/// `Ctrl-C` through `handle_key`, since that now routes to the
+/// (focused) management pane instead of the main pane.
 #[test]
 fn double_click_selects_the_clicked_line_for_copy() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
+    app.term_width = 120;
 
     for _ in 0..2 {
         app.handle_mouse(MouseEvent {
@@ -432,12 +440,16 @@ fn double_click_selects_the_clicked_line_for_copy() {
         "unexpected message: {}",
         app.message
     );
+    assert!(
+        app.manage_open,
+        "double-click on the overridden root node also opens the management pane"
+    );
 
     let (count, text) = app.selected_text().expect("selection must be active");
     assert_eq!(count, 1);
     assert_eq!(text, "alpha: 1");
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    app.copy_selection_to_clipboard();
     assert!(
         app.message == "1 line(s) copied to clipboard"
             || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",

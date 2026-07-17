@@ -133,6 +133,25 @@ impl App {
         }
     }
 
+    /// `Enter`/double-click on a main-pane node (item 3, spec 0139
+    /// follow-up): a smart proxy for `t`/`o` — opens the management
+    /// pane (`o`) if an override already applies to the cursor node,
+    /// active or not (the same Step A/B check spec 0139's `t` itself
+    /// uses to pick its initial highlight); otherwise opens the
+    /// selection pane (`t`), which handles eligibility/width refusals
+    /// on its own exactly as a direct keypress would.
+    pub(super) fn open_smart_override_or_manage(&mut self) {
+        let has_override = self.resolve_active_override_entry(self.cursor).is_some()
+            || self
+                .first_entry_matching_origin_candidates(self.cursor)
+                .is_some();
+        if has_override {
+            self.toggle_manage_pane();
+        } else {
+            self.toggle_override();
+        }
+    }
+
     /// Close the override pane (cancelling — spec 0114 §2), regardless of
     /// which pane currently has focus. Demotes `override_inferred_raw` (if
     /// any) into `candidate_cache`, capped to however many rows the pane

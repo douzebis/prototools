@@ -155,3 +155,36 @@ fn tab_toggles_focus_between_main_and_override_panes() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert!(app.override_focus);
 }
+
+/// Item 3 (spec 0139 follow-up): `Enter` on a main-pane node with an
+/// applicable override (active, here — the fixture's seeded root
+/// entry) opens the management pane, same as pressing `o` directly.
+#[test]
+fn enter_opens_the_management_pane_when_an_override_applies() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_open);
+    assert!(app.manage_focus);
+    assert_eq!(app.override_target, None);
+}
+
+/// Item 3 (spec 0139 follow-up): `Enter` on a main-pane node with
+/// neither an active nor an applicable-inactive override opens the
+/// selection pane instead, same as pressing `t` directly.
+#[test]
+fn enter_opens_the_override_pane_when_no_override_applies() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.override_focus);
+    assert_eq!(app.override_target, Some(0));
+    assert!(!app.manage_open);
+}

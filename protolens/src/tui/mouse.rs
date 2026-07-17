@@ -191,9 +191,13 @@ impl App {
                 // plain single click deselects everything; a double-click
                 // (recognized by the `Down` handler above, same line,
                 // within `DOUBLE_CLICK_THRESHOLD`) instead keeps the
-                // single-line selection `Down` just set.
+                // single-line selection `Down` just set, and additionally
+                // acts as the same `t`/`o` smart proxy as `Enter` (item 3,
+                // spec 0139 follow-up).
                 MouseEventKind::Up(MouseButton::Left) => {
-                    if self.select_anchor == self.select_end && !self.pending_double_click {
+                    if self.pending_double_click {
+                        self.open_smart_override_or_manage();
+                    } else if self.select_anchor == self.select_end {
                         self.select_anchor = None;
                         self.select_end = None;
                     }
