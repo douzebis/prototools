@@ -445,13 +445,13 @@ impl App {
     /// target's byte range and sort mode, and the ranked/lexicographic
     /// candidate list (§3.2) with the highlighted row reverse-styled,
     /// scrolled to keep it visible. In alphabetic mode row 0 is always the
-    /// `Empty` raw-type candidate (spec 0137 §G1/§G4) — no more separate
-    /// pinned row. Each row is styled by kind (spec 0137 §G8): `Empty`
-    /// (`Comment`), a primitive keyword (`PunctuationBracketExtension`),
-    /// an enum FQDN (`Attribute`), else a message/group FQDN (unstyled),
-    /// with G6's leading-dot collision-avoidance applied to non-sentinel
-    /// FQDNs. The `/`/`?` search buffer (§4) renders in the shared bottom
-    /// command/message bar instead of a row here (spec-0133-adjacent
+    /// `None` raw-type candidate (spec 0137 §G1/§G4) — no more separate
+    /// pinned row. Each row is styled by kind (spec 0137 §G8): `None`
+    /// and a primitive keyword (default style), an enum FQDN
+    /// (`Attribute`, with a ` [enum]` suffix), else a message/group FQDN
+    /// (unstyled), with G6's leading-dot collision-avoidance applied to
+    /// non-sentinel FQDNs. The `/`/`?` search buffer (§4) renders in the
+    /// shared bottom command/message bar instead of a row here (spec-0133-adjacent
     /// rework). Apply-on-`Enter` (§5) lands in a later implementation
     /// step.
     pub(super) fn render_override_pane(&mut self, frame: &mut Frame, area: Rect) {
@@ -493,12 +493,12 @@ impl App {
             let (fqdn, score) = &self.override_candidates[row];
             // Spec 0114/0137 amendment (2026-07-17 feedback): simplify
             // the lexicographic-mode color scheme — primitive types
-            // (including the `Empty` sentinel) get the default style,
+            // (including the `None` sentinel) get the default style,
             // no longer a distinct comment/punctuation color; enums keep
             // their blue `Attribute` color but gain an explicit
             // ` [enum]` suffix instead.
-            let (display_fqdn, base_style) = if fqdn == "protolens_internal.Empty" {
-                ("Empty".to_string(), Style::default())
+            let (display_fqdn, base_style) = if fqdn == "protolens_internal.None" {
+                ("None".to_string(), Style::default())
             } else if decode::primitive_type_for_keyword(fqdn).is_some() {
                 (fqdn.clone(), Style::default())
             } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {

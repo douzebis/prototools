@@ -78,13 +78,13 @@ impl App {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
         if let Some(fqdn_or_raw) = active_type {
-            // Spec 0137 §G4: raw (`None`) maps to the `Empty` sentinel
-            // string — found (and highlighted) only in alphabetic mode,
-            // where it is always a real candidate; in inferred mode, raw
-            // has no corresponding row, so `position` finds nothing and
-            // the default highlight (recompute's top-ranked candidate)
-            // is left as-is.
-            let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.Empty".to_string());
+            // Spec 0137 §G4: raw (`Option::None`) maps to the `None`
+            // sentinel string — found (and highlighted) only in
+            // alphabetic mode, where it is always a real candidate; in
+            // inferred mode, raw has no corresponding row, so `position`
+            // finds nothing and the default highlight (recompute's
+            // top-ranked candidate) is left as-is.
+            let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.None".to_string());
             if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
                 self.override_highlight = row;
             }
@@ -134,7 +134,7 @@ impl App {
     /// Recompute `override_candidates` for the current `override_target`
     /// under the currently active `override_sort` (spec 0114 §3.2), and
     /// reset the highlight to the first candidate (index `0`) — in
-    /// alphabetic mode this is always the `Empty` sentinel (spec 0137
+    /// alphabetic mode this is always the `None` sentinel (spec 0137
     /// §G1/§G4), not necessarily what was previously highlighted;
     /// there is no separate pinned row to preserve any more. Called
     /// both when the pane first opens and whenever `i` toggles the sort
@@ -151,11 +151,11 @@ impl App {
             return;
         };
         self.override_candidates = match self.override_sort {
-            // Spec 0137 §G1/§G4: the `Empty` sentinel + the 15 primitive
+            // Spec 0137 §G1/§G4: the `None` sentinel + the 15 primitive
             // keywords are prepended, in that fixed order, ahead of the
             // sorted message/group/enum FQDNs — alphabetic mode only
             // (§G7).
-            SortMode::Lexicographic => std::iter::once("protolens_internal.Empty".to_string())
+            SortMode::Lexicographic => std::iter::once("protolens_internal.None".to_string())
                 .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
                 .chain(self.all_type_fqdns.iter().cloned())
                 .map(|f| (f, None))
@@ -252,8 +252,8 @@ impl App {
     /// touch it) is entirely unaffected by whatever was last previewed.
     /// No-op if the override pane isn't open. `override_highlight`
     /// indexes `override_candidates` directly (spec 0137 §G4) — no more
-    /// pinned row 0; `None`/raw is reached only via the `Empty`
-    /// sentinel entry in alphabetic mode.
+    /// pinned row 0; raw (`Option::None`) is reached only via the
+    /// `None` sentinel entry in alphabetic mode.
     ///
     /// `idx`'s own `rendered_as` *is* deliberately invalidated
     /// (`None`'d out) on every successful preview splice — unlike a real

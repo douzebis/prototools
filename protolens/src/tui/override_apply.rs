@@ -623,11 +623,11 @@ impl App {
         // wire framing is `WT_START_GROUP`, else `Type::Message`; a
         // primitive keyword yields the matching primitive `Type`
         // directly; an enum FQDN yields `Type::Enum`; the reserved
-        // `Empty` sentinel and plain `None` (raw) both yield no
-        // synthetic field at all.
+        // `None` sentinel string and a plain `Option::None` (raw) both
+        // yield no synthetic field at all.
         let (target_desc, field_type) = match &target {
             None => (None, None),
-            Some(name) if name == "protolens_internal.Empty" => (None, None),
+            Some(name) if name == "protolens_internal.None" => (None, None),
             Some(name) => {
                 if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
                     let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
@@ -1010,7 +1010,7 @@ impl App {
 
 /// Formats a message/group/enum status-line label (spec 0136): `fqdn`
 /// prepended with a leading `.` only if omitting it would make the bare
-/// `fqdn` collide with a primitive keyword or the reserved `Empty`
+/// `fqdn` collide with a primitive keyword or the reserved `None`
 /// keyword (a future fake primitive type, per review — not yet wired up
 /// anywhere in this codebase), followed by a space and `[{tag}]`.
 fn format_fqdn_label(fqdn: &str, tag: &str) -> String {
@@ -1022,10 +1022,10 @@ fn format_fqdn_label(fqdn: &str, tag: &str) -> String {
 }
 
 /// Spec 0136/0137 §G6: whether a bare message/group/enum FQDN would
-/// collide with a primitive keyword or the reserved `Empty` keyword if
+/// collide with a primitive keyword or the reserved `None` keyword if
 /// displayed undecorated — shared between the status-line label
 /// (`format_fqdn_label`) and the override pane's row rendering
 /// (`render.rs`'s `render_override_pane`).
 pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
-    decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "Empty"
+    decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "None"
 }

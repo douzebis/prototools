@@ -771,9 +771,9 @@ fn enter_key_applies_override_and_closes_pane() {
         .expect("tree must contain the Inner submessage");
     app.cursor = inner_idx;
 
-    // Spec 0137 §G4: inferred mode has no raw/`Empty` row at all, so
+    // Spec 0137 §G4: inferred mode has no raw/`None` row at all, so
     // reaching raw via the pane requires alphabetic mode, where index
-    // `0` is always the `Empty` sentinel. `Enter` there clears the
+    // `0` is always the `None` sentinel. `Enter` there clears the
     // type and closes the pane.
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_target.is_some());
@@ -793,7 +793,7 @@ fn enter_key_applies_override_and_closes_pane() {
 
     // A ranked candidate row: re-open, switch to lexicographic sort
     // (no scoring graph in this fixture), and select the first real
-    // message FQDN (spec 0137 §G4: index `0` there is `Empty`, `1..16`
+    // message FQDN (spec 0137 §G4: index `0` there is `None`, `1..16`
     // are the primitive keywords, so the first message FQDN comes
     // after those).
     app.cursor = inner_idx;

@@ -75,7 +75,10 @@ unresolvable field).
   `Empty` (capitalized — message-type names, unlike primitive
   keywords, are capitalized) is reserved in the leading-dot
   collision-check set below purely so that a future top-level message
-  literally named `Empty` won't visually collide with it.
+  literally named `Empty` won't visually collide with it. (Later
+  amended: spec 0137 implemented this fake type under the name
+  `Empty`, itself renamed to `None` per 2026-07-17 feedback — see the
+  leading-dot collision check below, updated accordingly.)
 
 ## Specification
 
@@ -128,7 +131,8 @@ For any FQDN label (message/group/enum tag), prepend `.` only if the
 bare `fqdn` string exactly equals one of the 15 primitive keywords
 (`double`, `float`, `int32`, `int64`, `uint32`, `uint64`, `sint32`,
 `sint64`, `fixed32`, `fixed64`, `sfixed32`, `sfixed64`, `bool`,
-`string`, `bytes`) or the reserved `Empty` keyword (see Non-goals).
+`string`, `bytes`) or the reserved `None` keyword (see Non-goals;
+renamed from `Empty`, spec 0137 amendment).
 Otherwise, no leading dot.
 
 ### `render.rs`

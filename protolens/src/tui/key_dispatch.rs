@@ -68,7 +68,7 @@ impl App {
                 };
                 // Spec 0137 §G4: `override_candidates` is indexed
                 // directly — no more pinned row 0. In alphabetic mode,
-                // index `0` is always the `Empty` sentinel, resolving to
+                // index `0` is always the `None` sentinel, resolving to
                 // raw exactly as the old row 0 did (splice_override's
                 // sentinel arm).
                 let new_fqdn = match self
