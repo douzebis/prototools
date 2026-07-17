@@ -398,8 +398,8 @@ impl App {
             let path = self.positional_path(self.cursor);
             let range = self.display_range(self.cursor);
             let node = &self.tree[self.cursor].span;
-            let type_label = match node.type_fqdn.as_deref() {
-                Some(fqdn) => format!("type: {fqdn}"),
+            let type_label = match self.status_type_label(self.cursor) {
+                Some(label) => format!("type: {label}"),
                 None => String::new(),
             };
             format!(

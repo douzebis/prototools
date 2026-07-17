@@ -79,6 +79,56 @@ impl App {
         }
     }
 
+    /// Display-only counterpart to `natural_type` (spec 0136) — identical
+    /// mapping, except `Kind::Enum` resolves to its own FQDN instead of
+    /// `None`. `natural_type` itself must keep excluding `Enum` (its own
+    /// doc comment, spec 0135's Non-goals — `:type-as` wires up no enum
+    /// target path, and `resettle_node` relies on `natural_type`'s exact
+    /// current behavior for override splicing). Used only by
+    /// `status_type_label`, never for splicing.
+    pub(super) fn natural_type_display(&self, idx: usize) -> Option<String> {
+        use prost_reflect::Kind;
+        if let Kind::Enum(desc) = self.parent_field(idx)?.kind() {
+            return Some(desc.full_name().to_string());
+        }
+        self.natural_type(idx)
+    }
+
+    /// Status-line "type:" fragment for `idx` (spec 0136): the field's
+    /// *currently effective* proto type — an active `:type-as` override
+    /// if one applies, else the natural (schema-declared) type, enum
+    /// included (`natural_type_display`, unlike splicing's own
+    /// `natural_type`). `None` when nothing is resolvable at all, or when
+    /// the pinned `<raw / no type>` override entry is explicitly active
+    /// — either case means the status line shows no fragment.
+    pub(super) fn status_type_label(&self, idx: usize) -> Option<String> {
+        let span = &self.tree[idx].span;
+        if span.is_message {
+            // `resettle_node` keeps `span.type_fqdn`/`is_message` in sync
+            // with the currently effective override on every render pass
+            // — no separate override lookup needed for this branch.
+            let fqdn = span.type_fqdn.as_ref()?;
+            let tag = if span.wire_type == prototext_core::helpers::WT_START_GROUP {
+                "group"
+            } else {
+                "message"
+            };
+            return Some(format_fqdn_label(fqdn, tag));
+        }
+        let effective = match self.resolve_active_override(idx) {
+            Some(inner) => inner?,
+            None => self.natural_type_display(idx)?,
+        };
+        if decode::primitive_type_for_keyword(&effective).is_some() {
+            return Some(effective);
+        }
+        // Not a primitive keyword: the only other possibility reaching
+        // this branch is an enum FQDN from `natural_type_display` (an
+        // active override can never resolve to a message FQDN here — see
+        // the `is_message` branch above).
+        Some(format_fqdn_label(&effective, "enum"))
+    }
+
     /// `true` when `idx`'s resolved type is `google.protobuf.Any` — spec
     /// 0120 §G1's detection rule, a plain FQDN match (per review).
     pub(super) fn is_any_typed(&self, idx: usize) -> bool {
@@ -947,5 +997,19 @@ impl App {
         .into_iter()
         .find(|k| *k != a && *k != b)
         .expect("3 kinds total, 2 excluded, 1 remains")
+    }
+}
+
+/// Formats a message/group/enum status-line label (spec 0136): `fqdn`
+/// prepended with a leading `.` only if omitting it would make the bare
+/// `fqdn` collide with a primitive keyword or the reserved `Empty`
+/// keyword (a future fake primitive type, per review — not yet wired up
+/// anywhere in this codebase), followed by a space and `[{tag}]`.
+fn format_fqdn_label(fqdn: &str, tag: &str) -> String {
+    let collides = decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "Empty";
+    if collides {
+        format!(".{fqdn} [{tag}]")
+    } else {
+        format!("{fqdn} [{tag}]")
     }
 }
