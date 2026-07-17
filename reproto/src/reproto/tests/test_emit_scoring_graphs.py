@@ -123,16 +123,17 @@ def test_TC1_basic_emission(tmp_path: Path) -> None:
     field_numbers = [f["number"] for f in messages["test.field.PrimitiveTypes"]["fields"]]
     assert field_numbers == sorted(field_numbers)
 
-    # entries: all top-level messages in the file (sorted, full FQDNs)
+    # entries: all non-pruned messages in the file, top-level and nested
+    # alike (spec 0140), sorted, full FQDNs
     entries = data["entries"]
     assert "test.field.PrimitiveTypes" in entries
     assert "test.field.ComplexTypes" in entries
     assert "test.field.Outer" in entries
     # entries must be sorted
     assert entries == sorted(entries)
-    # nested types must NOT appear in entries
-    assert "test.field.Outer.Middle" not in entries
-    assert "test.field.Outer.Middle.Inner" not in entries
+    # nested types MUST appear in entries (spec 0140)
+    assert "test.field.Outer.Middle" in entries
+    assert "test.field.Outer.Middle.Inner" in entries
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,41 @@ def test_TC2_nested_message_types(tmp_path: Path) -> None:
     assert "test.field.Outer" in messages
     assert "test.field.Outer.Middle" in messages
     assert "test.field.Outer.Middle.Inner" in messages
+
+
+# ---------------------------------------------------------------------------
+# TC-2b: A pruned nested message type is excluded from both messages and
+# entries (spec 0140 G2 — pruning is now consulted at every nesting level,
+# not just the top level).
+# ---------------------------------------------------------------------------
+
+def test_TC2b_pruned_nested_message_excluded(tmp_path: Path) -> None:
+    """Pruning a nested message excludes it from both messages and entries."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "field_comprehensive.proto")
+    result = _run_reproto(
+        [pb], out_dir,
+        extra_args=["--prune", "desc:test.field.Outer.Middle"],
+    )
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "field_comprehensive.yaml")
+    messages = data["messages"]
+    entries = data["entries"]
+
+    # The pruned nested type and its own nested children are gone.
+    assert "test.field.Outer.Middle" not in messages
+    assert "test.field.Outer.Middle" not in entries
+    assert "test.field.Outer.Middle.Inner" not in messages
+    assert "test.field.Outer.Middle.Inner" not in entries
+
+    # The enclosing type is unaffected.
+    assert "test.field.Outer" in messages
+    assert "test.field.Outer" in entries
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +358,29 @@ def test_TC_MS3_non_message_set_unaffected(tmp_path: Path) -> None:
     assert "mockup.Payload.Item" not in messages
 
 
+def test_TC_MS4_item_node_excluded_from_entries(tmp_path: Path) -> None:
+    """The synthesized Item node is a messages key but never a candidate entry (spec 0140 G3)."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "message_set_proto2.proto")
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "message_set_proto2.yaml")
+    messages = data["messages"]
+    entries = data["entries"]
+
+    # Item is a real messages key (existing TC-MS2 coverage) but must not
+    # be an entry — it never corresponds to a real Descriptor.
+    assert "mockup.MessageSetMessage.Item" in messages
+    assert "mockup.MessageSetMessage.Item" not in entries
+    # The real message that owns it IS an entry.
+    assert "mockup.MessageSetMessage" in entries
+
+
 # ---------------------------------------------------------------------------
 # TC-6: Canonized output paths via variant import rewrites (spec 0086)
 # ---------------------------------------------------------------------------
@@ -464,3 +523,50 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
     assert phones_field.type_name == ".canonical.tutorial.PhoneNumber", (
         f"phones field type_name must be canonized, got {phones_field.type_name!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# TC-7: protoc-synthesized map-entry types appear as entries (spec 0140 G4)
+# ---------------------------------------------------------------------------
+
+def test_TC7_map_entry_types_are_entries(tmp_path: Path) -> None:
+    """map<K, V> fields' auto-generated *Entry types appear in both messages and entries."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (pb,) = compile_proto(pb_dir, "field_comprehensive.proto")
+    result = _run_reproto([pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    data = _load_yaml(out_dir / "field_comprehensive.yaml")
+    messages = data["messages"]
+    entries = data["entries"]
+
+    map_entry_fqdn = "test.field.MapFields.StringToIntEntry"
+    assert map_entry_fqdn in messages
+    assert map_entry_fqdn in entries
+
+
+# ---------------------------------------------------------------------------
+# TC-8: entries stay sorted and duplicate-free across multiple nesting
+# levels and multiple files (spec 0140 G5)
+# ---------------------------------------------------------------------------
+
+def test_TC8_entries_sorted_dedup_multi_file(tmp_path: Path) -> None:
+    """entries lists across several files are each sorted, with no duplicate FQDNs."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    phone_pb, ab_pb = compile_proto(pb_dir, "phone_number.proto", "address_book.proto")
+    result = _run_reproto([phone_pb, ab_pb], out_dir)
+    assert result.returncode == 0, result.stderr
+
+    for yaml_name in ("phone_number.yaml", "address_book.yaml"):
+        data = _load_yaml(out_dir / yaml_name)
+        entries = data["entries"]
+        assert entries == sorted(entries), f"{yaml_name}: entries must be sorted"
+        assert len(entries) == len(set(entries)), f"{yaml_name}: entries must be duplicate-free"

@@ -1464,7 +1464,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
 
     # ── 1. Collect per-file scoring-graph YAML strings (mirrors _phase_emit_scoring_graphs)
 
-    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]') -> None:
+    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
         msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
         if msg_node is not None and msg_node.is_pruned:
             return
@@ -1486,8 +1486,9 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         _synthesize_message_set_item(desc, messages, fields_out)
         node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
         messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
+        entries.append(desc.full_name)
         for nested in desc.nested_types:
-            _collect(nested, messages, group_fqdns)
+            _collect(nested, messages, group_fqdns, entries)
 
     scoring_graphs: list[str] = []
 
@@ -1509,14 +1510,9 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
 
             group_fqdns = _collect_group_fqdns(fd)
             messages: dict = {}
+            entries: list[str] = []
             for msg_desc in fd.message_types_by_name.values():
-                _collect(msg_desc, messages, group_fqdns)
-
-            entries = []
-            for msg_desc in fd.message_types_by_name.values():
-                node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
-                if node is None or not node.is_pruned:
-                    entries.append(msg_desc.full_name)
+                _collect(msg_desc, messages, group_fqdns, entries)
             entries.sort()
 
             scoring_graphs.append(
@@ -1794,7 +1790,7 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
     """Emit one scoring-graph YAML file per FileDescriptorProto (spec 0045)."""
     import yaml
 
-    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]') -> None:
+    def _collect(desc: Any, messages: dict, group_fqdns: 'set[str]', entries: list[str]) -> None:
         msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
         if msg_node is not None and msg_node.is_pruned:
             return
@@ -1816,8 +1812,9 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
         _synthesize_message_set_item(desc, messages, fields_out)
         node_kind = 'GROUP' if desc.full_name in group_fqdns else 'LENDEL'
         messages[desc.full_name] = {'kind': node_kind, 'fields': fields_out}
+        entries.append(desc.full_name)
         for nested in desc.nested_types:
-            _collect(nested, messages, group_fqdns)
+            _collect(nested, messages, group_fqdns, entries)
 
     from .mappings import canonize_dependency
     for re_file in ctx.nodes.values():
@@ -1843,16 +1840,9 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
 
         group_fqdns = _collect_group_fqdns(fd)
         messages: dict = {}
+        entries: list[str] = []
         for msg_desc in fd.message_types_by_name.values():
-            _collect(msg_desc, messages, group_fqdns)
-
-        # Entry nodes: top-level (non-nested) messages in this file that are
-        # not pruned (full FQDNs, sorted for determinism).
-        entries = []
-        for msg_desc in fd.message_types_by_name.values():
-            node = ctx.nodes.get(Fqdn(f'desc:.{msg_desc.full_name}'))
-            if node is None or not node.is_pruned:
-                entries.append(msg_desc.full_name)
+            _collect(msg_desc, messages, group_fqdns, entries)
         entries.sort()
 
         yaml_path = out_dir / Path(canonical_name).with_suffix('.yaml')

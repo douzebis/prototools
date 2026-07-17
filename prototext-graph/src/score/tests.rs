@@ -1193,3 +1193,49 @@ fn any_expansion_empty_value() {
     let s = score_entry(&pb, &g, "Wrapper");
     assert!(!s.vetoed, "Any with empty value must not veto");
 }
+
+// ── Entry-count guard hardening (spec 0140 G6) ───────────────────────────────
+
+/// TC-OF1: an entry count exceeding `u16::MAX` must panic loudly at
+/// `score_all`'s guard rather than silently wrapping/truncating the `as u16`
+/// cast used to pack entry indices. Nested-type entries (spec 0140) grow the
+/// corpus well past what a top-level-only schema set would ever reach, so
+/// this guard is no longer purely academic.
+#[test]
+#[should_panic(expected = "exceeds u16::MAX")]
+fn tc_of1_entry_count_over_u16_max_panics() {
+    let n = usize::from(u16::MAX) + 1;
+    let field = vec![ScoringField {
+        number: 1,
+        kind: ScoringKind::Uint32,
+        child: None,
+        range: None,
+        label: FieldLabel::Optional,
+    }];
+
+    let mut states = std::collections::HashMap::new();
+    let mut roots = Vec::with_capacity(n);
+    for i in 0..n {
+        let name = format!("M{i}");
+        states.insert(name.clone(), field.clone());
+        roots.push(name);
+    }
+
+    let merged = Merged {
+        states,
+        node_kinds: std::collections::HashMap::new(),
+        roots,
+    };
+
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("huge.bin");
+    serial::write(&compiled, &path).expect("write graph");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    let g = score_load::load_graph(&path).expect("load graph");
+
+    let pb = field_varint(1, 1);
+    let _ = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
+}

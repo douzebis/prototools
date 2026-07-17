@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0140 — reproto: nested message types as scoring entry points
 
-Status: draft
-Implemented in: —
+Status: implemented
+Implemented in: 2026-07-17
 Refs: docs/specs/0045-reproto-emit-graph.md (YAML `messages` dict — already
       includes nested types, predates the `entries` field so does not
       document it), docs/specs/0047-build-scoring-graph.md (amended by
@@ -209,7 +209,10 @@ G3 (excluding `Item` from `entries`) holds regardless of whether
   signal (per G6/G7) that this spec's changes need reverting or the
   index type needs widening in a follow-up spec. What IS in scope is
   hardening the existing guard so an overflow is loud, not silent —
-  see G6.
+  see G6. See "Real-world measurement: googleapis corpus" and
+  "Preliminary analysis: widening the entry-index type" below for the
+  actual googleapis-corpus margin measurement and a scoping analysis
+  (not an implementation) of what a `u16`→`u32` follow-up would involve.
 - N4: no UI/UX changes to protolens's override pane or heat-cue
   candidate-list rendering (specs 0114, 0138) to cope with longer
   candidate lists from deeply-nested schemas. Those lists getting
@@ -362,6 +365,128 @@ cp "$store/wkt_index.rkyv" prototext/wkt/prebuilt/wkt_index.rkyv
 No other checked-in `.rkyv`/YAML artifacts were found to depend on
 entry-point selection (test fixtures are hand-authored, N6).
 
+### Real-world measurement: googleapis corpus
+
+Before committing this spec's code changes, the full (unscoped) `nix-build`
+was run once with the pre-0140 code (baseline, four separate store paths,
+all identical — `registrationTime` 2026-07-09 and 2026-07-15) and once
+with this spec's code (2026-07-17), producing two `googleapis-db`
+Hopcroft-compiled graphs (`hopcroft.rkyv`) over the real, full googleapis
+corpus (7771 `.proto` files). A throwaway diagnostic binary
+(`LoadedGraph::roots.len()` / `transitions.len()` / max `state_id`, not
+committed) was run against both:
+
+| | Before (pre-0140) | After (this spec) | Δ |
+|---|---|---|---|
+| Roots (entry points) | 39,937 | 49,255 | **+9,318 (+23.3%)** |
+| Transitions | 89,267 | 89,267 | unchanged |
+| Max `state_id` | 17,572 | 17,572 | unchanged |
+| `u16::MAX` margin | 25,598 (60.9% fill) | 16,280 (75.2% fill) | −9,318 |
+
+Transitions and max `state_id` are identical before/after: nested message
+types were already nodes in the graph (reachable via field recursion, per
+Background), so this spec's change is purely additive to the *root* table
+— it does not alter graph structure or size in any other dimension.
+
+The build itself completed cleanly: exit code 0, no panic, no
+`u16::MAX` overflow (grepped the full build log for
+`panic|error|exceeds u16::MAX`, only match was an unrelated benign lint
+summary line). The googleapis stress-test suite
+(`tests/stress/test_stress.py::test_auto_infer`) reported 88 passed, 54
+warnings — each warning is `--list-schemas returned N tied FQDNs
+(max_ties=5)` for a specific real FQDN, with `N` up to 23,723–34,063 for
+the worst cases (e.g. `google.ads.datamanager.v1.RetrieveRequestStatusRequest`,
+`google.cloud.aiplatform.v1beta1.TFRecordDestination`). Per discussion,
+these particular worst-case ties are attributed to auto-generated,
+toy-like request/response message shapes in that corpus rather than a
+general scoring-precision regression, and the tests still passed —
+roughly half of the 88 tested protobufs had fewer than 5 tied candidates,
+which is the target discriminability. This finding is not treated as a
+blocker for this spec, but the entry-count margin consumption (a real
+corpus's `u16::MAX` headroom shrinking from 60.9% to 75.2% fill from this
+change alone) is a concrete, load-bearing data point for the "widening
+the entry-index type" analysis below, and for any future spec that grows
+`entries` further.
+
+### Preliminary analysis: widening the entry-index type (not implemented)
+
+N3 explicitly keeps raising the `u16::MAX` ceiling out of scope for this
+spec. This subsection is a preliminary scoping analysis only — requested
+after the googleapis measurement above showed a real corpus already at
+75% fill — to inform whether/when a follow-up spec should do the work.
+No code changes described here are made by this spec.
+
+**Scope of the change.** The `u16` entry-index type is used **only** in
+`prototext-graph/src/score/walk.rs` (confirmed by repo-wide grep for
+`as u16` / `u16::MAX` / `SmallVec<[u16`; the only other `u16` hits in the
+codebase — `protolens`'s terminal-coordinate casts, and
+`build_scoring_graph/graph.rs`'s `range_idx` for spec 0077 varint-veto
+ranges — are unrelated concepts). All ten sites are runtime, in-memory
+structures local to the scoring walk:
+
+- `ActiveEntry::entries: SmallVec<[u16; 4]>` (walk.rs:69)
+- `WalkState::is_vetoed(&self, e: u16)` / `set_vetoed(&mut self, e: u16, ...)`
+  (walk.rs:105, 110) — index into a `Vec<u64>` bitset, already
+  width-agnostic internally (`e as usize`)
+- `group_by_state(pairs: impl Iterator<Item = (u32, u16)>)` and its local
+  `Vec<(u32, u16)>` (walk.rs:126-127)
+- the `assert!(graph.roots.len() <= u16::MAX as usize, ...)` guard itself
+  and the `i as u16` cast that produces the initial entry indices
+  (walk.rs:171-172, 194)
+- three more `Vec<(u32, u16)>` / `Vec<u16>` locals inside the LEN and
+  START_GROUP branches of the walk (`child_pairs`, `recurse_into`,
+  `stay_out_entries`; walk.rs:963, 1068-1069)
+
+Nothing outside this file depends on the width: `EntryScore` (the public
+output type) has no index field — entries are identified positionally,
+by `Vec` order, which is width-independent. The on-disk `CompiledGraph`
+format (`build_scoring_graph/serial.rs`) already stores `RootEntry.state_id`
+as `u32` and the root table as a plain `Vec<RootEntry>` with no explicit
+count-width field — so no serialization/`rkyv` format change is needed to
+support more roots; the `u16` limit is purely a runtime packing choice
+inside `score_all`'s walk, not a persisted-format constraint.
+
+**Recommendation: `u32`, not `usize` or a batching scheme.** `u32`
+matches `state_id`'s existing width (no third integer size introduced),
+raises the ceiling to ~4.29 billion (no credible corpus gets remotely
+close — even a corpus 1000x the size of the full googleapis stress
+corpus measured above would be under 50 million entries), and only
+modestly increases memory: `SmallVec<[u32; 4]>` doubles from 16 to 32
+bytes inline, and the `Vec<(u32, u32)>` locals double their second field
+— all transient, per-`score_all`-call allocations, not persisted state,
+so the cost is negligible even at the largest corpus sizes seen so far.
+`usize` would work identically on 64-bit but wastes 4 bytes per entry for
+no benefit (there is no near-term scenario needing more than `u32::MAX`
+entries) and introduces platform-width dependence for no reason. A
+batching/paging scheme (splitting the parallel walk into multiple
+`u16`-sized batches) was considered and rejected: it would require
+correctly merging veto/occurrence state across batch boundaries for
+negligible benefit over just widening one integer type — added
+complexity with no corresponding advantage.
+
+**Testing implication.** The current regression test
+(`tc_of1_entry_count_over_u16_max_panics`, G6) constructs a real
+`u16::MAX + 1`-entry graph through the full production pipeline — feasible
+at ~65K entries. The same approach is **not** feasible at `u32::MAX + 1`
+(~4.29 billion entries): building that many `RootEntry` records would
+exhaust memory and take an impractical amount of time in a unit test. A
+follow-up spec that performs this widening would need to either (a)
+extract the bound check into a small free function
+(`fn check_entry_count(n: usize) -> Result<(), String>` or similar) and
+unit-test *that* directly with a fake `usize` argument rather than a
+real graph, or (b) accept the practical-impossibility argument (no
+integration test can build a `u32::MAX`-entry fixture; the assert is
+reviewed by inspection instead) — a decision to make explicitly if/when
+that spec is written, not implied by this analysis.
+
+This is flagged as a concrete follow-up candidate, not an immediate
+action: the googleapis corpus is at 75% fill today, not over the
+ceiling, and G6's hardened assert means any future overflow fails loudly
+at build time rather than corrupting results silently. But the margin
+consumed by this spec alone (over a third of the previous headroom, for
+one already-large real corpus) suggests the `u16→u32` follow-up should
+not be deferred indefinitely.
+
 ## Test plan
 
 `reproto/src/reproto/tests/test_emit_scoring_graphs.py`:
@@ -404,7 +529,7 @@ strict requirement).
   on it for match precision; spec 0108's `Item` synthesis is
   unaffected by this spec either way, so G3/G4 hold as originally
   drafted.
-- Q2: should `_phase_build_schema_db` and `_phase_emit_scoring_graphs`'s
-  now-even-more-similar `_collect` closures be de-duplicated into one
-  shared helper as part of this change, or left as-is (matching the
-  current file's existing duplication convention)?
+- ~~Q2~~ Resolved: left as-is for this change, matching the current
+  file's existing duplication convention — the two `_collect`
+  closures remain separate. De-duplicating them is a follow-up
+  cleanup opportunity, not required by this spec's goals.
