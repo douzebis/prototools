@@ -186,6 +186,49 @@ impl App {
         self.override_candidates_complete = false;
         self.override_target = None;
         self.override_focus = false;
+        // Item 11 (2026-07-17 feedback): a pane opened from the
+        // management pane always returns there on close — the Enter-
+        // confirm call site (`handle_override_key`) already sets these
+        // same three fields itself right after calling this, so setting
+        // them here too is harmless there; it's the cancelling call
+        // sites (`Esc`/`t`/`q`) that actually need it.
+        if self.override_opened_from_manage {
+            self.override_opened_from_manage = false;
+            self.manage_open = true;
+            self.manage_focus = true;
+        }
+    }
+
+    /// `Enter`/double-click on an entry in the override management pane
+    /// (item 11, 2026-07-17 feedback): opens the selection pane on that
+    /// entry's own origin, initially highlighted on its own current type
+    /// (Step A/B's mode-selection rule, reused via `open_override_on_
+    /// type`), to let the user pick an alternate type. Confirming lands
+    /// back in the management pane (spec 0119 G3, unconditional); Esc/
+    /// `t`/`q` also return there — without mutating the entry — via
+    /// `override_opened_from_manage` (`close_override`).
+    pub(super) fn open_override_from_manage(&mut self) {
+        let Some(entry) = self.overrides.entries().get(self.manage_highlight) else {
+            return;
+        };
+        let origin = entry.origin.clone();
+        let current_type = entry.r#type.clone();
+        let affected = self.manage_affected_nodes(&origin);
+        let target = affected
+            .iter()
+            .find(|&&i| i == self.cursor)
+            .or_else(|| affected.first());
+        let Some(&target) = target else {
+            return;
+        };
+        self.manage_open = false;
+        self.override_target = Some(target);
+        self.override_focus = true;
+        self.override_scroll = 0;
+        self.override_pan_offset = 0;
+        self.override_opened_from_manage = true;
+        self.open_override_on_type(current_type);
+        self.preview_override_highlight();
     }
 
     /// Recompute `override_candidates` for the current `override_target`

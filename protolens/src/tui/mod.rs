@@ -536,6 +536,15 @@ pub struct App {
     /// `true` when the override pane has focus (spec 0114 §3's `Tab`
     /// toggle); meaningless while `override_target` is `None`.
     override_focus: bool,
+    /// `true` when the override pane was opened via `Enter`/double-click
+    /// on an entry in the management pane (item 11, 2026-07-17
+    /// feedback), rather than via `t`/item 3's smart open on a main-pane
+    /// node. Confirming (`Enter`) already lands back in the management
+    /// pane unconditionally (spec 0119 G3); this flag makes cancelling
+    /// (`Esc`/`t`/`q`) do the same — `close_override` reopens the
+    /// management pane instead of leaving focus on the main pane — and
+    /// is cleared as soon as it's acted on.
+    override_opened_from_manage: bool,
     /// Type-lookup/scoring context (spec 0114 §3) — owned by `App` after
     /// `decode()` returns it, so the override pane can resolve/score
     /// candidate types for the rest of the session.
@@ -627,6 +636,15 @@ pub struct App {
     /// selection before it ever reaches the app). `None` before the
     /// first marker click.
     last_manage_click: Option<(Instant, usize)>,
+    /// Timestamp + entry index of the most recent left-click `Down` that
+    /// landed on an entry row *outside* its radio marker (item 11,
+    /// 2026-07-17 feedback) — compared against on the next such click to
+    /// recognize a double-click (same entry, within
+    /// `DOUBLE_CLICK_THRESHOLD`), which opens the override selection
+    /// pane on that entry (`open_override_from_manage`), same as
+    /// `Enter`. Tracked separately from `last_manage_click`, which is
+    /// marker-column-only and drives an unrelated toggle behavior.
+    last_manage_row_click: Option<(Instant, usize)>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
     /// `Some` while `f` in the management pane is editing the highlighted
@@ -802,6 +820,7 @@ impl App {
             command_pan_offset: 0,
             override_target: None,
             override_focus: false,
+            override_opened_from_manage: false,
             ctx,
             all_type_fqdns,
             override_sort: SortMode::Inferred,
@@ -822,6 +841,7 @@ impl App {
             manage_highlight: 0,
             manage_scroll: 0,
             last_manage_click: None,
+            last_manage_row_click: None,
             last_manage_search: None,
             manage_rename: None,
             manage_pending_kind: None,

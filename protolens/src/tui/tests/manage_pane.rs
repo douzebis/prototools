@@ -79,7 +79,12 @@ fn clicking_the_current_override_advances_to_the_next_impacted_node() {
         .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
         .expect("entry must have a display row") as u16;
 
-    // Column 10 is well clear of `MANAGE_MARKER_COL` (2).
+    // Column 10 is well clear of `MANAGE_MARKER_COL` (2). Each click
+    // below resets `last_manage_row_click` first — these are meant to
+    // simulate separate, deliberate single clicks (item 10's own
+    // behavior), not a rapid double-click (item 11's, which opens the
+    // selection pane instead — there's no real clock to wait out in a
+    // synchronous unit test).
     app.handle_manage_click(10, row, false);
     assert_eq!(
         app.manage_highlight, idx,
@@ -87,8 +92,10 @@ fn clicking_the_current_override_advances_to_the_next_impacted_node() {
     );
     assert_eq!(app.cursor, items[1]);
 
+    app.last_manage_row_click = None;
     app.handle_manage_click(10, row, false);
     assert_eq!(app.cursor, items[2]);
+    app.last_manage_row_click = None;
     app.handle_manage_click(10, row, false);
     assert_eq!(app.cursor, items[0], "must wrap around, same as Right");
 }
@@ -126,6 +133,130 @@ fn clicking_a_different_override_only_moves_the_highlight() {
     app.handle_manage_click(10, row, false);
     assert_eq!(app.manage_highlight, idx);
     assert_eq!(app.cursor, items[0], "cursor must not move on first click");
+}
+
+/// Item 11 (2026-07-17 feedback): `Enter` on a highlighted management-
+/// pane entry opens the override selection pane on it (not the old
+/// close-the-pane behavior), hiding the management pane, rather than
+/// closing it outright.
+#[test]
+fn enter_in_manage_pane_opens_the_selection_pane_on_the_highlighted_entry() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(items[0]),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.manage_open, "selection pane replaces the manage pane");
+    assert!(app.override_focus);
+    assert_eq!(app.override_target, Some(items[0]));
+}
+
+/// Item 11: cancelling (`Esc`) out of a selection pane opened this way
+/// returns to the management pane — not the main pane — with the same
+/// entry still highlighted, and without mutating it.
+#[test]
+fn esc_after_opening_from_manage_returns_to_manage_pane_without_mutating() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(items[0]),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+    let before = app.overrides.entries()[idx].clone();
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.override_focus);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.manage_open, "must return to the management pane");
+    assert!(app.manage_focus);
+    assert!(!app.override_focus);
+    assert_eq!(app.override_target, None);
+    assert_eq!(app.manage_highlight, idx);
+    assert_eq!(
+        app.overrides.entries()[idx],
+        before,
+        "cancelling must not mutate the entry"
+    );
+}
+
+/// Item 11: confirming (`Enter`) a new type from a selection pane
+/// opened this way still lands back in the management pane (spec
+/// 0119 G3's existing unconditional behavior), same as when the pane
+/// is opened via `t`/item 3.
+#[test]
+fn enter_confirm_after_opening_from_manage_returns_to_manage_pane() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(items[0]),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.override_focus);
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_open, "must land back in the management pane");
+    assert!(app.manage_focus);
+    assert!(!app.override_focus);
+    assert_eq!(app.override_target, None);
+}
+
+/// Item 11: double-clicking an entry outside its marker column is
+/// equivalent to `Enter` on it — opens the selection pane, hiding the
+/// management pane.
+#[test]
+fn double_click_on_a_non_marker_cell_opens_the_selection_pane() {
+    let (mut app, items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    app.term_width = 120;
+    app.side_area = Rect::new(0, 0, 40, 20);
+    app.manage_list_height = 10;
+    app.manage_scroll = 0;
+    app.manage_pan_offset = 0;
+
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(items[0]),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("sint32".to_string()));
+    let idx = app.overrides.entries().len() - 1;
+
+    let row = app
+        .manage_display_rows()
+        .iter()
+        .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
+        .expect("entry must have a display row") as u16;
+
+    // Column 10 is well clear of `MANAGE_MARKER_COL` (2).
+    app.handle_manage_click(10, row, false);
+    app.handle_manage_click(10, row, false);
+    assert!(!app.manage_open);
+    assert!(app.override_focus);
+    assert_eq!(app.override_target, Some(items[0]));
 }
 
 // Spec 0134 G2: a single derivable candidate is used even when the
@@ -723,13 +854,20 @@ fn manage_pane_shift_down_moves_and_activates_destination() {
     );
 }
 
-/// `Enter` in the management pane closes it (returning focus to the
-/// main pane), same as `Esc`/`o`.
+/// Item 11 (2026-07-17 feedback): `Enter` in the management pane no
+/// longer closes it — it now opens the selection pane on the
+/// highlighted entry (see the dedicated tests above). It still falls
+/// back to the old close behavior when the collection is empty, since
+/// there's nothing to open a selection pane on.
 #[test]
-fn manage_pane_enter_closes_pane() {
-    let (mut app, _items) = repeated_scalar_fixture();
+fn manage_pane_enter_closes_pane_when_empty() {
+    let mut app = message_node_app();
+    app.splash = false;
     app.manage_focus = true;
     app.manage_open = true;
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.manage_open);

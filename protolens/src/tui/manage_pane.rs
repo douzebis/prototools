@@ -259,8 +259,17 @@ impl App {
         }
         match key.code {
             KeyCode::Tab => self.manage_focus = false,
-            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') | KeyCode::Enter => {
-                self.close_manage_pane()
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('q') => self.close_manage_pane(),
+            // Item 11 (2026-07-17 feedback): opens the selection pane on
+            // the highlighted entry to change its type, instead of
+            // closing the pane — falls back to the old close behavior
+            // when there's nothing to select.
+            KeyCode::Enter => {
+                if self.overrides.entries().is_empty() {
+                    self.close_manage_pane();
+                } else {
+                    self.open_override_from_manage();
+                }
             }
             // Interactive feedback, 2026-07-17: Shift-Up/Shift-Down move
             // the highlight like Up/Down, but also activate the
@@ -651,13 +660,19 @@ impl App {
                     self.overrides.toggle_active(idx);
                 }
                 self.render_overrides(self.first_node);
+            } else if is_double_click(&mut self.last_manage_row_click, idx) {
+                // Item 11 (2026-07-17 feedback): double-clicking an
+                // entry outside its marker column opens the selection
+                // pane on it, same as `Enter` — tracked via its own
+                // `last_manage_row_click`, separate from the marker
+                // column's `last_manage_click` above.
+                self.open_override_from_manage();
             } else if was_current {
-                // Item 10 (2026-07-17 feedback): clicking the entry that
-                // was already highlighted (anywhere outside the marker
-                // column, which keeps its own toggle-active behavior
-                // above) does the same as pressing `Right` — jump the
-                // main-pane cursor to the next node this override
-                // impacts.
+                // Item 10 (2026-07-17 feedback): a single click on the
+                // entry that was already highlighted (anywhere outside
+                // the marker column) does the same as pressing `Right`
+                // — jump the main-pane cursor to the next node this
+                // override impacts.
                 self.manage_circulate_cursor(true);
             }
         }
