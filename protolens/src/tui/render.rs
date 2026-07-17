@@ -216,8 +216,19 @@ impl App {
         }
     }
 
+    /// Auto-dismiss the startup splash after `SPLASH_TIMEOUT` (item 13 of
+    /// 2026-07-17 feedback), in addition to its existing keypress/mouse
+    /// dismissal. Called once per `render()`, mirroring
+    /// `track_message_timeout`'s deadline-based approach.
+    fn track_splash_timeout(&mut self) {
+        if self.splash && Instant::now() >= self.splash_deadline {
+            self.splash = false;
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame) {
         self.track_message_timeout();
+        self.track_splash_timeout();
         let area = frame.area();
         self.term_width = area.width;
         let chunks = Layout::default()
@@ -592,8 +603,10 @@ impl App {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// Startup splash — dismissed by any key — telling the user how to
-    /// reach the `F1` help overlay (spec 0113 D22).
+    /// Startup splash — dismissed by any key/mouse event or after
+    /// `SPLASH_TIMEOUT` elapses (item 13 of 2026-07-17 feedback) —
+    /// telling the user how to reach the `F1` help overlay (spec 0113
+    /// D22).
     pub(super) fn render_splash(&self, frame: &mut Frame, area: Rect) {
         let popup = centered_rect(60, 30, area);
         frame.render_widget(Clear, popup);
@@ -606,7 +619,6 @@ impl App {
             Line::from(self.header.as_str()),
             Line::from(""),
             Line::from("Press F1 for help."),
-            Line::from("Press any key to continue."),
         ];
         frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), inner);
     }

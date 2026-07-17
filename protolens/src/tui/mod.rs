@@ -83,6 +83,11 @@ fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> boo
 /// comment).
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// Auto-dismiss delay for the startup splash screen (2026-07-17
+/// feedback, item 13), in addition to its existing keypress/mouse
+/// dismissal — mirrors `MESSAGE_TIMEOUT`'s deadline-based approach.
+const SPLASH_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
 /// for a short-lived interactive session: at a rough ~50-70 bytes per
 /// cached `(fqdn, score)` entry, this comfortably holds capped previews for
@@ -717,6 +722,11 @@ pub struct App {
     /// `true` on startup until the first keypress dismisses it — a splash
     /// screen telling the user how to reach help (spec 0113 D22).
     splash: bool,
+    /// Wall-clock time at which `splash` auto-dismisses (2026-07-17
+    /// feedback, item 13), in addition to its existing keypress/mouse
+    /// dismissal — checked only while `splash` is still `true`, mirroring
+    /// `message_deadline`'s deadline-based approach.
+    splash_deadline: Instant,
     /// `true` while the `F1` help overlay is open.
     help_open: bool,
     /// Scroll offset (in `HELP_TEXT` lines) while the help overlay is open.
@@ -877,6 +887,7 @@ impl App {
             last_search: None,
             completion: None,
             splash: true,
+            splash_deadline: Instant::now() + SPLASH_TIMEOUT,
             help_open: false,
             help_scroll: 0,
             help_area: Rect::default(),
@@ -1172,13 +1183,21 @@ where
     loop {
         terminal.draw(|frame| app.render(frame))?;
         // While a status message is pending auto-dismissal
-        // (`message_deadline`, `track_message_timeout`), poll with a
-        // timeout instead of blocking indefinitely on `event::read()`,
-        // so the next `render()` (which actually clears an expired
-        // message) runs even with no further keypress. No behavior
-        // change — same indefinite block as before — while no message
-        // is pending, which is most of the time in ordinary navigation.
-        let event = match app.message_deadline {
+        // (`message_deadline`, `track_message_timeout`) or the splash
+        // screen hasn't yet auto-dismissed (`splash_deadline`, item 13
+        // of 2026-07-17 feedback), poll with a timeout instead of
+        // blocking indefinitely on `event::read()`, so the next
+        // `render()` (which actually clears an expired message/splash)
+        // runs even with no further keypress. No behavior change — same
+        // indefinite block as before — once both have elapsed, which is
+        // most of the time in ordinary navigation.
+        let splash_deadline = app.splash.then_some(app.splash_deadline);
+        let deadline = match (app.message_deadline, splash_deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(d), None) | (None, Some(d)) => Some(d),
+            (None, None) => None,
+        };
+        let event = match deadline {
             Some(deadline) => {
                 let timeout = deadline.saturating_duration_since(Instant::now());
                 if event::poll(timeout)? {

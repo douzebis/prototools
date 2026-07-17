@@ -82,6 +82,27 @@ fn message_auto_dismisses_after_timeout() {
     assert!(app.message_deadline.is_none());
 }
 
+/// Item 13 of 2026-07-17 feedback: the startup splash auto-dismisses
+/// once `SPLASH_TIMEOUT` has elapsed, in addition to its existing
+/// keypress/mouse dismissal — detected by `track_splash_timeout`
+/// (called from `render`) noticing an expired `splash_deadline`.
+#[test]
+fn splash_auto_dismisses_after_timeout() {
+    let mut app = empty_app();
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    assert!(app.splash);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    // Not yet expired: still showing on a later render.
+    assert!(app.splash);
+
+    // Force expiry (real time never actually elapses in a unit test).
+    app.splash_deadline = Instant::now() - Duration::from_millis(1);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!app.splash);
+}
+
 /// A message never auto-dismisses while the bottom bar is actively
 /// serving as a text-entry prompt (`command_buffer`) or a pending `q`
 /// quit confirmation — both are actively awaiting a keypress, unlike
