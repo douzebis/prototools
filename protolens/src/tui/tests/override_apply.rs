@@ -715,3 +715,37 @@ fn esc_closing_the_override_pane_restores_nested_message_set_auto_expansion() {
         app.lines
     );
 }
+
+/// Spec 0117 §1 (amended): when neither `--type` nor inference resolves
+/// a root type, `App::new` seeds no override at all — the collection
+/// starts genuinely empty, not with a `path: "/"` entry typed `None`.
+/// The root must still render raw with no panic, and a later real
+/// `type-as` must still take effect (the pre-marked `rendered_as` must
+/// not wrongly claim "already settled").
+#[test]
+fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
+    use crate::decode::{decode, DescriptorContext};
+
+    let mut ctx = DescriptorContext::empty_for_test();
+    // A single varint field (tag 0x08, value 5) — no --type, and this
+    // context has no hopcroft.rkyv, so autoinference is unavailable.
+    let blob = [0x08u8, 0x05];
+    let decoded = decode(&blob, &mut ctx, None, 2).unwrap();
+    assert_eq!(decoded.root_type, "<raw / no type>");
+
+    let app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+
+    assert!(
+        app.overrides.entries().is_empty(),
+        "no root type resolved: the override collection must start empty, \
+         got {:#?}",
+        app.overrides.entries()
+    );
+}

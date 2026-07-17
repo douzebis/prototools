@@ -596,13 +596,12 @@ impl App {
         // `natural_type` infers a node's type by walking up to its
         // *parent's* resolved field descriptor, and root has no parent.
         // It must therefore survive a wholesale collection replace as a
-        // persistent baseline entry, same as `App::new`'s own initial
-        // `seed_root` call — otherwise root (and, transitively, every
-        // schema-typed descendant whose own `natural_type` walks back up
-        // through it) silently reverts to raw rendering, even though the
-        // loaded file's own explicit overrides are all individually
-        // intact. Preserve the currently-resolved root type unless the
-        // loaded file defines its own active root entry.
+        // persistent baseline entry — otherwise root (and, transitively,
+        // every schema-typed descendant whose own `natural_type` walks
+        // back up through it) silently reverts to raw rendering, even
+        // though the loaded file's own explicit overrides are all
+        // individually intact. Preserve the currently-resolved root type
+        // unless the loaded file defines its own active root entry.
         let root_origin = OverrideOrigin::Path {
             path: "/".to_string(),
         };

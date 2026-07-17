@@ -307,9 +307,12 @@ impl OverrideCollection {
         });
     }
 
-    /// Seeds the startup root entry (spec 0117 §1): `path: "/"`, active,
-    /// typed as given (`None` if neither `--type` nor inference resolved
-    /// one).
+    /// Seeds a root entry: `path: "/"`, active, typed as given. Spec
+    /// 0117 §1: `App::new` calls this at startup only when `--type` or
+    /// inference actually resolved a root type — an untyped root gets no
+    /// entry at all, leaving the collection empty until the user adds
+    /// one. `load_overrides` also calls this (with `Some`/`None` alike)
+    /// to re-seed a root baseline when a restored file lacks one.
     pub fn seed_root(&mut self, r#type: Option<String>) {
         self.entries.push(OverrideEntry {
             origin: OverrideOrigin::Path {

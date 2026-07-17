@@ -743,16 +743,20 @@ impl App {
             .position(|n| n.doc_prev.is_none())
             .unwrap_or(0);
         // Spec 0117 §1: seed the root `path` override with whatever type
-        // was explicitly requested or inferred; `None` (raw) if neither —
-        // `decode::decode` uses the "<raw / no type>" sentinel for that
-        // case rather than an `Option`.
+        // was explicitly requested or inferred; if neither is available,
+        // seed nothing at all — an untyped root has no override worth
+        // recording, and the collection is legitimately empty until the
+        // user adds one. `decode::decode` uses the "<raw / no type>"
+        // sentinel for the "neither" case rather than an `Option`.
         let root_override_type = if decoded.root_type == "<raw / no type>" {
             None
         } else {
             Some(decoded.root_type.clone())
         };
         let mut overrides = override_pane::OverrideCollection::new();
-        overrides.seed_root(root_override_type.clone());
+        if root_override_type.is_some() {
+            overrides.seed_root(root_override_type.clone());
+        }
         let mut app = App {
             blob: decoded.blob,
             wrapper_offset: decoded.wrapper_offset,
@@ -832,17 +836,23 @@ impl App {
         };
         // Spec 0118 §2.1: the wrapper root is already rendered under
         // `root_override_type` by `decode()` itself, matching the
-        // `seed_root` entry above — mark it as such so the first
-        // `render_overrides` pass doesn't treat it as a mismatch and
-        // needlessly re-splice the entire tree (which would invalidate
-        // every already-computed node index: `cursor`, `folded`, etc.).
+        // `seed_root` entry above (when one was seeded) — mark it as
+        // such so the first `render_overrides` pass doesn't treat it as
+        // a mismatch and needlessly re-splice the entire tree (which
+        // would invalidate every already-computed node index: `cursor`,
+        // `folded`, etc.). When no entry was seeded (untyped root), the
+        // outer `Option` must be `None` — matching what
+        // `resolve_active_override` will itself compute ("no active
+        // entry") — not `Some(None)` ("an active entry explicitly says
+        // raw"), else the first pass would wrongly conclude nothing
+        // needs resettling should the user later seed a real entry.
         if let Some(node) = app.tree.get_mut(cursor) {
             // The root's own field name is always "1" (its field number
             // in the virtual encompassing message — mirrors
             // `field_name_for`'s no-parent case), and can't yet carry a
             // §G4 name override at this point (the collection was just
             // seeded, nothing has been renamed).
-            node.rendered_as = Some((Some(root_override_type), "1".to_string()));
+            node.rendered_as = Some((root_override_type.clone().map(Some), "1".to_string()));
         }
         // Spec 0120: Any/MessageSet auto-expansion is computed by
         // `render_overrides` itself (`auto_expand_type`), not by

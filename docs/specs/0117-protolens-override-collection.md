@@ -41,9 +41,11 @@ management UI (navigate, toggle, delete) and YAML save/restore.
   1. **`path`**: `path -> none | some(type)`.
   2. **`path-field`**: `(path, field number) -> none | some(type)`.
   3. **`fqdn-field`**: `(FQDN, field number) -> none | some(type)`.
-- On startup, a single `path` override is seeded for the root (`/`),
-  set to whatever type was explicitly requested (`--type`) or
-  inferred; `none` if neither is available.
+- On startup, a single `path` override is seeded for the root (`/`)
+  whenever a type was explicitly requested (`--type`) or inferred. If
+  neither is available, no root override is seeded at all — the
+  collection starts empty, and the root simply renders raw until the
+  user adds an override.
 - Overrides are sorted by kind (`path`, `path-field`, `fqdn-field`),
   then by origin (`path`'s own path string; `path-field`'s
   `path:field`; `fqdn-field`'s `fqdn:field`), then by type in
@@ -176,10 +178,14 @@ trailing slash seen in the user-facing origin display (e.g. `/1/`)
 is a display-only decoration for message/group nodes, applied the
 same way 0114 §3 already decorates its own listings.
 
-On startup, `OverrideCollection` is seeded with exactly one entry:
+On startup, `OverrideCollection` is seeded with one entry —
 `OverrideOrigin::Path { path: "/" }`, `active: true`, `r#type` set to
-the explicitly-requested (`--type`) or inferred root type, `None` if
-neither.
+the explicitly-requested (`--type`) or inferred root type — only when
+such a type was actually resolved. If neither `--type` nor inference
+resolved a root type, no entry is seeded at all and the collection
+starts empty; the root then renders raw (falling back to
+`natural_type`'s "no active override" behavior, same as any other
+untyped node) until the user adds a real override.
 
 Sort order (used for both the management pane's listing and the YAML
 file's entry order): `OverrideKind` (`Path` < `PathField` <
