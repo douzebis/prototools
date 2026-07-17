@@ -269,7 +269,11 @@ impl App {
             clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
         }
         let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
-        let window = &self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end];
+        // Collected (not a borrowed slice) so the heat-cue pass below can
+        // mutate `self.heat_cache` — a plain slice would keep `self`
+        // borrowed immutably for the rest of this block.
+        let window: Vec<usize> =
+            self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end].to_vec();
 
         // Spec 0129 §G1: the drag-selected `line_idx` range (if any) gets
         // the same `REVERSED` treatment as the single cursor row below —
@@ -280,15 +284,46 @@ impl App {
             _ => None,
         };
 
+        // Spec 0138 (item 12, 2026-07-17 feedback): computed in its own
+        // pass, ahead of the (immutable-`self`) `text_lines` closure
+        // below, since populating `self.heat_cache` needs `&mut self`.
+        let heat_cues: Vec<Option<heat_cue::HeatCue>> = window
+            .iter()
+            .map(|&line_idx| self.heat_cue_for(line_idx))
+            .collect();
+
         let text_lines: Vec<Line> = window
             .iter()
+            .zip(heat_cues.iter())
             .enumerate()
-            .map(|(row, &line_idx)| {
+            .map(|(row, (&line_idx, cue))| {
                 let mut spans = pan_spans(self.render_line_spans(line_idx), self.pan_offset);
                 if self.line_has_active_override(line_idx) {
                     for span in &mut spans {
                         span.style = span.style.add_modifier(Modifier::BOLD);
                     }
+                }
+                // Leading gutter glyph + trailing `[current/best]` suffix
+                // (spec 0138 N1) — the glyph column is always reserved
+                // (a blank space when absent), so node indentation never
+                // shifts; both are appended/prepended after panning, so
+                // neither is affected by horizontal scroll. `heat_style`
+                // returns `None` on the ANSI-16 fallback for a
+                // low-confidence `best_score` (G7's narrowing of the G4
+                // gate) — in that case no cue shows at all, glyph or
+                // suffix.
+                let glyph_style = cue
+                    .as_ref()
+                    .and_then(|c| theme::heat_style(c.level, self.theme));
+                match (glyph_style, cue) {
+                    (Some(style), Some(c)) => {
+                        spans.push(Span::styled(
+                            format!(" [{}/{}]", c.current, c.best),
+                            theme::heat_suffix_style(self.theme),
+                        ));
+                        spans.insert(0, Span::styled(heat_cue::HEAT_GLYPH.to_string(), style));
+                    }
+                    _ => spans.insert(0, Span::raw(" ")),
                 }
                 let selected = selection_range
                     .as_ref()

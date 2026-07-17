@@ -422,6 +422,97 @@ pub fn unfocused_pane_style() -> Style {
     Style::default().fg(Color::Gray)
 }
 
+/// True-color 12-stop "heat" gradients (spec 0138 G6), dimmest (index 0,
+/// level 1) to brightest (index 11, level 12) — purpose-designed for the
+/// main-pane inference-mismatch cue, not reused from `dark_rgb`/
+/// `light_rgb`'s `SyntaxRole`-driven palettes (none of which form a
+/// natural 12-step heat ramp).
+mod heat_rgb {
+    use ratatui::style::Color;
+
+    /// Dark theme, "ember → flame".
+    pub const DARK: [Color; 12] = [
+        Color::Rgb(0x3D, 0x20, 0x20),
+        Color::Rgb(0x4A, 0x24, 0x20),
+        Color::Rgb(0x57, 0x28, 0x22),
+        Color::Rgb(0x6B, 0x2E, 0x22),
+        Color::Rgb(0x7F, 0x34, 0x20),
+        Color::Rgb(0x96, 0x39, 0x1C),
+        Color::Rgb(0xAD, 0x40, 0x18),
+        Color::Rgb(0xC4, 0x49, 0x13),
+        Color::Rgb(0xDB, 0x54, 0x0D),
+        Color::Rgb(0xF0, 0x60, 0x08),
+        Color::Rgb(0xFF, 0x7A, 0x04),
+        Color::Rgb(0xFF, 0xAC, 0x06),
+    ];
+
+    /// Light theme, "pale → deep red" (ColorBrewer OrRd-inspired).
+    pub const LIGHT: [Color; 12] = [
+        Color::Rgb(0xFD, 0xED, 0xE4),
+        Color::Rgb(0xFC, 0xE0, 0xD0),
+        Color::Rgb(0xFB, 0xD0, 0xB8),
+        Color::Rgb(0xF8, 0xB8, 0x9C),
+        Color::Rgb(0xF4, 0x9E, 0x7E),
+        Color::Rgb(0xED, 0x82, 0x61),
+        Color::Rgb(0xE3, 0x67, 0x49),
+        Color::Rgb(0xD3, 0x4E, 0x36),
+        Color::Rgb(0xBE, 0x38, 0x26),
+        Color::Rgb(0xA2, 0x23, 0x1A),
+        Color::Rgb(0x86, 0x12, 0x10),
+        Color::Rgb(0x6E, 0x10, 0x04),
+    ];
+}
+
+/// Main-pane inference-mismatch heat cue color for the leading glyph
+/// column (spec 0138, item 12 of 2026-07-17 feedback). `level` is 1..=12
+/// (see `tui::heat_cue::heat_level`), already gated present by the
+/// caller (G4: `best_score > current_score`). Returns `None` when the
+/// cue must not be shown at all on this terminal — only possible on the
+/// ANSI-16 fallback, for `level <= 3` (`best_score <= 3`, G7's
+/// low-confidence narrowing of the gate); the truecolor gradient always
+/// shows *some* color once the gate has passed, however dim.
+pub fn heat_style(level: u8, theme: ThemeKind) -> Option<Style> {
+    match theme {
+        ThemeKind::Dark if supports_rgb() => {
+            Some(Style::default().fg(heat_rgb_color(level, false)))
+        }
+        ThemeKind::Light if supports_rgb() => {
+            Some(Style::default().fg(heat_rgb_color(level, true)))
+        }
+        ThemeKind::Dark | ThemeKind::Light if level <= 3 => None,
+        ThemeKind::Dark | ThemeKind::Light if level <= 7 => Some(Style::default().fg(Color::Red)),
+        ThemeKind::Dark | ThemeKind::Light => Some(Style::default().fg(Color::LightRed)),
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    }
+}
+
+fn heat_rgb_color(level: u8, light: bool) -> Color {
+    let idx = level.clamp(1, 12) as usize - 1;
+    if light {
+        heat_rgb::LIGHT[idx]
+    } else {
+        heat_rgb::DARK[idx]
+    }
+}
+
+/// The heat cue's ` [current/best]` suffix color — always the brightest
+/// available red (truecolor level 12, or `Color::LightRed` on the
+/// ANSI-16 fallback) whenever the cue is present at all, regardless of
+/// `level` (spec 0138 N1) — unlike `heat_style`, which grades the
+/// leading glyph by `level`.
+pub fn heat_suffix_style(theme: ThemeKind) -> Style {
+    match theme {
+        ThemeKind::Dark if supports_rgb() => Style::default().fg(heat_rgb::DARK[11]),
+        ThemeKind::Light if supports_rgb() => Style::default().fg(heat_rgb::LIGHT[11]),
+        ThemeKind::Dark | ThemeKind::Light => Style::default().fg(Color::LightRed),
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    }
+}
+
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
 /// (spec 0116 §9's "Selection mechanism"):
 ///
@@ -571,6 +662,74 @@ mod tests {
         }
         unsafe {
             std::env::remove_var("COLORTERM");
+        }
+    }
+
+    #[test]
+    fn heat_style_uses_rgb_gradient_when_colorterm_truecolor() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+        }
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let level1 = heat_style(1, theme).unwrap();
+            let level12 = heat_style(12, theme).unwrap();
+            assert!(matches!(level1.fg, Some(Color::Rgb(..))));
+            assert!(matches!(level12.fg, Some(Color::Rgb(..))));
+            assert_ne!(level1.fg, level12.fg, "brightness must vary by level");
+            // Out-of-range levels clamp rather than panic.
+            assert_eq!(heat_style(0, theme), heat_style(1, theme));
+            assert_eq!(heat_style(200, theme), heat_style(12, theme));
+        }
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
+    }
+
+    #[test]
+    fn heat_style_ansi16_fallback_thresholds() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
+        if terminfo_reports_rgb() {
+            return;
+        }
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            // Level 3 == `best_score <= 3` (G7's low-confidence absence).
+            assert_eq!(heat_style(3, theme), None);
+            // Level 7 == `best_score <= 21`: dark red.
+            assert_eq!(heat_style(7, theme), Some(Style::default().fg(Color::Red)));
+            // Level 8 == `best_score > 21`: bright red.
+            assert_eq!(
+                heat_style(8, theme),
+                Some(Style::default().fg(Color::LightRed))
+            );
+        }
+    }
+
+    #[test]
+    fn heat_suffix_style_is_always_the_brightest_red() {
+        let _guard = lock_env();
+        // SAFETY: single-threaded (guarded by ENV_MUTEX above).
+        unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+        }
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            assert!(matches!(heat_suffix_style(theme).fg, Some(Color::Rgb(..))));
+        }
+        unsafe {
+            std::env::remove_var("COLORTERM");
+        }
+        if !terminfo_reports_rgb() {
+            for theme in [ThemeKind::Dark, ThemeKind::Light] {
+                assert_eq!(
+                    heat_suffix_style(theme),
+                    Style::default().fg(Color::LightRed)
+                );
+            }
         }
     }
 

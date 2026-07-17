@@ -90,6 +90,11 @@ const MESSAGE_TIMEOUT: Duration = Duration::from_secs(4);
 /// implementation-time tuning choice (spec Open Issue #1).
 const CANDIDATE_CACHE_MAX_BYTES: usize = 1 << 20;
 
+/// Byte budget for `App::heat_cache` (spec 0138, item 12 of 2026-07-17
+/// feedback) — same order of magnitude as `CANDIDATE_CACHE_MAX_BYTES`,
+/// its direct structural precedent.
+const HEAT_CACHE_MAX_BYTES: usize = 1 << 20;
+
 /// Byte budget for `App::render_cache` (spec 0116 §8) — same order of
 /// magnitude as `CANDIDATE_CACHE_MAX_BYTES`, its direct structural
 /// precedent, for the same short-lived-interactive-session reasoning.
@@ -587,6 +592,20 @@ pub struct App {
     /// Byte-bounded MRU cache of capped inferred-candidate previews for
     /// ranges other than the one currently active (spec 0114 §6).
     candidate_cache: override_pane::CandidateCache,
+    /// Byte-bounded MRU cache of complete ranked-candidate lists, keyed
+    /// by a node's tag/length-stripped payload range, for the main-pane
+    /// inference-mismatch heat cue (spec 0138, item 12 of 2026-07-17
+    /// feedback) — reuses `override_pane::CandidateCache`'s exact shape
+    /// directly (a second, separate instance) rather than a duplicate
+    /// type, since it already matches spec 0138 G1 exactly. Populated
+    /// lazily, only for nodes actually visible in the main-pane viewport
+    /// (`heat_cue::heat_cue_for`); independent of `candidate_cache`,
+    /// which serves the override *pane* rather than the main pane.
+    heat_cache: override_pane::CandidateCache,
+    /// `true` while the main-pane heat cue (spec 0138) is toggled off by
+    /// `i` (item 12, 2026-07-17 feedback) — hides the cue without
+    /// discarding `heat_cache`.
+    heat_cues_hidden: bool,
     /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
     /// hints)` renders (spec 0116 §8) — consulted/populated by
     /// `apply_override`, keyed by the same `payload_range`/type pair
@@ -831,6 +850,8 @@ impl App {
             term_width: 0,
             override_list_height: 0,
             candidate_cache: override_pane::CandidateCache::new(CANDIDATE_CACHE_MAX_BYTES),
+            heat_cache: override_pane::CandidateCache::new(HEAT_CACHE_MAX_BYTES),
+            heat_cues_hidden: false,
             render_cache: RenderCache::new(RENDER_CACHE_MAX_BYTES),
             active_override_range: None,
             override_inferred_raw: Vec::new(),
@@ -1194,6 +1215,7 @@ where
 }
 
 mod command_line;
+mod heat_cue;
 mod key_dispatch;
 mod manage_pane;
 mod mouse;

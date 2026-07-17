@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0138 — protolens: main-pane inference-mismatch heat cue
 
-Status: draft
+Status: implemented
+Implemented in: 2026-07-17
 Refs: docs/specs/0114-protolens-range-type-override.md (override pane,
       `inferred_candidates`/`score_all` scoring precedent this spec
       reuses), docs/specs/0137-protolens-override-primitive-and-enum-
@@ -60,13 +61,17 @@ scoring/caching/gating/color model only.
   the single range-keyed vector on every lookup, so it stays correct
   automatically across override changes with no cache-invalidation
   logic needed.
-- G4: gating — the cue is shown for a node if and only if
-  `best_score(range)` is present **and**
-  `current_score(range, current_type) < best_score(range) * 0.9`
-  (current typing scores more than 10% below the best available
-  candidate). Exact integer-vs-float comparison basis is an
-  implementation-time detail (Specification proposes an
-  integer-only form to avoid rounding ambiguity).
+- G4 (amended 2026-07-17): gating — the cue is shown for a node if
+  and only if `best_score(range)` is present **and**
+  `best_score(range) > current_score(range, current_type)` (the best
+  available candidate strictly outscores the current typing). This
+  replaces the original 10%-margin gate below with a simpler
+  strictly-greater comparison, per follow-up feedback.
+
+  ~~the cue is shown for a node if and only if `best_score(range)` is
+  present **and** `current_score(range, current_type) <
+  best_score(range) * 0.9` (current typing scores more than 10% below
+  the best available candidate)~~
 - G5: true-color brightness dimension — when the gate (G4) is
   triggered, the cue's brightness level (1–12) is selected by matching
   `best_score(range)` (**not** `current_score`) against the Fibonacci
@@ -134,12 +139,28 @@ scoring/caching/gating/color model only.
   |  12   | `#6E1004` |
 
   These are draft proposals for review, not yet confirmed.
-- G7: ANSI-16 fallback (terminals without truecolor support) — a
-  simpler, independent 3-state mapping on the same `best_score`
-  dimension, exactly as specified: `best_score <= 0` → absent (no
-  cue); `best_score <= 13` → dark red (`Color::Red`); `best_score >
-  13` → bright red (`Color::LightRed`). Not derived from the 12-level
-  truecolor table above — its own coarse rule.
+- G7 (amended 2026-07-17): ANSI-16 fallback (terminals without
+  truecolor support) — a simpler 3-state mapping on the same
+  `best_score` dimension, recalibrated per follow-up feedback:
+  `best_score <= 3` → absent (no cue); `best_score <= 21` → dark red
+  (`Color::Red`); `best_score > 21` → bright red (`Color::LightRed`).
+
+  Interaction with the G4 gate (ambiguous in the follow-up feedback,
+  resolved here): the G4 gate (`best_score > current_score`) still
+  governs *whether* a cue is shown at all — a node whose current
+  typing already matches the best-scoring candidate never shows a
+  cue, on any terminal. The ANSI-16 thresholds above apply only
+  *after* the gate has already passed, and serve two purposes: they
+  select which of the two ANSI colors to use, and they impose an
+  additional absence rule for low-confidence signals (`best_score <=
+  3`) where the "best" candidate isn't a strong enough signal to be
+  worth flagging even on a terminal that can't express the fine-
+  grained truecolor ramp. Without this reading, a perfectly
+  well-typed node (`current_score == best_score`, both large) would
+  show a permanent bright-red cue forever on ANSI-16 terminals, which
+  would contradict the feature's purpose — so G7's thresholds are
+  best read as *narrowing* G4's gate on ANSI-16 terminals, not as an
+  independent presence rule.
 - G8: absent state — no cue is rendered at all (not a 13th color or
   distinct "level 0" glyph) whenever the gate (G4) is not triggered,
   including whenever `best_score(range)` itself is unavailable (no
@@ -148,19 +169,25 @@ scoring/caching/gating/color model only.
 
 ## Non-goals
 
-- N1: the exact visual placement/mechanism of the cue within the main
-  pane (text-color tint, gutter/margin glyph, border decoration, or
-  otherwise) is explicitly left undetermined here — to be settled by
-  a future spec or amendment before implementation.
+- N1 (resolved 2026-07-17): the visual placement is a dedicated
+  leading column (one character wide, always reserved whether or not
+  a cue is present, so node indentation never shifts) showing a
+  single glyph, `●` (U+25CF BLACK CIRCLE), styled per G5/G6/G7's
+  per-node graduated level; plus a trailing
+  ` [<current_score>/<best_score>]` suffix appended to the node's own
+  header line, styled unconditionally in the *brightest* available
+  red (truecolor level 12, or `Color::LightRed` on the ANSI-16
+  fallback) whenever the cue is present at all — the suffix's color
+  is not graduated by level; only the leading glyph is.
 - N2: no relation to, or reuse of, the override selection pane's own
   primitive/enum candidate-row styling (spec 0137 §G8). That feature
   colors rows *inside* the override pane's candidate list; this
   feature colors nodes in the *main* pane, is gated by an entirely
   different condition (best-vs-current score comparison, not row
   kind), and uses a separate, purpose-built palette.
-- N3: no implementation in this pass — this spec is drafted for design
-  review only. `Status` remains `draft` until a future session
-  implements it.
+- N3 (superseded 2026-07-17): originally deferred implementation to a
+  future session — superseded by follow-up feedback explicitly
+  requesting implementation now; see `Status`/`Implemented in` above.
 - N4: no change to override-pane machinery, `splice_override`, or
   `OverrideEntry` — this is a purely additive, read-only main-pane
   rendering feature layered on top of existing scoring/graph
@@ -174,11 +201,11 @@ scoring/caching/gating/color model only.
 
 ### New cache (`override_pane.rs` or a new module)
 
-A `InferenceScoreCache` (name TBD at implementation time) mirroring
-`CandidateCache`'s exact struct shape and `get`/`insert` MRU,
-byte-bounded eviction logic (`override_pane.rs:105-148`), keyed by
-`Range<usize>` (tag/length-stripped payload range), storing
-`Vec<(String, i64)>` — populated via a call to
+Reuses `override_pane::CandidateCache` directly (a second instance,
+`App::heat_cache`) rather than introducing a duplicate type — its
+shape (`Range<usize> -> Vec<(String, i64)>`, MRU, byte-bounded
+eviction) already matches G1 exactly, and nothing about it assumes
+capped data. Populated via a call to
 `override_pane::inferred_candidates(range_bytes, graph)` the first
 time a node's range is looked up, called only from the main-pane
 render path when a node is actually within the visible viewport.
@@ -202,13 +229,11 @@ fn current_score(candidates: &[(String, i64)], current_type: &str) -> i64 {
 }
 ```
 
-### Gating (integer-only, avoiding float rounding)
+### Gating (amended 2026-07-17, see G4)
 
 ```
-current_score * 10 < best_score * 9
+best_score > current_score
 ```
-equivalent to `current_score < best_score * 0.9` without floating
-point — exact form to be confirmed at implementation time.
 
 ### Brightness bucketing
 
@@ -228,12 +253,18 @@ with the G7 ANSI-16 fallback selected via `theme::supports_rgb`'s
 existing detection chain, exactly as `theme::style_for` already
 branches per-role today.
 
+### Visibility toggle
+
+Pressing `i` (as in "inferred") in the main pane toggles
+`App::heat_cues_hidden`, hiding/showing all heat cues without
+discarding the cache.
+
 ## Test plan
 
-(Deferred to implementation time — this spec is draft-only. When
-implemented, the test plan should cover: G1's lazy population trigger
-and MRU eviction; G2/G3's absent/default-0 edge cases; G4's gate
-arithmetic at and around the 10% boundary; G5's bucket boundaries at
-each of the 11 Fibonacci values; G7's ANSI-16 3-state fallback; and
-that the cue never appears in the override pane itself, only the main
-pane.)
+Covers: G1's lazy population trigger; G2/G3's absent/default-0 edge
+cases; G4's gate at and around equality (`best_score == current_score`
+must not show a cue, `best_score == current_score + 1` must); G5's
+bucket boundaries at each of the 11 Fibonacci values; G7's ANSI-16
+3-state fallback and its interaction with the gate; the `i` toggle;
+and that the cue never appears in the override pane itself, only the
+main pane.
