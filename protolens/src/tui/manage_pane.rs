@@ -87,7 +87,7 @@ impl App {
         let marker = if e.active { '●' } else { '○' };
         let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
         match &e.name {
-            Some(name) => format!("  {marker} {type_label}  as \"{name}\""),
+            Some(name) => format!("  {marker} {type_label} as \"{name}\""),
             None => format!("  {marker} {type_label}"),
         }
     }
