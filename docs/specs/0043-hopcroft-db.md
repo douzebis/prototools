@@ -151,9 +151,11 @@ graph `G = (V, E, λ)` as described in `docs/schema-match.md` Part 2:
 `expected_wire_type` is determined by the `ScoringKind` mapping from spec
 0042 §Schema information required for scoring.
 
-"One schema" = one top-level message type in the root `FileDescriptorProto`
-of a `.pb` file.  A `.pb` whose root `FileDescriptorProto` declares N
-top-level message types contributes N schemas (N root nodes) to the graph.
+"One schema" = one message type in the root `FileDescriptorProto` of a
+`.pb` file (amended 2026-07-17 by spec 0140: originally top-level message
+types only, now every non-pruned message type, nested or not — see spec
+0140).  A `.pb` whose root `FileDescriptorProto` declares N such message
+types contributes N schemas (N root nodes) to the graph.
 
 **Checkpoint 3** — graph sanity:
 - Node count = (sum of all message types across all `.pb` files, counting

@@ -19,8 +19,11 @@ Spec 0042 delivered the single-schema scoring walk: `score-graph score <graph>
 prints a single result line.
 
 The compiled graph produced by `score-graph build-scoring-graph` (spec 0047)
-already contains **all** top-level message types across all input YAML files
-as named `RootEntry` records.  Scoring them one at a time is wasteful: each
+already contains **all** message types across all input YAML files as named
+`RootEntry` records (amended 2026-07-17 by spec 0140: originally top-level
+types only, now nested types too — see spec 0140; the algorithm below is
+unaffected either way, since it already treats `graph.roots` generically).
+Scoring them one at a time is wasteful: each
 independent call re-loads the graph, re-decodes the prototext if needed, and
 traverses the wire bytes from scratch.  Because the scoring walk is
 schema-guided, the traversal of a given wire field depends on which schema is
@@ -29,8 +32,9 @@ joint traversal can therefore amortize the cost of the wire parse across all
 candidate entry points simultaneously.
 
 The target use-case is schema identification: given a binary protobuf of
-unknown type, rank all known top-level message types by how well they explain
-the wire content, and return the best match (or top-k candidates).
+unknown type, rank all known message types (top-level and nested — spec
+0140) by how well they explain the wire content, and return the best match
+(or top-k candidates).
 
 This spec describes the data structures and algorithm for the multi-entry
 parallel walk, and adds a `score-graph match` subcommand to invoke it.

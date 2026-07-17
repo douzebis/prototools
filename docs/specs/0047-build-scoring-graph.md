@@ -17,8 +17,10 @@ SPDX-License-Identifier: MIT
 Spec 0045 adds `reproto --emit-scoring-graph`, which writes one YAML file per
 summoned FileDescriptorProto.  Each YAML describes the message types in that
 file as a list of `(field_number, ScoringKind[, child_fqdn])` triples, plus
-an `entries` list naming the top-level (non-nested) message types that serve
-as candidate entry points for the scoring walk.
+an `entries` list naming the message types that serve as candidate entry
+points for the scoring walk (amended 2026-07-17 by spec 0140: originally
+top-level message types only, now every non-pruned message type, nested or
+not — see spec 0140).
 
 The next step in the pipeline (spec 0043 Stages 3–4) is to:
 
@@ -41,8 +43,9 @@ This spec adds `prototext build-scoring-graph` as a subcommand of the existing
    `reproto --emit-scoring-graph` as input.
 3. Merge them into a single scoring graph, run Hopcroft minimization, and
    write a `CompiledGraph` binary to a caller-specified output path.
-4. Preserve `entries` (the per-file lists of top-level message FQDNs from the
-   YAML) as **root entries** in the `CompiledGraph`, so the scoring walk knows
+4. Preserve `entries` (the per-file lists of message FQDNs from the YAML —
+   see spec 0140 for the amended, no-longer-top-level-only scope) as
+   **root entries** in the `CompiledGraph`, so the scoring walk knows
    which states to try as starting points for each original schema.
 5. Emit a human-readable summary to stderr: number of YAML files read, message
    types before and after deduplication, transition count, output file size.
