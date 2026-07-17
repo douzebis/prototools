@@ -244,20 +244,17 @@ impl App {
             (chunks[0], None)
         };
 
-        // Bold border marks whichever pane currently holds keyboard
-        // focus, mirroring the override/management panes' own
-        // `override_focus`/`manage_focus`-driven border style — the main
-        // pane has focus exactly when neither side pane does (2026-07-14
-        // feedback: no prior visible sign of which pane focus was in).
+        // `pane_focus_style` marks whichever pane currently holds keyboard
+        // focus, shared with the override/management panes' own
+        // `render_override_pane`/`render_manage_pane` — the main pane has
+        // focus exactly when neither side pane does (2026-07-14 feedback:
+        // no prior visible sign of which pane focus was in).
         let main_focused = !self.override_focus && !self.manage_focus;
-        let main_border_style = if main_focused {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
+        let main_style = pane_focus_style(main_focused, self.theme);
         let main_block = Block::bordered()
-            .title(format!(" {} ", self.header))
-            .border_style(main_border_style);
+            .title(Line::styled(format!(" {} ", self.header), main_style))
+            .border_style(main_style)
+            .border_type(BorderType::Rounded);
         let inner = main_block.inner(main_outer);
         frame.render_widget(main_block, main_outer);
         self.main_area = inner;
@@ -345,7 +342,7 @@ impl App {
                 .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                 .split(chunks[1]);
 
-            let cmd_block = Block::bordered();
+            let cmd_block = Block::bordered().border_type(BorderType::Rounded);
             let cmd_inner = cmd_block.inner(bottom[0]);
             frame.render_widget(cmd_block, bottom[0]);
             self.cmd_area = Some(cmd_inner);
@@ -402,7 +399,9 @@ impl App {
                 type_label,
             )
         };
-        let status_block = Block::bordered().title(" Status — F1 for help ");
+        let status_block = Block::bordered()
+            .title(" Status — F1 for help ")
+            .border_type(BorderType::Rounded);
         let status_inner = status_block.inner(status_outer);
         frame.render_widget(status_block, status_outer);
         frame.render_widget(Paragraph::new(status), status_inner);
@@ -443,12 +442,11 @@ impl App {
             " Override — range [{}..{}) — sort: {sort_label} ",
             range.start, range.end,
         );
-        let border_style = if self.override_focus {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let block = Block::bordered().title(title).border_style(border_style);
+        let style = pane_focus_style(self.override_focus, self.theme);
+        let block = Block::bordered()
+            .title(Line::styled(title, style))
+            .border_style(style)
+            .border_type(BorderType::Rounded);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.side_area = inner;
@@ -495,7 +493,9 @@ impl App {
     pub(super) fn render_help(&mut self, frame: &mut Frame, area: Rect) {
         let popup = centered_rect(70, 70, area);
         frame.render_widget(Clear, popup);
-        let block = Block::bordered().title(" Help (j/k scroll, q/Esc/F1 close) ");
+        let block = Block::bordered()
+            .title(" Help (j/k scroll, q/Esc/F1 close) ")
+            .border_type(BorderType::Rounded);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         self.help_area = inner;
@@ -516,7 +516,9 @@ impl App {
     pub(super) fn render_splash(&self, frame: &mut Frame, area: Rect) {
         let popup = centered_rect(60, 30, area);
         frame.render_widget(Clear, popup);
-        let block = Block::bordered().title(" protolens ");
+        let block = Block::bordered()
+            .title(" protolens ")
+            .border_type(BorderType::Rounded);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         let text = vec![

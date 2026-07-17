@@ -888,18 +888,20 @@ fn toggling_message_set_auto_override_off_and_on_sticks() {
     );
 }
 
-/// Regression test (2026-07-14 interactive feedback): deactivating a
-/// MessageSet's tier-1 (`Item`) auto-derived override must also stop
-/// honoring its tier-2 (`message`) auto-derived override, even though
-/// the tier-2 entry itself is never touched — its derivation
-/// (looking up the extension type from `type_id`) is only valid
-/// while its parent still resolves as `MessageSetItem`, so it must
-/// demote alongside its ancestor rather than keep rendering the stale
-/// extension type. Previously, only deactivating an *outer* ancestor
-/// override (e.g. an enclosing `Any`) cleared it — deactivating the
-/// immediate tier-1 `Item` alone was not enough.
+/// Regression test (2026-07-17 design correction, following 2026-07-14
+/// interactive feedback): deactivating a MessageSet's tier-1 (`Item`)
+/// override must have NO effect on its tier-2 (`message`) override —
+/// `auto`/`manual` is provenance only (how an entry was created, shown
+/// via `manage_entry_style`), and must never influence whether an
+/// *active* entry actually applies. Tier-2's own entry stays active and
+/// keeps applying regardless of tier-1's state, the same as it would if
+/// it had been created manually. Supersedes the old "demotion"
+/// mechanism (spec 0120 follow-up), which cascaded a tier-1
+/// deactivation into silently un-applying tier-2 even though tier-2's
+/// own entry was never touched — confusing given overrides are
+/// otherwise modeled as plain active/inactive flags.
 #[test]
-fn deactivating_tier_1_demotes_the_still_active_tier_2_entry() {
+fn deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry() {
     let mut app = message_set_fixture();
 
     let item_idx = app
@@ -934,34 +936,81 @@ fn deactivating_tier_1_demotes_the_still_active_tier_2_entry() {
     assert!(
         app.overrides.entries()[message_entry_idx].active,
         "tier-2's own entry must remain active (untouched by \
-         deactivating tier-1) — demotion must not mutate `active`: \
-         {:#?}",
+         deactivating tier-1): {:#?}",
         app.overrides.entries()
     );
-    // `app.tree` retains splice-abandoned/orphaned entries (never
-    // referenced again but never removed from the `Vec` either — see
-    // `splice_override`'s "abandon in place" pattern), so checking
-    // for absence must go through the *rendered* text (`app.lines`),
-    // which only ever reflects the current, live splice — not
-    // `app.tree.iter()`, which could still find the old, no-longer-
-    // reachable `ExtPayload` node from before this deactivation.
     assert!(
-        !app.lines.iter().any(|l| l.contains("ExtPayload")),
-        "tier-2's stale extension-type annotation must disappear \
-         once its governing tier-1 ancestor is deactivated: {:?}",
+        app.lines.iter().any(|l| l.contains("ExtPayload")),
+        "tier-2's active override must keep applying even though its \
+         governing tier-1 ancestor is now deactivated — provenance \
+         (auto vs manual) must have no effect on whether an active \
+         override applies: {:?}",
         app.lines
     );
 
-    // Reactivating tier-1 must bring tier-2 back without touching
-    // tier-2's own entry.
+    // Reactivating tier-1 must not disturb tier-2 either.
     app.overrides.toggle_active(item_entry_idx);
     app.render_overrides(app.first_node);
     assert!(
         app.tree
             .iter()
             .any(|n| n.span.type_fqdn.as_deref() == Some("ms_test.ExtPayload")),
-        "tier-2 must resume once its tier-1 ancestor is reactivated: \
-         {:?}",
+        "tier-2 must still resolve after reactivating tier-1: {:?}",
         app.lines
+    );
+}
+
+/// Interactive feedback (2026-07-17): double-clicking an entry's radio
+/// marker is the mouse-only alternative to Shift-click for
+/// `toggle_active_cascading` (most terminal emulators intercept Shift-
+/// click for native text selection before it ever reaches the app). By
+/// the time the second click is recognized as a double, the first
+/// click has already applied its own plain toggle
+/// (`handle_manage_click`'s synchronous, timer-free double-click
+/// detection) — the handler undoes it before applying the cascading
+/// toggle, so the net effect matches a single Shift-click/`A` from the
+/// state before the first click, not two independent plain toggles.
+#[test]
+fn double_click_on_marker_cascades_like_a_single_shift_click() {
+    let (mut app, _items) = repeated_scalar_fixture();
+    app.manage_open = true;
+    app.manage_focus = true;
+    app.side_area = Rect::new(0, 0, 40, 20);
+    app.manage_list_height = 10;
+    app.manage_scroll = 0;
+    app.manage_pan_offset = 0;
+
+    let origin = OverrideOrigin::PathField {
+        path: "/".to_string(),
+        field: 1,
+    };
+    app.overrides.activate(origin, None);
+    let idx = app.overrides.entries().len() - 1;
+    app.manage_highlight = idx;
+    assert!(app.overrides.entries()[idx].active);
+
+    // Look up the entry's own display row rather than assuming a fixed
+    // one — the fixture already seeds an auto root entry ahead of it,
+    // so it isn't necessarily the first `Entry` row.
+    let row = app
+        .manage_display_rows()
+        .iter()
+        .position(|r| matches!(r, ManageRow::Entry(i) if *i == idx))
+        .expect("entry must have a display row") as u16;
+
+    // Column 2 is `manage_pane`'s own `MANAGE_MARKER_COL`.
+    app.handle_manage_click(2, row, false);
+    assert!(
+        !app.overrides.entries()[idx].active,
+        "first click toggles off, same as a plain `a`/Space"
+    );
+
+    app.handle_manage_click(2, row, false);
+    assert!(
+        !app.overrides.entries()[idx].active,
+        "double-click must net a single cascading toggle from the state \
+         before the first click (originally active, so a single toggle \
+         deactivates), not two plain toggles stacked on top of each \
+         other (which would cancel out and leave it active)"
     );
 }

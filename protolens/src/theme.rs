@@ -170,27 +170,96 @@ pub fn prime_supports_rgb() {
     xtgettcap_reports_rgb();
 }
 
+/// Named RGB constants for the dark palette (spec 0116 §9's "RGB
+/// palette" table), borrowed from VSCode's `dark_plus.json`/
+/// `dark_vs.json`. Doc comments cite each color's closest named-color
+/// match from <https://www.color-name.com>, purely for human
+/// readability when scanning this file — VSCode itself has no
+/// equivalent naming, only semantic scope names (mirrored here by
+/// which `SyntaxRole` each constant is named after). Centralized here,
+/// and referenced (not re-typed) wherever the same VSCode color
+/// applies to more than one role/function, so a color only ever needs
+/// updating in one place.
+mod dark_rgb {
+    use ratatui::style::Color;
+
+    /// "Clear Blue".
+    pub const ATTRIBUTE: Color = Color::Rgb(0x9C, 0xDC, 0xFE);
+    /// "Subtle Blue Green" — also VSCode's link-color (`StringSpecialUrl`)
+    /// and `Constant`, and this crate's own focused-pane accent
+    /// (`focus_style`).
+    pub const TYPE: Color = Color::Rgb(0x4E, 0xC9, 0xB0);
+    /// "Beauty Copper".
+    pub const STRING_LITERAL: Color = Color::Rgb(0xCE, 0x91, 0x78);
+    /// "Mushroom Melt".
+    pub const STRING_ESCAPE: Color = Color::Rgb(0xD7, 0xBA, 0x7D);
+    /// "Brussels Sprout" — also this crate's manage-pane "auto" entry
+    /// color (`manage_entry_style`).
+    pub const COMMENT: Color = Color::Rgb(0x6A, 0x99, 0x55);
+    /// "Rainee".
+    pub const NUMBER: Color = Color::Rgb(0xB5, 0xCE, 0xA8);
+    /// "Azul Mystic" — also this crate's manage-pane "manual" entry
+    /// color (`manage_entry_style`).
+    pub const BOOLEAN: Color = Color::Rgb(0x56, 0x9C, 0xD6);
+    /// "Pale Hazel".
+    pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0xDC, 0xDC, 0xAA);
+    /// "Alexa".
+    pub const PUNCTUATION_BRACKET_EXTENSION: Color = Color::Rgb(0xD1, 0x69, 0x69);
+}
+
+/// Named RGB constants for the light palette (spec 0116 §9's "RGB
+/// palette" table), borrowed from VSCode's `light_plus.json`/
+/// `light_vs.json`. See `dark_rgb` for the naming/reuse convention.
+mod light_rgb {
+    use ratatui::style::Color;
+
+    /// "Electric Red".
+    pub const ATTRIBUTE: Color = Color::Rgb(0xE5, 0x00, 0x00);
+    /// "Jelly Bean Blue" — also VSCode's link-color (`StringSpecialUrl`)
+    /// and `Constant`, and this crate's own focused-pane accent
+    /// (`focus_style`).
+    pub const TYPE: Color = Color::Rgb(0x26, 0x7F, 0x99);
+    /// "San Diego".
+    pub const STRING_LITERAL: Color = Color::Rgb(0xA3, 0x15, 0x15);
+    /// "Strong Red".
+    pub const STRING_ESCAPE: Color = Color::Rgb(0xEE, 0x00, 0x00);
+    /// "Digital Green" — also this crate's manage-pane "auto" entry
+    /// color (`manage_entry_style`).
+    pub const COMMENT: Color = Color::Rgb(0x00, 0x80, 0x00);
+    /// "Funky Green".
+    pub const NUMBER: Color = Color::Rgb(0x09, 0x86, 0x58);
+    /// "Blue" — also this crate's manage-pane "manual" entry color
+    /// (`manage_entry_style`).
+    pub const BOOLEAN: Color = Color::Rgb(0x00, 0x00, 0xFF);
+    /// "French Blue".
+    pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0x04, 0x51, 0xA5);
+    /// "Dried Burgundy".
+    pub const PUNCTUATION_BRACKET_EXTENSION: Color = Color::Rgb(0x81, 0x1F, 0x3F);
+}
+
 /// RGB palette, dark — borrowed from VSCode's `dark_plus.json`/
 /// `dark_vs.json` (spec 0116 §9's "RGB palette" table; scope names
 /// cited there).
 fn style_for_dark_rgb(role: SyntaxRole) -> Style {
     match role {
-        SyntaxRole::Attribute => Style::default().fg(Color::Rgb(0x9C, 0xDC, 0xFE)),
-        SyntaxRole::Type => Style::default().fg(Color::Rgb(0x4E, 0xC9, 0xB0)),
-        SyntaxRole::StringLiteral => Style::default().fg(Color::Rgb(0xCE, 0x91, 0x78)),
-        SyntaxRole::StringEscape => Style::default().fg(Color::Rgb(0xD7, 0xBA, 0x7D)),
+        SyntaxRole::Attribute => Style::default().fg(dark_rgb::ATTRIBUTE),
+        SyntaxRole::Type => Style::default().fg(dark_rgb::TYPE),
+        SyntaxRole::StringLiteral => Style::default().fg(dark_rgb::STRING_LITERAL),
+        SyntaxRole::StringEscape => Style::default().fg(dark_rgb::STRING_ESCAPE),
         SyntaxRole::StringSpecialUrl => Style::default()
-            .fg(Color::Rgb(0x4E, 0xC9, 0xB0))
+            .fg(dark_rgb::TYPE)
             .add_modifier(Modifier::UNDERLINED),
-        SyntaxRole::Comment => Style::default().fg(Color::Rgb(0x6A, 0x99, 0x55)),
-        SyntaxRole::Number => Style::default().fg(Color::Rgb(0xB5, 0xCE, 0xA8)),
-        SyntaxRole::Boolean => Style::default().fg(Color::Rgb(0x56, 0x9C, 0xD6)),
-        SyntaxRole::Constant => Style::default().fg(Color::Rgb(0x4E, 0xC9, 0xB0)),
+        SyntaxRole::Comment => Style::default().fg(dark_rgb::COMMENT),
+        SyntaxRole::Number => Style::default().fg(dark_rgb::NUMBER),
+        SyntaxRole::Boolean => Style::default().fg(dark_rgb::BOOLEAN),
+        SyntaxRole::Constant => Style::default().fg(dark_rgb::TYPE),
         SyntaxRole::PunctuationDelimiter => Style::default(),
         SyntaxRole::PunctuationBracket => Style::default(),
-        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Rgb(0xDC, 0xDC, 0xAA)),
+        SyntaxRole::PunctuationBracketList => {
+            Style::default().fg(dark_rgb::PUNCTUATION_BRACKET_LIST)
+        }
         SyntaxRole::PunctuationBracketExtension => {
-            Style::default().fg(Color::Rgb(0xD1, 0x69, 0x69))
+            Style::default().fg(dark_rgb::PUNCTUATION_BRACKET_EXTENSION)
         }
     }
 }
@@ -200,22 +269,24 @@ fn style_for_dark_rgb(role: SyntaxRole) -> Style {
 /// cited there).
 fn style_for_light_rgb(role: SyntaxRole) -> Style {
     match role {
-        SyntaxRole::Attribute => Style::default().fg(Color::Rgb(0xE5, 0x00, 0x00)),
-        SyntaxRole::Type => Style::default().fg(Color::Rgb(0x26, 0x7F, 0x99)),
-        SyntaxRole::StringLiteral => Style::default().fg(Color::Rgb(0xA3, 0x15, 0x15)),
-        SyntaxRole::StringEscape => Style::default().fg(Color::Rgb(0xEE, 0x00, 0x00)),
+        SyntaxRole::Attribute => Style::default().fg(light_rgb::ATTRIBUTE),
+        SyntaxRole::Type => Style::default().fg(light_rgb::TYPE),
+        SyntaxRole::StringLiteral => Style::default().fg(light_rgb::STRING_LITERAL),
+        SyntaxRole::StringEscape => Style::default().fg(light_rgb::STRING_ESCAPE),
         SyntaxRole::StringSpecialUrl => Style::default()
-            .fg(Color::Rgb(0x26, 0x7F, 0x99))
+            .fg(light_rgb::TYPE)
             .add_modifier(Modifier::UNDERLINED),
-        SyntaxRole::Comment => Style::default().fg(Color::Rgb(0x00, 0x80, 0x00)),
-        SyntaxRole::Number => Style::default().fg(Color::Rgb(0x09, 0x86, 0x58)),
-        SyntaxRole::Boolean => Style::default().fg(Color::Rgb(0x00, 0x00, 0xFF)),
-        SyntaxRole::Constant => Style::default().fg(Color::Rgb(0x26, 0x7F, 0x99)),
+        SyntaxRole::Comment => Style::default().fg(light_rgb::COMMENT),
+        SyntaxRole::Number => Style::default().fg(light_rgb::NUMBER),
+        SyntaxRole::Boolean => Style::default().fg(light_rgb::BOOLEAN),
+        SyntaxRole::Constant => Style::default().fg(light_rgb::TYPE),
         SyntaxRole::PunctuationDelimiter => Style::default(),
         SyntaxRole::PunctuationBracket => Style::default(),
-        SyntaxRole::PunctuationBracketList => Style::default().fg(Color::Rgb(0x04, 0x51, 0xA5)),
+        SyntaxRole::PunctuationBracketList => {
+            Style::default().fg(light_rgb::PUNCTUATION_BRACKET_LIST)
+        }
         SyntaxRole::PunctuationBracketExtension => {
-            Style::default().fg(Color::Rgb(0x81, 0x1F, 0x3F))
+            Style::default().fg(light_rgb::PUNCTUATION_BRACKET_EXTENSION)
         }
     }
 }
@@ -302,17 +373,17 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
 
 fn manage_entry_style_dark_rgb(auto: bool) -> Style {
     if auto {
-        Style::default().fg(Color::Rgb(0x6A, 0x99, 0x55))
+        Style::default().fg(dark_rgb::COMMENT)
     } else {
-        Style::default().fg(Color::Rgb(0x56, 0x9C, 0xD6))
+        Style::default().fg(dark_rgb::BOOLEAN)
     }
 }
 
 fn manage_entry_style_light_rgb(auto: bool) -> Style {
     if auto {
-        Style::default().fg(Color::Rgb(0x00, 0x80, 0x00))
+        Style::default().fg(light_rgb::COMMENT)
     } else {
-        Style::default().fg(Color::Rgb(0x00, 0x00, 0xFF))
+        Style::default().fg(light_rgb::BOOLEAN)
     }
 }
 
@@ -324,6 +395,26 @@ fn manage_entry_style_ansi16(auto: bool) -> Style {
     } else {
         Style::default().fg(Color::Blue)
     }
+}
+
+/// Focused-pane border/title accent, shared by every focus-tracked pane
+/// (main/override/manage — see `tui/mod.rs`'s `pane_focus_style`).
+/// Reuses `Type`'s teal/cyan accent from the existing RGB palettes (and
+/// the matching Cyan/Blue ANSI-16 fallback) rather than inventing a new
+/// color, so the focus indicator stays visually consistent with the
+/// rest of the palette. Bold on top of the color, so focus still reads
+/// in terminals with color disabled.
+pub fn focus_style(theme: ThemeKind) -> Style {
+    let color = match theme {
+        ThemeKind::Dark if supports_rgb() => dark_rgb::TYPE,
+        ThemeKind::Dark => Color::Cyan,
+        ThemeKind::Light if supports_rgb() => light_rgb::TYPE,
+        ThemeKind::Light => Color::Blue,
+        ThemeKind::System => {
+            unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
+        }
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup

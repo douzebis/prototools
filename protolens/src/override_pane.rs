@@ -220,6 +220,34 @@ impl OverrideOrigin {
     }
 }
 
+/// True when `candidate`'s origin `label()` is `origin`'s own `label()`,
+/// or has it as a genuine prefix (`toggle_active_cascading`'s notion of
+/// "under", interactive feedback 2026-07-17) — comparing plain label
+/// strings (`path`, `path:field`, or `fqdn:field`) works uniformly
+/// across all three origin kinds without needing to special-case them:
+/// a `path:field` origin's label naturally extends its `path` origin's
+/// label with a `:field` suffix (so `/3` matches `/3:5`, the same node
+/// via a different override kind), and a deeper `path` origin's label
+/// extends it with a `/segment` suffix (so `/3` matches `/3/2` but not
+/// `/30`, a genuine path-segment boundary, not a raw string prefix).
+/// The root path `/` is a special case: every path-rooted label starts
+/// with `/`, but `format!("{origin}/")` would double up its own
+/// trailing slash, so it's checked directly instead. An `fqdn:field`
+/// origin never prefixes, nor is prefixed by, anything but its own
+/// label — no other origin's label is ever built by extending an FQDN.
+fn origin_is_at_or_under(candidate: &OverrideOrigin, origin: &OverrideOrigin) -> bool {
+    let origin_label = origin.label();
+    let candidate_label = candidate.label();
+    if candidate_label == origin_label {
+        return true;
+    }
+    if origin_label == "/" {
+        return candidate_label.starts_with('/');
+    }
+    candidate_label.starts_with(&format!("{origin_label}/"))
+        || candidate_label.starts_with(&format!("{origin_label}:"))
+}
+
 /// One entry of the collection: an origin, its candidate type (`None` =
 /// raw/no type), and whether it is the currently-active entry for that
 /// origin.
@@ -236,16 +264,15 @@ pub struct OverrideEntry {
     /// `true` when this entry was created by `render_overrides`'s
     /// internal Any/MessageSet auto-expansion seeding (`activate_auto`),
     /// as opposed to an explicit user action (`activate`, via the
-    /// override pane or `type-as`) — spec 0120 follow-up. Session-only:
-    /// never round-tripped through the YAML save/restore format (a
-    /// restored entry is always treated as a deliberate, pinned user
-    /// choice, immune to demotion). Lets `render_overrides` detect when
-    /// an auto-derived entry's governing ancestor has since changed
-    /// (e.g. its MessageSet `Item` was deactivated back to raw) and stop
-    /// honoring the now-stale derived type for this pass, without
-    /// touching `active` — the entry transparently resumes applying once
-    /// the ancestor context is restored, since only a manual `activate`
-    /// pins `auto` back to `false`.
+    /// override pane or `type-as`) — spec 0120 follow-up. Provenance
+    /// only, purely for display (`manage_entry_style` colors auto
+    /// entries differently from manual ones): it has no effect
+    /// whatsoever on how an active entry is resolved or rendered
+    /// (2026-07-17 design correction — an override is an override,
+    /// active or not, regardless of how it came to exist). Round-trips
+    /// faithfully through the YAML save/restore format (spec 0125 §G3),
+    /// same as every other field — a file with no `auto` key at all
+    /// (predating spec 0125) defaults to `false`.
     pub auto: bool,
 }
 
@@ -310,10 +337,8 @@ impl OverrideCollection {
 
     /// Like `activate`, but for `render_overrides`'s internal Any/
     /// MessageSet auto-expansion seeding (spec 0120 follow-up): marks the
-    /// entry `auto: true`, making it subject to demotion (silently not
-    /// honored for a render pass, without touching `active`) whenever its
-    /// governing ancestor's context no longer supports the derivation
-    /// that produced it.
+    /// entry `auto: true`, purely as provenance (see `OverrideEntry::auto`)
+    /// — it applies exactly like a manually-activated entry.
     pub fn activate_auto(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
         self.activate_impl(origin, r#type, true);
     }
@@ -371,6 +396,58 @@ impl OverrideCollection {
             }
         }
         self.entries[idx].active = target_active;
+    }
+
+    /// Like `toggle_active`, but also cascades the same new active/
+    /// inactive state to every entry whose origin sits at-or-under
+    /// `idx`'s origin (`origin_is_at_or_under`) — the manage pane's `A`/
+    /// Shift-Space/Shift-click (interactive feedback, 2026-07-17).
+    ///
+    /// Deactivating is unambiguous: every affected entry (regardless of
+    /// how many share a given origin) is simply set inactive, same as
+    /// `toggle_active` already guarantees no per-origin conflict when
+    /// deactivating.
+    ///
+    /// Activating is not: two entries sharing one origin can never both
+    /// be active (the same per-origin invariant `toggle_active`/
+    /// `activate` already enforce). Since the collection is always kept
+    /// sorted by origin (`sort`), entries sharing an origin are always a
+    /// contiguous run — for `idx`'s own run, `idx` itself wins (the
+    /// entry the user actually acted on, exactly like `toggle_active`);
+    /// for every other affected run, only its first entry (the one
+    /// sorted first, i.e. the one the manage pane displays first) wins,
+    /// leaving the rest of that run inactive.
+    pub fn toggle_active_cascading(&mut self, idx: usize) {
+        let Some(entry) = self.entries.get(idx) else {
+            return;
+        };
+        let origin = entry.origin.clone();
+        let target_active = !entry.active;
+
+        if !target_active {
+            for e in self.entries.iter_mut() {
+                if origin_is_at_or_under(&e.origin, &origin) {
+                    e.active = false;
+                }
+            }
+            return;
+        }
+
+        let mut i = 0;
+        while i < self.entries.len() {
+            let run_origin = self.entries[i].origin.clone();
+            let mut j = i + 1;
+            while j < self.entries.len() && self.entries[j].origin == run_origin {
+                j += 1;
+            }
+            if origin_is_at_or_under(&run_origin, &origin) {
+                let winner = if run_origin == origin { idx } else { i };
+                for (k, e) in self.entries[i..j].iter_mut().enumerate() {
+                    e.active = i + k == winner;
+                }
+            }
+            i = j;
+        }
     }
 
     /// Removes the entry at `idx` (spec 0117 §3's `Delete`/`Backspace`).
@@ -772,6 +849,192 @@ mod tests {
                 .unwrap()
                 .active
         );
+    }
+
+    /// Interactive feedback, 2026-07-17: activating an entry via `A`/
+    /// Shift-Space/Shift-click also activates every entry whose origin
+    /// sits at-or-under it — a descendant `Path` origin, a `PathField`
+    /// origin at the same path, but not an unrelated sibling path, and
+    /// not an `FqdnField` origin (no tree-path relationship to cascade
+    /// through). Where a descendant origin has more than one entry
+    /// (multiple candidate types), only the one sorted first activates,
+    /// keeping the per-origin "at most one active" invariant intact.
+    #[test]
+    fn toggle_active_cascading_activates_descendants_only_first_per_origin() {
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1".to_string(),
+            },
+            Some("pkg.Root".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1/2".to_string(),
+            },
+            Some("pkg.A".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1/2".to_string(),
+            },
+            Some("pkg.B".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::PathField {
+                path: "/1".to_string(),
+                field: 5,
+            },
+            Some("pkg.Field".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/10".to_string(),
+            },
+            Some("pkg.Sibling".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::FqdnField {
+                fqdn: "pkg.Root".to_string(),
+                field: 2,
+            },
+            Some("pkg.Unrelated".to_string()),
+        );
+        // Deactivate everything first so the cascade's own activation is
+        // what's actually under test.
+        for i in 0..collection.entries().len() {
+            if collection.entries()[i].active {
+                collection.toggle_active(i);
+            }
+        }
+        assert!(collection.entries().iter().all(|e| !e.active));
+
+        let root_idx = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.Root"))
+            .unwrap();
+        collection.toggle_active_cascading(root_idx);
+
+        let active_types: Vec<&str> = collection
+            .entries()
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.r#type.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            active_types,
+            vec!["pkg.Root", "pkg.A", "pkg.Field"],
+            "pkg.Root itself, its descendant /1/2 (first-sorted \
+             candidate pkg.A, not pkg.B), and the same-node path-field \
+             /1:5 must activate; the unrelated sibling /10 and the \
+             fqdn-field origin must not: {:#?}",
+            collection.entries()
+        );
+    }
+
+    /// Interactive feedback, 2026-07-17: deactivating via the cascading
+    /// toggle deactivates every entry at-or-under the origin, with no
+    /// per-origin ambiguity to resolve (unlike activating).
+    #[test]
+    fn toggle_active_cascading_deactivates_every_descendant() {
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1".to_string(),
+            },
+            Some("pkg.Root".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/1/2".to_string(),
+            },
+            Some("pkg.A".to_string()),
+        );
+        collection.activate(
+            OverrideOrigin::Path {
+                path: "/10".to_string(),
+            },
+            Some("pkg.Sibling".to_string()),
+        );
+
+        let root_idx = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.Root"))
+            .unwrap();
+        collection.toggle_active_cascading(root_idx);
+
+        assert!(
+            !collection.entries()[root_idx].active,
+            "pkg.Root must deactivate"
+        );
+        let a_idx = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.A"))
+            .unwrap();
+        assert!(
+            !collection.entries()[a_idx].active,
+            "descendant pkg.A must deactivate alongside its ancestor"
+        );
+        let sibling_idx = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.Sibling"))
+            .unwrap();
+        assert!(
+            collection.entries()[sibling_idx].active,
+            "unrelated sibling /10 must be untouched"
+        );
+
+        // Reactivate: root and its descendant come back; sibling was
+        // never touched by either pass, so it's still active too.
+        let root_idx = collection
+            .entries()
+            .iter()
+            .position(|e| e.r#type.as_deref() == Some("pkg.Root"))
+            .unwrap();
+        collection.toggle_active_cascading(root_idx);
+        let active_types: Vec<&str> = collection
+            .entries()
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.r#type.as_deref().unwrap())
+            .collect();
+        assert_eq!(active_types, vec!["pkg.Root", "pkg.A", "pkg.Sibling"]);
+    }
+
+    #[test]
+    fn origin_is_at_or_under_examples() {
+        let path = |p: &str| OverrideOrigin::Path {
+            path: p.to_string(),
+        };
+        let path_field = |p: &str, f: u64| OverrideOrigin::PathField {
+            path: p.to_string(),
+            field: f,
+        };
+        let fqdn_field = |f: &str, n: u64| OverrideOrigin::FqdnField {
+            fqdn: f.to_string(),
+            field: n,
+        };
+
+        assert!(origin_is_at_or_under(&path("/3/2"), &path("/3")));
+        assert!(!origin_is_at_or_under(&path("/30"), &path("/3")));
+        assert!(origin_is_at_or_under(&path_field("/3", 5), &path("/3")));
+        assert!(origin_is_at_or_under(&path("/3"), &path("/")));
+        assert!(!origin_is_at_or_under(
+            &fqdn_field("pkg.Msg", 2),
+            &path("/3")
+        ));
+        assert!(!origin_is_at_or_under(
+            &fqdn_field("pkg.Msg", 20),
+            &fqdn_field("pkg.Msg", 2)
+        ));
+        assert!(origin_is_at_or_under(
+            &fqdn_field("pkg.Msg", 2),
+            &fqdn_field("pkg.Msg", 2)
+        ));
     }
 
     #[test]

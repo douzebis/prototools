@@ -132,15 +132,17 @@ impl App {
                 // reports `Down` identically for single and double
                 // clicks, so recognizing the second click of a pair means
                 // comparing this `Down` against the previous one's own
-                // timestamp/line ourselves. The `Up` handler below is
-                // what actually acts on `pending_double_click`.
-                let now = Instant::now();
-                self.pending_double_click = matches!(
-                    (self.last_click, line_idx),
-                    (Some((t, prev_line)), Some(cur_line))
-                        if prev_line == cur_line && now.duration_since(t) < DOUBLE_CLICK_THRESHOLD
-                );
-                self.last_click = line_idx.map(|l| (now, l));
+                // timestamp/line ourselves (`is_double_click`, generalized
+                // 2026-07-17 to also serve the manage pane's radio-marker
+                // double-click). The `Up` handler below is what actually
+                // acts on `pending_double_click`.
+                self.pending_double_click = match line_idx {
+                    Some(l) => is_double_click(&mut self.last_click, l),
+                    None => {
+                        self.last_click = None;
+                        false
+                    }
+                };
 
                 // Spec 0129 §G1: a click also (re-)seeds the drag
                 // selection's anchor/end, replacing any previous one, so
@@ -156,7 +158,7 @@ impl App {
                 // side pane (re-)claims keyboard focus for it too.
                 if self.manage_open {
                     self.manage_focus = true;
-                    self.handle_manage_click(event.column, event.row);
+                    self.handle_manage_click(event.column, event.row, shift);
                 } else {
                     self.override_focus = true;
                     self.handle_override_click(event.column, event.row);

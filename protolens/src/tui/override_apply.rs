@@ -291,28 +291,8 @@ impl App {
             .map(|e| e.r#type.clone())
     }
 
-    /// Spec 0120's stale-auto-entry demotion (factored out of
-    /// `render_overrides` by spec 0132 §G3, so it can also be reused by
-    /// the override-pane live preview/revert): the override (if any)
-    /// that should currently be considered "active" for `idx`, demoting
-    /// a stale `auto` entry — one whose ancestor context has since
-    /// changed, `auto_entry_in_scope` returning `false` — back to
-    /// "nothing active", same as `resolve_active_override` otherwise.
-    /// Outer `None` = no override active; inner `Option<String>` = the
-    /// override's type (`None` = raw/no-type override).
-    pub(super) fn effective_override_target(&mut self, idx: usize) -> Option<Option<String>> {
-        let stale_auto_entry = self
-            .resolve_active_override_entry(idx)
-            .filter(|e| e.auto)
-            .cloned();
-        match stale_auto_entry {
-            Some(entry) if !self.auto_entry_in_scope(&entry) => None,
-            _ => self.resolve_active_override(idx),
-        }
-    }
-
     /// Spec 0132 §G3: settles `idx`'s main-pane rendering to its current
-    /// "effective" override target (`effective_override_target`'s
+    /// "effective" override target (`resolve_active_override`'s
     /// explicit type if one is active, else `natural_type(idx)` when
     /// nothing is active at all) — splicing only if it doesn't already
     /// match `self.tree[idx].rendered_as` (the same no-op-when-already-
@@ -320,11 +300,22 @@ impl App {
     /// out of `render_overrides` itself (which calls this for `idx`
     /// before recursing into children) so the override-pane's live-
     /// preview revert (on close/cancel) can reuse the exact same
-    /// "effective type" computation — including the stale-auto-entry
-    /// demotion and natural-type fallback a plain
-    /// `resolve_active_override_entry`-only revert would get wrong.
+    /// "effective type" computation — including the natural-type
+    /// fallback a plain `resolve_active_override_entry`-only revert
+    /// would get wrong.
+    ///
+    /// 2026-07-17: no longer demotes a stale `auto` entry whose
+    /// ancestor context has since changed (spec 0120's original
+    /// design) — `auto`/`manual` is provenance only (how an entry was
+    /// created, shown via `manage_entry_style`), and must have no
+    /// effect on whether an *active* entry actually applies. An
+    /// active entry, auto-derived or not, applies exactly as long as
+    /// its path still resolves to a live node — the same fallback
+    /// `splice_override` already relies on for a manual override that
+    /// no longer cleanly matches its target (a `TYPE_MISMATCH`-style
+    /// annotation, not a silent revert to raw).
     pub(super) fn resettle_node(&mut self, idx: usize) {
-        let target = self.effective_override_target(idx);
+        let target = self.resolve_active_override(idx);
         let field_name = self.field_name_for(idx);
         let current = Some((target.clone(), field_name));
         if current != self.tree[idx].rendered_as {
@@ -342,15 +333,18 @@ impl App {
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
-    /// Factored out of `render_overrides`'s own staleness/demotion check
-    /// (spec 0120) so `handle_manage_key`'s `Delete` handling can reuse
-    /// the same predicate instead of duplicating it. Lives on `App`
-    /// (not `OverrideCollection`) because it needs `auto_expand_type`,
-    /// which resolves against the live tree/descriptor pool, not just
-    /// the override collection itself. Auto-seeded entries only ever
-    /// have a `Path` origin (`render_overrides` always calls
-    /// `activate_auto` with `OverrideOrigin::Path`), so a single
-    /// `resolve_path` lookup suffices.
+    /// Sole remaining use (2026-07-17, since `resettle_node` dropped its
+    /// own demotion check): `handle_manage_key`'s `Delete`/`Backspace`
+    /// handling, which still needs to distinguish "deleting this would
+    /// just make the next `render_overrides` pass re-seed an identical
+    /// entry" (still in scope) from "deleting this is final" (out of
+    /// scope). Lives on `App` (not `OverrideCollection`) because it
+    /// needs `auto_expand_type`, which resolves against the live tree/
+    /// descriptor pool, not just the override collection itself.
+    /// Auto-seeded entries only ever have a `Path` origin
+    /// (`render_overrides` always calls `activate_auto` with
+    /// `OverrideOrigin::Path`), so a single `resolve_path` lookup
+    /// suffices.
     pub(super) fn auto_entry_in_scope(&mut self, entry: &override_pane::OverrideEntry) -> bool {
         let OverrideOrigin::Path { path } = &entry.origin else {
             return false;
@@ -437,18 +431,6 @@ impl App {
                 }
             }
         }
-        // Demotion (spec 0120 follow-up): an *auto*-seeded entry's
-        // derivation depended on its ancestor's context at the time it
-        // was seeded (e.g. tier 2's extension-type lookup needs its
-        // parent to still resolve as `MessageSetItem`). If that ancestor
-        // context has since changed — most commonly because the user
-        // deactivated (or retyped) the ancestor's own auto-derived entry
-        // — re-deriving now not only can, but must, disagree with the
-        // stale persisted type. Detected without touching `active` (so
-        // it transparently resumes once the ancestor context is
-        // restored): only entries the user has never manually
-        // (re-)activated are eligible, since `activate` always pins
-        // `auto` back to `false`.
         self.resettle_node(idx);
         let mut child = self.tree[idx].first_child;
         while let Some(c) = child {

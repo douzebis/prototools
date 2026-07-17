@@ -400,9 +400,54 @@ were resolved as follows:
   has a dedicated fixture (`message_set_fixture`, `tui.rs`) and regression
   tests (`message_set_group_items_auto_expand_through_render_overrides`,
   `toggling_message_set_auto_override_off_and_on_sticks`,
-  `deactivating_tier_1_demotes_the_still_active_tier_2_entry` — the last
-  one covering the `auto`-flag demotion mechanism specifically, beyond
-  what G4 itself asked for).
+  `deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry` —
+  the last one originally covered the `auto`-flag demotion mechanism;
+  see the 2026-07-17 addendum below, which removed demotion and
+  rewrote/renamed this test to match).
+
+## Addendum, 2026-07-17: demotion removed
+
+The "Demotion" mechanism described above (`Non-goals`' superseded bullet;
+`auto: bool`'s original doc comment; `render_overrides`'s per-pass
+re-check of a stale `auto` entry's governing ancestor) has been removed.
+
+User feedback (interactive session, 2026-07-17): deactivating a
+MessageSet's tier-1 (`Item`) auto-derived override was silently making
+its tier-2 (`message`) auto-derived override stop applying too, even
+though tier-2's own entry was never touched and stayed `active`. This
+was demotion working exactly as originally designed, but the design
+itself was judged confusing: "In my mental model auto/manual overriding
+and the memorization of it is only for showing 'provenance' to the
+user. With respect to rendering, an override is an override. It can be
+active or inactive. However, its provenance should have no impact
+whatsoever on how the protobuf is rendered."
+
+Change: `auto` is now pure provenance (how an entry was created, shown
+via `manage_entry_style`'s color), with zero effect on override
+resolution. `resettle_node` (formerly gated through a since-removed
+`effective_override_target` demotion check) now always resolves via
+`resolve_active_override` directly — an active entry, auto-derived or
+not, applies exactly as long as its path still resolves to a live node,
+same as a manual override always did. If an ancestor's retype makes a
+descendant's stored type structurally incompatible with the actual
+bytes, the existing `TYPE_MISMATCH`-style fallback in `splice_override`
+handles it, same safety net manual overrides already relied on — no
+separate demotion mechanism is needed.
+
+`auto_entry_in_scope` (the "would this auto entry still be re-derived
+if visited again right now" check) is kept, but narrowed to its one
+remaining use: the manage pane's Delete/Backspace key handling, which
+still needs to distinguish "deleting this in-scope auto entry would
+just be immediately re-seeded, so deactivate instead" from "this entry
+is out of scope, delete it for real." This is a UX convenience for the
+delete action itself, not a render-time behavior.
+
+The regression test that had codified demotion,
+`deactivating_tier_1_demotes_the_still_active_tier_2_entry`, was
+rewritten and renamed to
+`deactivating_tier_1_does_not_affect_the_still_active_tier_2_entry`,
+asserting the opposite: tier-2 keeps applying (and its entry stays
+active) regardless of tier-1's own active state.
 
 ## Files changed
 

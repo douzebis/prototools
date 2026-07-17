@@ -4,6 +4,12 @@
 
 use super::*;
 
+/// Character column (within `manage_type_line`'s own "  <marker> ..."
+/// layout) the active/inactive radio marker renders at — kept as a named
+/// constant since `handle_manage_click` needs to recognize the same
+/// column a mouse click landed on to toggle it.
+const MANAGE_MARKER_COL: usize = 2;
+
 impl App {
     /// `o`: toggle the override management pane (spec 0117 §3). Closes
     /// it (cancelling) if already open. Otherwise opens it — no
@@ -31,6 +37,7 @@ impl App {
         self.manage_scroll = 0;
         self.manage_pan_offset = 0;
         self.manage_pending_kind = None;
+        self.last_manage_click = None;
     }
 
     /// Close the override management pane (spec 0117 §3).
@@ -70,12 +77,14 @@ impl App {
         rows
     }
 
-    /// One management-pane type row's display text: indented, active
-    /// marker (`*`) leading, type label (spec 0117 §3 amendment), plus
-    /// the display-name override when set (spec 0119 §G4).
+    /// One management-pane type row's display text: indented, a
+    /// radio-button-style active marker (`●`/`○`) leading — clickable, see
+    /// `handle_manage_click` — then the type label (spec 0117 §3
+    /// amendment), plus the display-name override when set (spec 0119
+    /// §G4).
     pub(super) fn manage_type_line(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
-        let marker = if e.active { '*' } else { ' ' };
+        let marker = if e.active { '●' } else { '○' };
         let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
         match &e.name {
             Some(name) => format!("  {marker} {type_label}  as \"{name}\""),
@@ -286,6 +295,38 @@ impl App {
                     self.manage_rename = Some(current);
                 }
             }
+            // Interactive feedback, 2026-07-17: `A`/Shift-Space is
+            // `toggle_active`'s cascading sibling — same toggle, but also
+            // applied to every entry whose origin sits at-or-under the
+            // highlighted entry's own origin (`toggle_active_cascading`).
+            // Terminals report Shift-`a` as the uppercase char directly
+            // (no modifier check needed, same convention as `J`/`K`
+            // elsewhere), but Space has no uppercase form, so Shift-Space
+            // is only distinguishable via its modifier bit — which
+            // legacy terminal escape sequences don't carry for printable
+            // keys at all (unlike arrows/function keys), so this arm only
+            // fires on terminals `push_keyboard_enhancement` (`mod.rs`)
+            // successfully negotiated Kitty-protocol enhancement with; on
+            // every other terminal, Shift-Space is indistinguishable from
+            // plain Space and falls through to the arm below instead —
+            // `A` remains the universally reliable keyboard trigger. The
+            // guarded `Char(' ')` arm here must precede the plain `a`/
+            // Space arm below, since an unguarded `Char(' ')` there would
+            // otherwise shadow it.
+            KeyCode::Char('A') => {
+                if !self.overrides.entries().is_empty() {
+                    self.overrides
+                        .toggle_active_cascading(self.manage_highlight);
+                    self.render_overrides(self.first_node);
+                }
+            }
+            KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if !self.overrides.entries().is_empty() {
+                    self.overrides
+                        .toggle_active_cascading(self.manage_highlight);
+                    self.render_overrides(self.first_node);
+                }
+            }
             // Spec 0118 §6: toggling active status changes the active set
             // (possibly for a sibling too), so it always triggers a
             // recursive render pass.
@@ -456,19 +497,29 @@ impl App {
     /// Mouse handling for the override management pane (spec 0113 D30):
     /// wheel scroll moves the highlight by one entry, click moves the
     /// highlight to the entry under the cursor (header rows under the
-    /// click are ignored, same as clicking whitespace).
+    /// click are ignored, same as clicking whitespace) and, when the
+    /// click lands on that entry's own radio marker, also toggles it
+    /// active/inactive — the mouse equivalent of `a`/Space, or of `A`/
+    /// Shift-Space (cascading) when Shift is held, or when the marker is
+    /// double-clicked (interactive feedback, 2026-07-17 — most terminal
+    /// emulators intercept Shift-click for native text selection before
+    /// it ever reaches the app, so double-click is the reliable mouse
+    /// trigger for the cascading toggle; Shift-click is kept too, for
+    /// terminals that do pass it through).
     pub(super) fn handle_manage_mouse(&mut self, event: MouseEvent) {
         match event.kind {
             MouseEventKind::ScrollDown => self.move_manage_highlight(1),
             MouseEventKind::ScrollUp => self.move_manage_highlight(-1),
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_manage_click(event.column, event.row)
-            }
+            MouseEventKind::Down(MouseButton::Left) => self.handle_manage_click(
+                event.column,
+                event.row,
+                event.modifiers.contains(KeyModifiers::SHIFT),
+            ),
             _ => {}
         }
     }
 
-    pub(super) fn handle_manage_click(&mut self, col: u16, row: u16) {
+    pub(super) fn handle_manage_click(&mut self, col: u16, row: u16, shift: bool) {
         let area = self.side_area;
         if !Self::rect_contains(area, col, row) {
             return;
@@ -479,9 +530,45 @@ impl App {
         }
         let absolute_row = self.manage_scroll + rel_row;
         let rows = self.manage_display_rows();
-        if let Some(ManageRow::Entry(idx)) = rows.get(absolute_row) {
-            self.manage_highlight = *idx;
+        if let Some(&ManageRow::Entry(idx)) = rows.get(absolute_row) {
+            self.manage_highlight = idx;
             self.manage_pending_kind = None;
+            // Content-space column the click landed on, undoing the
+            // pane's own horizontal pan (`pan_spans` strips the first
+            // `manage_pan_offset` chars before display, so screen column
+            // 0 is content column `manage_pan_offset`) — spec 0118 §6:
+            // clicking the radio marker itself toggles active status,
+            // same as `a`/Space on the highlighted entry (or `A`/Shift-
+            // Space's cascading toggle, when Shift is held or the marker
+            // is double-clicked).
+            let content_col = (col - area.x) as usize + self.manage_pan_offset;
+            if content_col == MANAGE_MARKER_COL {
+                // Double-click detection (2026-07-17 feedback), same
+                // technique as the main pane's own `last_click`/
+                // `pending_double_click` (generalized as `is_double_click`)
+                // — only tracked for marker clicks specifically, since
+                // that's the only click this handler ever turns into a
+                // state change; a marker click on one entry followed by
+                // one on a different entry's marker never counts.
+                //
+                // There is no timer to defer to in this synchronous event
+                // loop, so by the time a second click is recognized as
+                // "double", the first click has *already* applied its own
+                // plain toggle. Undoing that toggle first, then applying
+                // the cascading one, reproduces exactly what a single
+                // Shift-click/`A` would have done from the state *before*
+                // the first click — not two independent toggles stacked
+                // on top of each other.
+                if is_double_click(&mut self.last_manage_click, idx) {
+                    self.overrides.toggle_active(idx);
+                    self.overrides.toggle_active_cascading(idx);
+                } else if shift {
+                    self.overrides.toggle_active_cascading(idx);
+                } else {
+                    self.overrides.toggle_active(idx);
+                }
+                self.render_overrides(self.first_node);
+            }
         }
     }
 
@@ -490,12 +577,11 @@ impl App {
     /// `OverrideCollection` in its canonical sort order.
     pub(super) fn render_manage_pane(&mut self, frame: &mut Frame, area: Rect) {
         let title = format!(" Overrides ({} entries) ", self.overrides.entries().len());
-        let border_style = if self.manage_focus {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let block = Block::bordered().title(title).border_style(border_style);
+        let style = pane_focus_style(self.manage_focus, self.theme);
+        let block = Block::bordered()
+            .title(Line::styled(title, style))
+            .border_style(style)
+            .border_type(BorderType::Rounded);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.side_area = inner;
@@ -532,15 +618,36 @@ impl App {
                     // `Comment`'s muted color, manual entries in
                     // `Boolean`'s blue — dedicated, `SyntaxRole`-
                     // independent styling, visually distinct at every
-                    // palette depth. The highlighted row's `REVERSED`
-                    // modifier layers on top of either.
+                    // palette depth.
                     let auto = self.overrides.entries()[*idx].auto;
-                    let mut style = theme::manage_entry_style(auto, self.theme);
-                    if *idx == self.manage_highlight {
-                        style = style.add_modifier(Modifier::REVERSED);
-                    }
+                    let base_style = theme::manage_entry_style(auto, self.theme);
+                    // Feedback (2026-07-16): the highlighted row's
+                    // `REVERSED` modifier applies only starting at the
+                    // type label's own first character, not the radio
+                    // marker or the single space separating it from the
+                    // label — reverse video on the marker's own cell would
+                    // wash out the filled-vs-hollow shape that's the whole
+                    // point of showing active/inactive state there,
+                    // defeating it on exactly the row (the cursor's own)
+                    // where a user is most likely to be checking it, and
+                    // starting the reversed block right at the label reads
+                    // cleaner than leaving one un-reversed space in the
+                    // middle of it.
+                    let split = text
+                        .char_indices()
+                        .nth(MANAGE_MARKER_COL + 2)
+                        .map_or(text.len(), |(byte, _)| byte);
+                    let (marker_part, rest_part) = text.split_at(split);
+                    let rest_style = if *idx == self.manage_highlight {
+                        base_style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        base_style
+                    };
                     lines.push(Line::from(pan_spans(
-                        vec![Span::styled(text, style)],
+                        vec![
+                            Span::styled(marker_part.to_string(), base_style),
+                            Span::styled(rest_part.to_string(), rest_style),
+                        ],
                         self.manage_pan_offset,
                     )));
                 }

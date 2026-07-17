@@ -11,21 +11,24 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use prototext_core::serialize::render_text::{decode_and_render_indexed, DecodeRenderOpts};
@@ -53,6 +56,25 @@ const MIN_OVERRIDE_WIDTH: u16 = 100;
 /// the app disambiguates them itself by comparing consecutive `Down`
 /// timestamps/positions (`App::last_click`).
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
+
+/// Whether a click identified by `key` (a main-pane line index, or a
+/// manage-pane entry index), arriving now, is the second half of a
+/// double-click against `last`'s previously recorded click — same `key`,
+/// within `DOUBLE_CLICK_THRESHOLD` — updating `last` to this click either
+/// way. Generic form of the main pane's own same-line-within-threshold
+/// check (`last_click`/`pending_double_click`, spec-0129-era), reused by
+/// the manage pane's radio-marker double-click (2026-07-17 feedback): an
+/// alternative to Shift-click, which most terminal emulators intercept
+/// for native text selection before it ever reaches the app.
+fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> bool {
+    let now = Instant::now();
+    let is_double = matches!(
+        last,
+        Some((t, prev)) if *prev == key && now.duration_since(*t) < DOUBLE_CLICK_THRESHOLD
+    );
+    *last = Some((now, key));
+    is_double
+}
 
 /// How long a passive status message stays visible in the shared bottom
 /// command/message bar before `track_message_timeout` auto-dismisses it
@@ -165,6 +187,23 @@ fn pan_by_step(offset: &mut usize, left: bool) {
     } else {
         offset.saturating_add(PAN_STEP)
     };
+}
+
+/// Border/title style for a focus-tracked pane (main/override/manage):
+/// `theme::focus_style`'s bold accent color when focused, plain default
+/// otherwise — the visual language protolens uses throughout for "this
+/// pane currently holds keyboard focus," shared by `render`'s main-pane
+/// block, `render_override_pane`, and `render_manage_pane`. Every
+/// bordered pane always uses `BorderType::Rounded` — no built-in
+/// `BorderType` combines rounded corners with any other line weight
+/// (2026-07-17), so focus is conveyed by color/weight of style alone,
+/// not by swapping border glyph sets.
+fn pane_focus_style(focused: bool, theme: ThemeKind) -> Style {
+    if focused {
+        theme::focus_style(theme)
+    } else {
+        Style::default()
+    }
 }
 
 /// Resolve a typed command `name` against `COMMANDS`, with **exact match
@@ -321,7 +360,16 @@ const HELP_TEXT: &[&str] = &[
     "  Left/Right       move the main-pane cursor to the prev/next field",
     "                   affected by the highlighted entry (wraps around)",
     "  /  ?  n          search / search backward / repeat",
-    "  a                toggle the highlighted entry active/inactive",
+    "  a / Space        toggle the highlighted entry active/inactive",
+    "  A / Shift-Space  same, but also cascades the new state to every",
+    "                   entry whose origin sits at-or-under it (a",
+    "                   descendant path, or a path-field/fqdn-field at",
+    "                   the same path); when several entries would",
+    "                   activate under one origin, only the first",
+    "                   (sorted) one does — Shift-Space needs terminal",
+    "                   support (Kitty keyboard protocol); also",
+    "                   available as Shift-click or double-click on an",
+    "                   entry's marker",
     "  z / Z            rotate the highlighted entry's origin kind",
     "                   forward/backward: path, path-field, fqdn-field;",
     "                   auto-resolves from the fields the entry affects,",
@@ -550,6 +598,15 @@ pub struct App {
     manage_highlight: usize,
     /// Scroll offset (in rows) for the management pane's listing.
     manage_scroll: usize,
+    /// Timestamp + entry index of the most recent left-click `Down` that
+    /// landed on an entry's radio marker (2026-07-17 feedback) — compared
+    /// against on the next such click to recognize a double-click (same
+    /// entry, within `DOUBLE_CLICK_THRESHOLD`), the mouse-only
+    /// alternative to Shift-click for `toggle_active_cascading` (most
+    /// terminal emulators intercept Shift-click for native text
+    /// selection before it ever reaches the app). `None` before the
+    /// first marker click.
+    last_manage_click: Option<(Instant, usize)>,
     /// Last confirmed management-pane in-pane search — `n` repeats it.
     last_manage_search: Option<(SearchDir, String)>,
     /// `Some` while `f` in the management pane is editing the highlighted
@@ -740,6 +797,7 @@ impl App {
             manage_focus: false,
             manage_highlight: 0,
             manage_scroll: 0,
+            last_manage_click: None,
             last_manage_search: None,
             manage_rename: None,
             manage_pending_kind: None,
@@ -928,11 +986,52 @@ fn drain_pending_input() {
     }
 }
 
+/// Set by `push_keyboard_enhancement` once it has actually pushed Kitty
+/// keyboard-protocol enhancement flags, so `pop_keyboard_enhancement`
+/// knows whether the matching pop is needed — `restore_terminal`/
+/// `suspend` are free functions with no `App` to carry this as ordinary
+/// state, and popping when nothing was pushed would either do nothing
+/// (unsupported terminals just ignore the unknown escape sequence) or,
+/// worse, pop a flag set some other way. Single-threaded (one terminal,
+/// one event loop), so `Ordering::Relaxed` is enough.
+static KITTY_KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+
+/// Push `DISAMBIGUATE_ESCAPE_CODES` (Kitty keyboard protocol) if the
+/// terminal supports it (2026-07-17 feedback) — without it, legacy
+/// terminal escape sequences carry no modifier parameter for printable
+/// keys, so Shift-Space is reported identically to plain Space (unlike
+/// arrow/function keys, which already carry one, e.g. `ESC [1;2A` for
+/// Shift-Up). `supports_keyboard_enhancement` queries the terminal and
+/// blocks briefly waiting for its response — fine here since it only
+/// ever runs before the main event loop starts (`run`) or during a
+/// suspend/resume cycle (`suspend`), never concurrently with
+/// `event::read`/`poll`. Terminals that don't support it are left
+/// exactly as before (no-op): `handle_manage_key`'s guarded
+/// `Char(' ') if SHIFT` arm simply never fires there, same as today.
+fn push_keyboard_enhancement() -> io::Result<()> {
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        KITTY_KEYBOARD_ENHANCED.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Undo `push_keyboard_enhancement`, if it actually pushed anything.
+fn pop_keyboard_enhancement() {
+    if KITTY_KEYBOARD_ENHANCED.swap(false, Ordering::Relaxed) {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
 /// Restore the terminal to its normal (cooked, main-screen, no mouse
 /// capture) state — shared by `run`'s own cleanup and the panic hook below,
 /// so a panic mid-session doesn't leave the user's terminal unusable.
 fn restore_terminal() {
     drain_pending_input();
+    pop_keyboard_enhancement();
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
@@ -961,6 +1060,7 @@ where
         libc::raise(libc::SIGTSTP);
     }
     enable_raw_mode()?;
+    push_keyboard_enhancement()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     terminal.clear()?;
     Ok(())
@@ -969,6 +1069,7 @@ where
 /// Run the interactive TUI loop against a real terminal.
 pub fn run(app: &mut App) -> io::Result<()> {
     enable_raw_mode()?;
+    push_keyboard_enhancement()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
