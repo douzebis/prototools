@@ -342,7 +342,20 @@ impl App {
                 .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                 .split(chunks[1]);
 
-            let cmd_block = Block::bordered().border_type(BorderType::Rounded);
+            // 2026-07-17 feedback: the command/message bar borrows the
+            // same focused/unfocused accent as the main/override/manage
+            // panes, but its own "focused" condition is "currently
+            // expecting keystrokes into `cmd_text`" (an active `:`/`/`/
+            // `?` command-line edit, or a manage-pane rename buffer) —
+            // not keyboard-focus tracking, since this bar never actually
+            // holds focus away from whichever pane the cursor keys
+            // still operate on. Merely *displaying* `self.message` (no
+            // active edit) uses the unfocused accent instead.
+            let cmd_editing = self.command_buffer.is_some() || self.manage_rename.is_some();
+            let cmd_style = pane_focus_style(cmd_editing, self.theme);
+            let cmd_block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(cmd_style);
             let cmd_inner = cmd_block.inner(bottom[0]);
             frame.render_widget(cmd_block, bottom[0]);
             self.cmd_area = Some(cmd_inner);
@@ -399,8 +412,15 @@ impl App {
                 type_label,
             )
         };
+        // 2026-07-17 feedback: never keyboard-focused, so always the
+        // plain "white" unfocused accent (`theme::unfocused_pane_style`)
+        // — explicit, rather than the implicit terminal-default style
+        // this used before, which some terminals render indistinguishably
+        // from the focused accent's "bright white".
+        let status_style = theme::unfocused_pane_style();
         let status_block = Block::bordered()
-            .title(" Status — F1 for help ")
+            .title(Line::styled(" Status — F1 for help ", status_style))
+            .border_style(status_style)
             .border_type(BorderType::Rounded);
         let status_inner = status_block.inner(status_outer);
         frame.render_widget(status_block, status_outer);

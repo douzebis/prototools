@@ -190,19 +190,20 @@ fn pan_by_step(offset: &mut usize, left: bool) {
 }
 
 /// Border/title style for a focus-tracked pane (main/override/manage):
-/// `theme::focus_style`'s bold accent color when focused, plain default
-/// otherwise — the visual language protolens uses throughout for "this
-/// pane currently holds keyboard focus," shared by `render`'s main-pane
-/// block, `render_override_pane`, and `render_manage_pane`. Every
-/// bordered pane always uses `BorderType::Rounded` — no built-in
-/// `BorderType` combines rounded corners with any other line weight
-/// (2026-07-17), so focus is conveyed by color/weight of style alone,
-/// not by swapping border glyph sets.
+/// `theme::focus_style`'s bold accent color when focused,
+/// `theme::unfocused_pane_style`'s plain accent otherwise — the visual
+/// language protolens uses throughout for "this pane currently holds
+/// keyboard focus," shared by `render`'s main-pane block,
+/// `render_override_pane`, and `render_manage_pane`. Every bordered
+/// pane always uses `BorderType::Rounded` — no built-in `BorderType`
+/// combines rounded corners with any other line weight (2026-07-17),
+/// so focus is conveyed by color/weight of style alone, not by
+/// swapping border glyph sets.
 fn pane_focus_style(focused: bool, theme: ThemeKind) -> Style {
     if focused {
         theme::focus_style(theme)
     } else {
-        Style::default()
+        theme::unfocused_pane_style()
     }
 }
 

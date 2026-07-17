@@ -399,22 +399,27 @@ fn manage_entry_style_ansi16(auto: bool) -> Style {
 
 /// Focused-pane border/title accent, shared by every focus-tracked pane
 /// (main/override/manage — see `tui/mod.rs`'s `pane_focus_style`).
-/// Reuses `Type`'s teal/cyan accent from the existing RGB palettes (and
-/// the matching Cyan/Blue ANSI-16 fallback) rather than inventing a new
-/// color, so the focus indicator stays visually consistent with the
-/// rest of the palette. Bold on top of the color, so focus still reads
-/// in terminals with color disabled.
+/// Plain grayscale (bright white, bold) instead of the previous teal/
+/// cyan RGB accent, paired with `unfocused_pane_style`'s plain gray —
+/// deliberately theme-independent (same accent in both `Dark`/`Light`),
+/// unlike `style_for`'s own RGB-vs-theme dispatch (2026-07-17).
 pub fn focus_style(theme: ThemeKind) -> Style {
-    let color = match theme {
-        ThemeKind::Dark if supports_rgb() => dark_rgb::TYPE,
-        ThemeKind::Dark => Color::Cyan,
-        ThemeKind::Light if supports_rgb() => light_rgb::TYPE,
-        ThemeKind::Light => Color::Blue,
+    match theme {
         ThemeKind::System => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
+        ThemeKind::Dark | ThemeKind::Light => Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Unfocused-pane border/title accent, paired with `focus_style` above —
+/// plain gray, no bold, so the focused pane's brighter/bold accent reads
+/// clearly by contrast (previously `Style::default()`, i.e. no explicit
+/// color at all).
+pub fn unfocused_pane_style() -> Style {
+    Style::default().fg(Color::Gray)
 }
 
 /// Resolves `ThemeKind::System` to `Dark` or `Light`, once, at startup
