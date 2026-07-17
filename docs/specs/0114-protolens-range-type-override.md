@@ -400,7 +400,13 @@ inferred type," not "mark this raw" — raw remains one `k`/`Up` press away.
 #### §3.2 — Sort modes for the ranked candidates
 
 Two sort modes, `a` toggling between them while the override pane has
-focus — apply only to the ranked candidates below the pinned raw entry:
+focus — apply only to the ranked candidates below the pinned raw entry.
+
+Later amended (spec 0137 implementation feedback): the active sort mode
+no longer persists across successive `t` invocations for the session —
+`t` resets it to the `Inferred` default every time the pane opens.
+
+
 
 - **Lexicographic**: all message/group types known to the loaded
   descriptor set, alphabetically by FQDN. Cheap — no `score_all` call (§6).
@@ -553,7 +559,7 @@ Override pane (only meaningful while it has focus, except `Tab`/`t` which work r
 | Key | Action |
 |---|---|
 | `j` / `Down`, `k` / `Up` | Move highlighted candidate (or onto the pinned raw entry) |
-| `a` | Toggle candidate sort: inferred score (default) / lexicographic — persists across successive `t` invocations for the session |
+| `a` | Toggle candidate sort: inferred score (default) / lexicographic — resets to `Inferred` every time the pane opens (see amendment below), not persisted across `t` invocations |
 | `/` | Search forward |
 | `?` | Search backward |
 | `n` | Repeat last search |

@@ -442,13 +442,18 @@ impl App {
     }
 
     /// Ephemeral right-hand override pane (spec 0114 §2): title showing the
-    /// target's byte range and sort mode, the pinned `<raw / no type>` row
-    /// (§3.1) followed by the ranked/lexicographic candidate list (§3.2)
-    /// with the highlighted row reverse-styled, scrolled to keep it
-    /// visible. The `/`/`?` search buffer (§4) renders in the shared
-    /// bottom command/message bar instead of a row here (spec-0133-
-    /// adjacent rework). Apply-on-`Enter` (§5) lands in a later
-    /// implementation step.
+    /// target's byte range and sort mode, and the ranked/lexicographic
+    /// candidate list (§3.2) with the highlighted row reverse-styled,
+    /// scrolled to keep it visible. In alphabetic mode row 0 is always the
+    /// `Empty` raw-type candidate (spec 0137 §G1/§G4) — no more separate
+    /// pinned row. Each row is styled by kind (spec 0137 §G8): `Empty`
+    /// (`Comment`), a primitive keyword (`PunctuationBracketExtension`),
+    /// an enum FQDN (`Attribute`), else a message/group FQDN (unstyled),
+    /// with G6's leading-dot collision-avoidance applied to non-sentinel
+    /// FQDNs. The `/`/`?` search buffer (§4) renders in the shared bottom
+    /// command/message bar instead of a row here (spec-0133-adjacent
+    /// rework). Apply-on-`Enter` (§5) lands in a later implementation
+    /// step.
     pub(super) fn render_override_pane(&mut self, frame: &mut Frame, area: Rect) {
         let Some(idx) = self.override_target else {
             return;
@@ -474,7 +479,7 @@ impl App {
         let list_height = inner.height as usize;
         self.override_list_height = list_height;
 
-        let total_rows = self.override_candidates.len() + 1;
+        let total_rows = self.override_candidates.len();
         clamp_scroll_to_visible(
             &mut self.override_scroll,
             self.override_highlight,
@@ -485,19 +490,40 @@ impl App {
 
         let mut lines: Vec<Line> = Vec::new();
         for row in start..end {
-            let text = if row == 0 {
-                "<raw / no type>".to_string()
+            let (fqdn, score) = &self.override_candidates[row];
+            let (display_fqdn, base_style) = if fqdn == "protolens_internal.Empty" {
+                (
+                    "Empty".to_string(),
+                    theme::style_for(SyntaxRole::Comment, self.theme),
+                )
+            } else if decode::primitive_type_for_keyword(fqdn).is_some() {
+                (
+                    fqdn.clone(),
+                    theme::style_for(SyntaxRole::PunctuationBracketExtension, self.theme),
+                )
+            } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
+                let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+                    format!(".{fqdn}")
+                } else {
+                    fqdn.clone()
+                };
+                (display, theme::style_for(SyntaxRole::Attribute, self.theme))
             } else {
-                let (fqdn, score) = &self.override_candidates[row - 1];
-                match score {
-                    Some(s) => format!("{fqdn}  (score: {s})"),
-                    None => fqdn.clone(),
-                }
+                let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+                    format!(".{fqdn}")
+                } else {
+                    fqdn.clone()
+                };
+                (display, Style::default())
+            };
+            let text = match score {
+                Some(s) => format!("{display_fqdn}  (score: {s})"),
+                None => display_fqdn,
             };
             let style = if row == self.override_highlight {
-                Style::default().add_modifier(Modifier::REVERSED)
+                base_style.add_modifier(Modifier::REVERSED)
             } else {
-                Style::default()
+                base_style
             };
             // Spec 0127 §G1: pan the override pane's own rows
             // independently of the main pane's `pan_offset`.

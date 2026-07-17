@@ -14,7 +14,7 @@ use std::path::Path;
 
 use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
 use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
-use prost_reflect::{DescriptorPool, MessageDescriptor};
+use prost_reflect::{DescriptorPool, EnumDescriptor, MessageDescriptor};
 use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
@@ -365,27 +365,54 @@ fn synthetic_wrapper_name(field_number: u64, field_type: Type, type_name: &str) 
     format!("protolens_internal.x{hex}")
 }
 
+/// A wrapper-target descriptor: either a message/group FQDN target, or
+/// (spec 0137 §G3) an enum FQDN target. `register_wrapper` only ever
+/// needs `full_name()`/`parent_file()` from either kind, so this is a
+/// thin owned enum (both `MessageDescriptor`/`EnumDescriptor` are cheap
+/// to clone), not a trait object.
+pub(crate) enum WrapperTarget {
+    Message(MessageDescriptor),
+    Enum(EnumDescriptor),
+}
+
+impl WrapperTarget {
+    fn full_name(&self) -> &str {
+        match self {
+            WrapperTarget::Message(d) => d.full_name(),
+            WrapperTarget::Enum(d) => d.full_name(),
+        }
+    }
+
+    fn parent_file_name(&self) -> String {
+        match self {
+            WrapperTarget::Message(d) => d.parent_file().name().to_string(),
+            WrapperTarget::Enum(d) => d.parent_file().name().to_string(),
+        }
+    }
+}
+
 /// Build (or reuse, if already registered) a synthetic one-field message
 /// descriptor whose sole field `field_number` has type `field_type`
-/// (message/group/primitive, spec 0135 §G3) and, for a message/group
-/// target, references `target_desc` — the virtual encompassing protobuf
-/// of spec 0114 §1.1, generalized (spec 0118 §4) to an arbitrary field
-/// number so `splice_override` can wrap any node's own field, not just
-/// the document root (always field `1`), and (spec 0135 §G3) to primitive
-/// wire types, not just message/group. The field's own name is always
+/// (message/group/primitive/enum, spec 0135 §G3, spec 0137 §G3) and,
+/// for a message/group/enum target, references `target` — the virtual
+/// encompassing protobuf of spec 0114 §1.1, generalized (spec 0118 §4)
+/// to an arbitrary field number so `splice_override` can wrap any
+/// node's own field, not just the document root (always field `1`),
+/// (spec 0135 §G3) to primitive wire types, not just message/group, and
+/// (spec 0137 §G3) to enum targets. The field's own name is always
 /// the fixed placeholder `"_"` (spec 0135 §G2) — the real display name
 /// is patched in as a post-render substring replacement, so it's no
-/// longer part of the descriptor's identity. `target_desc` is `None` for
-/// a primitive target; `Some` for a message/group target, supplying both
-/// `type_name` (`.{fqdn}`) and the `dependency` file entry.
+/// longer part of the descriptor's identity. `target` is `None` for a
+/// primitive target; `Some` for a message/group/enum target, supplying
+/// both `type_name` (`.{fqdn}`) and the `dependency` file entry.
 /// `pub(crate)`: also called from `tui.rs`'s `splice_override`.
 pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
     field_number: u64,
     field_type: Type,
-    target_desc: Option<&MessageDescriptor>,
+    target: Option<&WrapperTarget>,
 ) -> Result<MessageDescriptor, DecodeError> {
-    let type_name = target_desc.map(|d| format!(".{}", d.full_name()));
+    let type_name = target.map(|t| format!(".{}", t.full_name()));
     let full_name =
         synthetic_wrapper_name(field_number, field_type, type_name.as_deref().unwrap_or(""));
     if let Some(existing) = pool.get_message_by_name(&full_name) {
@@ -408,8 +435,8 @@ pub(crate) fn register_wrapper(
         field: vec![field],
         ..Default::default()
     };
-    let dependency = target_desc
-        .map(|d| vec![d.parent_file().name().to_string()])
+    let dependency = target
+        .map(|t| vec![t.parent_file_name()])
         .unwrap_or_default();
     let file = FileDescriptorProto {
         name: Some(format!("protolens_internal/{short_name}.proto")),
@@ -475,6 +502,16 @@ pub(crate) fn primitive_keywords_for_wire_type(wire_type: u32) -> &'static [&'st
         _ => &[],
     }
 }
+
+/// Every primitive keyword `primitive_type_for_keyword` recognizes,
+/// alphabetically pre-sorted (spec 0137 §G1) — used by the override
+/// pane's alphabetic-mode candidate list. Must stay in sync with that
+/// function's match arms (the same duplication precedent
+/// `primitive_keywords_for_wire_type` already accepts).
+pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
+    "bool", "bytes", "double", "fixed32", "fixed64", "float", "int32", "int64", "sfixed32",
+    "sfixed64", "sint32", "sint64", "string", "uint32", "uint64",
+];
 
 /// FQDN of the synthetic, globally-shared "Item" shape used to represent
 /// a MessageSet group entry generically — `type_id` (field 2) and
@@ -565,7 +602,7 @@ pub fn decode(
                 &mut ctx.pool,
                 1,
                 Type::Message,
-                Some(desc),
+                Some(&WrapperTarget::Message(desc.clone())),
             )?),
         ),
         None => ("<raw / no type>".to_string(), None),

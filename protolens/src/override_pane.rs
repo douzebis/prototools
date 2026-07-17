@@ -28,14 +28,16 @@ pub enum SortMode {
     Inferred,
 }
 
-/// All message/group type FQDNs known to `pool`, alphabetically sorted
-/// (spec 0114 §3.2's lexicographic mode). Independent of range — computed
-/// once and reused for every override-pane invocation, every range, for
-/// the whole session (§6: "needs no per-range caching").
+/// All message/group/enum type FQDNs known to `pool`, alphabetically
+/// sorted (spec 0114 §3.2's lexicographic mode; enums added by spec
+/// 0137 §G2). Independent of range — computed once and reused for
+/// every override-pane invocation, every range, for the whole session
+/// (§6: "needs no per-range caching").
 pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
     let mut names: Vec<String> = pool
         .all_messages()
         .map(|m| m.full_name().to_string())
+        .chain(pool.all_enums().map(|e| e.full_name().to_string()))
         .collect();
     names.sort_unstable();
     names

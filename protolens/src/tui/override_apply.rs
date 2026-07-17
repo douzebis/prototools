@@ -618,13 +618,16 @@ impl App {
         let field_name = self.field_name_for(idx);
 
         // Resolve `target` into the synthetic field's declared `Type`
-        // (spec 0135 G1's "second subtlety" + G3): a message FQDN yields
-        // `Type::Group` only when the node's real wire framing is
-        // `WT_START_GROUP`, else `Type::Message`; a primitive keyword
-        // yields the matching primitive `Type` directly; `None` (raw)
-        // yields no synthetic field at all.
+        // (spec 0135 G1's "second subtlety" + G3, spec 0137 §G3/§G4): a
+        // message FQDN yields `Type::Group` only when the node's real
+        // wire framing is `WT_START_GROUP`, else `Type::Message`; a
+        // primitive keyword yields the matching primitive `Type`
+        // directly; an enum FQDN yields `Type::Enum`; the reserved
+        // `Empty` sentinel and plain `None` (raw) both yield no
+        // synthetic field at all.
         let (target_desc, field_type) = match &target {
             None => (None, None),
+            Some(name) if name == "protolens_internal.Empty" => (None, None),
             Some(name) => {
                 if let Some(desc) = self.ctx.pool().get_message_by_name(name) {
                     let ft = if old_span.wire_type == prototext_core::helpers::WT_START_GROUP {
@@ -632,9 +635,14 @@ impl App {
                     } else {
                         Type::Message
                     };
-                    (Some(desc), Some(ft))
+                    (Some(decode::WrapperTarget::Message(desc)), Some(ft))
                 } else if let Some(prim) = decode::primitive_type_for_keyword(name) {
                     (None, Some(prim))
+                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(name) {
+                    (
+                        Some(decode::WrapperTarget::Enum(enum_desc)),
+                        Some(Type::Enum),
+                    )
                 } else {
                     return Err(format!("type '{name}' not found in descriptor set"));
                 }
@@ -1006,10 +1014,18 @@ impl App {
 /// keyword (a future fake primitive type, per review — not yet wired up
 /// anywhere in this codebase), followed by a space and `[{tag}]`.
 fn format_fqdn_label(fqdn: &str, tag: &str) -> String {
-    let collides = decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "Empty";
-    if collides {
+    if fqdn_needs_dot_prefix(fqdn) {
         format!(".{fqdn} [{tag}]")
     } else {
         format!("{fqdn} [{tag}]")
     }
+}
+
+/// Spec 0136/0137 §G6: whether a bare message/group/enum FQDN would
+/// collide with a primitive keyword or the reserved `Empty` keyword if
+/// displayed undecorated — shared between the status-line label
+/// (`format_fqdn_label`) and the override pane's row rendering
+/// (`render.rs`'s `render_override_pane`).
+pub(super) fn fqdn_needs_dot_prefix(fqdn: &str) -> bool {
+    decode::primitive_type_for_keyword(fqdn).is_some() || fqdn == "Empty"
 }

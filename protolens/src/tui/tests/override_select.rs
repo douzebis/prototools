@@ -298,8 +298,8 @@ fn override_sort_defaults_to_inferred_and_a_toggles_it() {
     assert_eq!(app.override_sort, SortMode::Inferred);
 }
 
-/// Spec 0114 §3.2: `j`/`k` move the highlight, clamped to
-/// `0..=candidates.len()` — row `0` is the pinned raw entry.
+/// Spec 0114 §3.2/spec 0137 §G4: `j`/`k` move the highlight, clamped to
+/// `0..=candidates.len() - 1` — direct indexing, no pinned raw row.
 #[test]
 fn override_highlight_movement_clamps_at_both_ends() {
     let mut app = message_node_app();
@@ -316,14 +316,12 @@ fn override_highlight_movement_clamps_at_both_ends() {
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
     assert_eq!(app.override_highlight, 1);
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 2);
-    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 2);
+    assert_eq!(app.override_highlight, 1);
 }
 
-/// Spec 0114 §4: `/` searches forward, `?` searches backward, `n`
-/// repeats the last search — wrapping around — and the pinned raw
-/// entry (row `0`) is never matched.
+/// Spec 0114 §4/spec 0137 §G4: `/` searches forward, `?` searches
+/// backward, `n` repeats the last search — wrapping around — over
+/// `override_candidates` directly, no pinned raw row excluded.
 #[test]
 fn override_search_forward_backward_and_repeat_with_n() {
     let mut app = message_node_app();
@@ -345,24 +343,24 @@ fn override_search_forward_backward_and_repeat_with_n() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.command_buffer.is_none());
-    assert_eq!(app.override_highlight, 2); // pkg.Beta
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
 
     // `n` repeats forward, wrapping to the next match.
     app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 4); // pkg.Beta2
+    assert_eq!(app.override_highlight, 3); // pkg.Beta2
 
     // Wraps back around to the first match.
     app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 2); // pkg.Beta
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
 
     // `?` searches backward from the current highlight (pkg.Beta,
-    // row 2) — skips itself, wraps to pkg.Beta2 (row 4).
+    // index 1) — skips itself, wraps to pkg.Beta2 (index 3).
     app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
     for c in "beta".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 4); // pkg.Beta2
+    assert_eq!(app.override_highlight, 3); // pkg.Beta2
 
     // No match leaves the highlight unchanged and sets a message.
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
@@ -370,7 +368,7 @@ fn override_search_forward_backward_and_repeat_with_n() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 4);
+    assert_eq!(app.override_highlight, 3);
     assert!(app.message.contains("not found"));
 }
 
@@ -399,19 +397,19 @@ fn override_search_with_no_argument_reuses_the_active_pattern() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 2); // pkg.Beta
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
 
     // `/<Enter>` with no typed pattern re-uses "beta", searching
     // forward from the current highlight — wraps to pkg.Beta2.
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 4); // pkg.Beta2
+    assert_eq!(app.override_highlight, 3); // pkg.Beta2
 
     // `?<Enter>` with no typed pattern re-uses "beta" too, but now
     // searches backward from the current highlight.
     app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.override_highlight, 2); // pkg.Beta
+    assert_eq!(app.override_highlight, 1); // pkg.Beta
 }
 
 /// Spec 0114 §4: `Esc` cancels an in-progress search without moving the
@@ -556,7 +554,7 @@ fn main_pane_search_keys_are_inert_while_override_pane_has_focus() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.command_buffer.is_none());
-    assert_eq!(app.override_highlight, 1); // pkg.Alpha
+    assert_eq!(app.override_highlight, 0); // pkg.Alpha
     assert_eq!(app.cursor, cursor_before);
 }
 
@@ -682,12 +680,14 @@ fn enter_key_applies_override_and_closes_pane() {
         .expect("tree must contain the Inner submessage");
     app.cursor = inner_idx;
 
-    // Row 0 (pinned raw entry): `Enter` clears the type and closes
-    // the pane. `t`'s default Inferred sort mode leaves an unrelated
-    // "no scoring graph" status message in this graph-less fixture —
-    // clear it first so it can't be mistaken for an override error.
+    // Spec 0137 §G4: inferred mode has no raw/`Empty` row at all, so
+    // reaching raw via the pane requires alphabetic mode, where index
+    // `0` is always the `Empty` sentinel. `Enter` there clears the
+    // type and closes the pane.
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_target.is_some());
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
     app.message.clear();
     app.override_highlight = 0;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -701,15 +701,22 @@ fn enter_key_applies_override_and_closes_pane() {
     assert!(!app.manage_open);
 
     // A ranked candidate row: re-open, switch to lexicographic sort
-    // (no scoring graph in this fixture), and select the first
-    // candidate.
+    // (no scoring graph in this fixture), and select the first real
+    // message FQDN (spec 0137 §G4: index `0` there is `Empty`, `1..16`
+    // are the primitive keywords, so the first message FQDN comes
+    // after those).
     app.cursor = inner_idx;
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     app.override_sort = SortMode::Lexicographic;
     app.recompute_override_candidates();
     assert!(!app.override_candidates.is_empty());
-    app.override_highlight = 1;
-    let chosen = app.override_candidates[0].0.clone();
+    let chosen = app.all_type_fqdns[0].clone();
+    let row = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| *f == chosen)
+        .expect("chosen FQDN must be a candidate");
+    app.override_highlight = row;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.override_target.is_none());
     assert_eq!(

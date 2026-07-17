@@ -72,18 +72,21 @@ impl App {
         self.override_focus = true;
         self.override_scroll = 0;
         self.override_pan_offset = 0;
+        // Sort mode no longer persists across successive `t` invocations
+        // for the session — it resets to the default (`Inferred`) every
+        // time the pane opens.
+        self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
         if let Some(fqdn_or_raw) = active_type {
-            let highlight = match &fqdn_or_raw {
-                None => Some(0),
-                Some(fqdn) => self
-                    .override_candidates
-                    .iter()
-                    .position(|(f, _)| f == fqdn)
-                    .map(|row| row + 1),
-            };
-            if let Some(highlight) = highlight {
-                self.override_highlight = highlight;
+            // Spec 0137 §G4: raw (`None`) maps to the `Empty` sentinel
+            // string — found (and highlighted) only in alphabetic mode,
+            // where it is always a real candidate; in inferred mode, raw
+            // has no corresponding row, so `position` finds nothing and
+            // the default highlight (recompute's top-ranked candidate)
+            // is left as-is.
+            let key = fqdn_or_raw.unwrap_or_else(|| "protolens_internal.Empty".to_string());
+            if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
+                self.override_highlight = row;
             }
         }
         // Spec 0132 §G2: live-preview the initial highlighted row from
@@ -130,9 +133,12 @@ impl App {
 
     /// Recompute `override_candidates` for the current `override_target`
     /// under the currently active `override_sort` (spec 0114 §3.2), and
-    /// reset the highlight to the first ranked candidate — not the pinned
-    /// raw entry (§3.1's "not the default on open"). Called both when the
-    /// pane first opens and whenever `i` toggles the sort mode.
+    /// reset the highlight to the first candidate (index `0`) — in
+    /// alphabetic mode this is always the `Empty` sentinel (spec 0137
+    /// §G1/§G4), not necessarily what was previously highlighted;
+    /// there is no separate pinned row to preserve any more. Called
+    /// both when the pane first opens and whenever `i` toggles the sort
+    /// mode.
     ///
     /// `SortMode::Inferred` consults `candidate_cache`/`active_override_range`
     /// (spec 0114 §6) before calling `score_all`: toggling back to
@@ -145,10 +151,14 @@ impl App {
             return;
         };
         self.override_candidates = match self.override_sort {
-            SortMode::Lexicographic => self
-                .all_type_fqdns
-                .iter()
-                .map(|f| (f.clone(), None))
+            // Spec 0137 §G1/§G4: the `Empty` sentinel + the 15 primitive
+            // keywords are prepended, in that fixed order, ahead of the
+            // sorted message/group/enum FQDNs — alphabetic mode only
+            // (§G7).
+            SortMode::Lexicographic => std::iter::once("protolens_internal.Empty".to_string())
+                .chain(decode::ALL_PRIMITIVE_KEYWORDS.iter().map(|s| s.to_string()))
+                .chain(self.all_type_fqdns.iter().cloned())
+                .map(|f| (f, None))
                 .collect(),
             SortMode::Inferred => match &self.ctx.graph {
                 Some(graph) => {
@@ -183,7 +193,7 @@ impl App {
                 }
             },
         };
-        self.override_highlight = usize::from(!self.override_candidates.is_empty());
+        self.override_highlight = 0;
         self.override_scroll = 0;
         self.override_pan_offset = 0;
     }
@@ -215,23 +225,22 @@ impl App {
     }
 
     /// Move the override pane's highlighted row by `delta` (spec 0114
-    /// §3.2's `j`/`k`), clamped to `0..=override_candidates.len()` (row
-    /// `0` is the pinned raw entry). Upgrades a capped preview to the
-    /// complete list first (spec 0114 §6) if the requested move would go
-    /// past what's currently loaded.
+    /// §3.2's `j`/`k`), clamped to `0..=override_candidates.len() - 1`
+    /// (spec 0137 §G4: `override_candidates` is indexed directly — no
+    /// more pinned row 0). Upgrades a capped preview to the complete
+    /// list first (spec 0114 §6) if the requested move would go past
+    /// what's currently loaded.
     pub(super) fn move_override_highlight(&mut self, delta: isize) {
+        let max_index = self.override_candidates.len().saturating_sub(1);
         if delta > 0
             && !self.override_candidates_complete
             && self.override_sort == SortMode::Inferred
-            && self.override_highlight as isize + delta > self.override_candidates.len() as isize
+            && self.override_highlight as isize + delta > max_index as isize
         {
             self.upgrade_active_override_to_complete();
         }
-        self.override_highlight = clamp_highlight(
-            self.override_highlight,
-            delta,
-            self.override_candidates.len(),
-        );
+        let max_index = self.override_candidates.len().saturating_sub(1);
+        self.override_highlight = clamp_highlight(self.override_highlight, delta, max_index);
         // Spec 0132 §G2: live-preview the newly-highlighted candidate.
         self.preview_override_highlight();
     }
@@ -241,9 +250,10 @@ impl App {
     /// single-node `splice_override` call that deliberately does not
     /// touch `self.overrides`, so a later `Enter`-confirm (which does
     /// touch it) is entirely unaffected by whatever was last previewed.
-    /// No-op if the override pane isn't open. Row 0 is the pinned
-    /// `<raw / no type>` entry (§3.1); rows 1.. are
-    /// `override_candidates[row - 1]`.
+    /// No-op if the override pane isn't open. `override_highlight`
+    /// indexes `override_candidates` directly (spec 0137 §G4) — no more
+    /// pinned row 0; `None`/raw is reached only via the `Empty`
+    /// sentinel entry in alphabetic mode.
     ///
     /// `idx`'s own `rendered_as` *is* deliberately invalidated
     /// (`None`'d out) on every successful preview splice — unlike a real
@@ -266,40 +276,31 @@ impl App {
         let Some(idx) = self.override_target else {
             return;
         };
-        let tentative = if self.override_highlight == 0 {
-            None
-        } else {
-            self.override_candidates
-                .get(self.override_highlight - 1)
-                .map(|(fqdn, _)| fqdn.clone())
-        };
+        let tentative = self
+            .override_candidates
+            .get(self.override_highlight)
+            .map(|(fqdn, _)| fqdn.clone());
         match self.splice_override(idx, tentative) {
             Ok(()) => self.tree[idx].rendered_as = None,
             Err(e) => self.message = format!("cannot preview override: {e}"),
         }
     }
 
-    /// Find the next `override_candidates` entry (1-based row, the pinned
-    /// raw entry excluded from matching — §4) whose FQDN contains
-    /// `pattern` (case-insensitive), searching in `dir` from just past the
-    /// currently highlighted row, wrapping around. Moves the highlight
-    /// there on success; otherwise leaves it unchanged and sets a
-    /// status-line message.
+    /// Find the next `override_candidates` entry (0-based, direct index
+    /// — spec 0137 §G4: no more pinned raw row excluded from matching)
+    /// whose FQDN contains `pattern` (case-insensitive), searching in
+    /// `dir` from just past the currently highlighted row, wrapping
+    /// around. Moves the highlight there on success; otherwise leaves it
+    /// unchanged and sets a status-line message.
     pub(super) fn jump_to_override_match(&mut self, dir: SearchDir, pattern: &str) {
         if pattern.is_empty() || self.override_candidates.is_empty() {
             return;
         }
         let needle = pattern.to_lowercase();
         let n = self.override_candidates.len();
-        // Candidate index (0-based into `override_candidates`) to start
-        // just past (row 0 = raw, row i+1 = candidate i) and wrapping
-        // around, in search direction. `row` is clamped into `0..=n`
-        // first since the raw entry (row 0) has no corresponding
-        // candidate index.
-        let row = self.override_highlight.min(n);
         let start = match dir {
-            SearchDir::Forward => row % n,
-            SearchDir::Backward => (row.saturating_sub(1) + n - 1) % n,
+            SearchDir::Forward => (self.override_highlight + 1) % n,
+            SearchDir::Backward => (self.override_highlight + n - 1) % n,
         };
         match search_wrap(n, start, dir, |i| {
             self.override_candidates[i]
@@ -307,7 +308,7 @@ impl App {
                 .to_lowercase()
                 .contains(&needle)
         }) {
-            Some(i) => self.override_highlight = i + 1,
+            Some(i) => self.override_highlight = i,
             None => self.message = format!("pattern not found: {pattern}"),
         }
     }

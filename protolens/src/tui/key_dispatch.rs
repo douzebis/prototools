@@ -27,7 +27,7 @@ impl App {
                 if !self.override_candidates_complete && self.override_sort == SortMode::Inferred {
                     self.upgrade_active_override_to_complete();
                 }
-                self.override_highlight = self.override_candidates.len();
+                self.override_highlight = self.override_candidates.len().saturating_sub(1);
                 self.preview_override_highlight();
             }
             KeyCode::Char('a') => {
@@ -61,22 +61,20 @@ impl App {
                 let Some(idx) = self.override_target else {
                     return;
                 };
-                // Row 0 is the pinned `<raw / no type>` entry (§3.1);
-                // rows 1.. are `override_candidates[row - 1]`.
-                let new_fqdn = if self.override_highlight == 0 {
-                    None
-                } else {
-                    match self
-                        .override_candidates
-                        .get(self.override_highlight - 1)
-                        .map(|(fqdn, _)| fqdn.clone())
-                    {
-                        Some(fqdn) => Some(fqdn),
-                        None => {
-                            self.message =
-                                "cannot apply override: no candidate selected".to_string();
-                            return;
-                        }
+                // Spec 0137 §G4: `override_candidates` is indexed
+                // directly — no more pinned row 0. In alphabetic mode,
+                // index `0` is always the `Empty` sentinel, resolving to
+                // raw exactly as the old row 0 did (splice_override's
+                // sentinel arm).
+                let new_fqdn = match self
+                    .override_candidates
+                    .get(self.override_highlight)
+                    .map(|(fqdn, _)| fqdn.clone())
+                {
+                    Some(fqdn) => Some(fqdn),
+                    None => {
+                        self.message = "cannot apply override: no candidate selected".to_string();
+                        return;
                     }
                 };
                 // Spec 0117 §2: per-kind origin — errors (wrapper root,
