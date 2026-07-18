@@ -44,6 +44,7 @@
 , treeSitterTextproto
 , treeSitterTextprotoRustLib
 , protoscan
+, buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
 {
@@ -81,7 +82,7 @@
     # Allow cargo to write build artifacts to target/ (outside /nix/store).
     NIX_ENFORCE_PURITY = 0;
 
-    nativeBuildInputs = with pkgs; [
+    nativeBuildInputs = (with pkgs; [
       cargo
       rustc
       rustfmt
@@ -89,7 +90,7 @@
       reuse
       gh
       protobuf
-      buf
+      neovim
       mandoc
       zola
       pythonPkgs.pytest
@@ -104,7 +105,7 @@
       chafa
       tree
       bat
-    ];
+    ]) ++ [ buf ];
 
     shellHook = ''
       old_opts=$(set +o)

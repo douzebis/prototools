@@ -34,6 +34,7 @@
 , protoPatchPhase
 , wktRkyv ? null   # store path to wkt.rkyv; null for bare/bootstrap builds
 , treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
+, buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
 let
@@ -240,6 +241,17 @@ let
         -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
       --zsh  <(PROTOLENS_COMPLETE=zsh  $out/bin/protolens) \
       --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
+    # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime
+    # dependency, not merely a dev-shell convenience — bundle a pinned
+    # Neovim and `buf` (for `buf lsp serve`) onto PATH so they resolve
+    # regardless of the user's own $PATH.
+    # spec 0145 G5: bundle a minimal Neovim config wiring `.proto`
+    # filetype/syntax and `buf lsp serve` navigation, loaded via `-u`.
+    install -Dm444 ${../protolens/nvim/init.lua} \
+      "$out/share/protolens/nvim/init.lua"
+    wrapProgram $out/bin/protolens \
+      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.neovim buf ]} \
+      --set PROTOLENS_NVIM_CONFIG "$out/share/protolens/nvim/init.lua"
   '';
 
   protolensMeta = with pkgs.lib; {
@@ -255,7 +267,7 @@ let
     src                                = workspaceSrc;
     pname                              = "protolens";
     cargoArtifacts                     = depsCache;
-    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
+    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles pkgs.makeWrapper ];
     doCheck                            = false;
     doInstallCargoArtifacts            = true;
     postInstall                        = protolensPostInstall;

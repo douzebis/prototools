@@ -19,6 +19,21 @@
     sha256 = "0xgsq0cfjnl2axbzzw579jrjq9g8mhbgjgfippl3qx03im636p5l";
   }) {})
 , pythonPkgs ? pkgs.python313Packages
+# buf — narrow override, pinned separately from the main nixpkgs revision
+# above: the main pin's buf is 1.59.0, which predates upstream fixes
+# critical to protolens's Neovim integration (spec 0145/0146) —
+# v1.60.0 changed `buf lsp serve`'s default --timeout from 2m0s to 0 (no
+# timeout), and v1.61.0 fixed a regression in LSP well-known-types
+# handling that reliably crashed `buf lsp serve` (SIGSEGV in
+# buflsp.(*file).RefreshIR) when navigating to a locally-materialized WKT
+# file such as google/protobuf/any.proto (as reproto emits under -O, spec
+# 0146) — live-reproduced and root-caused 2026-07-18. Rest of the
+# toolchain (rustc, protobuf, etc.) stays on the main pin.
+, buf ? (import (fetchTarball {
+    # nixpkgs-unstable @ 2026-07-18 (git rev 31cd72fdba8fa052e437ce7e6879c4fe62def10f)
+    url    = "https://github.com/NixOS/nixpkgs/archive/31cd72fdba8fa052e437ce7e6879c4fe62def10f.tar.gz";
+    sha256 = "107f6kp5kjxsh9aggnqfanlfn5mw24gq19alkdvld75vimv5r3jl";
+  }) {}).buf
 }:
 
 let
@@ -261,7 +276,7 @@ let
 
   rust = import ./nix/rust.nix {
     inherit pkgs crane pythonPkgs pythonBin pythonExecutable pyo3Rustflags
-            depsSrc workspaceSrc protoPatchPhase wktRkyv treeSitterTextprotoRustLib;
+            depsSrc workspaceSrc protoPatchPhase wktRkyv treeSitterTextprotoRustLib buf;
   };
 
   python = import ./nix/python.nix {
@@ -320,7 +335,7 @@ let
 
   shells = import ./nix/shells.nix {
     inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto
-            treeSitterTextprotoRustLib;
+            treeSitterTextprotoRustLib buf;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     repoRoot    = toString ./.;
