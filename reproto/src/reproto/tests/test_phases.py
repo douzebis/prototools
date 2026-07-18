@@ -432,3 +432,58 @@ def test_M4_fdp_name_collision_first_wins(tmp_path: Path) -> None:
     # Output should still contain the reconstructed protos
     assert (out_dir / "phone_number.proto").exists(), "Expected phone_number.proto in output"
     assert (out_dir / "address_book.proto").exists(), "Expected address_book.proto in output"
+
+
+# ---------------------------------------------------------------------------
+# TC-B1..B3  buf.yaml auto-generation (spec 0146)
+# ---------------------------------------------------------------------------
+
+def test_B1_buf_yaml_written_at_out_repo_root(tmp_path: Path) -> None:
+    """A normal -O run writes a minimal buf.yaml at the output root."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (base_pb,) = compile_proto(pb_dir, "prune_base.proto")
+
+    result = _run_reproto([base_pb], out_dir)
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    buf_yaml = out_dir / "buf.yaml"
+    assert buf_yaml.exists()
+    content = buf_yaml.read_text()
+    assert "version: v2" in content
+    assert "path: ." in content
+
+
+def test_B2_buf_yaml_skipped_on_dry_run(tmp_path: Path) -> None:
+    """--dry-run writes no files at all, including buf.yaml."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    (base_pb,) = compile_proto(pb_dir, "prune_base.proto")
+
+    result = _run_reproto([base_pb], out_dir, extra_args=["--dry-run"])
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    assert not (out_dir / "buf.yaml").exists()
+
+
+def test_B3_existing_buf_yaml_not_overwritten(tmp_path: Path) -> None:
+    """A pre-existing buf.yaml in the output directory is left untouched."""
+    pb_dir = tmp_path / "pb"
+    pb_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    custom_content = "# hand-customized\nversion: v2\nlint:\n  use:\n    - DEFAULT\n"
+    (out_dir / "buf.yaml").write_text(custom_content)
+
+    (base_pb,) = compile_proto(pb_dir, "prune_base.proto")
+
+    result = _run_reproto([base_pb], out_dir)
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    assert (out_dir / "buf.yaml").read_text() == custom_content

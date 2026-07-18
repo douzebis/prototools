@@ -27,6 +27,7 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
 
     let backend = TestBackend::new(80, 24);
@@ -182,6 +183,7 @@ fn a_toggles_the_main_pane_annotation_display() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
 

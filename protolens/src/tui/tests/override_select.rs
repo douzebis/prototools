@@ -121,6 +121,7 @@ fn t_opens_the_override_pane_on_an_unresolved_message_node() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -177,6 +178,7 @@ fn t_opens_the_override_pane_on_a_varint_scalar_field() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -260,6 +262,7 @@ fn t_opens_the_override_pane_on_a_length_delimited_scalar_field() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -868,6 +871,7 @@ fn enter_key_applies_override_and_closes_pane() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;

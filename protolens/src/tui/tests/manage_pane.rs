@@ -625,6 +625,7 @@ fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;

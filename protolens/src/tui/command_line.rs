@@ -171,6 +171,9 @@ impl App {
             {
                 self.complete_fs_path(cmd, arg_prefix);
             }
+            Some((cmd, arg_prefix)) if resolve_command(cmd) == Ok("proto-root") => {
+                self.complete_dir_path(cmd, arg_prefix);
+            }
             Some(_) => {}
         }
     }
@@ -270,6 +273,46 @@ impl App {
         self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
 
+    /// `:proto-root <dir>`'s argument completion (spec 0144 G4) — same
+    /// shape as `complete_fs_path`, but directory entries only: a file is
+    /// never a valid `:proto-root` argument.
+    pub(super) fn complete_dir_path(&mut self, cmd: &str, arg_prefix: &str) {
+        let (dir_part, file_prefix) = match arg_prefix.rfind('/') {
+            Some(i) => (&arg_prefix[..=i], &arg_prefix[i + 1..]),
+            None => ("", arg_prefix),
+        };
+        let read_dir_path = if dir_part.is_empty() {
+            Path::new(".")
+        } else {
+            Path::new(dir_part)
+        };
+        let entries = match std::fs::read_dir(read_dir_path) {
+            Ok(rd) => rd,
+            Err(e) => {
+                self.message = format!("cannot list '{}': {e}", read_dir_path.display());
+                return;
+            }
+        };
+        let mut matches: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(file_prefix) {
+                continue;
+            }
+            matches.push(format!("{dir_part}{name}/"));
+        }
+        if matches.is_empty() {
+            self.message = format!("no directory matches '{arg_prefix}'");
+            return;
+        }
+        matches.sort_unstable();
+        let token_start = cmd.chars().count() + 1;
+        self.apply_completion(token_start, arg_prefix.chars().count(), matches);
+    }
+
     /// Shared tail of Tab-completion (spec 0114 §7): `candidates` (already
     /// filtered/sorted by the caller) either replaces the in-progress
     /// token outright (a single candidate) or extends it to the longest
@@ -303,6 +346,18 @@ impl App {
     /// followed the token) verbatim, and move the cursor to just past the
     /// replacement.
     pub(super) fn replace_token(&mut self, token_start: usize, suffix: &str, replacement: &str) {
+        // A directory-path `replacement` always ends in `/` (G4). If the
+        // cursor sat right before an already-present `/` when completion
+        // was triggered (e.g. after Left-arrow-ing back into an earlier
+        // path segment to edit it), `suffix` starts with that same `/` —
+        // splicing them back-to-back would double it up (glitch reported
+        // 2026-07-18). Drop the redundant leading separator from `suffix`
+        // in that case.
+        let suffix = if replacement.ends_with('/') && suffix.starts_with('/') {
+            &suffix[1..]
+        } else {
+            suffix
+        };
         let start_byte = self.char_byte_index(token_start);
         let mut new_buf = String::with_capacity(start_byte + replacement.len() + suffix.len());
         if let Some(buf) = &self.command_buffer {
@@ -358,6 +413,7 @@ impl App {
             Ok("type-as-raw") => self.run_type_as_raw(),
             Ok("save-overrides") => self.run_save_overrides(tokens.collect()),
             Ok("restore-overrides") => self.run_restore_overrides(tokens.collect()),
+            Ok("proto-root") => self.run_proto_root(tokens.collect()),
             Ok(other) => unreachable!("resolve_command returned unregistered command: {other}"),
             Err(e) => self.message = e,
         }
@@ -569,6 +625,23 @@ impl App {
             Ok(()) => self.message = format!("saved overrides to {path}"),
             Err(e) => self.message = format!("save-overrides error: {e}"),
         }
+    }
+
+    /// `proto-root <dir>` (spec 0144 G4): validates and sets `proto_root`
+    /// dynamically, overriding `-I`/`--proto-root` for the rest of the
+    /// session. Invalid input leaves the previous value untouched.
+    pub(super) fn run_proto_root(&mut self, args: Vec<&str>) {
+        if args.is_empty() {
+            self.message = "proto-root: missing directory".to_string();
+            return;
+        }
+        let dir = PathBuf::from(args.join(" "));
+        if !dir.is_dir() {
+            self.message = format!("not a directory: {}", dir.display());
+            return;
+        }
+        self.message = format!("proto-root set to {}", dir.display());
+        self.proto_root = Some(dir);
     }
 
     /// Shared core of `restore-overrides`/batch `--load-overrides` (spec

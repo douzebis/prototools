@@ -36,6 +36,7 @@ base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+nix  = { version = "0.29", features = ["process", "signal", "term"] }
 
 [dev-dependencies]
 prost       = "0.14"

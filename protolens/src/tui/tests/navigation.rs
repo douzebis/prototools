@@ -100,6 +100,7 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
 
     // The level-0 node is the wrapper's sole field, standing in for
@@ -194,6 +195,7 @@ fn display_range_strips_tag_and_length_for_scalars_including_packed() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
 
     let id_idx = app

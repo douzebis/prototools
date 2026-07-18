@@ -116,6 +116,7 @@ const COMMANDS: &[&str] = &[
     "type-as-raw",
     "save-overrides",
     "restore-overrides",
+    "proto-root",
 ];
 
 /// Filter `candidates` to those starting with `prefix` (spec 0113 D26) — a
@@ -813,6 +814,24 @@ pub struct App {
     /// suspending the process needs the `Terminal` handle that only
     /// `run_loop` owns.
     pub should_suspend: bool,
+
+    /// `-I`/`--proto-root`'s resolved value, or `:proto-root`'s last
+    /// successfully-set value (spec 0144 G4) — `None` until either is set.
+    pub proto_root: Option<PathBuf>,
+
+    /// Armed by `open_definition` (G1-G4) once a `v` press has fully
+    /// resolved to a real, on-disk `.proto` location; consumed by
+    /// `run_loop` right after the `handle_key` call that armed it, which
+    /// calls `neovim::open_editor` (G5) with the `Terminal` handle only it
+    /// owns. Mirrors `should_suspend`'s own split for the same reason.
+    #[cfg(unix)]
+    pub pending_editor_open: Option<neovim::EditorRequest>,
+
+    /// `v`'s Neovim handoff state (spec 0144 G5) — `NotRunning` until the
+    /// first successful `open_editor` call, `Suspended` whenever a
+    /// handed-off Neovim is currently stopped in the background.
+    #[cfg(unix)]
+    pub(crate) editor_state: neovim::EditorState,
 }
 
 impl App {
@@ -823,6 +842,7 @@ impl App {
         indent_size: usize,
         ctx: DescriptorContext,
         theme: ThemeKind,
+        proto_root: Option<PathBuf>,
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
         let mut line_to_node = HashMap::new();
@@ -946,6 +966,11 @@ impl App {
             should_quit: false,
             quit_confirm: false,
             should_suspend: false,
+            proto_root,
+            #[cfg(unix)]
+            pending_editor_open: None,
+            #[cfg(unix)]
+            editor_state: neovim::EditorState::NotRunning,
         };
         // Spec 0118 §2.1: the wrapper root is already rendered under
         // `root_override_type` by `decode()` itself, matching the
@@ -1186,6 +1211,20 @@ where
     unsafe {
         libc::raise(libc::SIGTSTP);
     }
+    enable_raw_mode_and_reenter(terminal)
+}
+
+/// Re-enter raw mode/keyboard-enhancement/alternate-screen/mouse-capture
+/// and force a full redraw — the shared tail of `suspend()`'s own
+/// resume path (spec 0113 D31) and `neovim::open_editor`'s Neovim-
+/// handoff resume path (spec 0144 G5): both leave the terminal via
+/// `restore_terminal()`, hand control to something else, then need this
+/// exact same re-entry sequence once control returns.
+#[cfg(unix)]
+pub(crate) fn enable_raw_mode_and_reenter<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     enable_raw_mode()?;
     push_keyboard_enhancement()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -1275,6 +1314,10 @@ where
             app.should_suspend = false;
             suspend(terminal)?;
         }
+        #[cfg(unix)]
+        if let Some(req) = app.pending_editor_open.take() {
+            neovim::open_editor(terminal, app, req)?;
+        }
     }
 }
 
@@ -1284,6 +1327,8 @@ mod key_dispatch;
 mod manage_pane;
 mod mouse;
 mod navigation;
+#[cfg(unix)]
+mod neovim;
 mod override_apply;
 mod override_select;
 mod render;

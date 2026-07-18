@@ -22,6 +22,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
 
@@ -64,6 +65,7 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
 
@@ -326,4 +328,216 @@ fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
         "Ctrl-Up must reveal rows above, capped so the highlight stays visible"
     );
     assert_eq!(app.manage_highlight, target_idx);
+}
+
+/// Spec 0144 G1/G2: `v` resolves the FQDN under focus from whichever
+/// pane currently has it — the override candidate pane here — and
+/// (with `DescriptorContext::empty_for_test()`'s empty pool) reports
+/// G3's "unknown type" outcome.
+#[test]
+#[cfg(unix)]
+fn v_in_override_pane_reports_unknown_type_for_unresolvable_candidate() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = vec![("test.SomeType".to_string(), None)];
+    app.override_highlight = 0;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "unknown type: test.SomeType");
+}
+
+/// Spec 0144 G2: the `None` sentinel row (alphabetic-mode row 0) has
+/// no declaration to jump to — `v` must not even attempt a lookup.
+#[test]
+#[cfg(unix)]
+fn v_in_override_pane_is_a_no_op_for_the_none_sentinel() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = vec![("protolens_internal.None".to_string(), None)];
+    app.override_highlight = 0;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "no declaration to jump to here");
+}
+
+/// Spec 0144 G2: the manage pane's highlighted entry's own type is
+/// resolved, independent of the override pane/cursor.
+#[test]
+#[cfg(unix)]
+fn v_in_manage_pane_reports_unknown_type_for_the_highlighted_entry() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.manage_open = true;
+    app.manage_focus = true;
+    app.overrides.activate(
+        OverrideOrigin::PathField {
+            path: "/".to_string(),
+            field: 1,
+        },
+        Some("test.ManageType".to_string()),
+    );
+    app.manage_highlight = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.r#type.as_deref() == Some("test.ManageType"))
+        .unwrap();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "unknown type: test.ManageType");
+}
+
+/// Spec 0144 G2: with neither pane focused, `v` falls back to the
+/// main-pane cursor node's own type.
+#[test]
+#[cfg(unix)]
+fn v_in_main_pane_reports_unknown_type_for_the_cursor_node() {
+    let mut app = message_node_app();
+    app.splash = false;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "unknown type: google.protobuf.DescriptorProto");
+}
+
+/// Spec 0144 G2: a scalar main-pane node carries no `type_fqdn` at
+/// all — `v` is a no-op, not a lookup failure.
+#[test]
+#[cfg(unix)]
+fn v_in_main_pane_is_a_no_op_for_a_scalar_node() {
+    let mut app = sibling_leaves_app(&["field: 1"]);
+    app.splash = false;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "no declaration to jump to here");
+}
+
+/// Spec 0144 G2 (`fqdn_under_focus` doc comment): the internal,
+/// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder is never
+/// registered as a real message — `v` must treat it the same as "no
+/// type at all", not surface a confusing "unknown type" message.
+#[test]
+#[cfg(unix)]
+fn v_is_a_no_op_for_the_internal_message_set_item_fqdn() {
+    let mut app = message_set_fixture();
+    let item_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+        .expect("fixture must contain a MessageSet Item node");
+    app.cursor = item_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(app.message, "no declaration to jump to here");
+}
+
+/// Spec 0144 G3/G4: a real, resolving FQDN (`type_as_fixture`'s
+/// `test.Inner`) clears G3's own check, but with no `proto_root`
+/// configured `v` stops at G4 with a clear message.
+#[test]
+#[cfg(unix)]
+fn v_reports_missing_proto_root_when_type_resolves_but_none_is_configured() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    assert!(app.proto_root.is_none());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(
+        app.message,
+        "no proto root configured; set one with :proto-root <dir> or -I/--proto-root"
+    );
+    assert!(app.pending_editor_open.is_none());
+}
+
+/// Spec 0144 G4: a configured `proto_root` under which the resolved
+/// file doesn't actually exist reports "proto source not found"
+/// rather than silently arming the editor handoff.
+#[test]
+#[cfg(unix)]
+fn v_reports_proto_source_not_found_when_the_file_is_missing_under_proto_root() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    let proto_root = std::env::temp_dir().join("protolens-v-test-missing-root");
+    app.proto_root = Some(proto_root.clone());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(
+        app.message,
+        format!(
+            "proto source not found: test_type_as.proto (under proto-root {})",
+            proto_root.display()
+        )
+    );
+    assert!(app.pending_editor_open.is_none());
+}
+
+/// Spec 0144 G1-G4: the full happy path — a resolving FQDN, a
+/// configured `proto_root`, and the resolved `.proto` file actually
+/// present — arms `pending_editor_open` (the fixture carries no
+/// `source_code_info`, so `locate_declaration` falls back to line 1,
+/// column 1 — see `neovim::locate_declaration`'s own doc comment).
+#[test]
+#[cfg(unix)]
+fn v_arms_pending_editor_open_when_the_proto_source_is_found() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let proto_root = std::env::temp_dir().join(format!("protolens-v-test-root-{n}"));
+    std::fs::create_dir_all(&proto_root).unwrap();
+    let proto_path = proto_root.join("test_type_as.proto");
+    std::fs::write(&proto_path, "").unwrap();
+    app.proto_root = Some(proto_root.clone());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    std::fs::remove_dir_all(&proto_root).unwrap();
+
+    let req = app
+        .pending_editor_open
+        .expect("must arm pending_editor_open");
+    assert_eq!(req.path, proto_path);
+    assert_eq!(req.line, 1);
+    assert_eq!(req.col, 1);
+}
+
+/// Glitch reported 2026-07-18: a missing `nvim` binary must not crash
+/// protolens — the failure is reported via `app.message` and the TUI
+/// keeps running. Runtime-probes for a real `nvim` first and skips
+/// gracefully instead of assuming this sandbox's `PATH` lacks it — a
+/// real `nvim` would otherwise be spawned and block on `waitpid`.
+#[test]
+fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
+    if std::process::Command::new("nvim")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        eprintln!("skipping: a real nvim is present on PATH");
+        return;
+    }
+    let mut app = empty_app();
+    // `open_editor` requires `io::Error: From<B::Error>` (it propagates
+    // real I/O errors via `?`) — `TestBackend`'s `Error` is `Infallible`,
+    // which doesn't convert, so a `CrosstermBackend` over an in-memory
+    // buffer is used instead; it never touches a real terminal.
+    let mut terminal = Terminal::new(CrosstermBackend::new(Vec::new())).unwrap();
+    let req = neovim::EditorRequest {
+        path: PathBuf::from("/tmp/protolens-test-does-not-exist.proto"),
+        line: 1,
+        col: 1,
+    };
+    // The return value itself isn't asserted: `enable_raw_mode_and_reenter`
+    // (called on the way out, regardless of the branch below) talks to the
+    // *real* process stdout/stdin, which isn't a tty under `cargo test`
+    // and can legitimately fail here — a pre-existing, orthogonal
+    // limitation of this sandboxed test run, not something Glitch 1's fix
+    // is responsible for. What this test verifies is that the missing-
+    // `nvim` spawn failure itself doesn't propagate as an `Err` (the
+    // actual crash reported) but is instead converted to a message.
+    let _ = neovim::open_editor(&mut terminal, &mut app, req);
+    assert!(app.message.contains("cannot launch nvim"));
+    assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
 }

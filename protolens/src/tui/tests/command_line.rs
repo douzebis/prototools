@@ -604,3 +604,80 @@ fn tab_completes_filesystem_path_for_save_overrides_argument() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Spec 0144 G4: `:proto-root <dir>` sets `proto_root` when `<dir>` is
+/// a real directory; an invalid argument (non-existent, or a file)
+/// leaves the previous value untouched.
+#[test]
+fn proto_root_command_sets_a_valid_directory_and_rejects_an_invalid_one() {
+    let mut app = empty_app();
+    let dir = std::env::temp_dir().join(format!("protolens-tui-proto-root-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    app.run_command(&format!("proto-root {}", dir.to_string_lossy()));
+    assert_eq!(app.proto_root, Some(dir.clone()));
+    assert!(app.message.contains("proto-root set to"));
+
+    let missing = dir.join("does-not-exist");
+    app.run_command(&format!("proto-root {}", missing.to_string_lossy()));
+    assert_eq!(
+        app.proto_root,
+        Some(dir.clone()),
+        "an invalid directory must leave the previous value untouched"
+    );
+    assert!(app.message.starts_with("not a directory:"));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Spec 0144 G4: `Tab` completes `:proto-root`'s directory argument
+/// against real directory entries only — a file with a matching
+/// prefix must not be offered as a candidate.
+#[test]
+fn tab_completes_proto_root_directory_argument_excluding_files() {
+    let mut app = empty_app();
+    let dir = std::env::temp_dir().join(format!(
+        "protolens-tui-proto-root-complete-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(dir.join("alpha_dir")).unwrap();
+    std::fs::write(dir.join("alpha_file.proto"), b"").unwrap();
+
+    let prefix = format!("proto-root {}/al", dir.to_string_lossy());
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in prefix.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let expected = format!("proto-root {}/alpha_dir/", dir.to_string_lossy());
+    assert_eq!(app.command_buffer.as_deref(), Some(expected.as_str()));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Glitch reported 2026-07-18: completing while the cursor sits right
+/// before an already-present `/` (e.g. after Left-arrow-ing back into an
+/// earlier path segment) must not double up the separator.
+#[test]
+fn tab_completion_does_not_double_a_slash_when_cursor_precedes_one() {
+    let mut app = empty_app();
+    let dir = std::env::temp_dir().join(format!(
+        "protolens-tui-proto-root-noslash-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(dir.join("alpha")).unwrap();
+
+    let prefix = format!("proto-root {}/alpha/", dir.to_string_lossy());
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in prefix.chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    // Cursor is now right after the trailing `/`; move it back one
+    // position so it sits right before that same `/` instead.
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let expected = format!("proto-root {}/alpha/", dir.to_string_lossy());
+    assert_eq!(app.command_buffer.as_deref(), Some(expected.as_str()));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

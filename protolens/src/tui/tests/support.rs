@@ -23,6 +23,7 @@ pub(super) fn empty_app() -> App {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     )
 }
 
@@ -71,6 +72,7 @@ pub(super) fn message_node_app() -> App {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     )
 }
 
@@ -120,6 +122,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         2,
         DescriptorContext::empty_for_test(),
         ThemeKind::Dark,
+        None,
     )
 }
 
@@ -178,6 +181,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -259,6 +263,7 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -341,6 +346,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -447,6 +453,7 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -561,6 +568,7 @@ pub(super) fn message_set_fixture() -> App {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;

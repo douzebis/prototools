@@ -95,6 +95,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
 
     let node_idx = app
@@ -239,6 +240,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -319,6 +321,7 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -616,6 +619,7 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
     app.splash = false;
     app.term_width = 120;
@@ -870,6 +874,7 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
         2,
         ctx,
         ThemeKind::Dark,
+        None,
     );
 
     assert!(

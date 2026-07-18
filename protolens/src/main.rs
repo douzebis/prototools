@@ -42,6 +42,14 @@ struct Cli {
     #[arg(long = "descriptor-set", env = "PROTOTEXT_DESCRIPTOR_SET")]
     descriptor_set: Option<PathBuf>,
 
+    /// Root directory `.proto` source files are resolved against for `v`'s
+    /// jump-to-definition (spec 0144). Shares its env var naming with
+    /// `PROTOTEXT_DESCRIPTOR_SET` (spec 0090); set externally by the
+    /// internal `prototools` package embedding this repo. Optional — `v`
+    /// reports a message (rather than failing at startup) when unset.
+    #[arg(long = "proto-root", short = 'I', env = "PROTOTEXT_PROTO_ROOT")]
+    proto_root: Option<PathBuf>,
+
     /// Root message type. If omitted, inferred automatically from
     /// --descriptor-set (requires a hopcroft.rkyv scoring graph next to
     /// it); if inference is unavailable or inconclusive, the blob is
@@ -203,6 +211,7 @@ fn main() -> ExitCode {
         cli.indent,
         ctx,
         theme,
+        cli.proto_root.clone(),
     );
 
     match cli.command {

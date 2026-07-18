@@ -257,6 +257,16 @@ impl App {
             self.command_cursor = 0;
             return;
         }
+        // `v` jumps to the FQDN under focus's declaration in a handed-off
+        // Neovim (spec 0144 G1) — checked centrally here, ahead of every
+        // focus-specific dispatch, so it works identically in the override
+        // pane, the manage pane, and the main pane. Unix-only (mirrors
+        // `Ctrl-Z` above): no terminal job-control equivalent elsewhere.
+        #[cfg(unix)]
+        if key.code == KeyCode::Char('v') && key.modifiers.is_empty() {
+            self.open_definition();
+            return;
+        }
         if self.override_focus {
             self.handle_override_key(key);
             return;
@@ -501,6 +511,75 @@ impl App {
 
             _ => {}
         }
+    }
+
+    /// Resolve the type FQDN currently under focus (G2) — the override
+    /// candidate pane (either sort mode), the manage pane, or the main
+    /// pane, whichever currently holds focus. `None` when the focused row
+    /// has nothing to jump to: an empty candidate list/tree, the `None`
+    /// sentinel or a primitive keyword row (spec 0137), or the internal,
+    /// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder (spec 0120/
+    /// 0135) — never registered as a real message in the pool, so it has
+    /// no declaration of its own to jump to.
+    #[cfg(unix)]
+    fn fqdn_under_focus(&self) -> Option<String> {
+        if self.override_focus {
+            let (fqdn, _) = self.override_candidates.get(self.override_highlight)?;
+            if fqdn == "protolens_internal.None"
+                || decode::ALL_PRIMITIVE_KEYWORDS.contains(&fqdn.as_str())
+            {
+                return None;
+            }
+            return Some(fqdn.clone());
+        }
+        let fqdn = if self.manage_open && self.manage_focus {
+            self.overrides
+                .entries()
+                .get(self.manage_highlight)?
+                .r#type
+                .clone()?
+        } else {
+            self.tree.get(self.cursor)?.span.type_fqdn.clone()?
+        };
+        (fqdn != decode::MESSAGE_SET_ITEM_FQDN).then_some(fqdn)
+    }
+
+    /// `v` (G1): resolve the FQDN under focus (G2), look up its
+    /// declaration (G3), resolve it against `proto_root` (G4), and — if
+    /// everything checks out — arm `pending_editor_open` so `run_loop` can
+    /// hand off to Neovim (G5) once it regains control of the `Terminal`.
+    /// Any failure along the way is reported via `self.message` (the
+    /// existing auto-dismissing bottom-bar notice) and stops here.
+    #[cfg(unix)]
+    fn open_definition(&mut self) {
+        let Some(fqdn) = self.fqdn_under_focus() else {
+            self.message = "no declaration to jump to here".to_string();
+            return;
+        };
+        let Some((rel_path, line, col)) = neovim::locate_declaration(self.ctx.pool(), &fqdn) else {
+            self.message = format!("unknown type: {fqdn}");
+            return;
+        };
+        let Some(proto_root) = &self.proto_root else {
+            self.message =
+                "no proto root configured; set one with :proto-root <dir> or -I/--proto-root"
+                    .to_string();
+            return;
+        };
+        let abs_path = proto_root.join(&rel_path);
+        if !abs_path.is_file() {
+            self.message = format!(
+                "proto source not found: {} (under proto-root {})",
+                rel_path.display(),
+                proto_root.display()
+            );
+            return;
+        }
+        self.pending_editor_open = Some(neovim::EditorRequest {
+            path: abs_path,
+            line,
+            col,
+        });
     }
 
     /// Scroll/close the `F1` help overlay.
