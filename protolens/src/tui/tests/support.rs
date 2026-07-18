@@ -363,6 +363,91 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
     (app, inner_idx)
 }
 
+/// `Outer3 { durability: Durability = 0 (EPHEMERAL) }` — a scalar
+/// enum-typed field, for the enum-inclusive `natural_type` regression
+/// tests (2026-07-18 feedback: `t` then `Esc` on an enum field, and
+/// `t`'s initial highlight/mode on an enum field with no active
+/// override).
+pub(super) fn enum_field_fixture() -> (App, usize) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,
+        FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let durability_enum = EnumDescriptorProto {
+        name: Some("Durability".to_string()),
+        value: vec![
+            EnumValueDescriptorProto {
+                name: Some("EPHEMERAL".to_string()),
+                number: Some(0),
+                ..Default::default()
+            },
+            EnumValueDescriptorProto {
+                name: Some("PERSISTENT".to_string()),
+                number: Some(1),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer3".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("durability".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Enum as i32),
+            type_name: Some(".test.Durability".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_enum_field.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc],
+        enum_type: vec![durability_enum],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-enum-field-descriptor-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Outer3 { durability: EPHEMERAL (0) } — field 1 (tag 0x08),
+    // varint value 0.
+    let blob = [0x08u8, 0x00];
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer3"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+        None,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let durability_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.field_number == 1)
+        .expect("tree must contain the durability field");
+    (app, durability_idx)
+}
+
 /// `Outer2 { grp: MyGroup { id: 5 } }`, with `grp` declared as a
 /// genuine schema wire-group field (`Type::Group`) — unlike
 /// `message_set_fixture`'s auto-expanded MessageSet group items,

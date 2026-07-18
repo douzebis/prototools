@@ -42,9 +42,8 @@ impl App {
 
     /// The type `idx` would naturally have from its parent's schema, used
     /// as the fallback when no active override applies (spec 0119 §G1) —
-    /// `None` only when genuinely no type information is available (no
-    /// parent schema, field not declared, or an enum field kind — spec
-    /// 0135's `:type-as` wires up no enum target path, Non-goals).
+    /// `None` only when genuinely no type information is available at all
+    /// (no parent schema, or field not declared).
     ///
     /// Every primitive `Kind` (spec 0135 follow-up, 2026-07-17: found
     /// post-implementation) resolves to its own `:type-as` keyword, not
@@ -56,10 +55,20 @@ impl App {
     /// applies." Message fields already relied on this same "natural
     /// type, not raw" fallback since spec 0119; primitives now get the
     /// same treatment via `primitive_type_for_keyword`'s reverse mapping.
+    ///
+    /// `Kind::Enum` resolves to its own FQDN (2026-07-18 fix): previously
+    /// excluded here (`None`, spec 0135's original Non-goals, predating
+    /// spec 0137's enum splicing support in `splice_override`), which made
+    /// `resettle_node` demote every enum-typed field to a raw record dump
+    /// the moment it was directly resettled (e.g. opening the override
+    /// pane with `t` then cancelling with `Esc`) — permanently, since no
+    /// other pass ever revisits a plain scalar leaf once `rendered_as` is
+    /// set (see `render_overrides`'s recursion-gating comment below).
     pub(super) fn natural_type(&self, idx: usize) -> Option<String> {
         use prost_reflect::Kind;
         match self.parent_field(idx)?.kind() {
             Kind::Message(desc) => Some(desc.full_name().to_string()),
+            Kind::Enum(desc) => Some(desc.full_name().to_string()),
             Kind::Double => Some("double".to_string()),
             Kind::Float => Some("float".to_string()),
             Kind::Int32 => Some("int32".to_string()),
@@ -75,32 +84,16 @@ impl App {
             Kind::Bool => Some("bool".to_string()),
             Kind::String => Some("string".to_string()),
             Kind::Bytes => Some("bytes".to_string()),
-            Kind::Enum(_) => None,
         }
-    }
-
-    /// Display-only counterpart to `natural_type` (spec 0136) — identical
-    /// mapping, except `Kind::Enum` resolves to its own FQDN instead of
-    /// `None`. `natural_type` itself must keep excluding `Enum` (its own
-    /// doc comment, spec 0135's Non-goals — `:type-as` wires up no enum
-    /// target path, and `resettle_node` relies on `natural_type`'s exact
-    /// current behavior for override splicing). Used only by
-    /// `status_type_label`, never for splicing.
-    pub(super) fn natural_type_display(&self, idx: usize) -> Option<String> {
-        use prost_reflect::Kind;
-        if let Kind::Enum(desc) = self.parent_field(idx)?.kind() {
-            return Some(desc.full_name().to_string());
-        }
-        self.natural_type(idx)
     }
 
     /// Status-line "type:" fragment for `idx` (spec 0136): the field's
     /// *currently effective* proto type — an active `:type-as` override
     /// if one applies, else the natural (schema-declared) type, enum
-    /// included (`natural_type_display`, unlike splicing's own
-    /// `natural_type`). `None` when nothing is resolvable at all, or when
-    /// the pinned `<raw / no type>` override entry is explicitly active
-    /// — either case means the status line shows no fragment.
+    /// included (`natural_type`). `None` when nothing is resolvable at
+    /// all, or when the pinned `<raw / no type>` override entry is
+    /// explicitly active — either case means the status line shows no
+    /// fragment.
     pub(super) fn status_type_label(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
@@ -126,15 +119,15 @@ impl App {
         }
         let effective = match self.resolve_active_override(idx) {
             Some(inner) => inner?,
-            None => self.natural_type_display(idx)?,
+            None => self.natural_type(idx)?,
         };
         if decode::primitive_type_for_keyword(&effective).is_some() {
             return Some(effective);
         }
         // Not a primitive keyword: the only other possibility reaching
-        // this branch is an enum FQDN from `natural_type_display` (an
-        // active override can never resolve to a message FQDN here — see
-        // the `is_message` branch above).
+        // this branch is an enum FQDN from `natural_type` (an active
+        // override can never resolve to a message FQDN here — see the
+        // `is_message` branch above).
         Some(format_fqdn_label(&effective, "enum"))
     }
 

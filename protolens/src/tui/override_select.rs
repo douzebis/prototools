@@ -69,13 +69,27 @@ impl App {
         // inactive-but-applicable entry from the management list
         // (`first_entry_matching_origin_candidates` — by construction,
         // since Step A found no active match, any entry it returns here
-        // is necessarily inactive).
+        // is necessarily inactive); else Step B.5: for an enum-typed
+        // field with no override at all, its own schema-declared enum
+        // type (`natural_type`). Without this step such a field fell
+        // through to `open_override_on_default`'s `Inferred`-mode
+        // scoring, which is meaningless for an enum scalar (it scores
+        // the bytes as a prospective *message*) and so landed on the
+        // unrelated `None` sentinel row instead of the field's own
+        // current type (2026-07-18 feedback).
         let candidate_type = self
             .resolve_active_override_entry(self.cursor)
             .map(|e| e.r#type.clone())
             .or_else(|| {
                 self.first_entry_matching_origin_candidates(self.cursor)
                     .map(|i| self.overrides.entries()[i].r#type.clone())
+            })
+            .or_else(|| {
+                let is_enum = matches!(
+                    self.parent_field(self.cursor).map(|f| f.kind()),
+                    Some(prost_reflect::Kind::Enum(_))
+                );
+                is_enum.then(|| self.natural_type(self.cursor))
             });
 
         match candidate_type {

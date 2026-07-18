@@ -53,11 +53,11 @@ impl App {
     /// override by `resettle_node` on every render pass (see
     /// `status_type_label`'s own doc comment), so no separate override
     /// lookup is needed. Scalar nodes consult `resolve_active_override`
-    /// first, falling back to the schema-declared type
-    /// (`natural_type_display`) when no override is active — mirroring
-    /// `status_type_label`'s own fallback chain. A primitive-keyword or
-    /// otherwise-unranked result simply won't be found in the candidate
-    /// list, naturally defaulting `current_score` to `0` (G3).
+    /// first, falling back to the schema-declared type (`natural_type`)
+    /// when no override is active — mirroring `status_type_label`'s own
+    /// fallback chain. A primitive-keyword or otherwise-unranked result
+    /// simply won't be found in the candidate list, naturally defaulting
+    /// `current_score` to `0` (G3).
     fn current_type_key(&self, idx: usize) -> Option<String> {
         let span = &self.tree[idx].span;
         if span.is_message {
@@ -65,7 +65,7 @@ impl App {
         }
         match self.resolve_active_override(idx) {
             Some(inner) => inner,
-            None => self.natural_type_display(idx),
+            None => self.natural_type(idx),
         }
     }
 

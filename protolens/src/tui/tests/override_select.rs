@@ -215,6 +215,51 @@ fn esc_after_t_on_a_primitive_field_restores_its_original_rendering() {
     );
 }
 
+/// Spec 0139 Step B.5 (2026-07-18 feedback): `t` on an enum-typed
+/// scalar field with no active/matching override entry must open in
+/// `Lexicographic` mode (no enum candidate can ever appear in
+/// `Inferred` mode's message-shaped scoring) with the highlight
+/// already on the field's own natural enum type — not the `None`
+/// sentinel row.
+#[test]
+fn t_opens_on_an_enum_field_highlighting_its_own_natural_type() {
+    let (mut app, durability_idx) = enum_field_fixture();
+    app.cursor = durability_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(
+        app.override_candidates[app.override_highlight].0,
+        "test.Durability"
+    );
+}
+
+/// Regression test (2026-07-18 feedback): pressing `t` on an
+/// enum-typed scalar field, then immediately `Esc`, must leave the
+/// main-pane rendering exactly as it was before `t` was pressed —
+/// same bug class as `esc_after_t_on_a_primitive_field_...` above,
+/// but for `Kind::Enum`, which `natural_type` excluded until this
+/// fix (`resettle_node`'s no-active-override fallback demoted the
+/// field to a raw record dump, permanently, since no other render
+/// pass ever revisits a plain scalar leaf).
+#[test]
+fn esc_after_t_on_an_enum_field_restores_its_original_rendering() {
+    let (mut app, durability_idx) = enum_field_fixture();
+    app.cursor = durability_idx;
+    let line_idx = app.tree[durability_idx].span.text_range.start;
+    let original_line = app.lines[line_idx].clone();
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_target, Some(durability_idx));
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.override_target, None);
+    assert_eq!(
+        app.lines[line_idx], original_line,
+        "the enum field's rendering must be restored exactly, not left raw"
+    );
+}
+
 /// 2026-07-14 feedback: `t` must not refuse a plain string/bytes
 /// field just because it isn't schema-typed as a message — it's
 /// still `WT_LEN`-wire and may in practice carry an embedded
