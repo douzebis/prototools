@@ -915,13 +915,25 @@ impl App {
         while let Some(c) = cur {
             self.line_to_node
                 .insert(self.tree[c].span.text_range.start, c);
-            if self.tree[c].first_child.is_some() {
+            // See `App::new`'s matching build site (spec 0142 fix) for
+            // why this checks the line span rather than `first_child`.
+            if self.tree[c].span.text_range.end - 1 > self.tree[c].span.text_range.start {
                 self.footer_line_to_node
                     .insert(self.tree[c].span.text_range.end - 1, c);
             }
             cur = self.tree[c].doc_next;
         }
         self.rebuild_visible_rows();
+
+        // Spec 0142 G6.1: `idx` keeps its own tree-array identity across
+        // a retype (see this function's own doc comment), so if the
+        // cursor was resting on `idx`'s footer and the retype turned it
+        // into a childless (scalar) node, that footer line no longer
+        // exists — fall back to `idx`'s header rather than leave a
+        // stale footer-cursor referencing a line that's gone.
+        if self.cursor_footer && !self.has_children(self.cursor) {
+            self.cursor_footer = false;
+        }
 
         Ok(())
     }

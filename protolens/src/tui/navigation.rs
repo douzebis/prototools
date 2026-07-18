@@ -5,8 +5,18 @@
 use super::*;
 
 impl App {
+    /// Whether `idx` is a bracketed node — has its own distinct header
+    /// *and* footer line, so it's foldable and carries a fold marker.
+    /// Not the same as `self.tree[idx].first_child.is_some()` (spec
+    /// 0142 fix, 2026-07-18 feedback): an empty-but-bracketed message
+    /// (decoded with zero populated fields, still rendered as `Name {`
+    /// then `}` on the next line) has no children yet is still a real,
+    /// two-line bracketed node — foldable (folding it just hides its
+    /// own footer line, same as any node with an empty body) and
+    /// entitled to a fold marker/handle like any other message node.
     pub(super) fn has_children(&self, idx: usize) -> bool {
-        self.tree[idx].first_child.is_some()
+        let span = &self.tree[idx].span;
+        span.text_range.end - 1 > span.text_range.start
     }
 
     /// Recompute `visible_rows` from current fold state: a folded node
@@ -25,19 +35,6 @@ impl App {
         self.visible_rows = (0..total).filter(|&l| !hidden[l]).collect();
     }
 
-    /// True if any ancestor of `idx` is currently folded (so `idx` itself
-    /// is not reachable by cursor movement).
-    pub(super) fn is_hidden(&self, idx: usize) -> bool {
-        let mut p = self.tree[idx].parent;
-        while let Some(pi) = p {
-            if self.folded.contains(&pi) {
-                return true;
-            }
-            p = self.tree[pi].parent;
-        }
-        false
-    }
-
     /// Unfold every ancestor of `idx`, so it becomes visible.
     pub(super) fn unfold_ancestors(&mut self, idx: usize) {
         let mut p = self.tree[idx].parent;
@@ -53,51 +50,73 @@ impl App {
         }
     }
 
-    /// Next node in document order (`raw_range.start`), skipping any
-    /// hidden (folded-away) node — not the same as `from + 1`: the
-    /// underlying arena is post-order, not document order (see
-    /// `decode::TreeNode`'s doc comment).
-    pub(super) fn next_visible(&self, from: usize) -> Option<usize> {
-        let mut cur = self.tree[from].doc_next;
-        while let Some(i) = cur {
-            if !self.is_hidden(i) {
-                return Some(i);
-            }
-            cur = self.tree[i].doc_next;
-        }
-        None
-    }
-
-    pub(super) fn prev_visible(&self, from: usize) -> Option<usize> {
-        let mut cur = self.tree[from].doc_prev;
-        while let Some(i) = cur {
-            if !self.is_hidden(i) {
-                return Some(i);
-            }
-            cur = self.tree[i].doc_prev;
-        }
-        None
-    }
-
     /// Sets `self.cursor` and bumps `cursor_moves` — the sole mutation
     /// path for `self.cursor`, so every real cursor change (even a
     /// round trip that lands back on the same node, e.g. Down then Up)
     /// is observable via `cursor_moves`, unlike comparing `self.
-    /// cursor`'s value alone against a stashed old value.
+    /// cursor`'s value alone against a stashed old value. Always resets
+    /// `cursor_footer` to `false` (spec 0142) — every caller of this
+    /// method targets a node's own header row.
     pub(super) fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx;
+        self.cursor_footer = false;
         self.cursor_moves += 1;
     }
 
+    /// `self.cursor`'s own currently-displayed line: its footer line
+    /// (`text_range.end - 1`) if `cursor_footer`, else its header line
+    /// (`text_range.start`) — spec 0142.
+    pub(super) fn cursor_line(&self) -> usize {
+        let span = &self.tree[self.cursor].span;
+        if self.cursor_footer {
+            span.text_range.end - 1
+        } else {
+            span.text_range.start
+        }
+    }
+
+    /// Resolve a visible line back to a `(node, is_footer)` cursor stop
+    /// (spec 0142) — `line_to_node` (header) checked first,
+    /// `footer_line_to_node` (footer) as fallback; the two never
+    /// overlap for the same line (a footer line only exists for a node
+    /// with a nonempty body, so its closing line always differs from
+    /// its own header line).
+    fn resolve_cursor_line(&self, line: usize) -> Option<(usize, bool)> {
+        if let Some(&idx) = self.line_to_node.get(&line) {
+            return Some((idx, false));
+        }
+        self.footer_line_to_node.get(&line).map(|&idx| (idx, true))
+    }
+
+    /// Moves the cursor to the next/previous visible *line* (spec
+    /// 0142) — a node's own closing `}` line is now a distinct stop,
+    /// right after its last visible descendant and right before its
+    /// next sibling (or ancestor's own footer). Walks `visible_rows`
+    /// directly rather than `doc_next`/`doc_prev` node links, since
+    /// footer lines aren't nodes in their own right.
     pub(super) fn move_down(&mut self) {
-        if let Some(next) = self.next_visible(self.cursor) {
-            self.set_cursor(next);
+        let cur = self.cursor_line();
+        if let Ok(pos) = self.visible_rows.binary_search(&cur) {
+            if let Some(&line) = self.visible_rows.get(pos + 1) {
+                if let Some((idx, footer)) = self.resolve_cursor_line(line) {
+                    self.cursor = idx;
+                    self.cursor_footer = footer;
+                    self.cursor_moves += 1;
+                }
+            }
         }
     }
 
     pub(super) fn move_up(&mut self) {
-        if let Some(prev) = self.prev_visible(self.cursor) {
-            self.set_cursor(prev);
+        let cur = self.cursor_line();
+        if let Ok(pos) = self.visible_rows.binary_search(&cur) {
+            if pos > 0 {
+                if let Some((idx, footer)) = self.resolve_cursor_line(self.visible_rows[pos - 1]) {
+                    self.cursor = idx;
+                    self.cursor_footer = footer;
+                    self.cursor_moves += 1;
+                }
+            }
         }
     }
 
@@ -186,25 +205,36 @@ impl App {
         }
     }
 
-    /// Jump to the last currently-visible node (`End`/`G`) — the document's
-    /// absolute last node, or its nearest visible predecessor if that node
-    /// is itself folded away.
+    /// Jump to the document's true last visible line (`End`/`G`, spec
+    /// 0142) — `visible_rows`'s own last entry, which may be a node's
+    /// footer line (e.g. the virtual encompassing wrapper's own final
+    /// `}`), not just the last content node's header as before.
     pub(super) fn move_end(&mut self) {
-        let last = self.last_node();
-        let target = if self.is_hidden(last) {
-            self.prev_visible(last).unwrap_or(last)
-        } else {
-            last
+        let Some(&last_line) = self.visible_rows.last() else {
+            return;
         };
-        if self.cursor != target {
+        let Some((idx, footer)) = self.resolve_cursor_line(last_line) else {
+            return;
+        };
+        if self.cursor != idx || self.cursor_footer != footer {
             self.record_jump(self.cursor);
-            self.set_cursor(target);
+            self.cursor = idx;
+            self.cursor_footer = footer;
+            self.cursor_moves += 1;
         }
     }
 
+    /// Folds/unfolds `idx`. Folding hides `idx`'s whole body, including
+    /// its own footer line — if the cursor was resting there
+    /// (`cursor_footer`) at the moment `idx` itself gets folded, snap
+    /// it back to `idx`'s header (spec 0142 G6.2), since that line is
+    /// no longer visible.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
         if !self.folded.remove(&idx) {
             self.folded.insert(idx);
+            if idx == self.cursor && self.cursor_footer {
+                self.cursor_footer = false;
+            }
         }
         self.rebuild_visible_rows();
     }

@@ -313,32 +313,46 @@ impl App {
         let Some(line_idx) = self.main_pane_line_idx(col, row) else {
             return;
         };
-        let Some(&idx) = self.line_to_node.get(&line_idx) else {
-            return;
-        };
 
-        if idx != self.cursor {
-            self.record_jump(self.cursor);
-            self.set_cursor(idx);
+        if let Some(&idx) = self.line_to_node.get(&line_idx) {
+            if idx != self.cursor || self.cursor_footer {
+                self.record_jump(self.cursor);
+                self.set_cursor(idx);
+            }
+
+            if self.has_children(idx) {
+                let area = self.main_area;
+                let rel_col = col - area.x;
+                // Column 0 is always the heat-cue gutter (spec 0138 N1:
+                // a glyph or a reserved blank, never part of the
+                // line's own text) — the marker sits one column
+                // further right.
+                if rel_col >= 1 && rel_col - 1 == marker_column(&self.lines[line_idx]) {
+                    self.toggle_fold(idx);
+                }
+            }
+            return;
         }
 
-        if self.has_children(idx) {
-            let area = self.main_area;
-            let rel_col = col - area.x;
-            // Column 0 is always the heat-cue gutter (spec 0138 N1: a
-            // glyph or a reserved blank, never part of the line's own
-            // text) — the marker sits one column further right.
-            if rel_col >= 1 && rel_col - 1 == marker_column(&self.lines[line_idx]) {
-                self.toggle_fold(idx);
+        // Spec 0142: a click on a node's own closing `}` line (never in
+        // `line_to_node`, only in `footer_line_to_node`) moves the
+        // cursor there — no fold-marker check applies, since footer
+        // lines never carry a fold glyph.
+        if let Some(&idx) = self.footer_line_to_node.get(&line_idx) {
+            if idx != self.cursor || !self.cursor_footer {
+                self.record_jump(self.cursor);
+                self.cursor = idx;
+                self.cursor_footer = true;
+                self.cursor_moves += 1;
             }
         }
     }
 
-    /// Index of `cursor`'s opening line within `visible_rows`.
+    /// Index of `cursor`'s own currently-displayed line (header or
+    /// footer, spec 0142) within `visible_rows`.
     pub(super) fn cursor_display_row(&self) -> usize {
-        let target = self.tree[self.cursor].span.text_range.start;
         self.visible_rows
-            .binary_search(&target)
+            .binary_search(&self.cursor_line())
             .unwrap_or_else(|i| i)
     }
 }

@@ -250,3 +250,184 @@ fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
          gutter"
     );
 }
+
+/// Spec 0142: `Down` from `inner`'s header must land on `inner`'s own
+/// footer line as a distinct cursor stop, not skip straight to the
+/// next node. Layout (`type_as_fixture`):
+/// `0:"1 {"(outer) 1:"  inner {"(inner) 2:"    id: 5"(id) 3:"  }"(inner
+/// footer) 4:"}"(outer footer, doc's true last line)`.
+#[test]
+fn down_from_header_reaches_own_footer_line() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+    app.cursor = inner_idx;
+    app.cursor_footer = false;
+
+    app.move_down(); // inner header -> id header
+    app.move_down(); // id header -> inner footer
+
+    assert_eq!(app.cursor, inner_idx);
+    assert!(
+        app.cursor_footer,
+        "cursor must be resting on inner's own }} line"
+    );
+}
+
+/// Spec 0142: `Down` from a node's own footer reaches the document's
+/// true last visible line (the root's own footer), not nothing.
+#[test]
+fn down_from_footer_reaches_the_document_true_last_line() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    app.cursor = inner_idx;
+    app.cursor_footer = true;
+
+    app.move_down();
+
+    assert_eq!(app.cursor, outer_idx);
+    assert!(
+        app.cursor_footer,
+        "cursor must be resting on the root's own }} line"
+    );
+}
+
+/// Spec 0142: `Up` is the exact mirror of `Down` across header/footer
+/// stops.
+#[test]
+fn up_from_footer_and_from_next_header_are_symmetric_with_down() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+
+    app.cursor = inner_idx;
+    app.cursor_footer = true;
+    app.move_up();
+    assert_eq!(
+        app.cursor, id_idx,
+        "Up from inner's footer must reach id's header"
+    );
+    assert!(!app.cursor_footer);
+
+    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    app.cursor = outer_idx;
+    app.cursor_footer = true;
+    app.move_up();
+    assert_eq!(app.cursor, inner_idx);
+    assert!(
+        app.cursor_footer,
+        "Up from the root's footer must reach inner's own footer"
+    );
+}
+
+/// Spec 0142 G3: `move_end` (`End`/`G`) reaches the document's true
+/// last visible line — the root's own footer — not just the last
+/// content node's header.
+#[test]
+fn move_end_reaches_the_document_true_last_line() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    app.cursor = id_idx;
+    app.cursor_footer = false;
+
+    app.move_end();
+
+    assert_eq!(app.cursor, outer_idx);
+    assert!(app.cursor_footer);
+}
+
+/// Spec 0142 G6.2: folding the node the cursor's footer currently
+/// rests on must snap the cursor back to that node's own header,
+/// since the footer line stops being visible.
+#[test]
+fn folding_the_node_under_a_footer_cursor_snaps_back_to_header() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+    app.cursor = inner_idx;
+    app.cursor_footer = true;
+
+    app.toggle_fold(inner_idx);
+
+    assert_eq!(app.cursor, inner_idx);
+    assert!(
+        !app.cursor_footer,
+        "footer is hidden by the fold, cursor must fall back to header"
+    );
+}
+
+/// Spec 0142: a mouse click directly on a node's own closing `}` line
+/// moves the cursor there (`cursor_footer = true`) without toggling
+/// the node's fold state (footer lines never carry a fold marker).
+#[test]
+fn clicking_a_closing_brace_line_moves_cursor_there_without_folding() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 40, 10);
+    app.rebuild_visible_rows();
+    app.cursor = 0;
+    app.cursor_footer = false;
+
+    // Line 3 ("  }") is inner's own footer line — row 3 within the pane.
+    app.handle_click(2, 3);
+
+    assert_eq!(app.cursor, inner_idx);
+    assert!(app.cursor_footer);
+    assert!(
+        !app.folded.contains(&inner_idx),
+        "clicking the }} line must not toggle the fold"
+    );
+}
+
+/// Spec 0142 empty-message fix (2026-07-18 feedback): `Down`/`Up` must
+/// be able to pass through an empty-but-bracketed message's own header
+/// and footer lines, not get stuck.
+#[test]
+fn navigation_passes_through_an_empty_bracketed_message() {
+    let (mut app, inner_idx) = empty_message_fixture();
+    app.splash = false;
+    let outer_idx = app.tree[inner_idx].parent.unwrap();
+    app.cursor = outer_idx;
+    app.cursor_footer = false;
+
+    app.move_down(); // outer header -> inner header
+    assert_eq!(app.cursor, inner_idx);
+    assert!(!app.cursor_footer);
+
+    app.move_down(); // inner header -> inner's own footer
+    assert_eq!(app.cursor, inner_idx);
+    assert!(
+        app.cursor_footer,
+        "empty message must still have a reachable footer stop"
+    );
+
+    app.move_down(); // inner footer -> outer footer
+    assert_eq!(app.cursor, outer_idx);
+    assert!(app.cursor_footer);
+
+    app.move_up();
+    assert_eq!(app.cursor, inner_idx);
+    assert!(app.cursor_footer);
+}
+
+/// Spec 0142 empty-message fix: an empty-but-bracketed message is
+/// still foldable — it has its own fold marker/handle (`has_children`)
+/// and can be folded via `Left`.
+#[test]
+fn empty_bracketed_message_is_foldable() {
+    let (mut app, inner_idx) = empty_message_fixture();
+    app.splash = false;
+
+    assert!(
+        app.has_children(inner_idx),
+        "an empty message is still a two-line bracketed node"
+    );
+
+    app.cursor = inner_idx;
+    app.cursor_footer = false;
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+    assert!(
+        app.folded.contains(&inner_idx),
+        "Left must fold an empty message"
+    );
+}

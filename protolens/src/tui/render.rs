@@ -453,14 +453,13 @@ impl App {
         } else {
             let path = self.positional_path(self.cursor);
             let range = self.display_range(self.cursor);
-            let node = &self.tree[self.cursor].span;
             let type_label = match self.status_type_label(self.cursor) {
                 Some(label) => format!("type: {label}"),
                 None => String::new(),
             };
             format!(
                 "L{}/{}  {}  range[{}..{})  {}",
-                node.text_range.start + 1,
+                self.cursor_line() + 1,
                 self.lines.len(),
                 path,
                 range.start,

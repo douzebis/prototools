@@ -224,3 +224,27 @@ fn line_has_active_override_marks_header_and_footer_but_not_children() {
     let id_line = app.tree[id_idx].span.text_range.start;
     assert!(!app.line_has_active_override(id_line));
 }
+
+/// 2026-07-18 feedback: when the cursor rests on a node's own closing
+/// `}` line (spec 0142), the status line's `L<n>` must report the
+/// footer line's own number, not the header's.
+#[test]
+fn status_line_reports_the_footer_line_number_for_a_footer_resting_cursor() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.splash = false;
+
+    let footer_line = app.tree[inner_idx].span.text_range.end - 1;
+    app.cursor = inner_idx;
+    app.cursor_footer = true;
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
+    assert!(
+        text.contains(&format!("L{}/", footer_line + 1)),
+        "status line must report the footer's own 1-based line number: {text:?}"
+    );
+}

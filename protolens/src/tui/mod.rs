@@ -486,6 +486,15 @@ pub struct App {
     /// own opening line.
     footer_line_to_node: HashMap<usize, usize>,
     cursor: usize,
+    /// `true` when the cursor is visually resting on `cursor`'s own
+    /// closing `}` line rather than its header line (spec 0142).
+    /// `cursor` itself is unaffected — still the node whose bracket
+    /// pair the cursor belongs to, so every existing node-indexed
+    /// action (fold, override edit, status line, etc.) already treats
+    /// a footer-resting cursor exactly like its header, satisfying the
+    /// "acts as if on the opening bracket" requirement with no extra
+    /// redirection.
+    cursor_footer: bool,
     /// Incremented every time `self.cursor` changes (via `set_cursor`),
     /// regardless of whether the new value differs from any prior one —
     /// a real "did the cursor move since X" signal (spec-0117-adjacent
@@ -795,7 +804,15 @@ impl App {
         let mut footer_line_to_node = HashMap::new();
         for (idx, node) in decoded.tree.iter().enumerate() {
             line_to_node.insert(node.span.text_range.start, idx);
-            if node.first_child.is_some() {
+            // A distinct footer line only exists when the node's own
+            // header and closing `}` aren't the same line — not the
+            // same as `first_child.is_some()` (spec 0142 fix, 2026-07-
+            // 18 feedback): an empty-but-bracketed message (decoded
+            // with zero populated fields, still rendered as `Name {`
+            // then `}` on the next line) has no children yet still has
+            // a real, distinct footer line that must be a reachable
+            // cursor stop.
+            if node.span.text_range.end - 1 > node.span.text_range.start {
                 footer_line_to_node.insert(node.span.text_range.end - 1, idx);
             }
         }
@@ -837,6 +854,7 @@ impl App {
             line_to_node,
             footer_line_to_node,
             cursor,
+            cursor_footer: false,
             cursor_moves: 0,
             select_anchor: None,
             select_end: None,

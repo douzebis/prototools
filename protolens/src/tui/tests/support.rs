@@ -274,6 +274,89 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
     (app, inner_idx, id_idx)
 }
 
+/// `Outer { inner: Inner {} }` — same schema as `type_as_fixture`, but
+/// `inner`'s payload is zero-length: a genuinely empty, still-bracketed
+/// submessage (rendered as `inner {` then `}` on the next line, no
+/// body in between). Regression fixture for spec 0142's fix (2026-07-
+/// 18 feedback): an empty message has `first_child == None` yet is
+/// still a real two-line bracketed node — must be foldable and its
+/// footer line must be a reachable cursor stop, same as any other
+/// message.
+pub(super) fn empty_message_fixture() -> (App, usize) {
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    use crate::decode::{decode, DescriptorContext};
+
+    let inner_desc = DescriptorProto {
+        name: Some("Inner".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("id".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let outer_desc = DescriptorProto {
+        name: Some("Outer".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("inner".to_string()),
+            number: Some(1),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".test.Inner".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("test_empty_message.proto".to_string()),
+        package: Some("test".to_string()),
+        message_type: vec![outer_desc, inner_desc],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-empty-message-descriptor-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // Outer { inner: Inner {} } — field 1 (LEN), length 0, no payload.
+    let blob = [0x0Au8, 0x00];
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let inner_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some("test.Inner"))
+        .expect("tree must contain the empty Inner submessage");
+    assert!(
+        app.tree[inner_idx].first_child.is_none(),
+        "fixture must exercise the no-children case"
+    );
+    (app, inner_idx)
+}
+
 /// `Outer2 { grp: MyGroup { id: 5 } }`, with `grp` declared as a
 /// genuine schema wire-group field (`Type::Group`) — unlike
 /// `message_set_fixture`'s auto-expanded MessageSet group items,
