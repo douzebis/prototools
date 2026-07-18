@@ -662,6 +662,56 @@ fn message_set_group_items_auto_expand_through_render_overrides() {
     );
 }
 
+/// Regression test (2026-07-18 feedback item 4): the internal,
+/// globally-shared `decode::MESSAGE_SET_ITEM_FQDN` (`protolens_internal
+/// .Item`) must never leak into the two places a tier-1 Item node's
+/// type is shown to the user — the status line and the manage pane —
+/// both must instead show the friendly, MessageSet-specific FQDN
+/// (`ms_test.TestMessageSet.Item` for this fixture's MessageSet).
+#[test]
+fn message_set_item_status_and_manage_labels_show_the_friendly_fqdn_not_the_internal_one() {
+    let app = message_set_fixture();
+
+    let item_idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
+        .expect("Item group must be spliced to the synthetic MessageSetItem type");
+
+    let status_label = app
+        .status_type_label(item_idx)
+        .expect("Item node must have a status-line type label");
+    assert!(
+        status_label.contains("ms_test.TestMessageSet.Item"),
+        "status line must show the friendly MessageSet-specific FQDN, \
+         not the internal one: {status_label:?}"
+    );
+    assert!(
+        !status_label.contains("protolens_internal"),
+        "status line must never leak the internal namespace: \
+         {status_label:?}"
+    );
+
+    let item_path = app.positional_path(item_idx);
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+        .expect("tier-1 entry must exist");
+    let manage_line = app.manage_type_line(entry_idx);
+    assert!(
+        manage_line.contains("ms_test.TestMessageSet.Item"),
+        "manage pane must show the friendly MessageSet-specific FQDN, \
+         not the internal one: {manage_line:?}"
+    );
+    assert!(
+        !manage_line.contains("protolens_internal"),
+        "manage pane must never leak the internal namespace: \
+         {manage_line:?}"
+    );
+}
+
 /// Regression test (spec 0132 §G3 feedback, 2026-07-15): opening the
 /// override pane on an ancestor of a MessageSet's `Item` group live-
 /// previews that ancestor's subtree via a bare `splice_override`

@@ -513,27 +513,48 @@ pub(crate) const ALL_PRIMITIVE_KEYWORDS: &[&str] = &[
     "sfixed64", "sint32", "sint64", "string", "uint32", "uint64",
 ];
 
-/// FQDN of the synthetic, globally-shared "Item" shape used to represent
-/// a MessageSet group entry generically — `type_id` (field 2) and
+/// Internal FQDN of the synthetic "Item" shape used to represent a
+/// MessageSet group entry generically — `type_id` (field 2) and
 /// `message` (field 3, raw bytes) — before the specific extension type
-/// is known (spec 0120 §G2 tier 1). Registered once per pool
-/// (`register_message_set_item`), reused by every MessageSet occurrence
-/// in the document: the shape is always identical, independent of any
-/// particular extendee. Named `Item` (not, say, `MessageSetItem`) so
-/// that its short name — `TextSink::begin_nested`'s group-header label
-/// (spec 0135 G1: always the group's message type name, never the
-/// field's own name) — already reads `Item {`, matching
-/// `prototext-core`'s own native MessageSet rendering convention
-/// (`message_set_field.rs`'s hardcoded `"Item"` virtual-node label) with
-/// no post-render header patch needed (spec 0135, 2026-07-17 review).
+/// is known (spec 0120 §G2 tier 1). A single descriptor, globally
+/// shared and registered once per pool, reused across every MessageSet
+/// occurrence in the document — genuinely nesting it under each
+/// distinct MessageSet's own FQDN (e.g. `google.protobuf.MessageSet.
+/// Item`) turned out to be structurally impossible: the descriptor pool
+/// (matching real `protoc`) rejects a package literally equal to an
+/// already-registered message's own full name, and there is no API to
+/// reopen an already-loaded foreign message to append a real nested
+/// type (2026-07-18 feedback item 4, reverting an earlier attempt).
+/// Never shown to the user directly — `message_set_item_display_fqdn`
+/// computes a friendly, MessageSet-specific label for the two places
+/// this FQDN would otherwise leak into the UI (the status line, the
+/// manage pane). Named `Item` (not, say, `MessageSetItem`) so that its
+/// short name — `TextSink::begin_nested`'s group-header label (spec
+/// 0135 G1: always the group's message type name, never the field's
+/// own name) — already reads `Item {`, matching `prototext-core`'s own
+/// native MessageSet rendering convention (`message_set_field.rs`'s
+/// hardcoded `"Item"` virtual-node label) with no post-render header
+/// patch needed (spec 0135, 2026-07-17 review).
 pub(crate) const MESSAGE_SET_ITEM_FQDN: &str = "protolens_internal.Item";
 
-/// Build (or reuse, if already registered) the synthetic
-/// `protolens_internal.Item` descriptor: `type_id: int32 = 2`,
+/// The friendly, MessageSet-specific FQDN to display in place of the
+/// internal, globally-shared `MESSAGE_SET_ITEM_FQDN` wherever a tier-1
+/// Item node's type is shown to the user (2026-07-18 feedback item 4)
+/// — e.g. `google.protobuf.MessageSet.Item` for a MessageSet whose own
+/// FQDN is `google.protobuf.MessageSet`. Display-only: never stored on
+/// a tree node or an override entry, and never registered in the
+/// descriptor pool (see `MESSAGE_SET_ITEM_FQDN`'s doc comment for why
+/// genuine nesting isn't possible).
+pub(crate) fn message_set_item_display_fqdn(message_set_fqdn: &str) -> String {
+    format!("{message_set_fqdn}.Item")
+}
+
+/// Build (or reuse, if already registered) the synthetic, globally
+/// shared `MESSAGE_SET_ITEM_FQDN` descriptor: `type_id: int32 = 2`,
 /// `message: bytes = 3` — the generic tier-1 shape for a MessageSet
-/// group entry (spec 0120 §G2). Unlike `register_wrapper`, this has no
-/// per-target parameters: the shape never varies, so it's registered
-/// exactly once and shared by every MessageSet in the document.
+/// group entry (spec 0120 §G2). Unlike `register_wrapper`, the shape
+/// itself never varies, so the descriptor is registered once per pool
+/// and reused across every MessageSet occurrence in the document.
 /// `pub(crate)`: also called from `tui.rs`'s `auto_expand_type`.
 pub(crate) fn register_message_set_item(
     pool: &mut DescriptorPool,

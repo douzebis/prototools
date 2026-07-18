@@ -115,6 +115,28 @@ impl App {
         rows
     }
 
+    /// The type label for management-pane entry `idx`: the entry's own
+    /// `r#type`, or `"<raw / no type>"` if unset — except the internal,
+    /// globally-shared `decode::MESSAGE_SET_ITEM_FQDN` is never shown
+    /// to the user directly, replaced by the friendly, MessageSet-
+    /// specific FQDN instead (2026-07-18 feedback item 4).
+    pub(super) fn manage_entry_type_label(&self, idx: usize) -> String {
+        let e = &self.overrides.entries()[idx];
+        let Some(fqdn) = e.r#type.as_deref() else {
+            return "<raw / no type>".to_string();
+        };
+        if fqdn == decode::MESSAGE_SET_ITEM_FQDN {
+            if let OverrideOrigin::Path { path } = &e.origin {
+                if let Some(node_idx) = self.resolve_path(path) {
+                    if let Some(display) = self.message_set_item_display_fqdn(node_idx) {
+                        return display;
+                    }
+                }
+            }
+        }
+        fqdn.to_string()
+    }
+
     /// One management-pane type row's display text: indented, a
     /// radio-button-style active marker (`●`/`○`) leading — clickable, see
     /// `handle_manage_click` — then the type label (spec 0117 §3
@@ -123,7 +145,7 @@ impl App {
     pub(super) fn manage_type_line(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
         let marker = if e.active { '●' } else { '○' };
-        let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
+        let type_label = self.manage_entry_type_label(idx);
         match &e.name {
             Some(name) => format!("  {marker} {type_label} as \"{name}\""),
             None => format!("  {marker} {type_label}"),
@@ -136,7 +158,7 @@ impl App {
     /// grouped display happens to lay them out across rows.
     pub(super) fn manage_search_text(&self, idx: usize) -> String {
         let e = &self.overrides.entries()[idx];
-        let type_label = e.r#type.as_deref().unwrap_or("<raw / no type>");
+        let type_label = self.manage_entry_type_label(idx);
         format!("{} {type_label}", e.origin.label())
     }
 

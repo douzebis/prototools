@@ -113,6 +113,15 @@ impl App {
             } else {
                 "message"
             };
+            // The internal, globally-shared MessageSet Item FQDN
+            // (`decode::MESSAGE_SET_ITEM_FQDN`) is never shown to the
+            // user directly — show the friendly, MessageSet-specific
+            // FQDN instead (2026-07-18 feedback item 4).
+            if fqdn == decode::MESSAGE_SET_ITEM_FQDN {
+                if let Some(display) = self.message_set_item_display_fqdn(idx) {
+                    return Some(format_fqdn_label(&display, tag));
+                }
+            }
             return Some(format_fqdn_label(fqdn, tag));
         }
         let effective = match self.resolve_active_override(idx) {
@@ -157,6 +166,19 @@ impl App {
             .and_then(|o| o.message_set_wire_format)
             .unwrap_or(false);
         msf && desc.fields().count() == 0
+    }
+
+    /// The friendly, MessageSet-specific FQDN to show in place of the
+    /// internal, globally-shared `decode::MESSAGE_SET_ITEM_FQDN`
+    /// wherever `idx` (a tier-1 Item wrapper node) is displayed to the
+    /// user — `None` if `idx`'s parent isn't actually a MessageSet
+    /// container (shouldn't happen for a real Item node, but keeps this
+    /// a safe fallback rather than a panic). Display-only: never stored
+    /// on a tree node or an override entry (2026-07-18 feedback item 4).
+    pub(super) fn message_set_item_display_fqdn(&self, idx: usize) -> Option<String> {
+        let parent = self.tree[idx].parent?;
+        let message_set_fqdn = self.tree[parent].span.type_fqdn.as_deref()?;
+        Some(decode::message_set_item_display_fqdn(message_set_fqdn))
     }
 
     /// The sibling of `idx` (another child of `idx`'s own parent) whose
