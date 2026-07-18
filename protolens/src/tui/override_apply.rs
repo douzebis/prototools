@@ -742,10 +742,12 @@ impl App {
         // here after the fact.
         let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
         if matches!(field_type, Some(ft) if ft != Type::Group) {
-            new_lines[0] = new_lines[0].replacen('_', &field_name, 1);
-            new_line_styles[0] =
-                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
-                    .remove(0);
+            if let Some(patched) = decode::patch_synthetic_field_name(&new_lines[0], &field_name) {
+                new_lines[0] = patched;
+                new_line_styles[0] =
+                    colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
+                        .remove(0);
+            }
         }
 
         let delta = new_lines.len() as isize

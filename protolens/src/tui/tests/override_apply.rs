@@ -264,6 +264,86 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     );
 }
 
+/// Spec 0143 regression (2026-07-18 feedback): overriding a
+/// varint-wire-framed field to an incompatible primitive type (any
+/// `Kind::Double`/`Float`/`Fixed32`/`Fixed64`/`String`/`Bytes`/
+/// `Message` target hits `prototext-core`'s `VarintKind::Mismatch`
+/// catch-all, which writes the numeric field key and a `TYPE_MISMATCH`
+/// flag, never the synthetic field-name placeholder) must not corrupt
+/// the `TYPE_MISMATCH` annotation by splicing the field name into it —
+/// the naive `.replacen('_', ..)` this spec replaced used to produce
+/// `TYPEtype_idMISMATCH`.
+#[test]
+fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotation() {
+    use crate::decode::{decode, DescriptorContext};
+    use prost::Message as _;
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
+
+    let msg = DescriptorProto {
+        name: Some("IntHolder".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("type_id".to_string()),
+            number: Some(2),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let file = FileDescriptorProto {
+        name: Some("varint_mismatch.proto".to_string()),
+        package: Some("varint_mismatch".to_string()),
+        message_type: vec![msg],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let descriptor_path =
+        std::env::temp_dir().join(format!("protolens-tui-varint-mismatch-override-{n}.pb"));
+    std::fs::write(&descriptor_path, fds.encode_to_vec()).unwrap();
+    let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
+    std::fs::remove_file(&descriptor_path).unwrap();
+
+    // IntHolder { type_id: 5 } — field 2, varint wire type.
+    let blob = vec![0x10u8, 0x05];
+    let decoded = decode(&blob, &mut ctx, Some("varint_mismatch.IntHolder"), 2).unwrap();
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        ctx,
+        ThemeKind::Dark,
+    );
+    app.splash = false;
+    app.term_width = 120;
+
+    let idx = app
+        .tree
+        .iter()
+        .position(|n| n.span.field_number == 2)
+        .expect("must find field 2");
+
+    app.splice_override(idx, Some("double".to_string()))
+        .expect("override onto an incompatible primitive type must still succeed");
+
+    assert!(
+        app.lines.iter().any(|l| l.contains("TYPE_MISMATCH")),
+        "mismatch must surface as an intact inline annotation: {:?}",
+        app.lines
+    );
+    assert!(
+        !app.lines.iter().any(|l| l.contains("type_id")),
+        "the field name must never be spliced into a mismatched line: {:?}",
+        app.lines
+    );
+}
+
 /// Overriding a group field to a resolvable type must keep the
 /// `group;` prefix in the header (spec 0122 Test Plan item 2, 1st
 /// bullet).

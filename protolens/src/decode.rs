@@ -452,6 +452,33 @@ pub(crate) fn register_wrapper(
         .ok_or_else(|| DecodeError::Schema("wrapper descriptor registered but not found".into()))
 }
 
+/// Patch `register_wrapper`'s synthetic placeholder field name (the
+/// fixed literal `"_"`, spec 0135 G2) into `line`, if — and only if —
+/// the render actually wrote that placeholder there.
+/// `wfl_prefix_n`/`wob_prefix_n` (prototext-core) write the schema
+/// field's own name only when the render resolved to a known,
+/// non-mismatched field; on any wire-type mismatch they write the
+/// numeric field key instead, and no placeholder is emitted anywhere
+/// on the line. Detected precisely by anchoring on the exact two
+/// prefix shapes both writers document — `"_: "` (scalar/value line)
+/// or `"_ {"` (nested-message header line) — immediately after the
+/// line's leading indentation, rather than searching the line for a
+/// bare `_` character: the naive `.replacen('_', ..)` approach
+/// previously matched the `_` inside an unrelated `TYPE_MISMATCH`
+/// annotation on a mismatched line, corrupting it (2026-07-18
+/// feedback, spec 0143). Returns `None` (caller keeps the original
+/// line untouched) when no placeholder was actually written.
+pub(crate) fn patch_synthetic_field_name(line: &str, field_name: &str) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let after = rest.strip_prefix('_')?;
+    if after.starts_with(": ") || after.starts_with(" {") {
+        Some(format!("{indent}{field_name}{after}"))
+    } else {
+        None
+    }
+}
+
 /// Resolve a `:type-as` primitive type keyword (spec 0135 §G3/§G4) to its
 /// `Type`. Covers exactly the fifteen keywords listed in G4 — `string`/
 /// `bytes` included, even though they share `WT_LEN` framing with
@@ -662,9 +689,11 @@ pub fn decode(
     // via `wrap_blob(1, ..)` above, and has no schema field name of its
     // own to show instead).
     if wrapper_desc.is_some() {
-        lines[0] = lines[0].replacen('_', "1", 1);
-        style_hints[0] =
-            colorize::hints_by_line(&lines[..1], &colorize::colorize(&lines[0])).remove(0);
+        if let Some(patched) = patch_synthetic_field_name(&lines[0], "1") {
+            lines[0] = patched;
+            style_hints[0] =
+                colorize::hints_by_line(&lines[..1], &colorize::colorize(&lines[0])).remove(0);
+        }
     }
     let tree = build_tree(spans);
 
@@ -691,6 +720,50 @@ mod tests {
         let blob = [0x08u8, 0x05];
         let resolved = determine_root_type(&blob, &ctx, None).unwrap();
         assert!(resolved.is_none());
+    }
+
+    /// Spec 0143: the placeholder is anchored on its exact structural
+    /// position (immediately after indentation, followed by `": "` or
+    /// `" {"`), not found by a bare `_`-anywhere-in-the-line search.
+    #[test]
+    fn patch_synthetic_field_name_replaces_a_scalar_value_line_placeholder() {
+        assert_eq!(
+            patch_synthetic_field_name("_: 5", "id"),
+            Some("id: 5".to_string())
+        );
+    }
+
+    #[test]
+    fn patch_synthetic_field_name_replaces_a_message_header_placeholder() {
+        assert_eq!(
+            patch_synthetic_field_name("_ {", "inner"),
+            Some("inner {".to_string())
+        );
+    }
+
+    #[test]
+    fn patch_synthetic_field_name_preserves_leading_indentation() {
+        assert_eq!(
+            patch_synthetic_field_name("    _: 5", "id"),
+            Some("    id: 5".to_string())
+        );
+    }
+
+    /// 2026-07-18 feedback: the exact regression case — a wire-type
+    /// mismatch line never writes the placeholder, so the line must
+    /// come back untouched instead of having a field name spliced
+    /// into the middle of `TYPE_MISMATCH`.
+    #[test]
+    fn patch_synthetic_field_name_leaves_a_type_mismatch_line_untouched() {
+        assert_eq!(
+            patch_synthetic_field_name("2: 525005305  #@ varint; TYPE_MISMATCH", "type_id"),
+            None
+        );
+    }
+
+    #[test]
+    fn patch_synthetic_field_name_leaves_a_plain_numeric_key_line_untouched() {
+        assert_eq!(patch_synthetic_field_name("5: 3  #@ int32 = 5", "id"), None);
     }
 
     /// Spec 0114: `--type` is optional — with no graph (autoinference
