@@ -404,15 +404,47 @@ fn v_in_main_pane_reports_unknown_type_for_the_cursor_node() {
 }
 
 /// Spec 0144 G2: a scalar main-pane node carries no `type_fqdn` at
-/// all — `v` is a no-op, not a lookup failure.
+/// all — `v` is a no-op, not a lookup failure, when it also has no
+/// active override and no parent schema to fall back to (2026-07-18
+/// fix: `fqdn_under_focus` now also consults those, mirroring
+/// `status_type_label`, so an enum-typed scalar can resolve — see
+/// `v_in_main_pane_resolves_an_enum_scalars_natural_type` below).
 #[test]
 #[cfg(unix)]
 fn v_in_main_pane_is_a_no_op_for_a_scalar_node() {
     let mut app = sibling_leaves_app(&["field: 1"]);
     app.splash = false;
+    // This fixture's single node sits at path "/" (root-level, no
+    // parent) — drop the seeded root-type override entry first, or
+    // it would accidentally match that node and mask the no-op case
+    // this test targets.
+    while !app.overrides.entries().is_empty() {
+        app.overrides.remove(0);
+    }
 
     app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
     assert_eq!(app.message, "no declaration to jump to here");
+}
+
+/// Regression test (2026-07-18 feedback): `v` on an enum-typed scalar
+/// field with no active override must resolve the field's own
+/// natural enum type and attempt a lookup — previously
+/// `fqdn_under_focus` read only `span.type_fqdn` (always `None` for
+/// scalars) for the main-pane branch, so this always reported "no
+/// declaration to jump to here" even though `status_type_label`
+/// already resolved and displayed the same FQDN on the status line.
+#[test]
+#[cfg(unix)]
+fn v_in_main_pane_resolves_an_enum_scalars_natural_type() {
+    let (mut app, durability_idx) = enum_field_fixture();
+    app.cursor = durability_idx;
+    assert!(app.proto_root.is_none());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(
+        app.message,
+        "no proto root configured; set one with :proto-root <dir> or -I/--proto-root"
+    );
 }
 
 /// Spec 0144 G2 (`fqdn_under_focus` doc comment): the internal,

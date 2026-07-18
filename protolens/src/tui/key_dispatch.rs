@@ -521,6 +521,14 @@ impl App {
     /// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder (spec 0120/
     /// 0135) — never registered as a real message in the pool, so it has
     /// no declaration of its own to jump to.
+    ///
+    /// The main-pane branch mirrors `status_type_label`'s own fallback
+    /// chain (2026-07-18 feedback): `span.type_fqdn` is `None` for every
+    /// scalar node, including enum-typed ones, so an enum field under
+    /// the cursor falls back to its currently effective type (an active
+    /// override if one applies, else `natural_type`) — the same FQDN the
+    /// status line already shows as "type: ...". A primitive-keyword
+    /// result has no declaration to jump to either.
     #[cfg(unix)]
     fn fqdn_under_focus(&self) -> Option<String> {
         if self.override_focus {
@@ -539,7 +547,20 @@ impl App {
                 .r#type
                 .clone()?
         } else {
-            self.tree.get(self.cursor)?.span.type_fqdn.clone()?
+            let idx = self.cursor;
+            self.tree.get(idx)?;
+            match self.tree[idx].span.type_fqdn.clone() {
+                Some(fqdn) => fqdn,
+                None => {
+                    let effective = match self.resolve_active_override(idx) {
+                        Some(inner) => inner?,
+                        None => self.natural_type(idx)?,
+                    };
+                    decode::primitive_type_for_keyword(&effective)
+                        .is_none()
+                        .then_some(effective)?
+                }
+            }
         };
         (fqdn != decode::MESSAGE_SET_ITEM_FQDN).then_some(fqdn)
     }
