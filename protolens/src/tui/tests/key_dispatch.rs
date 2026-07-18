@@ -218,3 +218,112 @@ fn ctrl_left_right_pan_the_override_and_manage_panes() {
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
     assert_eq!(app.manage_pan_offset, 0);
 }
+
+/// 2026-07-18 feedback item 2: `Ctrl-Up`/`Ctrl-Down` pan the override
+/// pane's candidate list vertically without moving the highlight,
+/// bounded so the highlighted row never leaves view.
+#[test]
+fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.override_focus = true;
+    app.override_target = Some(0);
+    app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
+    app.override_list_height = 5;
+    app.override_highlight = 19;
+    // Start at the bottom edge of the 5-row window, same as after a
+    // normal `clamp_scroll_to_visible` pass following cursor movement.
+    app.override_scroll = 15;
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.override_scroll, 19,
+        "Ctrl-Down must reveal rows below, capped at the highlight's own row"
+    );
+    assert_eq!(
+        app.override_highlight, 19,
+        "panning must not move the highlight"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.override_scroll, 19,
+        "further Ctrl-Down is a no-op once the highlight reaches the top edge"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.override_scroll, 15,
+        "Ctrl-Up must reveal rows above, capped so the highlight stays visible"
+    );
+    assert_eq!(app.override_highlight, 19);
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.override_scroll, 15,
+        "further Ctrl-Up is a no-op once the highlight reaches the bottom edge"
+    );
+}
+
+/// 2026-07-18 feedback item 2: `Ctrl-Up`/`Ctrl-Down` pan the manage
+/// pane's list vertically without moving the highlight, bounded so the
+/// highlighted row never leaves view. Uses 30 distinct-origin entries
+/// (each gets its own `Header` row, spec 0117 §3 amendment) and asks
+/// `manage_highlighted_row()` for the resulting row instead of
+/// predicting the sort order, since `OverrideOrigin::label()` sorts
+/// lexicographically (not numerically) on the embedded field number.
+#[test]
+fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.manage_open = true;
+    app.manage_focus = true;
+    for field in 1..=30 {
+        app.overrides.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field,
+            },
+            None,
+        );
+    }
+    let target_field = 15;
+    let target_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| {
+            e.origin
+                == OverrideOrigin::PathField {
+                    path: "/".to_string(),
+                    field: target_field,
+                }
+        })
+        .unwrap();
+    app.manage_highlight = target_idx;
+    app.manage_list_height = 5;
+    let target_row = app.manage_highlighted_row();
+    app.manage_scroll = target_row.saturating_sub(4);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.manage_scroll,
+        (target_row.saturating_sub(4) + PAN_STEP).min(target_row),
+        "Ctrl-Down must reveal rows below, capped at the highlight's own row"
+    );
+    assert_eq!(
+        app.manage_highlight, target_idx,
+        "panning must not move the highlight"
+    );
+
+    app.manage_scroll = target_row; // top edge
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.manage_scroll,
+        target_row
+            .saturating_sub(PAN_STEP)
+            .max(target_row.saturating_sub(4)),
+        "Ctrl-Up must reveal rows above, capped so the highlight stays visible"
+    );
+    assert_eq!(app.manage_highlight, target_idx);
+}

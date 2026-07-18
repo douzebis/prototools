@@ -23,6 +23,23 @@ impl App {
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 pan_by_step(&mut self.override_pan_offset, false)
             }
+            // Vertical pan (2026-07-18 feedback item 2): scrolls the
+            // candidate list without moving the highlight, bounded so
+            // the highlighted row never leaves view. Must precede the
+            // plain `Up`/`Down` arms below, same "modifier-guard first"
+            // convention as the horizontal pan above.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => pan_vertical_by_step(
+                &mut self.override_scroll,
+                self.override_highlight,
+                self.override_list_height,
+                true,
+            ),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => pan_vertical_by_step(
+                &mut self.override_scroll,
+                self.override_highlight,
+                self.override_list_height,
+                false,
+            ),
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
             KeyCode::PageDown => {
@@ -288,6 +305,16 @@ impl App {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.prev_sibling_move(),
             KeyCode::Char('J') => self.next_sibling_move(),
             KeyCode::Char('K') => self.prev_sibling_move(),
+
+            // Vertical pan (2026-07-18 feedback item 2): scrolls the
+            // viewport without moving the cursor, bounded so the
+            // cursor's own row never leaves view. Checked before the
+            // plain Up/Down arms below, same "modifier-guard first"
+            // convention as the horizontal pan below.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => self.pan_vertical_up(),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.pan_vertical_down()
+            }
 
             // Document-order move.
             KeyCode::Char('j') | KeyCode::Down => self.move_down(),

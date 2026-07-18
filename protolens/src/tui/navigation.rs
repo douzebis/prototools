@@ -188,6 +188,21 @@ impl App {
         self.pan_offset = (self.pan_offset + PAN_STEP).min(max_offset);
     }
 
+    /// Vertical pan (Ctrl-Up/Ctrl-Down, 2026-07-18 feedback item 2):
+    /// scrolls the main pane's viewport without moving the cursor,
+    /// bounded so the cursor's own row never leaves view.
+    pub(super) fn pan_vertical_up(&mut self) {
+        let height = self.main_area.height as usize;
+        let cursor_row = self.cursor_display_row();
+        pan_vertical_by_step(&mut self.scroll_offset, cursor_row, height, true);
+    }
+
+    pub(super) fn pan_vertical_down(&mut self) {
+        let height = self.main_area.height as usize;
+        let cursor_row = self.cursor_display_row();
+        pan_vertical_by_step(&mut self.scroll_offset, cursor_row, height, false);
+    }
+
     /// Absolute last node in document order (regardless of visibility).
     pub(super) fn last_node(&self) -> usize {
         let mut cur = self.first_node;

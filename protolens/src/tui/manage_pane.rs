@@ -115,6 +115,17 @@ impl App {
         rows
     }
 
+    /// The manage pane's currently-highlighted display row, resolved
+    /// from `manage_highlight`'s entry index — the target row for
+    /// `clamp_scroll_to_visible` and for Ctrl-Up/Ctrl-Down vertical
+    /// panning (2026-07-18 feedback item 2).
+    pub(super) fn manage_highlighted_row(&self) -> usize {
+        self.manage_display_rows()
+            .iter()
+            .position(|r| matches!(r, ManageRow::Entry(idx) if *idx == self.manage_highlight))
+            .unwrap_or(0)
+    }
+
     /// The type label for management-pane entry `idx`: the entry's own
     /// `r#type`, or `"<raw / no type>"` if unset — except the internal,
     /// globally-shared `decode::MESSAGE_SET_ITEM_FQDN` is never shown
@@ -321,6 +332,19 @@ impl App {
                         self.render_overrides(self.first_node);
                     }
                 }
+            }
+            // Vertical pan (2026-07-18 feedback item 2): scrolls the
+            // list without moving the highlight, bounded so the
+            // highlighted row never leaves view. Must precede the plain
+            // `Up`/`Down` arms below, same "modifier-guard first"
+            // convention as the horizontal pan below.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let row = self.manage_highlighted_row();
+                pan_vertical_by_step(&mut self.manage_scroll, row, self.manage_list_height, true);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let row = self.manage_highlighted_row();
+                pan_vertical_by_step(&mut self.manage_scroll, row, self.manage_list_height, false);
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
@@ -736,10 +760,7 @@ impl App {
 
         let rows = self.manage_display_rows();
         let total_rows = rows.len();
-        let highlighted_row = rows
-            .iter()
-            .position(|r| matches!(r, ManageRow::Entry(idx) if *idx == self.manage_highlight))
-            .unwrap_or(0);
+        let highlighted_row = self.manage_highlighted_row();
         clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
         let end = (self.manage_scroll + list_height).min(total_rows);
         let start = self.manage_scroll.min(total_rows);

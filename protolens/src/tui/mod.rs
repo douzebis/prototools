@@ -200,6 +200,25 @@ fn pan_by_step(offset: &mut usize, left: bool) {
     };
 }
 
+/// Shared vertical pan-by-one-step arithmetic behind Ctrl-Up/Ctrl-Down
+/// in the main, override, and manage panes (2026-07-18 feedback item 2)
+/// — mirrors `pan_by_step`'s horizontal pan, but bounded on both ends so
+/// `target` (the pane's own cursor/highlight row) never scrolls out of
+/// the `height`-row visible window: unlike horizontal panning, which has
+/// no cursor-column concept to protect, the request was explicit that
+/// "the cursor must never leave view". No-op when `height` is `0`.
+fn pan_vertical_by_step(scroll: &mut usize, target: usize, height: usize, up: bool) {
+    if height == 0 {
+        return;
+    }
+    if up {
+        let min_scroll = target.saturating_sub(height - 1);
+        *scroll = scroll.saturating_sub(PAN_STEP).max(min_scroll);
+    } else {
+        *scroll = (*scroll + PAN_STEP).min(target);
+    }
+}
+
 /// Border/title style for a focus-tracked pane (main/override/manage):
 /// `theme::focus_style`'s bold accent color when focused,
 /// `theme::unfocused_pane_style`'s plain accent otherwise — the visual
@@ -317,6 +336,8 @@ const HELP_TEXT: &[&str] = &[
     "  PageUp           scroll up one page",
     "  Ctrl-Left        pan main pane left",
     "  Ctrl-Right       pan main pane right",
+    "  Ctrl-Up          pan main pane up, cursor stays in view",
+    "  Ctrl-Down        pan main pane down, cursor stays in view",
     "  Shift+wheel / native horizontal scroll",
     "                   pan whichever pane (main, override, manage, or",
     "                   the command bar) the mouse is hovering",
@@ -367,6 +388,8 @@ const HELP_TEXT: &[&str] = &[
     "  j/k, PageUp/Down, Home/End   move the highlighted candidate",
     "                   (pane focused)",
     "  Ctrl-Left/Ctrl-Right         pan the pane horizontally",
+    "  Ctrl-Up/Ctrl-Down            pan the pane vertically, highlight",
+    "                   stays in view",
     "  Enter            apply the highlighted type (pane focused) and",
     "                   close the pane; also records the override in the",
     "                   collection (see \"Override management\" below)",
@@ -389,6 +412,8 @@ const HELP_TEXT: &[&str] = &[
     "  Left/Right       move the main-pane cursor to the prev/next field",
     "                   affected by the highlighted entry (wraps around)",
     "  Ctrl-Left/Ctrl-Right         pan the pane horizontally",
+    "  Ctrl-Up/Ctrl-Down            pan the pane vertically, highlight",
+    "                   stays in view",
     "  /  ?  n  p       search / search backward / repeat / repeat",
     "                   opposite direction",
     "  a / Space        toggle the highlighted entry active/inactive",
