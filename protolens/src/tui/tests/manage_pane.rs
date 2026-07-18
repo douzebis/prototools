@@ -888,11 +888,11 @@ fn manage_pane_q_closes_pane() {
     assert!(!app.manage_focus);
 }
 
-/// Spec 0130 §G1: manage-pane entry rows render `auto == true`
-/// entries in `manage_entry_style(true, ..)`'s color and
-/// `auto == false` entries in `manage_entry_style(false, ..)`'s
-/// distinct color (no `REVERSED` on either, since neither is
-/// highlighted here).
+/// Spec 0130 §G1 (restyled 2026-07-18): manage-pane entry rows render
+/// `auto == true` entries in `manage_entry_style(true, ..)`'s dedicated
+/// color; `auto == false` entries render in the plain terminal default
+/// (no explicit `fg`) — so only auto-derived entries stand out (no
+/// `REVERSED` on either, since neither is highlighted here).
 #[test]
 fn manage_pane_entries_style_auto_vs_manual_distinctly() {
     let (mut app, items) = repeated_scalar_fixture();
@@ -950,9 +950,9 @@ fn manage_pane_entries_style_auto_vs_manual_distinctly() {
         "auto entry row must use the auto color"
     );
     assert_eq!(
-        Some(row_fg(manual_idx)),
         theme::manage_entry_style(false, app.theme).fg,
-        "manual entry row must use the manual color"
+        None,
+        "manual entries must use the plain terminal default (no explicit fg)"
     );
     assert_ne!(
         row_fg(auto_idx),

@@ -198,8 +198,8 @@ mod dark_rgb {
     pub const COMMENT: Color = Color::Rgb(0x6A, 0x99, 0x55);
     /// "Rainee".
     pub const NUMBER: Color = Color::Rgb(0xB5, 0xCE, 0xA8);
-    /// "Azul Mystic" — also this crate's manage-pane "manual" entry
-    /// color (`manage_entry_style`).
+    /// "Azul Mystic" — also this crate's manage-pane origin-path
+    /// header color (`render_manage_pane`, via `style_for`).
     pub const BOOLEAN: Color = Color::Rgb(0x56, 0x9C, 0xD6);
     /// "Pale Hazel".
     pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0xDC, 0xDC, 0xAA);
@@ -228,8 +228,8 @@ mod light_rgb {
     pub const COMMENT: Color = Color::Rgb(0x00, 0x80, 0x00);
     /// "Funky Green".
     pub const NUMBER: Color = Color::Rgb(0x09, 0x86, 0x58);
-    /// "Blue" — also this crate's manage-pane "manual" entry color
-    /// (`manage_entry_style`).
+    /// "Blue" — also this crate's manage-pane origin-path header
+    /// color (`render_manage_pane`, via `style_for`).
     pub const BOOLEAN: Color = Color::Rgb(0x00, 0x00, 0xFF);
     /// "French Blue".
     pub const PUNCTUATION_BRACKET_LIST: Color = Color::Rgb(0x04, 0x51, 0xA5);
@@ -351,49 +351,28 @@ fn style_for_light_ansi16(role: SyntaxRole) -> Style {
     }
 }
 
-/// Manage-pane auto/manual override-entry color (spec 0130) — a small,
-/// standalone style function independent of `SyntaxRole`/
-/// `RECOGNIZED_NAMES` (those are strictly one variant per
-/// `queries/highlights.scm` capture name; these two colors have no
-/// corresponding syntax capture). Colors reused from existing
-/// `SyntaxRole` palette entries rather than invented: `auto` mirrors
-/// `Comment`'s values (minus `ITALIC`); manual mirrors `Boolean`'s RGB
-/// values paired with a plain, unbold ANSI-16 `Blue` in both themes.
+/// Manage-pane auto-override type-label color (spec 0130, restyled
+/// 2026-07-18): a small, standalone style function independent of
+/// `SyntaxRole`/`RECOGNIZED_NAMES` (those are strictly one variant per
+/// `queries/highlights.scm` capture name; this has no corresponding
+/// syntax capture). Only `auto` entries get a dedicated color, mirroring
+/// `Comment`'s values (minus `ITALIC`) — manual entries render in the
+/// terminal's plain default style, so only auto-derived entries stand
+/// out. (The manage-pane origin-path header row has its own, separate
+/// styling — `theme::style_for(SyntaxRole::Boolean, theme)`, applied
+/// directly by `render_manage_pane`, not through this function.)
 pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
+    if !auto {
+        return Style::default();
+    }
     match theme {
-        ThemeKind::Dark if supports_rgb() => manage_entry_style_dark_rgb(auto),
-        ThemeKind::Dark => manage_entry_style_ansi16(auto),
-        ThemeKind::Light if supports_rgb() => manage_entry_style_light_rgb(auto),
-        ThemeKind::Light => manage_entry_style_ansi16(auto),
+        ThemeKind::Dark if supports_rgb() => Style::default().fg(dark_rgb::COMMENT),
+        ThemeKind::Dark => Style::default().fg(Color::DarkGray),
+        ThemeKind::Light if supports_rgb() => Style::default().fg(light_rgb::COMMENT),
+        ThemeKind::Light => Style::default().fg(Color::DarkGray),
         ThemeKind::System => {
             unreachable!("ThemeKind::System must be resolved before rendering — see main.rs")
         }
-    }
-}
-
-fn manage_entry_style_dark_rgb(auto: bool) -> Style {
-    if auto {
-        Style::default().fg(dark_rgb::COMMENT)
-    } else {
-        Style::default().fg(dark_rgb::BOOLEAN)
-    }
-}
-
-fn manage_entry_style_light_rgb(auto: bool) -> Style {
-    if auto {
-        Style::default().fg(light_rgb::COMMENT)
-    } else {
-        Style::default().fg(light_rgb::BOOLEAN)
-    }
-}
-
-/// Same ANSI-16 fallback in both dark and light themes (no per-theme
-/// substitution, unlike `style_for_dark_ansi16`/`style_for_light_ansi16`).
-fn manage_entry_style_ansi16(auto: bool) -> Style {
-    if auto {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::Blue)
     }
 }
 

@@ -770,17 +770,24 @@ impl App {
             match row {
                 // Spec 0127 §G1: pan the manage pane's own rows
                 // independently of the main pane's `pan_offset`.
+                // Origin-path header rows render in the same dark-blue
+                // style as a `true`/`false` value in the main pane
+                // (`SyntaxRole::Boolean`), distinguishing them at a
+                // glance from the type rows grouped underneath
+                // (restyled 2026-07-18).
                 ManageRow::Header(label) => lines.push(Line::from(pan_spans(
-                    vec![Span::raw(label.clone())],
+                    vec![Span::styled(
+                        label.clone(),
+                        theme::style_for(SyntaxRole::Boolean, self.theme),
+                    )],
                     self.manage_pan_offset,
                 ))),
                 ManageRow::Entry(idx) => {
                     let text = self.manage_type_line(*idx);
-                    // Spec 0130 §G1: auto-derived entries render in
-                    // `Comment`'s muted color, manual entries in
-                    // `Boolean`'s blue — dedicated, `SyntaxRole`-
-                    // independent styling, visually distinct at every
-                    // palette depth.
+                    // Spec 0130 §G1 (restyled 2026-07-18): auto-derived
+                    // entries render in `Comment`'s muted-green color;
+                    // manual entries render in the plain terminal
+                    // default, so only auto-derived entries stand out.
                     let auto = self.overrides.entries()[*idx].auto;
                     let base_style = theme::manage_entry_style(auto, self.theme);
                     // Feedback (2026-07-16): the highlighted row's
