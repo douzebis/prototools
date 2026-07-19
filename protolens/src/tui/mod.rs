@@ -97,17 +97,24 @@ const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 /// dismissal — mirrors `MESSAGE_TIMEOUT`'s deadline-based approach.
 const SPLASH_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long `warm_up_heat_cues` (spec 0151 G8) waits, from its own
+/// start, before drawing its first progress frame — avoids any flicker
+/// for small/fast descriptor sets, where the whole pass is already
+/// near-instant.
+const WARMUP_FIRST_DRAW_DELAY: Duration = Duration::from_millis(300);
+
+/// Minimum elapsed time between successive `warm_up_heat_cues` progress
+/// redraws (spec 0151 G8) — time-based, not a fixed line-count interval,
+/// so it stays responsive regardless of how expensive each individual
+/// line turns out to be.
+const WARMUP_REDRAW_INTERVAL: Duration = Duration::from_millis(300);
+
 /// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
 /// for a short-lived interactive session: at a rough ~50-70 bytes per
 /// cached `(fqdn, score)` entry, this comfortably holds capped previews for
 /// hundreds of distinct previously-viewed ranges. Exact cap left as an
 /// implementation-time tuning choice (spec Open Issue #1).
 const CANDIDATE_CACHE_MAX_BYTES: usize = 1 << 20;
-
-/// Byte budget for `App::heat_cache` (spec 0138, item 12 of 2026-07-17
-/// feedback) — same order of magnitude as `CANDIDATE_CACHE_MAX_BYTES`,
-/// its direct structural precedent.
-const HEAT_CACHE_MAX_BYTES: usize = 1 << 20;
 
 /// Byte budget for `App::render_cache` (spec 0116 §8) — same order of
 /// magnitude as `CANDIDATE_CACHE_MAX_BYTES`, its direct structural
@@ -710,19 +717,27 @@ pub struct App {
     /// Byte-bounded MRU cache of capped inferred-candidate previews for
     /// ranges other than the one currently active (spec 0114 §6).
     candidate_cache: override_pane::CandidateCache,
-    /// Byte-bounded MRU cache of complete ranked-candidate lists, keyed
-    /// by a node's tag/length-stripped payload range, for the main-pane
-    /// inference-mismatch heat cue (spec 0138, item 12 of 2026-07-17
-    /// feedback) — reuses `override_pane::CandidateCache`'s exact shape
-    /// directly (a second, separate instance) rather than a duplicate
-    /// type, since it already matches spec 0138 G1 exactly. Populated
-    /// lazily, only for nodes actually visible in the main-pane viewport
-    /// (`heat_cue::heat_cue_for`); independent of `candidate_cache`,
-    /// which serves the override *pane* rather than the main pane.
-    heat_cache: override_pane::CandidateCache,
+    /// Entry-count-bounded MRU cache of small `RangeHeatStats` summaries
+    /// (`best_score`/`best_count`), keyed by a node's tag/length-stripped
+    /// payload range's `start` offset, for the main-pane inference-
+    /// mismatch heat cue (spec 0151 G1, superseding spec 0138 G1's
+    /// full-candidate-list `CandidateCache` reuse — see spec 0151
+    /// Background for why that reuse never actually cached anything
+    /// useful). Populated lazily, only for nodes actually visible in the
+    /// main-pane viewport (`heat_cue::heat_cue_for`); independent of the
+    /// node's current type. Independent of `candidate_cache`, which
+    /// serves the override *pane* rather than the main pane (though G6
+    /// opportunistically cross-populates it on a miss here).
+    heat_range_cache: heat_cue::BoundedMru<usize, heat_cue::RangeHeatStats>,
+    /// Entry-count-bounded MRU cache of one node's current-type score
+    /// within its range's candidate list (spec 0151 G1/G3), keyed by
+    /// `(range-start, current-type-FQDN)` — `None` when the current type
+    /// is confirmed absent from the candidate list (vetoed for this
+    /// range), distinct from "not yet looked up".
+    heat_current_score_cache: heat_cue::BoundedMru<(usize, String), Option<i64>>,
     /// `true` while the main-pane heat cue (spec 0138) is toggled off by
     /// `i` (item 12, 2026-07-17 feedback) — hides the cue without
-    /// discarding `heat_cache`.
+    /// discarding `heat_range_cache`/`heat_current_score_cache`.
     heat_cues_hidden: bool,
     /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
     /// hints)` renders (spec 0116 §8) — consulted/populated by
@@ -1012,7 +1027,8 @@ impl App {
             term_width: 0,
             override_list_height: 0,
             candidate_cache: override_pane::CandidateCache::new(CANDIDATE_CACHE_MAX_BYTES),
-            heat_cache: override_pane::CandidateCache::new(HEAT_CACHE_MAX_BYTES),
+            heat_range_cache: heat_cue::BoundedMru::new(heat_cue::HEAT_CACHE_MAX_ENTRIES),
+            heat_current_score_cache: heat_cue::BoundedMru::new(heat_cue::HEAT_CACHE_MAX_ENTRIES),
             heat_cues_hidden: false,
             render_cache: RenderCache::new(RENDER_CACHE_MAX_BYTES),
             active_override_range: None,
@@ -1328,6 +1344,14 @@ pub fn run(app: &mut App) -> io::Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // Safe upper bound (spec 0151 G6/G8): the real, render-computed
+    // `override_list_height` (set by the override pane's own first
+    // render, `render.rs`) is always <= the raw terminal height, since
+    // it's an inner-area height net of borders/header rows. Setting it
+    // eagerly here means G6's cross-population cap isn't stuck at `1`
+    // (its `App::new` default) for the warm-up pass or any ordinary
+    // browsing before the user's first `t` press.
+    app.override_list_height = terminal.size()?.height.max(1) as usize;
 
     // A panic mid-session (e.g. an indexing bug) would otherwise unwind
     // straight out of this function, skipping the cleanup below and
@@ -1339,6 +1363,8 @@ pub fn run(app: &mut App) -> io::Result<()> {
         default_hook(info);
     }));
 
+    warm_up_heat_cues(&mut terminal, app)?;
+
     let result = run_loop(&mut terminal, app);
 
     let _ = std::panic::take_hook();
@@ -1346,6 +1372,44 @@ pub fn run(app: &mut App) -> io::Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+/// One-time warm-up pass (spec 0151 G8) populating heat cues for the
+/// initial viewport before the first `run_loop` iteration, so that cost
+/// (a first visit to each initially-visible range, G2) drives its own
+/// incremental redraws instead of computing silently inside a single
+/// `render()` call — the mechanism behind the original "stalled"
+/// report.
+fn warm_up_heat_cues<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
+    if app.ctx.graph.is_none() || app.heat_cues_hidden {
+        return Ok(());
+    }
+    let rows = terminal.size()?.height as usize;
+    let lines: Vec<usize> = app.visible_rows.iter().take(rows).copied().collect();
+    let start = Instant::now();
+    let mut last_draw = start;
+    for (i, &line_idx) in lines.iter().enumerate() {
+        app.heat_cue_for(line_idx); // populates the caches; return value unused here
+        let now = Instant::now();
+        if now.duration_since(start) > WARMUP_FIRST_DRAW_DELAY
+            && now.duration_since(last_draw) > WARMUP_REDRAW_INTERVAL
+        {
+            app.message = format!(
+                "Computing inference cues for the initial view: {}/{} lines scored...",
+                i + 1,
+                lines.len()
+            );
+            terminal.draw(|frame| app.render(frame))?;
+            last_draw = now;
+        }
+    }
+    if Instant::now().duration_since(start) > WARMUP_FIRST_DRAW_DELAY {
+        app.message.clear();
+    }
+    Ok(())
 }
 
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>

@@ -412,7 +412,7 @@ impl App {
 
             // Toggle the main-pane inference-mismatch heat cue (spec
             // 0138, item 12 of 2026-07-17 feedback) — hides/shows the
-            // cue without discarding `heat_cache`, distinct from the
+            // cue without discarding the heat-cue caches, distinct from the
             // override pane's own `i` (candidate sort toggle), gated
             // behind its own focus check and unreachable here. Guarded
             // to plain `i` so `Ctrl-i` (jumplist "forward", below) is

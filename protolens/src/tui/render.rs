@@ -308,8 +308,9 @@ impl App {
         }
         let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
         // Collected (not a borrowed slice) so the heat-cue pass below can
-        // mutate `self.heat_cache` — a plain slice would keep `self`
-        // borrowed immutably for the rest of this block.
+        // mutate `self.heat_range_cache`/`self.heat_current_score_cache`
+        // — a plain slice would keep `self` borrowed immutably for the
+        // rest of this block.
         let window: Vec<usize> =
             self.visible_rows[self.scroll_offset.min(self.visible_rows.len())..end].to_vec();
 
@@ -324,7 +325,7 @@ impl App {
 
         // Spec 0138 (item 12, 2026-07-17 feedback): computed in its own
         // pass, ahead of the (immutable-`self`) `text_lines` closure
-        // below, since populating `self.heat_cache` needs `&mut self`.
+        // below, since populating the heat-cue caches needs `&mut self`.
         let heat_cues: Vec<Option<heat_cue::HeatCue>> = window
             .iter()
             .map(|&line_idx| self.heat_cue_for(line_idx))

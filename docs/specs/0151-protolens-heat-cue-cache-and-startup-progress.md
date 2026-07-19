@@ -6,8 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0151 — protolens: heat-cue cache redesign and startup progress messaging
 
-Status: draft
+Status: implemented
 App: protolens
+Implemented in: 2026-07-19
 Refs: docs/specs/0138-protolens-main-pane-inference-heat-cue.md (introduces
       `App::heat_cache`/G1, whose caching strategy this spec supersedes),
       docs/specs/0114-protolens-range-type-override.md (override pane's

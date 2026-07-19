@@ -11,7 +11,7 @@ mod render_cache;
 mod theme;
 mod tui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
@@ -162,6 +162,37 @@ fn main() -> ExitCode {
         }
     };
 
+    if cli.command.is_none() {
+        let name = descriptor_set
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| descriptor_set.display().to_string());
+        // Best effort (spec 0151 G7): a metadata read failure simply
+        // omits the size suffix rather than aborting or erroring, since
+        // this is pure UX decoration, not load-bearing for correctness.
+        let size_suffix = |p: &Path| -> String {
+            match std::fs::metadata(p) {
+                Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
+                Err(_) => String::new(),
+            }
+        };
+        // Mirrors the sibling-graph check `DescriptorContext::load`
+        // itself performs (`decode.rs:87-89`).
+        let rkyv_path = descriptor_set.with_extension("").join("hopcroft.rkyv");
+        if rkyv_path.exists() {
+            eprintln!(
+                "protolens: loading descriptor set '{name}'{} and scoring graph{}...",
+                size_suffix(descriptor_set),
+                size_suffix(&rkyv_path)
+            );
+        } else {
+            eprintln!(
+                "protolens: loading descriptor set '{name}'{}...",
+                size_suffix(descriptor_set)
+            );
+        }
+    }
+
     let mut ctx = match decode::DescriptorContext::load(descriptor_set) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -169,6 +200,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if cli.command.is_none() && ctx.graph.is_some() {
+        eprintln!("protolens: resolving root type...");
+    }
 
     let decoded = match decode::decode(&blob, &mut ctx, cli.r#type.as_deref(), cli.indent) {
         Ok(d) => d,
@@ -198,6 +233,7 @@ fn main() -> ExitCode {
             // Primes the XTGETTCAP RGB probe now, before `tui::run` takes
             // over the terminal with its own crossterm event loop (see
             // `prime_supports_rgb` doc comment).
+            eprintln!("protolens: detecting terminal capabilities...");
             theme::prime_supports_rgb();
             theme
         }
