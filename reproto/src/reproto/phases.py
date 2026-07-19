@@ -1376,20 +1376,27 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
         if isinstance(re_fdp, ReFileDescriptorProto)
         and re_fdp.is_present()
         and re_fdp.is_summoned
-        and not (re_fdp.name == ctx.variant_descriptor_proto
-                 and not ctx.write_variant_descriptor)
     ]
 
     from .mappings import canonize_dependency
     with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned), quiet=ctx.quiet) as advance:
         for re_fdp in summoned:
+            # --emit-descriptor suppresses disk output only (spec 0150):
+            # descriptor.proto (or a variant's equivalent) is otherwise
+            # rendered and binary-accumulated exactly like any other WKT,
+            # so --schema-db-out/--build-schema-db stays transitively
+            # complete even when it is not written to --proto-out.
+            suppress_disk_output = (
+                re_fdp.name == ctx.variant_descriptor_proto
+                and not ctx.write_variant_descriptor
+            )
             canonical_name = canonize_dependency(ctx, re_fdp.name)
             res_path = out_repo / Path(canonical_name)
-            if ctx.debug:
+            if ctx.debug and not suppress_disk_output:
                 cli_info(f"  Writing: {res_path}")
 
             # Make sure all parent directories exist
-            if not ctx.dry_run:
+            if not ctx.dry_run and not suppress_disk_output:
                 res_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Render whenever we need output: text write, --emit-binary, or
@@ -1429,7 +1436,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 ctx.force_proto2_for_editions = saved_force
 
                 # Write binary (.pb) if requested (skipped in dry-run mode)
-                if ctx.binary and not ctx.dry_run and slot is not None and slot.out is not None:
+                if ctx.binary and not ctx.dry_run and not suppress_disk_output and slot is not None and slot.out is not None:
                     assert isinstance(slot.out, FileDescriptorProto)
                     try:
                         res_path.with_suffix(".pb").write_bytes(
@@ -1445,7 +1452,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                     ctx.schema_db_fdps.append(slot.out)
 
                 # Write .proto text (skipped in dry-run mode)
-                if not ctx.dry_run:
+                if not ctx.dry_run and not suppress_disk_output:
                     try:
                         res_path.write_text(content)
                     except (IOError, OSError, PermissionError, UnicodeEncodeError) as e:

@@ -6,8 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0150 — reproto: schema-db dependency closure drops suppressed `descriptor.proto`
 
-Status: draft
+Status: implemented
 App: reproto
+Implemented in: 2026-07-19
 
 ## Background
 
