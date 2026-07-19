@@ -1544,3 +1544,19 @@ fn message_is_dismissed_by_the_next_key_in_the_manage_pane() {
         app.message
     );
 }
+
+/// `Esc` closes the manage pane when it's open but the main pane has
+/// focus — consistent with the override-select pane's own `Esc`
+/// behavior (`close_override` fires whenever `override_target` is
+/// set, regardless of which pane currently has focus).
+#[test]
+fn esc_closes_the_manage_pane_from_main_pane_focus() {
+    let (mut app, _items) = repeated_scalar_fixture();
+    app.manage_open = true;
+    app.manage_focus = false;
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(!app.manage_open);
+    assert!(!app.manage_focus);
+}

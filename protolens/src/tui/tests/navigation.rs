@@ -398,6 +398,28 @@ fn folding_the_node_under_a_footer_cursor_snaps_back_to_header() {
     );
 }
 
+/// Folding a node while the cursor rests on one of its descendants
+/// (reachable via a fold-marker click on an ancestor, not just the
+/// cursor's own node) must snap the cursor up to the folded node
+/// itself — its row is the nearest still-visible ancestor once the
+/// descendant's own row disappears from `visible_rows`. Generalizes
+/// spec 0142 G6.2 beyond the footer-only case.
+#[test]
+fn folding_an_ancestor_of_the_cursor_snaps_the_cursor_up_to_it() {
+    let (mut app, inner_idx, id_idx) = type_as_fixture();
+    app.splash = false;
+    app.cursor = id_idx;
+    app.cursor_footer = false;
+
+    app.toggle_fold(inner_idx);
+
+    assert_eq!(
+        app.cursor, inner_idx,
+        "cursor must snap up to the folded ancestor, not stay stuck on a hidden descendant"
+    );
+    assert!(!app.cursor_footer);
+}
+
 /// Spec 0142: a mouse click directly on a node's own closing `}` line
 /// moves the cursor there (`cursor_footer = true`) without toggling
 /// the node's fold state (footer lines never carry a fold marker).

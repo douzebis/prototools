@@ -286,15 +286,37 @@ impl App {
     /// its own footer line — if the cursor was resting there
     /// (`cursor_footer`) at the moment `idx` itself gets folded, snap
     /// it back to `idx`'s header (spec 0142 G6.2), since that line is
-    /// no longer visible.
+    /// no longer visible. More generally, if the cursor was resting on
+    /// any strict descendant of `idx` (reachable via a fold-marker
+    /// click, not just the cursor's own node), that row also just
+    /// disappeared from `visible_rows` — snap the cursor up to `idx`
+    /// itself, the nearest still-visible ancestor, rather than leaving
+    /// it stuck on a now-hidden node until the fold is reopened.
     pub(super) fn toggle_fold(&mut self, idx: usize) {
         if !self.folded.remove(&idx) {
             self.folded.insert(idx);
             if idx == self.cursor && self.cursor_footer {
                 self.cursor_footer = false;
+            } else if self.is_strict_descendant(self.cursor, idx) {
+                self.cursor = idx;
+                self.cursor_footer = false;
             }
         }
         self.rebuild_visible_rows();
+    }
+
+    /// True if `idx` is a strict ancestor of `descendant` (i.e.
+    /// `descendant` != `idx` but is reachable by following `parent`
+    /// links from `descendant`).
+    fn is_strict_descendant(&self, descendant: usize, idx: usize) -> bool {
+        let mut p = self.tree[descendant].parent;
+        while let Some(pi) = p {
+            if pi == idx {
+                return true;
+            }
+            p = self.tree[pi].parent;
+        }
+        false
     }
 
     /// All siblings of `idx` (including `idx` itself), in document order —

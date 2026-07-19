@@ -490,6 +490,10 @@ impl App {
             // behavior below in `handle_mouse`.
             KeyCode::Enter => self.open_smart_override_or_manage(),
             KeyCode::Esc if self.override_target.is_some() => self.close_override(),
+            // `Esc` also closes the override management pane when it's
+            // open but the main pane has focus (consistent with the
+            // override-select pane's own arm just above).
+            KeyCode::Esc if self.manage_open => self.close_manage_pane(),
             // Spec 0129 §G3: `Esc` clears an active main-pane line
             // selection, alongside whatever else it already clears above.
             KeyCode::Esc => {
