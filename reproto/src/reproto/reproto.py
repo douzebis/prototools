@@ -208,12 +208,14 @@ def reproto(
         prunings: list[Fqdn],
         out_repo: Path | None,
         options: Options | None = None,
+        path_seeds: list[str] | None = None,
+        path_prunings: list[str] | None = None,
 ) -> Context | None:
     """Reconstruct .proto files from descriptor sets."""
     import warnings as _warnings
     from .lib.warnings import get_collector
 
-    ctx = _make_context(options, prunings)
+    ctx = _make_context(options, prunings, path_prunings, path_seeds)
 
     if ctx.emit_scoring_html is not None and ctx.build_schema_db is None:
         import sys
@@ -244,7 +246,10 @@ def reproto(
             return ctx
 
         _phase4_pruning(ctx, topo, prunings)
-        _phase5_reachability(ctx, seeds, topo)
+        # Seed-by-path (spec 0149 G4): path_seed_fqdns is populated by
+        # load_from_path() during phase 1 for every FDP produced by a
+        # physical candidate matching a path seed pattern.
+        _phase5_reachability(ctx, seeds + list(ctx.path_seed_fqdns), topo)
         _phase6_summoning(ctx)
 
         # Phase 7 runs whenever there is file output OR when --build-schema-db

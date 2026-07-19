@@ -50,6 +50,7 @@ class WarningCollector:
         collector.w5("third_party/bar.proto")   # render miss — feeds W5 counter
         collector.w6("my/file.proto", "field 'x'", "Couldn't find Extension 42")
         collector.w3("file:a.proto pruned — ...")  # always immediate
+        collector.w7("my/file.proto", "path/b/my/file.proto", "path/a/my/file.proto")
         collector.flush()
     """
 
@@ -130,6 +131,14 @@ class WarningCollector:
     def w3(self, message: str) -> None:
         """Duplicate symbol pruning (W3) — always printed immediately."""
         cli_warning(message)
+
+    def w7(self, fdp_name: str, shadowed_path: str, kept_path: str) -> None:
+        """Duplicate FDP name across -I roots (W7, spec 0148) — always
+        printed immediately, not squashed."""
+        cli_warning(
+            f"Warning: {shadowed_path}: definition of file:{fdp_name} "
+            f"shadowed by {kept_path}"
+        )
 
     def w_prost(self, file_name: str) -> None:
         """--force-proto2-for-editions: editions file patched to proto2.

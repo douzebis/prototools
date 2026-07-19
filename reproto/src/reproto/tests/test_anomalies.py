@@ -578,7 +578,8 @@ def test_C4_explicit_default_proto3(tmp_path: Path) -> None:
 
 def _make_context():
     from reproto.context import Context
-    return Context(pruned_fqdns=set())
+    from reproto.load import PathPatterns
+    return Context(pruned_fqdns=set(), pruned_paths=PathPatterns(set()), path_seeds=PathPatterns(set()))
 
 
 def test_D1_scalar_type_mismatch() -> None:

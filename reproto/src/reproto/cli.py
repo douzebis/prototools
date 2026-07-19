@@ -158,6 +158,7 @@ _SECTIONS: dict[str, str] = {
     '--emit-descriptor':     'Variant / Schema',
     '--seed':                'Filtering',
     '--prune':               'Filtering',
+    '--filter-config':       'Filtering',
     '--force-proto2-output': 'Rendering',
     '--force-proto2-for-editions': 'Rendering',
     '--redact-comments':     'Rendering',
@@ -374,10 +375,12 @@ class _SectionedCommand(click.Command):
     type=str,
     multiple=True,
     help=(
-        'FQDN or glob pattern to treat as an output root. '
-        'Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto. '
-        'Glob: file:borg/common/*.proto (one level), '
-        'file:borg/** (recursive), desc:my.pkg.* (one level).'
+        'FQDN or path pattern to treat as an output root. '
+        'FQDN (needs a prefix): desc:my.pkg.MyMsg, file:foo.proto '
+        '(the FDP named foo.proto). Path (bare, or path: prefix): '
+        'foo.pb (every FDP in that physical file), matched against '
+        'the -I-relative path. Glob (either form): one *.proto '
+        '(one level), borg/** (recursive).'
     ),
 )
 
@@ -387,10 +390,24 @@ class _SectionedCommand(click.Command):
     type=str,
     multiple=True,
     help=(
-        'FQDN or glob pattern to exclude from output. '
-        'Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto. '
-        'Glob: file:borg/common/*.proto (one level), '
-        'file:borg/** (recursive), desc:my.pkg.* (one level).'
+        'FQDN or path pattern to exclude from output. '
+        'FQDN (needs a prefix): desc:my.pkg.MyMsg, file:foo.proto '
+        '(the FDP named foo.proto). Path (bare, or path: prefix): '
+        'foo.pb (that physical file, never loaded), matched against '
+        'the -I-relative path. Glob (either form): one *.proto '
+        '(one level), borg/** (recursive).'
+    ),
+)
+
+@click.option(
+    '-C',
+    '--filter-config',
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        'Path to a YAML file with "seed:"/"prune:" lists of FQDNs or '
+        'path patterns (same syntax as -s/--seed and -p/--prune). '
+        'Merged with any -s/-p flags given on the command line.'
     ),
 )
 
@@ -598,6 +615,7 @@ def main(
         emit_descriptor: bool,
         seeds: list[str],
         stumps: list[str],
+        filter_config: Path | None,
         redact_comments: bool,
         redact_orphans: bool,
         go_root: str,
@@ -763,12 +781,13 @@ def main(
         redact_orphans=redact_orphans,
         phase2_plugin=phase2_plugin_function,
     )
-    _VALID_PREFIXES = ('file', 'desc', 'enum', 'serv', 'meth', 'fdsc')
+    _FQDN_PREFIXES = ('file', 'desc', 'enum', 'serv', 'meth', 'fdsc')
+    _VALID_PREFIXES = _FQDN_PREFIXES + ('path',)
 
     def _normalise_fqdn(s: str) -> Fqdn:
         """Normalise an FQDN pattern for matching.
 
-        - Validates that the pattern has a known prefix.
+        - Validates that the pattern has a known FQDN prefix.
         - For file: patterns: name part is left as-is (already uses /).
         - For all other prefixes: replace . with / in the name part and strip
           any leading / so PurePosixPath.match() gives proper segment-level
@@ -777,13 +796,13 @@ def main(
         if ':' not in s:
             raise click.UsageError(
                 f'Invalid FQDN {s!r}: must start with a prefix '
-                f'({", ".join(_VALID_PREFIXES)}).'
+                f'({", ".join(_FQDN_PREFIXES)}).'
             )
         prefix, rest = s.split(':', 1)
-        if prefix not in _VALID_PREFIXES:
+        if prefix not in _FQDN_PREFIXES:
             raise click.UsageError(
                 f'Invalid FQDN prefix {prefix!r} in {s!r}: '
-                f'must be one of {", ".join(_VALID_PREFIXES)}.'
+                f'must be one of {", ".join(_FQDN_PREFIXES)}.'
             )
         if prefix == 'file':
             return Fqdn(s)
@@ -791,39 +810,41 @@ def main(
         normalised = rest.replace('.', '/').lstrip('/')
         return Fqdn(f'{prefix}:{normalised}')
 
-    def _resolve_seed_or_prune(value: str) -> str:
-        """Auto-resolve a bare (no-prefix) seed/prune value to a canonical FQDN.
+    def _split_seed_or_prune(value: str) -> tuple[str, str]:
+        """Classify a raw -s/-p/filter-config value as ('fqdn', v) or ('path', v).
 
-        - If value already has a known prefix (e.g. 'file:foo.proto') → pass through.
-        - If value contains a wildcard and no prefix → prepend 'file:' unconditionally.
-          (Wildcards expand to multiple results; trying all prefixes would invariably
-          trigger the ambiguity error in the multi-match case.)
-        - Otherwise (bare non-wildcard, no prefix): use syntax heuristics to
-          determine the prefix:
-          - Values containing '/' or ending in a file extension (.proto, .pb, .desc)
-            are treated as file: paths.
-          - Values that look like dotted qualified names (e.g. 'com.example.Foo')
-            are treated as desc: FQDNs.
-          - If both or neither heuristic matches, pass through as-is so that
-            _normalise_fqdn produces the original 'missing prefix' error.
+        A value with a recognized FQDN prefix (file:, desc:, enum:, serv:,
+        meth:, fdsc:) is an FQDN pattern, unchanged from spec 0074. A value
+        with the path: prefix, or a bare value with no recognized prefix at
+        all, is a filesystem path pattern, matched root-independently
+        against each candidate file's -I-root-relative path before it is
+        loaded (spec 0149). path: and bare are fully equivalent; path:
+        exists for readability and to allow a literal ':' inside a path.
         """
-        if ':' in value and value.split(':', 1)[0] in _VALID_PREFIXES:
-            return value  # already has a valid prefix
-        has_wildcard = any(c in value for c in ('*', '?'))
-        if has_wildcard:
-            return f'file:{value}'
-        # Bare non-wildcard: use syntax heuristics
-        file_like = '/' in value or any(
-            value.endswith(ext) for ext in ('.proto', '.pb', '.desc', '.textpb')
-        )
-        # Dotted name with no slashes and no file extension → desc:
-        desc_like = not file_like and '.' in value
-        if file_like and not desc_like:
-            return f'file:{value}'
-        if desc_like and not file_like:
-            return f'desc:{value}'
-        # Ambiguous or no heuristic match → pass through; _normalise_fqdn will error
-        return value
+        if ':' in value:
+            prefix, _, rest = value.partition(':')
+            if prefix == 'path':
+                return ('path', rest)
+            if prefix in _FQDN_PREFIXES:
+                return ('fqdn', value)
+            raise click.UsageError(
+                f"'{value}': '{prefix}:' is not a recognized prefix "
+                f"({', '.join(_VALID_PREFIXES)}); if this is meant to be a "
+                f"filesystem path, use the 'path:' prefix"
+            )
+        return ('path', value)
+
+    def _partition(values: list[str]) -> tuple[list[Fqdn], list[str]]:
+        """Split a merged CLI+filter-config list into (FQDNs, path patterns)."""
+        fqdns: list[Fqdn] = []
+        paths: list[str] = []
+        for v in values:
+            kind, resolved = _split_seed_or_prune(v)
+            if kind == 'fqdn':
+                fqdns.append(_normalise_fqdn(resolved))
+            else:
+                paths.append(resolved)
+        return fqdns, paths
 
     try:
         for h in pyvis_hide:
@@ -833,13 +854,31 @@ def main(
                     f'--hide only accepts desc: patterns (got {h!r})'
                 )
         options.pyvis_hide = tuple(_normalise_fqdn(h) for h in pyvis_hide)
+
+        config_seeds: list[str] = []
+        config_prunes: list[str] = []
+        if filter_config is not None:
+            from .filter_config import load as load_filter_config
+            try:
+                config_seeds, config_prunes = load_filter_config(filter_config)
+            except ValueError as e:
+                raise click.UsageError(str(e))
+
+        all_seeds = list(seeds) + config_seeds
+        all_stumps = list(stumps) + config_prunes
+
+        seed_fqdns, seed_paths = _partition(all_seeds)
+        prune_fqdns, prune_paths = _partition(all_stumps)
+
         reproto(
             list(pb_path) if pb_path else [Path('.')],
             pb_files,
-            [_normalise_fqdn(_resolve_seed_or_prune(s)) for s in seeds],
-            [_normalise_fqdn(_resolve_seed_or_prune(p)) for p in stumps],
+            seed_fqdns,
+            prune_fqdns,
             proto_out,
             options,
+            path_seeds=seed_paths,
+            path_prunings=prune_paths,
         )
     except DescriptorProtoMissingError:
         raise click.ClickException(

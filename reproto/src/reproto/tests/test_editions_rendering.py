@@ -24,6 +24,7 @@ import pytest
 from google.protobuf.descriptor_pb2 import FieldDescriptorProto
 
 from reproto.context import Context
+from reproto.load import PathPatterns
 
 from reproto.feature_resolution import (
     FIELD_PRESENCE_EXPLICIT,
@@ -50,7 +51,7 @@ from reproto.syntax import (
 
 def _ctx(target_syntax: str = "proto2", syntax: str = "proto2") -> Context:
     """Return a minimal Context sufficient for the syntax helpers."""
-    ctx = Context(pruned_fqdns=set())
+    ctx = Context(pruned_fqdns=set(), pruned_paths=PathPatterns(set()), path_seeds=PathPatterns(set()))
     ctx.target_syntax = target_syntax
     ctx.syntax = syntax
     return ctx

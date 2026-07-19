@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from .base import NodeBase
     from .feature_resolution import EditionDefaultTable
+    from .load import PathPatterns
     from .re_file import ReFileDescriptorProto
     from .text import BlockLine
 
@@ -135,12 +136,20 @@ class Context(Options):
     def __init__(
         self,
         pruned_fqdns: set[Fqdn],
+        pruned_paths: PathPatterns,
+        path_seeds: PathPatterns,
         **opts_kwargs: Any,
     ):
         # Initialize Options fields
         super().__init__(**opts_kwargs)
 
         self.pruned_fqdns = pruned_fqdns
+        self.pruned_paths = pruned_paths
+        self.path_seeds = path_seeds
+        # Populated by load.py as matching candidate files are discovered
+        # (spec 0149 G4); consumed by reproto() after phase 1 to extend the
+        # FQDN seed list passed to _phase5_reachability.
+        self.path_seed_fqdns: set[Fqdn] = set()
 
         # Per-file syntax state (updated by re_file.py at the start of each render)
         self.syntax: str = "proto2"         # input file syntax
@@ -220,9 +229,11 @@ class Context(Options):
     def from_options(
         cls,
         pruned_fqdns: set[Fqdn],
+        pruned_paths: PathPatterns,
+        path_seeds: PathPatterns,
         options: Options
     ) -> Context:
-        return cls(pruned_fqdns, **vars(options))
+        return cls(pruned_fqdns, pruned_paths, path_seeds, **vars(options))
     
     def merge_nodes(self) -> None:
         self.nodes.update(self.new_nodes)

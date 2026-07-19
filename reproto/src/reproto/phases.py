@@ -246,10 +246,11 @@ def patch_go_package(ctx: Context, fdp: FileDescriptorProto) -> None:
 def _normalise_fqdn_name(prefix: str, name: str) -> str:
     """Normalise the name part of an FQDN for path-aware matching.
 
-    For non-file prefixes, replace '.' with '/' and strip any leading '/'.
-    For file: prefixes, leave the name as-is.
+    For non-file/path prefixes, replace '.' with '/' and strip any leading
+    '/'. For file: and path: prefixes, leave the name as-is (both already
+    use '/' as their natural separator; see spec 0149).
     """
-    if prefix == 'file':
+    if prefix in ('file', 'path'):
         return name
     return name.replace('.', '/').lstrip('/')
 
@@ -428,11 +429,19 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     print(yaml.dump(doc, sort_keys=False, allow_unicode=True), end="")
 
 
-def _make_context(options: Options | None, prunings: list[Fqdn]) -> Context:
+def _make_context(
+    options: Options | None,
+    prunings: list[Fqdn],
+    path_prunings: list[str] | None = None,
+    path_seeds: list[str] | None = None,
+) -> Context:
+    from .load import PathPatterns
+    pruned_paths = PathPatterns(set(path_prunings or []))
+    seed_paths = PathPatterns(set(path_seeds or []))
     if options is None:
-        ctx = Context(set(prunings))
+        ctx = Context(set(prunings), pruned_paths, seed_paths)
     else:
-        ctx = Context.from_options(set(prunings), options)
+        ctx = Context.from_options(set(prunings), pruned_paths, seed_paths, options)
     import_annotations(
         ctx.variant_annotation_modules,
         str(ctx.variant_root.joinpath(ctx.variant_stem)),

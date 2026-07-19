@@ -183,6 +183,26 @@ def test_W6_w3_immediate_detailed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# TC-W9  W7 (spec 0148): duplicate FDP name across -I roots, always immediate
+# ---------------------------------------------------------------------------
+
+def test_W9_w7_immediate_squashed() -> None:
+    c = WarningCollector(detailed=False)
+    immediate = _capture_immediate(
+        c.w7, "foo.proto", "path/b/foo.textpb", "path/a/foo.textpb"
+    )
+    assert len(immediate) == 1
+    line = immediate[0]
+    assert line.startswith("Warning:")
+    assert "path/b/foo.textpb" in line
+    assert "file:foo.proto" in line
+    assert "path/a/foo.textpb" in line
+
+    flush_lines = _capture_flush(c)
+    assert flush_lines == [], "flush() must not repeat the W7 line"
+
+
+# ---------------------------------------------------------------------------
 # TC-W7  Flush with no events produces no output
 # ---------------------------------------------------------------------------
 

@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-import fnmatch
 import logging
 from pathlib import Path
 
@@ -21,36 +20,35 @@ TEXT_EXTENSIONS = ['.textpb', '.pbtxt', '.prototxt', '.ascii_proto']
 PROTO_EXTENSION = '.proto'
 ALL_EXTENSIONS = BINARY_EXTENSIONS + TEXT_EXTENSIONS
 
+_GLOB_CHARS = set('*?[')
 
-def matches_any_pattern(fqdn: Fqdn, patterns: set[Fqdn]) -> bool:
+
+class PathPatterns:
+    """A set of root-relative path patterns, partitioned for fast lookup.
+
+    Literal patterns (no glob metacharacters) are matched via O(1) set
+    membership (spec 0149 G8). Glob patterns are matched via fqdn_match()
+    using a synthesized 'path:' pseudo-FQDN — the exact same
+    PurePosixPath.full_match()-based engine already used for -s/-p FQDN
+    patterns (spec 0074): '*' matches one path segment, '**' matches any
+    number of segments including zero.
     """
-    Check if an FQDN matches any of the given glob patterns.
+    def __init__(self, patterns: set[str]) -> None:
+        self.literals = {p for p in patterns if not (_GLOB_CHARS & set(p))}
+        self.globs = [p for p in patterns if _GLOB_CHARS & set(p)]
 
-    Args:
-        fqdn: The fully qualified domain name to match
-        patterns: Set of glob patterns (e.g., '.internal.*', '*.Service')
-
-    Returns:
-        True if fqdn matches any pattern (exact or glob), False otherwise
-    """
-    for pattern in patterns:
-        # Support both exact matches and glob patterns
-        if fqdn == pattern or fnmatch.fnmatch(fqdn, pattern):
+    def matches(self, rel_path: Path) -> bool:
+        s = rel_path.as_posix()
+        if s in self.literals:
             return True
-    return False
+        if not self.globs:
+            return False
+        from .phases import fqdn_match  # deferred: avoids load.py/phases.py import cycle
+        return any(
+            fqdn_match(Fqdn(f'path:{p}'), Fqdn(f'path:{s}'))
+            for p in self.globs
+        )
 
-
-def is_pruned(
-        ctx: Context,
-        rel_path: Path,
-) -> bool:
-    if rel_path.suffix in ALL_EXTENSIONS:
-        target = Fqdn('file' + ':' + str(rel_path.with_suffix('.proto')))
-    else:
-        target = Fqdn('file' + ':' + str(rel_path))
-    # FIXME: do we really want to match against pruned_fqdns with xxx:?
-    return matches_any_pattern(target, ctx.pruned_fqdns)
-        
 
 class QualFile:
     def __init__(
@@ -103,27 +101,37 @@ def _load_files(
         res_path = root / rel_path
         
         if res_path.is_dir():
-            # Recursively collect all files with recognized extensions
+            # Recursively collect all files with recognized extensions.
+            # Do not stop here (spec 0148 G1): a directory-shaped seed
+            # argument (e.g. ".") must be scanned under every -I root, not
+            # just the first one that happens to resolve as a directory.
             for f in res_path.rglob('*'):
                 if f.suffix in ALL_EXTENSIONS:
+                    f_rel = f.relative_to(root)
+                    if ctx.pruned_paths.matches(f_rel):
+                        continue
                     loaded_files.append(QualFile(
                         root,
-                        f.relative_to(root),
+                        f_rel,
                         f.read_text() if f.suffix in TEXT_EXTENSIONS
                         else f.read_bytes(),
                     ))
-            return loaded_files
-    
+            continue
+
         else:
             # Look for a single file
             if rel_path.suffix in TEXT_EXTENSIONS:
                 if not res_path.is_file():
+                    continue
+                if ctx.pruned_paths.matches(rel_path):
                     continue
                 loaded_files.append(
                     QualFile(root, rel_path, res_path.read_text()))
                 return loaded_files
             elif rel_path.suffix in BINARY_EXTENSIONS:
                 if not res_path.is_file():
+                    continue
+                if ctx.pruned_paths.matches(rel_path):
                     continue
                 loaded_files.append(
                     QualFile(root, rel_path, res_path.read_bytes()))
@@ -133,15 +141,21 @@ def _load_files(
                 for ext in TEXT_EXTENSIONS:
                     res_path = root / (rel_path.with_suffix(ext))
                     if res_path.is_file():
+                        if ctx.pruned_paths.matches(rel_path):
+                            continue
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_text()))
                         return loaded_files
                 for ext in BINARY_EXTENSIONS:
                     res_path = root / (rel_path.with_suffix(ext))
                     if res_path.is_file():
+                        if ctx.pruned_paths.matches(rel_path):
+                            continue
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_bytes()))
                         return loaded_files
+    if loaded_files:
+        return loaded_files
     from .lib.warnings import get_collector
     get_collector().w1(str(rel_path))
     return []
@@ -161,13 +175,42 @@ def load_from_path(
       - If extension is .proto → tries all binary/text extensions automatically
       - Otherwise → loads the file directly
 
+    When the same FileDescriptorProto.name is produced by more than one
+    source (e.g. present under two different -I roots), only the first
+    occurrence (in root order, then file-discovery order) is kept; the
+    rest are dropped with a W7 warning (spec 0148 G2/G3/G4).
+
     Returns a list of fully-initialised QualFiles (one per FDP found).
     """
     loaded_files = _load_files(ctx, roots, file_or_dir_path)
     qual_files: list[QualFile] = []
     for file in loaded_files:
-        qual_files.extend(parse_qfile(ctx, file))
-    return qual_files
+        parsed = parse_qfile(ctx, file)
+        qual_files.extend(parsed)
+        # Seed-by-path (spec 0149 G4): every FDP produced by a physical
+        # candidate whose root-relative path matches a path seed pattern
+        # becomes an ordinary file:<name> FQDN seed, regardless of whether
+        # it goes on to survive the G2 dedup pass below.
+        if ctx.path_seeds.matches(file.rel_path):
+            for qf in parsed:
+                ctx.path_seed_fqdns.add(Fqdn('file:' + qf.name))
+
+    from .lib.warnings import get_collector
+    collector = get_collector()
+    seen: dict[str, QualFile] = {}
+    deduped: list[QualFile] = []
+    for qf in qual_files:
+        first = seen.get(qf.name)
+        if first is None:
+            seen[qf.name] = qf
+            deduped.append(qf)
+        else:
+            collector.w7(
+                qf.name,
+                str(qf.root / qf.rel_path),
+                str(first.root / first.rel_path),
+            )
+    return deduped
 
 
 def parse_qfile(
