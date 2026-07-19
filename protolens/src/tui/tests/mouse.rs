@@ -124,7 +124,11 @@ fn mouse_click_in_main_pane_refocuses_without_closing_override_pane() {
 
 /// Wheel scroll routes to whichever pane the mouse is hovering, not
 /// whichever pane currently has keyboard focus (2026-07-14 feedback,
-/// item 4).
+/// item 4). 2026-07-19 feedback item 2: the wheel now pans the
+/// hovered pane's own scroll/pan offset instead of moving the cursor/
+/// highlight, so this checks `scroll_offset`/`override_scroll` — a
+/// 1-row pane height on both sides ensures each has room to pan by
+/// `WHEEL_PAN_STEP`.
 #[test]
 fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
     let (mut app, inner_idx, _) = type_as_fixture();
@@ -132,29 +136,30 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_focus, "keyboard focus starts in the side pane");
 
-    app.main_area = Rect::new(0, 0, 40, 20);
-    app.side_area = Rect::new(60, 0, 40, 20);
+    app.main_area = Rect::new(0, 0, 40, 1);
+    app.side_area = Rect::new(60, 0, 40, 1);
     app.override_candidates = vec![("a.B".to_string(), None), ("a.C".to_string(), None)];
+    app.override_list_height = 1;
     app.override_highlight = 0;
+    app.override_scroll = 0;
+    app.scroll_offset = 0;
 
-    let cursor_before = app.cursor;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 5,
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_ne!(
-        app.cursor, cursor_before,
-        "hovering the main pane must scroll it, even though the side \
+    assert_eq!(
+        app.scroll_offset, WHEEL_PAN_STEP,
+        "hovering the main pane must pan it, even though the side \
          pane still has keyboard focus"
     );
     assert_eq!(
-        app.override_highlight, 0,
+        app.override_scroll, 0,
         "the unhovered side pane must not react"
     );
 
-    let cursor_after_main_scroll = app.cursor;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 65,
@@ -162,22 +167,25 @@ fn mouse_wheel_routes_by_hover_position_not_keyboard_focus() {
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
-        app.cursor, cursor_after_main_scroll,
-        "hovering the side pane must not move the main-pane cursor"
+        app.scroll_offset, WHEEL_PAN_STEP,
+        "hovering the side pane must not pan the main pane"
     );
     assert_eq!(
-        app.override_highlight, 1,
-        "hovering the side pane must scroll it"
+        app.override_scroll, WHEEL_PAN_STEP,
+        "hovering the side pane must pan it"
     );
 }
 
 /// Spec 0127 §G2: Shift+wheel pans whichever pane the mouse is
 /// hovering; plain wheel (no Shift) keeps scrolling vertically as
-/// before.
+/// before. 2026-07-19 feedback: Shift+wheel now pans by
+/// `WHEEL_PAN_STEP` (not `PAN_STEP`, which stays reserved for Ctrl-
+/// Left/Ctrl-Right); plain wheel now pans the viewport (item 2), no
+/// longer moves the cursor.
 #[test]
 fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
     let (mut app, _items) = repeated_scalar_fixture();
-    app.main_area = Rect::new(0, 0, 5, 20);
+    app.main_area = Rect::new(0, 0, 5, 1);
     app.side_area = Rect::new(60, 0, 40, 20);
 
     let cursor_before = app.cursor;
@@ -191,7 +199,10 @@ fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
         app.cursor, cursor_before,
         "Shift+wheel must pan, not move the cursor"
     );
-    assert_eq!(app.pan_offset, PAN_STEP, "Shift+ScrollDown must pan right");
+    assert_eq!(
+        app.pan_offset, WHEEL_PAN_STEP,
+        "Shift+ScrollDown must pan right by the wheel step"
+    );
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollUp,
@@ -201,21 +212,28 @@ fn shift_wheel_pans_the_hovered_main_pane_plain_wheel_still_scrolls() {
     });
     assert_eq!(app.pan_offset, 0, "Shift+ScrollUp must pan left");
 
+    let scroll_before = app.scroll_offset;
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 2,
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_ne!(
+    assert_eq!(
         app.cursor, cursor_before,
-        "plain wheel (no Shift) must still scroll vertically"
+        "plain wheel (no Shift) no longer moves the cursor (2026-07-19 \
+         feedback item 2)"
     );
-    assert_eq!(app.pan_offset, 0, "plain wheel must not pan");
+    assert_ne!(
+        app.scroll_offset, scroll_before,
+        "plain wheel (no Shift) must still pan the viewport vertically"
+    );
+    assert_eq!(app.pan_offset, 0, "plain wheel must not pan horizontally");
 }
 
 /// Spec 0127 §G2: native `ScrollLeft`/`ScrollRight` pan the hovered
-/// pane without needing Shift.
+/// pane without needing Shift. 2026-07-19 feedback: at `WHEEL_PAN_STEP`,
+/// not `PAN_STEP` (reserved for Ctrl-Left/Ctrl-Right).
 #[test]
 fn native_scroll_left_right_pans_without_shift() {
     let (mut app, _items) = repeated_scalar_fixture();
@@ -227,7 +245,7 @@ fn native_scroll_left_right_pans_without_shift() {
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.pan_offset, PAN_STEP, "ScrollRight must pan right");
+    assert_eq!(app.pan_offset, WHEEL_PAN_STEP, "ScrollRight must pan right");
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollLeft,
@@ -240,7 +258,9 @@ fn native_scroll_left_right_pans_without_shift() {
 
 /// Spec 0127 §G1: the override pane and the manage pane each carry
 /// their own `pan_offset`, independent of the main pane's and of each
-/// other's.
+/// other's. 2026-07-19 feedback: wheel-driven pan now steps by
+/// `WHEEL_PAN_STEP` and is clamped on the right (item 4), so explicit
+/// `*_list_height`/candidate setup is needed to leave room to pan.
 #[test]
 fn override_and_manage_panes_pan_independently_of_the_main_pane() {
     let (mut app, items) = repeated_scalar_fixture();
@@ -248,6 +268,7 @@ fn override_and_manage_panes_pan_independently_of_the_main_pane() {
     app.side_area = Rect::new(60, 0, 5, 20);
 
     app.manage_open = true;
+    app.manage_list_height = 5;
     app.overrides.activate(
         OverrideOrigin::Path {
             path: app.positional_path(items[0]),
@@ -260,7 +281,7 @@ fn override_and_manage_panes_pan_independently_of_the_main_pane() {
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.manage_pan_offset, PAN_STEP);
+    assert_eq!(app.manage_pan_offset, WHEEL_PAN_STEP);
     assert_eq!(
         app.pan_offset, 0,
         "the main pane's pan_offset must be untouched"
@@ -268,15 +289,17 @@ fn override_and_manage_panes_pan_independently_of_the_main_pane() {
 
     app.manage_open = false;
     app.override_target = Some(items[0]);
+    app.override_list_height = 5;
+    app.override_candidates = vec![("cand.SomeVeryLongTypeNameHere".to_string(), None)];
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollRight,
         column: 62,
         row: 0,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.override_pan_offset, PAN_STEP);
+    assert_eq!(app.override_pan_offset, WHEEL_PAN_STEP);
     assert_eq!(
-        app.manage_pan_offset, PAN_STEP,
+        app.manage_pan_offset, WHEEL_PAN_STEP,
         "unrelated to the override pane's own offset"
     );
 }
@@ -676,5 +699,36 @@ fn clicking_the_fold_marker_focuses_the_main_pane_without_moving_the_cursor() {
     assert_eq!(
         app.cursor, original_cursor,
         "the cursor/highlight must not move on a marker click"
+    );
+}
+
+/// Spec 0147 G1: `main_area` excludes the main pane's own local
+/// statusline row, so a click on that row is not mistaken for a
+/// click on content row 0 — the cursor must not move.
+#[test]
+fn click_on_the_main_panes_own_statusline_row_is_not_treated_as_content_row_0() {
+    let (mut app, _inner_idx, _id_idx) = type_as_fixture();
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    let statusline_row = app.main_area.y + app.main_area.height;
+    let cursor_before = app.cursor;
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: app.main_area.x,
+        row: statusline_row,
+        modifiers: KeyModifiers::NONE,
+    });
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: app.main_area.x,
+        row: statusline_row,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.cursor, cursor_before,
+        "click on the local statusline row must not move the cursor"
     );
 }

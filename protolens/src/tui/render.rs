@@ -190,10 +190,11 @@ impl App {
     /// over this file), so a freshly-set message is detected here by
     /// comparing against `last_message_seen` rather than at each
     /// assignment site. Never dismissed while `command_buffer`/
-    /// `manage_rename` is `Some` (the bottom bar renders those instead of
-    /// `self.message` while either is active — see `render`'s `cmd_text`)
-    /// or while `quit_confirm` is armed (both are actively awaiting a
-    /// keypress, unlike a plain notice). Called once per `render()`.
+    /// `manage_rename` is `Some` (the global command/message row renders
+    /// those instead of `self.message` while either is active — see
+    /// `render`'s `cmd_text`) or while `quit_confirm` is armed (both are
+    /// actively awaiting a keypress, unlike a plain notice). Called once
+    /// per `render()`.
     pub(super) fn track_message_timeout(&mut self) {
         if self.message != self.last_message_seen {
             self.last_message_seen = self.message.clone();
@@ -234,26 +235,43 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(0),    // main pane (header folded into its title)
-                Constraint::Length(3), // command/message (left) + status (right)
+                Constraint::Min(0),    // main pane + side pane, each with its own local statusline
+                Constraint::Length(1), // global command/message row (spec 0147 G4)
             ])
             .split(area);
 
         // Ephemeral right-hand split (spec 0114 §2, extended by spec 0117
         // §3 to the management pane) when either the override selection
-        // pane or the management pane is open — 50/50, giving the
-        // candidate/entry list enough room to be legible. The two panes
-        // are mutually exclusive (spec 0117 §3), so at most one of these
-        // is ever true.
-        let (main_outer, right_outer) = if self.override_target.is_some() || self.manage_open {
-            let split = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[0]);
-            (split[0], Some(split[1]))
-        } else {
-            (chunks[0], None)
-        };
+        // pane or the management pane is open — 50/50 (minus the
+        // separator column), giving the candidate/entry list enough room
+        // to be legible. The two panes are mutually exclusive (spec 0117
+        // §3), so at most one of these is ever true. A single `'│'`-filled
+        // `Length(1)` separator column stands in for the border that used
+        // to divide the two panes (spec 0147 G3).
+        let (main_outer, separator_outer, right_outer) =
+            if self.override_target.is_some() || self.manage_open {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(50),
+                        Constraint::Length(1),
+                        Constraint::Percentage(50),
+                    ])
+                    .split(chunks[0]);
+                (split[0], Some(split[1]), Some(split[2]))
+            } else {
+                (chunks[0], None, None)
+            };
+
+        if let Some(separator_area) = separator_outer {
+            // Spec 0147 G3: one fixed, neutral style — not focus-colored,
+            // unlike the two panes it divides.
+            let separator_style = Style::default().fg(Color::DarkGray);
+            let separator_lines: Vec<Line> = (0..separator_area.height)
+                .map(|_| Line::styled("│", separator_style))
+                .collect();
+            frame.render_widget(Paragraph::new(separator_lines), separator_area);
+        }
 
         // `pane_focus_style` marks whichever pane currently holds keyboard
         // focus, shared with the override/management panes' own
@@ -262,12 +280,15 @@ impl App {
         // no prior visible sign of which pane focus was in).
         let main_focused = !self.override_focus && !self.manage_focus;
         let main_style = pane_focus_style(main_focused, self.theme);
-        let main_block = Block::bordered()
-            .title(Line::styled(format!(" {} ", self.header), main_style))
-            .border_style(main_style)
-            .border_type(BorderType::Rounded);
-        let inner = main_block.inner(main_outer);
-        frame.render_widget(main_block, main_outer);
+
+        // Spec 0147 G1/G2: no border — the main pane's own content splits
+        // into a `Min(0)` text area above its own `Length(1)` local
+        // statusline row.
+        let main_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(main_outer);
+        let inner = main_split[0];
         self.main_area = inner;
 
         let pane_height = inner.height as usize;
@@ -276,8 +297,14 @@ impl App {
         } else {
             self.cursor_display_row()
         };
-        if !self.tree.is_empty() {
+        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
+        // cursor movement (`cursor_row` differs from the last render that
+        // clamped), not on every render regardless of cause — otherwise
+        // a manual vertical pan (item 1's now-unclamped `pan_vertical_*`)
+        // would immediately get fought back into following the cursor.
+        if !self.tree.is_empty() && self.last_cursor_row != Some(cursor_row) {
             clamp_scroll_to_visible(&mut self.scroll_offset, cursor_row, pane_height);
+            self.last_cursor_row = Some(cursor_row);
         }
         let end = (self.scroll_offset + pane_height).min(self.visible_rows.len());
         // Collected (not a borrowed slice) so the heat-cue pass below can
@@ -359,21 +386,67 @@ impl App {
             .collect();
         frame.render_widget(Paragraph::new(text_lines), inner);
 
-        // Bottom row: command/message (left, 60%) and status (right, 40%) —
-        // vim-style, command line/messages flush left where the cursor
-        // naturally anchors while typing, ruler-style position info on the
-        // right. The command/message pane is hidden (no split at all, the
-        // status pane takes the full row) whenever there's nothing to show
-        // there — which is most of the time in ordinary navigation, since
-        // `self.message` is cleared on every normal-mode keypress before
-        // its handler runs.
+        // Local statusline (spec 0147 G2): the main pane's own position/
+        // selection info, plain-styled (`main_style`, the same accent
+        // `pane_focus_style` already chose above) across the whole row —
+        // no per-span coloring. The right-flushed range/ruler is dropped
+        // entirely (not truncated) when the side pane is open, since the
+        // main pane is only half-width then and there's rarely enough
+        // room for both halves.
+        let path_label = self.blob_path.display();
+        let (main_left, main_right) = if self.tree.is_empty() {
+            (
+                format!("{path_label} (empty — decoded to zero fields)"),
+                None,
+            )
+        } else {
+            let node_path = self.positional_path(self.cursor);
+            // `status_type_label` returns a bare keyword for a primitive
+            // scalar type (no tag), or a `<fqdn> [tag]`-suffixed label for
+            // a message/group/enum type — shown as-is (2026-07-19
+            // feedback), with a double space ahead of it to set it off
+            // from the node path.
+            let type_label = self.status_type_label(self.cursor);
+            let left = match type_label {
+                Some(t) => format!("{path_label} {node_path}  {t}"),
+                None => format!("{path_label} {node_path}"),
+            };
+            let range = self.display_range(self.cursor);
+            let right = format!(
+                "[{}..{})  L{}/{}",
+                range.start,
+                range.end,
+                self.cursor_line() + 1,
+                self.lines.len(),
+            );
+            (left, Some(right))
+        };
+        let main_right = if right_outer.is_some() {
+            None
+        } else {
+            main_right
+        };
+        let main_statusline = main_split[1];
+        let main_text = statusline_text(
+            &main_left,
+            main_right.as_deref(),
+            main_statusline.width as usize,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::styled(main_text, main_style)),
+            main_statusline,
+        );
+
+        // Global command/message row (spec 0147 G4): a single borderless
+        // `Length(1)` row, always reserved, shared across every pane —
+        // never duplicated per-pane, per the spec's "locality" principle.
         // The management pane's rename buffer (spec 0119 §G4's `f` key)
-        // shares this same bottom bar rather than being appended inside
-        // the side pane's own line list (2026-07-14 interactive
-        // feedback): unlike `:command`/`/`-search, that side-pane-local
-        // spot never got a real terminal cursor, making it unclear where
-        // typing lands — this bar already solves that for the main pane's
-        // own command/search input, so reusing it fixes both at once.
+        // shares this same row rather than being appended inside the side
+        // pane's own line list (2026-07-14 interactive feedback): unlike
+        // `:command`/`/`-search, that side-pane-local spot never got a
+        // real terminal cursor, making it unclear where typing lands —
+        // this row already solves that for the main pane's own command/
+        // search input, so reusing it fixes both at once.
         const RENAME_PREFIX: &str = "field name: ";
         let cmd_text = match &self.command_buffer {
             Some(buf) => {
@@ -389,32 +462,12 @@ impl App {
                 None => self.message.clone(),
             },
         };
-        let status_outer = if cmd_text.is_empty() {
+        let cmd_row = chunks[1];
+        if cmd_text.is_empty() {
             self.cmd_area = None;
-            chunks[1]
+            frame.render_widget(Paragraph::new(""), cmd_row);
         } else {
-            let bottom = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(chunks[1]);
-
-            // 2026-07-17 feedback: the command/message bar borrows the
-            // same focused/unfocused accent as the main/override/manage
-            // panes, but its own "focused" condition is "currently
-            // expecting keystrokes into `cmd_text`" (an active `:`/`/`/
-            // `?` command-line edit, or a manage-pane rename buffer) —
-            // not keyboard-focus tracking, since this bar never actually
-            // holds focus away from whichever pane the cursor keys
-            // still operate on. Merely *displaying* `self.message` (no
-            // active edit) uses the unfocused accent instead.
-            let cmd_editing = self.command_buffer.is_some() || self.manage_rename.is_some();
-            let cmd_style = pane_focus_style(cmd_editing, self.theme);
-            let cmd_block = Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(cmd_style);
-            let cmd_inner = cmd_block.inner(bottom[0]);
-            frame.render_widget(cmd_block, bottom[0]);
-            self.cmd_area = Some(cmd_inner);
+            self.cmd_area = Some(cmd_row);
 
             // Spec 0127 §G1: cursor char position (including the leading
             // "prefix"/"field name: " char(s)) within `cmd_text`, `None` while
@@ -427,7 +480,7 @@ impl App {
                     .as_ref()
                     .map(|buf| RENAME_PREFIX.chars().count() + buf.chars().count())
             };
-            let width = cmd_inner.width as usize;
+            let width = cmd_row.width as usize;
             if let Some(pos) = cursor_pos {
                 // Auto-follow the cursor while typing (mirrors the main
                 // pane's cursor-follow vertical scroll) — coexists with,
@@ -440,46 +493,12 @@ impl App {
                 }
             }
             let spans = pan_spans(vec![Span::raw(cmd_text)], self.command_pan_offset);
-            frame.render_widget(Paragraph::new(Line::from(spans)), cmd_inner);
+            frame.render_widget(Paragraph::new(Line::from(spans)), cmd_row);
             if let Some(pos) = cursor_pos {
-                let x = cmd_inner.x + (pos - self.command_pan_offset) as u16;
-                frame.set_cursor_position((x, cmd_inner.y));
+                let x = cmd_row.x + (pos - self.command_pan_offset) as u16;
+                frame.set_cursor_position((x, cmd_row.y));
             }
-            bottom[1]
-        };
-
-        let status = if self.tree.is_empty() {
-            "(empty — decoded to zero fields)".to_string()
-        } else {
-            let path = self.positional_path(self.cursor);
-            let range = self.display_range(self.cursor);
-            let type_label = match self.status_type_label(self.cursor) {
-                Some(label) => format!("type: {label}"),
-                None => String::new(),
-            };
-            format!(
-                "L{}/{}  {}  range[{}..{})  {}",
-                self.cursor_line() + 1,
-                self.lines.len(),
-                path,
-                range.start,
-                range.end,
-                type_label,
-            )
-        };
-        // 2026-07-17 feedback: never keyboard-focused, so always the
-        // plain "white" unfocused accent (`theme::unfocused_pane_style`)
-        // — explicit, rather than the implicit terminal-default style
-        // this used before, which some terminals render indistinguishably
-        // from the focused accent's "bright white".
-        let status_style = theme::unfocused_pane_style();
-        let status_block = Block::bordered()
-            .title(Line::styled(" Status — F1 for help ", status_style))
-            .border_style(status_style)
-            .border_type(BorderType::Rounded);
-        let status_inner = status_block.inner(status_outer);
-        frame.render_widget(status_block, status_outer);
-        frame.render_widget(Paragraph::new(status), status_inner);
+        }
 
         if let Some(right_area) = right_outer {
             if self.override_target.is_some() {
@@ -496,85 +515,78 @@ impl App {
         }
     }
 
-    /// Ephemeral right-hand override pane (spec 0114 §2): title showing the
-    /// target's byte range and sort mode, and the ranked/lexicographic
-    /// candidate list (§3.2) with the highlighted row reverse-styled,
-    /// scrolled to keep it visible. In alphabetic mode row 0 is always the
-    /// `None` raw-type candidate (spec 0137 §G1/§G4) — no more separate
-    /// pinned row. Each row is styled by kind (spec 0137 §G8): `None`
-    /// and a primitive keyword (default style), an enum FQDN
-    /// (`Attribute`, with a ` [enum]` suffix), else a message/group FQDN
-    /// (unstyled), with G6's leading-dot collision-avoidance applied to
-    /// non-sentinel FQDNs. The `/`/`?` search buffer (§4) renders in the
-    /// shared bottom command/message bar instead of a row here (spec-0133-adjacent
-    /// rework). Apply-on-`Enter` (§5) lands in a later implementation
+    /// Ephemeral right-hand override pane (spec 0114 §2): local statusline
+    /// (spec 0147 G2) showing the target's own node path and sort mode,
+    /// and the ranked/lexicographic candidate list (§3.2) with the
+    /// highlighted row reverse-styled, scrolled to keep it visible. In
+    /// alphabetic mode row 0 is always the `None` raw-type candidate
+    /// (spec 0137 §G1/§G4) — no more separate pinned row. Each row is
+    /// styled by kind (spec 0137 §G8): `None` and a primitive keyword
+    /// (default style), an enum FQDN (`Attribute`, with a ` [enum]`
+    /// suffix), else a message/group FQDN (unstyled), with G6's
+    /// leading-dot collision-avoidance applied to non-sentinel FQDNs. The
+    /// `/`/`?` search buffer (§4) renders in the global command/message
+    /// row instead of a row here (spec 0147 G4). Apply-on-`Enter` (§5)
+    /// lands in a later implementation
     /// step.
     pub(super) fn render_override_pane(&mut self, frame: &mut Frame, area: Rect) {
         let Some(idx) = self.override_target else {
             return;
         };
-        let range = self.display_range(idx);
-        let sort_label = match self.override_sort {
-            SortMode::Lexicographic => "a-z",
-            SortMode::Inferred => "inferred",
-        };
-        let title = format!(
-            " Override — range [{}..{}) — sort: {sort_label} ",
-            range.start, range.end,
-        );
         let style = pane_focus_style(self.override_focus, self.theme);
-        let block = Block::bordered()
-            .title(Line::styled(title, style))
-            .border_style(style)
-            .border_type(BorderType::Rounded);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+
+        // Spec 0147 G1/G2: no border — content splits into a `Min(0)`
+        // area above its own `Length(1)` local statusline row.
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        let inner = split[0];
         self.side_area = inner;
+
+        let node_path = self.positional_path(idx);
+        let mode_label = match self.override_sort {
+            SortMode::Lexicographic => "all types",
+            SortMode::Inferred => "inferred types",
+        };
+        let left = format!("{node_path} - {mode_label}");
+        let right = format!(
+            "L{}/{}",
+            self.override_highlight + 1,
+            self.override_candidates.len(),
+        );
+        let text = statusline_text(&left, Some(&right), split[1].width as usize);
+        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 
         let list_height = inner.height as usize;
         self.override_list_height = list_height;
 
         let total_rows = self.override_candidates.len();
-        clamp_scroll_to_visible(
-            &mut self.override_scroll,
-            self.override_highlight,
-            list_height,
-        );
+        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
+        // highlight movement, mirroring the main pane's own
+        // `last_cursor_row` gate above.
+        if self.last_override_highlight != Some(self.override_highlight) {
+            clamp_scroll_to_visible(
+                &mut self.override_scroll,
+                self.override_highlight,
+                list_height,
+            );
+            self.last_override_highlight = Some(self.override_highlight);
+        }
         let end = (self.override_scroll + list_height).min(total_rows);
         let start = self.override_scroll.min(total_rows);
 
         let mut lines: Vec<Line> = Vec::new();
         for row in start..end {
-            let (fqdn, score) = &self.override_candidates[row];
             // Spec 0114/0137 amendment (2026-07-17 feedback): simplify
             // the lexicographic-mode color scheme — primitive types
             // (including the `None` sentinel) get the default style,
             // no longer a distinct comment/punctuation color; enums keep
             // their blue `Attribute` color but gain an explicit
-            // ` [enum]` suffix instead.
-            let (display_fqdn, base_style) = if fqdn == "protolens_internal.None" {
-                ("None".to_string(), Style::default())
-            } else if decode::primitive_type_for_keyword(fqdn).is_some() {
-                (fqdn.clone(), Style::default())
-            } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
-                let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
-                    format!(".{fqdn} [enum]")
-                } else {
-                    format!("{fqdn} [enum]")
-                };
-                (display, theme::style_for(SyntaxRole::Attribute, self.theme))
-            } else {
-                let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
-                    format!(".{fqdn}")
-                } else {
-                    fqdn.clone()
-                };
-                (display, Style::default())
-            };
-            let text = match score {
-                Some(s) => format!("{display_fqdn}  (score: {s})"),
-                None => display_fqdn,
-            };
+            // ` [enum]` suffix instead. Factored into `override_row_
+            // display` (2026-07-19 feedback item 4) so `override_max_
+            // visible_line_len` computes the same text.
+            let (text, base_style) = self.override_row_display(row);
             let style = if row == self.override_highlight {
                 base_style.add_modifier(Modifier::REVERSED)
             } else {

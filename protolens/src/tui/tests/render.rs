@@ -250,3 +250,202 @@ fn status_line_reports_the_footer_line_number_for_a_footer_resting_cursor() {
         "status line must report the footer's own 1-based line number: {text:?}"
     );
 }
+
+/// Spec 0147 G6: `MESSAGE_TIMEOUT` is exactly 3 seconds (down from 4),
+/// per the original proposal's stated value.
+#[test]
+fn message_timeout_is_three_seconds() {
+    assert_eq!(MESSAGE_TIMEOUT, Duration::from_secs(3));
+}
+
+/// Spec 0147 G2: the main pane's local statusline shows a
+/// right-flushed `[start..end)  L<curr>/<total>` ruler when it is the
+/// only pane open (full width), but drops it entirely — not
+/// truncates it — once a side pane is open and the main pane is only
+/// half-width.
+#[test]
+fn main_statusline_omits_the_ruler_when_a_side_pane_is_open() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let statusline_row = app.main_area.y + app.main_area.height;
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
+        .collect();
+    assert!(
+        row_text.contains(".."),
+        "full width: the byte-range ruler must be shown: {row_text:?}"
+    );
+
+    app.toggle_override();
+    assert!(app.override_target.is_some());
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let statusline_row = app.main_area.y + app.main_area.height;
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..app.main_area.width)
+        .map(|x| {
+            buffer[(app.main_area.x + x, statusline_row)]
+                .symbol()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        !row_text.contains(".."),
+        "half width: the byte-range ruler must be omitted: {row_text:?}"
+    );
+}
+
+/// 2026-07-19 feedback item 7: the main pane's local statusline shows
+/// the full path as given on the command line (`App::new`'s
+/// `blob_path` argument), not just the short filename.
+#[test]
+fn main_statusline_shows_the_full_command_line_path_not_just_the_filename() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.blob_path = PathBuf::from("some/nested/dir/test.pb");
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let statusline_row = app.main_area.y + app.main_area.height;
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
+        .collect();
+    assert!(
+        row_text.contains("some/nested/dir/test.pb"),
+        "the statusline must show the full command-line path: {row_text:?}"
+    );
+}
+
+/// Spec 0147 G2's truncation rule (mirroring vim's `%<`): when the
+/// terminal is too narrow for the local statusline's full left-hand
+/// content, it is cut short with a trailing `<` marker, while the
+/// right-flushed ruler remains shown in full.
+#[test]
+fn main_statusline_truncates_the_left_side_with_a_marker_when_narrow() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+
+    let backend = TestBackend::new(30, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let statusline_row = app.main_area.y + app.main_area.height;
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
+        .collect();
+    assert!(
+        row_text.contains('<'),
+        "narrow terminal: the left side must be truncated with a marker: {row_text:?}"
+    );
+    assert!(
+        row_text.contains("..") && row_text.trim_end().ends_with(char::is_numeric),
+        "the right-flushed ruler must still be shown in full: {row_text:?}"
+    );
+}
+
+/// Spec 0147 G3: the `Length(1)` vertical separator column between
+/// the main pane and an open side pane is filled with `'│'` for the
+/// full height of `main_outer`/`right_outer` (content rows plus each
+/// pane's own local statusline row).
+#[test]
+fn vertical_separator_renders_between_main_and_side_pane() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.toggle_override();
+    assert!(app.override_target.is_some());
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let separator_x = app.side_area.x - 1;
+    for y in app.main_area.y..=(app.main_area.y + app.main_area.height) {
+        assert_eq!(
+            buffer[(separator_x, y)].symbol(),
+            "│",
+            "separator column must render '│' at row {y}"
+        );
+    }
+}
+
+/// 2026-07-19 feedback item 5: local statuslines render in vim-style
+/// inverted video (`Modifier::REVERSED`), and the focused pane's own
+/// statusline uses a brighter accent (`Color::White`) than an
+/// unfocused pane's (`Color::Gray`).
+#[test]
+fn local_statuslines_are_reversed_and_the_focused_pane_is_brighter() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.toggle_override();
+    assert!(app.override_target.is_some());
+    assert!(app.override_focus);
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let main_statusline_row = app.main_area.y + app.main_area.height;
+    let main_cell = &buffer[(app.main_area.x, main_statusline_row)];
+    assert!(
+        main_cell.modifier.contains(Modifier::REVERSED),
+        "unfocused main pane's statusline must be reversed"
+    );
+    assert_eq!(
+        main_cell.fg,
+        Color::Gray,
+        "unfocused pane's statusline accent must be the dimmer gray"
+    );
+
+    let side_statusline_row = app.side_area.y + app.side_area.height;
+    let side_cell = &buffer[(app.side_area.x, side_statusline_row)];
+    assert!(
+        side_cell.modifier.contains(Modifier::REVERSED),
+        "focused override pane's statusline must be reversed"
+    );
+    assert_eq!(
+        side_cell.fg,
+        Color::White,
+        "focused pane's statusline accent must be the brighter white"
+    );
+}
+
+/// Spec 0147 G4: the global command/message row is always reserved at
+/// a fixed `Length(1)` height, regardless of whether it is blank,
+/// showing a passive message, or showing active command entry — the
+/// main content area must never resize because of it.
+#[test]
+fn global_command_message_row_stays_fixed_height() {
+    let mut app = empty_app();
+    app.splash = false;
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.cmd_area.is_none());
+    let main_height = app.main_area.height;
+
+    app.message = "some notice".to_string();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(app.cmd_area.unwrap().height, 1);
+    assert_eq!(
+        app.main_area.height, main_height,
+        "main content area must not resize when a message appears"
+    );
+
+    app.message.clear();
+    app.command_buffer = Some("cmd".to_string());
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(app.cmd_area.unwrap().height, 1);
+    assert_eq!(
+        app.main_area.height, main_height,
+        "main content area must not resize during active command entry"
+    );
+}

@@ -14,32 +14,28 @@ impl App {
             // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
             // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
             // and the mouse's Shift-wheel/native horizontal-scroll pan
-            // over this pane (`handle_mouse`) — same `pan_by_step`
-            // helper, unclamped on the right like every other side-pane
-            // pan.
+            // over this pane (`handle_mouse`) — clamped on the right so
+            // the rightmost character of the widest visible row is the
+            // limit (2026-07-19 feedback item 4, see
+            // `App::override_pan_horizontal`).
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                pan_by_step(&mut self.override_pan_offset, true)
+                self.override_pan_horizontal(PAN_STEP, true)
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                pan_by_step(&mut self.override_pan_offset, false)
+                self.override_pan_horizontal(PAN_STEP, false)
             }
-            // Vertical pan (2026-07-18 feedback item 2): scrolls the
-            // candidate list without moving the highlight, bounded so
-            // the highlighted row never leaves view. Must precede the
+            // Vertical pan (2026-07-19 feedback item 1): scrolls the
+            // candidate list without moving the highlight, bounded only
+            // by the content itself, no longer by the highlighted row
+            // (see `App::override_pan_vertical`). Must precede the
             // plain `Up`/`Down` arms below, same "modifier-guard first"
             // convention as the horizontal pan above.
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => pan_vertical_by_step(
-                &mut self.override_scroll,
-                self.override_highlight,
-                self.override_list_height,
-                true,
-            ),
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => pan_vertical_by_step(
-                &mut self.override_scroll,
-                self.override_highlight,
-                self.override_list_height,
-                false,
-            ),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.override_pan_vertical(PAN_STEP, true)
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.override_pan_vertical(PAN_STEP, false)
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_override_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_override_highlight(-1),
             KeyCode::PageDown => {
@@ -142,6 +138,7 @@ impl App {
                 self.manage_focus = true;
                 self.manage_highlight = target_highlight.unwrap_or(0);
                 self.manage_scroll = 0;
+                self.last_manage_highlight = None;
                 self.manage_pan_offset = 0;
             }
             _ => {}
@@ -199,6 +196,18 @@ impl App {
         // been no splash screen at all (spec 0113 D22 amendment).
         self.splash = false;
 
+        // Spec 0147 G5: every keypress, regardless of which pane has
+        // focus, dismisses a stale `self.message` before its own handler
+        // runs — matching `handle_mouse`'s own unconditional clear at the
+        // top of every mouse event. Placed ahead of every dispatch branch
+        // below, including `quit_confirm`'s own prompt: on the keypress
+        // that calls `request_quit()`, this clear fires before
+        // `request_quit()` sets the prompt, so it doesn't erase its own
+        // prompt; on the *following* keypress, this clear fires first and
+        // wipes the prompt unconditionally, whether that keypress
+        // confirms, cancels, or does neither.
+        self.message.clear();
+
         // `Ctrl-Z` suspends the process (spec 0113 D31, Unix only) —
         // checked centrally here, ahead of every other dispatch, so it
         // applies uniformly regardless of focus/mode, same as
@@ -219,8 +228,6 @@ impl App {
             self.quit_confirm = false;
             if key.code == KeyCode::Char('q') {
                 self.should_quit = true;
-            } else {
-                self.message.clear();
             }
             return;
         }
@@ -275,7 +282,6 @@ impl App {
             self.handle_manage_key(key);
             return;
         }
-        self.message.clear();
 
         // An empty tree (e.g. reopening an extracted `google.protobuf.Empty`,
         // or any all-default submessage — decoding zero bytes legitimately

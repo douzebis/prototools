@@ -42,9 +42,11 @@ fn override_pane_q_closes_pane() {
 }
 
 /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
-/// kind-rotation key — pressing either is a no-op (no message, no
-/// panic, pane stays open); `Enter` always creates a `Path`-kind
-/// origin.
+/// kind-rotation key — pressing either is a no-op (no panic, pane stays
+/// open, no kind rotation); `Enter` always creates a `Path`-kind origin.
+/// (Spec 0147 G5: every keypress, `z`/`Z` included, now unconditionally
+/// dismisses a stale `self.message` — so unlike before spec 0147, `z`/`Z`
+/// are no longer asserted to leave `self.message` untouched.)
 #[test]
 fn override_pane_z_is_a_noop() {
     let mut app = message_node_app();
@@ -54,12 +56,15 @@ fn override_pane_z_is_a_noop() {
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_focus);
 
-    let message_before = app.message.clone();
+    let sort_before = app.override_sort;
+    let highlight_before = app.override_highlight;
     app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-    assert_eq!(app.message, message_before);
+    assert_eq!(app.override_sort, sort_before);
+    assert_eq!(app.override_highlight, highlight_before);
     assert!(app.override_focus, "pane must stay open");
     app.handle_key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-    assert_eq!(app.message, message_before);
+    assert_eq!(app.override_sort, sort_before);
+    assert_eq!(app.override_highlight, highlight_before);
     assert!(app.override_focus, "pane must stay open");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -232,6 +237,22 @@ fn t_opens_on_an_enum_field_highlighting_its_own_natural_type() {
         app.override_candidates[app.override_highlight].0,
         "test.Durability"
     );
+}
+
+/// 2026-07-19 feedback item 6: `t` on a schema-typed primitive field
+/// with no active or inactive override always opens `Lexicographic`
+/// mode, highlighted on the row matching the field's own natural
+/// primitive keyword — never `Inferred` mode, which is meaningless
+/// for a scalar (no primitive keyword is ever a member of the
+/// `Inferred` candidate list).
+#[test]
+fn t_opens_on_a_primitive_field_highlighting_its_own_natural_type() {
+    let (mut app, _inner_idx, id_idx) = type_as_fixture();
+    app.cursor = id_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert_eq!(app.override_sort, SortMode::Lexicographic);
+    assert_eq!(app.override_candidates[app.override_highlight].0, "int32");
 }
 
 /// Regression test (2026-07-18 feedback): pressing `t` on an
@@ -634,6 +655,63 @@ fn override_search_with_no_argument_reuses_the_active_pattern() {
     app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.override_highlight, 1); // pkg.Beta
+}
+
+/// Spec 0147 G2: the override-select pane's local statusline reads
+/// "inferred types" in `Inferred` mode and "all types" in
+/// `Lexicographic` mode.
+#[test]
+fn override_statusline_wording_differs_by_sort_mode() {
+    let (mut app, inner_idx, _id_idx) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_target.is_some());
+
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    app.override_sort = SortMode::Inferred;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let statusline_row = app.side_area.y + app.side_area.height;
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
+        .collect();
+    assert!(
+        row_text.contains("inferred types"),
+        "Inferred mode must read \"inferred types\": {row_text:?}"
+    );
+
+    app.override_sort = SortMode::Lexicographic;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let row_text: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, statusline_row)].symbol().to_string())
+        .collect();
+    assert!(
+        row_text.contains("all types"),
+        "Lexicographic mode must read \"all types\": {row_text:?}"
+    );
+}
+
+/// Spec 0147 G5: a message set while the override pane has focus is
+/// cleared by the *next* keypress handled by `handle_override_key`,
+/// not just by a keypress that reaches main-pane handling.
+#[test]
+fn message_is_dismissed_by_the_next_key_in_the_override_pane() {
+    let mut app = message_node_app();
+    app.splash = false;
+    app.term_width = 120;
+    app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    assert!(app.override_focus);
+
+    app.message = "stale notice".to_string();
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(
+        app.message.is_empty(),
+        "the next override-pane key must dismiss a stale message: {}",
+        app.message
+    );
 }
 
 /// Spec 0114 §4: `Esc` cancels an in-progress search without moving the

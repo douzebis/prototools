@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override management pane
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-19*
 
 ## Executive summary
 
@@ -70,14 +70,26 @@ auto entry the same way it respects any other deactivated override, and
 only resumes auto-deriving it once the entry genuinely falls out of
 scope (its governing ancestor context changes).
 
-### The rename buffer and search share the main pane's own bottom bar
+### No border — a local statusline, a vertical separator from the main pane
+
+Like the override-select pane it's mutually exclusive with (spec 0117
+§3), the management pane draws no border of its own — its area splits
+into a `Min(0)` entry-list region above its own `Length(1)` local
+statusline, showing the currently-highlighted entry's (or header row's)
+origin path plus a row ruler over `manage_display_rows()`. The same
+neutral `'│'` vertical separator divides it from the main pane when open
+— see [override-select-pane.md](override-select-pane.md) for that
+column's own details, since both side panes share it identically.
+
+### The rename buffer and search share the global command/message row
 
 Neither the display-name rename prompt (`f`) nor this pane's own `/`/`?`
 search reserves a row inside the side pane itself — both are typed into
-the same shared bottom command/message bar the main pane and the
-override-select pane already use. This wasn't the original design;
-folding text entry into one shared bar (rather than an ad hoc spot inside
-each side pane) was adopted specifically because only the shared bar
+the same global command/message row the main pane and the
+override-select pane already use (see
+[command-line.md](command-line.md)). This wasn't the original design;
+folding text entry into one shared row (rather than an ad hoc spot inside
+each side pane) was adopted specifically because only the shared row
 gets a real terminal text cursor, which a side-pane-local input never
 had — a genuine usability gap in the pane's own space that reusing the
-existing bar closed for every pane at once, not just this one.
+existing row closed for every pane at once, not just this one.

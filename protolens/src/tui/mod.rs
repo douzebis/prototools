@@ -26,7 +26,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
@@ -42,13 +42,22 @@ use crate::theme::{self, ThemeKind};
 
 /// Fixed horizontal-pan step, in columns (spec 0113 D24) — a generous but
 /// simple constant rather than a fraction of the pane's width, so panning
-/// speed doesn't change as the pane is resized.
+/// speed doesn't change as the pane is resized. Also used for Ctrl-Up/
+/// Ctrl-Down vertical panning (`pan_vertical_by_step`).
 const PAN_STEP: usize = 8;
 
+/// Vertical-pan step for the plain mouse wheel (2026-07-19 feedback item
+/// 2) — one row per notch, matching the granularity of the cursor/
+/// highlight movement the wheel used to perform before this change,
+/// unlike `PAN_STEP`'s larger Ctrl-Up/Ctrl-Down/Shift+wheel jump.
+const WHEEL_PAN_STEP: usize = 1;
+
 /// Minimum terminal width (columns) below which `t` refuses to open the
-/// override pane (spec 0114 §2) — matches 0111 Annex C's own Phase-5
-/// threshold; rendering an unusably narrow split is worse than refusing.
-const MIN_OVERRIDE_WIDTH: u16 = 100;
+/// override pane (spec 0114 §2) — lowered from the original 100 (spec
+/// 0111 Annex C's own Phase-5 threshold) to 60 (2026-07-19 feedback),
+/// since the borderless-pane layout (spec 0147) needs less horizontal
+/// room than the bordered one this threshold was originally set for.
+const MIN_OVERRIDE_WIDTH: u16 = 60;
 
 /// Maximum gap between two same-line `Down(MouseButton::Left)` events for
 /// the second to count as a double-click (feedback, 2026-07-15) —
@@ -76,12 +85,12 @@ fn is_double_click<T: PartialEq>(last: &mut Option<(Instant, T)>, key: T) -> boo
     is_double
 }
 
-/// How long a passive status message stays visible in the shared bottom
-/// command/message bar before `track_message_timeout` auto-dismisses it
-/// — doesn't apply while that bar is actively serving as a text-entry
+/// How long a passive status message stays visible in the global
+/// command/message row before `track_message_timeout` auto-dismisses it
+/// — doesn't apply while that row is actively serving as a text-entry
 /// prompt or a pending `q` quit confirmation (see that function's doc
 /// comment).
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(4);
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Auto-dismiss delay for the startup splash screen (2026-07-17
 /// feedback, item 13), in addition to its existing keypress/mouse
@@ -190,51 +199,101 @@ fn clamp_scroll_to_visible(scroll: &mut usize, target: usize, height: usize) {
     }
 }
 
-/// Shared pan-by-one-step arithmetic behind Shift+wheel/native
-/// ScrollLeft/ScrollRight handling in `handle_mouse` — moves `*offset` by
-/// `PAN_STEP`, saturating at `0`.
-fn pan_by_step(offset: &mut usize, left: bool) {
+/// Shared pan-by-`step` arithmetic behind the command bar's Shift+wheel/
+/// native ScrollLeft/ScrollRight handling in `handle_mouse` — moves
+/// `*offset` by `step`, saturating at `0`. `step` is `WHEEL_PAN_STEP`
+/// (2026-07-19 feedback: the wheel always pans by `1`, unlike Ctrl-
+/// Left/Ctrl-Right's `PAN_STEP`) for every caller today, since the
+/// command bar has no Ctrl-Left/Ctrl-Right binding of its own (it
+/// already auto-pans to keep the text cursor in view).
+fn pan_by_step(offset: &mut usize, step: usize, left: bool) {
     *offset = if left {
-        offset.saturating_sub(PAN_STEP)
+        offset.saturating_sub(step)
     } else {
-        offset.saturating_add(PAN_STEP)
+        offset.saturating_add(step)
     };
 }
 
-/// Shared vertical pan-by-one-step arithmetic behind Ctrl-Up/Ctrl-Down
-/// in the main, override, and manage panes (2026-07-18 feedback item 2)
-/// — mirrors `pan_by_step`'s horizontal pan, but bounded on both ends so
-/// `target` (the pane's own cursor/highlight row) never scrolls out of
-/// the `height`-row visible window: unlike horizontal panning, which has
-/// no cursor-column concept to protect, the request was explicit that
-/// "the cursor must never leave view". No-op when `height` is `0`.
-fn pan_vertical_by_step(scroll: &mut usize, target: usize, height: usize, up: bool) {
-    if height == 0 {
-        return;
-    }
-    if up {
-        let min_scroll = target.saturating_sub(height - 1);
-        *scroll = scroll.saturating_sub(PAN_STEP).max(min_scroll);
+/// Shared pan-by-`step` arithmetic behind the override and manage
+/// panes' own Ctrl-Left/Ctrl-Right (`step == PAN_STEP`) and Shift+wheel/
+/// native horizontal scroll (`step == WHEEL_PAN_STEP`, 2026-07-19
+/// feedback) — like `pan_by_step`, but bounded on the right by
+/// `max_offset` (each pane's own `..._max_visible_line_
+/// len().saturating_sub(width)`), so it stops once the rightmost
+/// character of the widest currently-visible row would be shown, never
+/// further — mirroring the main pane's own `pan_right`, which already
+/// had this bound.
+fn pan_by_step_clamped(offset: &mut usize, max_offset: usize, step: usize, left: bool) {
+    *offset = if left {
+        offset.saturating_sub(step)
     } else {
-        *scroll = (*scroll + PAN_STEP).min(target);
-    }
+        (*offset + step).min(max_offset)
+    };
 }
 
-/// Border/title style for a focus-tracked pane (main/override/manage):
-/// `theme::focus_style`'s bold accent color when focused,
-/// `theme::unfocused_pane_style`'s plain accent otherwise — the visual
-/// language protolens uses throughout for "this pane currently holds
-/// keyboard focus," shared by `render`'s main-pane block,
-/// `render_override_pane`, and `render_manage_pane`. Every bordered
-/// pane always uses `BorderType::Rounded` — no built-in `BorderType`
-/// combines rounded corners with any other line weight (2026-07-17),
-/// so focus is conveyed by color/weight of style alone, not by
-/// swapping border glyph sets.
+/// Shared vertical pan-by-`step` arithmetic behind Ctrl-Up/Ctrl-Down and
+/// the plain mouse wheel in the main, override, and manage panes
+/// (2026-07-19 feedback item 1) — mirrors `pan_by_step`'s horizontal pan:
+/// bounded only by the content itself (`0` at the top, `max_scroll` — the
+/// highest offset that still shows a full page — at the bottom), no
+/// longer tied to keeping the cursor/highlight row in view. Supersedes
+/// the previous 2026-07-18 "cursor must never leave view" bound —
+/// bringing the cursor/highlight back into view on its own movement is
+/// now `clamp_scroll_to_visible`'s job alone (see `last_cursor_row` and
+/// friends). `step` is `PAN_STEP` for Ctrl-Up/Ctrl-Down, `WHEEL_PAN_STEP`
+/// for the wheel (item 2).
+fn pan_vertical_by_step(scroll: &mut usize, max_scroll: usize, step: usize, up: bool) {
+    *scroll = if up {
+        scroll.saturating_sub(step)
+    } else {
+        (*scroll + step).min(max_scroll)
+    };
+}
+
+/// Local-statusline style for a focus-tracked pane (main/override/
+/// manage, spec 0147 G2): `theme::focus_style`'s bold accent color when
+/// focused, `theme::unfocused_pane_style`'s plain accent otherwise — the
+/// visual language protolens uses throughout for "this pane currently
+/// holds keyboard focus," applied to the full width of each pane's own
+/// `Length(1)` statusline row (`render`'s main-pane statusline,
+/// `render_override_pane`, `render_manage_pane`) — mirroring vim's own
+/// active/inactive statusline highlight groups, rather than a border
+/// color as this crate used before spec 0147.
 fn pane_focus_style(focused: bool, theme: ThemeKind) -> Style {
     if focused {
         theme::focus_style(theme)
     } else {
         theme::unfocused_pane_style()
+    }
+}
+
+/// Spec 0147 G2: compose a pane's local statusline as `left` flush-left
+/// and `right` flush-right (if any) within `width` columns — mirroring
+/// vim's own statusline layout. `right` is always shown in full, never
+/// truncated; if `left` would overlap it, `left` is cut short with a
+/// single trailing `<` marker at the cut point instead (mirrors vim's
+/// `%<`).
+fn statusline_text(left: &str, right: Option<&str>, width: usize) -> String {
+    let Some(right) = right else {
+        return left.chars().take(width).collect();
+    };
+    let right: String = right.chars().take(width).collect();
+    let budget = width.saturating_sub(right.chars().count());
+    if budget == 0 {
+        return right;
+    }
+    let left_chars: Vec<char> = left.chars().collect();
+    if left_chars.len() <= budget {
+        let pad = budget - left_chars.len();
+        let mut line: String = left_chars.into_iter().collect();
+        line.push_str(&" ".repeat(pad));
+        line.push_str(&right);
+        line
+    } else {
+        let mut line: String = left_chars.into_iter().take(budget - 1).collect();
+        line.push('<');
+        line.push_str(&right);
+        line
     }
 }
 
@@ -554,6 +613,15 @@ pub struct App {
     /// excluded) — rebuilt only on fold-state changes, not every frame.
     visible_rows: Vec<usize>,
     scroll_offset: usize,
+    /// `cursor_display_row()`'s value as of the last render pass that
+    /// applied `clamp_scroll_to_visible` to `scroll_offset` (2026-07-19
+    /// feedback item 3) — compared against the *current* row at the top
+    /// of every render, so the auto-pan-into-view only fires on genuine
+    /// cursor movement, not on every frame regardless of cause (which
+    /// would otherwise fight a manual vertical pan back into following
+    /// the cursor). `None` before the first render, guaranteeing an
+    /// initial clamp.
+    last_cursor_row: Option<usize>,
     /// Horizontal scroll offset (in characters) for the main pane (spec
     /// 0113 D24) — the whole rendered line (fold-marker gutter included)
     /// pans together, the simplest of the layout options the spec left
@@ -619,6 +687,14 @@ pub struct App {
     /// Scroll offset (in rows, the pinned raw entry included) for the
     /// override pane's candidate list.
     override_scroll: usize,
+    /// `override_highlight`'s value as of the last render pass that
+    /// applied `clamp_scroll_to_visible` to `override_scroll`
+    /// (2026-07-19 feedback item 3, mirrors `last_cursor_row`) — reset to
+    /// `None` everywhere `override_scroll` is itself reset to `0`
+    /// (opening the pane, recomputing candidates), guaranteeing a clamp
+    /// on the next render even if the new highlight happens to coincide
+    /// with the old one.
+    last_override_highlight: Option<usize>,
     /// Last confirmed in-pane search (direction, pattern) — `n` repeats it
     /// in the same direction.
     last_override_search: Option<(SearchDir, String)>,
@@ -688,6 +764,11 @@ pub struct App {
     manage_highlight: usize,
     /// Scroll offset (in rows) for the management pane's listing.
     manage_scroll: usize,
+    /// `manage_highlighted_row()`'s value as of the last render pass that
+    /// applied `clamp_scroll_to_visible` to `manage_scroll` (2026-07-19
+    /// feedback item 3, mirrors `last_cursor_row`) — reset to `None`
+    /// everywhere `manage_scroll` is itself reset to `0`.
+    last_manage_highlight: Option<usize>,
     /// Timestamp + entry index of the most recent left-click `Down` that
     /// landed on an entry's radio marker (2026-07-17 feedback) — compared
     /// against on the next such click to recognize a double-click (same
@@ -775,19 +856,23 @@ pub struct App {
     /// drawn on top of. Only meaningful while `help_open`.
     help_area: Rect,
     header: String,
-    /// Main pane's inner (bordered-away) `Rect` as of the last `render()`
-    /// call — used to hit-test mouse clicks against display rows/columns.
+    /// Main pane's content `Rect` (the `Min(0)` split above its own
+    /// `Length(1)` local statusline row, spec 0147 G1) as of the last
+    /// `render()` call — used to hit-test mouse clicks against display
+    /// rows/columns.
     main_area: Rect,
-    /// Override selection pane's / override management pane's inner
-    /// `Rect` as of the last render (spec 0113 D30) — used to hit-test
-    /// mouse clicks the same way `main_area` does. A single field
-    /// suffices since the two panes are mutually exclusive
-    /// (`override_target.is_some()` XOR `manage_open`).
+    /// Override selection pane's / override management pane's content
+    /// `Rect` (the `Min(0)` split above its own `Length(1)` local
+    /// statusline row, spec 0147 G1) as of the last render (spec 0113
+    /// D30) — used to hit-test mouse clicks the same way `main_area`
+    /// does. A single field suffices since the two panes are mutually
+    /// exclusive (`override_target.is_some()` XOR `manage_open`).
     side_area: Rect,
-    /// Bottom command/message bar's inner (bordered-away) `Rect` as of
-    /// the last `render()` call, `None` when the bar isn't shown at all
-    /// (spec 0127 §G2) — used to hit-test mouse hover for Shift+wheel/
-    /// native horizontal pan the same way `main_area`/`side_area` do.
+    /// Global command/message row's `Rect` as of the last `render()`
+    /// call (spec 0147 G4), `None` when neither `command_buffer` nor
+    /// `manage_rename` is active — used to hit-test mouse hover for
+    /// Shift+wheel/native horizontal pan the same way `main_area`/
+    /// `side_area` do.
     cmd_area: Option<Rect>,
     pub message: String,
     /// Mirrors `self.message` as of the last `track_message_timeout()`
@@ -908,6 +993,7 @@ impl App {
             folded: HashSet::new(),
             visible_rows: Vec::new(),
             scroll_offset: 0,
+            last_cursor_row: None,
             pan_offset: 0,
             override_pan_offset: 0,
             manage_pan_offset: 0,
@@ -921,6 +1007,7 @@ impl App {
             override_candidates: Vec::new(),
             override_highlight: 0,
             override_scroll: 0,
+            last_override_highlight: None,
             last_override_search: None,
             term_width: 0,
             override_list_height: 0,
@@ -936,6 +1023,7 @@ impl App {
             manage_focus: false,
             manage_highlight: 0,
             manage_scroll: 0,
+            last_manage_highlight: None,
             last_manage_click: None,
             last_manage_row_click: None,
             last_manage_search: None,

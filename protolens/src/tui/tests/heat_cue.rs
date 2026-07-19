@@ -212,7 +212,11 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
 
     let area = Rect::new(0, 0, 80, 24);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-    let inner = Block::bordered().inner(area);
+    // Spec 0147 G1: no border — main content is `area` minus the global
+    // command/message row (`Length(1)`, bottom of the whole screen) and
+    // the main pane's own local statusline row (`Length(1)`, bottom of
+    // the main pane).
+    let inner = Rect::new(area.x, area.y, area.width, area.height - 2);
     fn row_text(buffer: &ratatui::buffer::Buffer, inner: Rect, y: u16) -> String {
         (inner.x..inner.x + inner.width)
             .map(|x| buffer[(x, y)].symbol().to_string())
@@ -270,7 +274,11 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
 
     let area = Rect::new(0, 0, 80, 24);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
-    let inner = Block::bordered().inner(area);
+    // Spec 0147 G1: no border — main content is `area` minus the global
+    // command/message row (`Length(1)`, bottom of the whole screen) and
+    // the main pane's own local statusline row (`Length(1)`, bottom of
+    // the main pane).
+    let inner = Rect::new(area.x, area.y, area.width, area.height - 2);
     fn row_text(buffer: &ratatui::buffer::Buffer, inner: Rect, y: u16) -> String {
         (inner.x..inner.x + inner.width)
             .map(|x| buffer[(x, y)].symbol().to_string())

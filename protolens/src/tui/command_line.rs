@@ -81,7 +81,6 @@ impl App {
             KeyCode::Esc => {
                 self.command_buffer = None;
                 self.command_cursor = 0;
-                self.message.clear();
             }
             KeyCode::Left => self.command_cursor = self.command_cursor.saturating_sub(1),
             KeyCode::Right => {
@@ -696,6 +695,7 @@ impl App {
         self.render_overrides(self.first_node);
         self.manage_highlight = 0;
         self.manage_scroll = 0;
+        self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
         self.manage_pending_kind = None;
         Ok(warnings)

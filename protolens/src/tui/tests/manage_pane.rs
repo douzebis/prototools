@@ -929,7 +929,9 @@ fn manage_pane_entries_style_auto_vs_manual_distinctly() {
         .draw(|frame| app.render_manage_pane(frame, area))
         .expect("render must not panic");
     let buffer = terminal.backend().buffer().clone();
-    let inner = Block::bordered().inner(area);
+    // Spec 0147 G1: no border — content is `area` minus the pane's own
+    // `Length(1)` local statusline row.
+    let inner = Rect::new(area.x, area.y, area.width, area.height - 1);
 
     let rows = app.manage_display_rows();
     let row_fg = |entry_idx: usize| {
@@ -1523,4 +1525,22 @@ fn o_on_an_empty_override_collection_opens_with_highlight_zero() {
     app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
     assert!(app.manage_open);
     assert_eq!(app.manage_highlight, 0);
+}
+
+/// Spec 0147 G5: a message set while the manage pane has focus is
+/// cleared by the *next* keypress handled by `handle_manage_key`, not
+/// just by a keypress that reaches main-pane handling.
+#[test]
+fn message_is_dismissed_by_the_next_key_in_the_manage_pane() {
+    let (mut app, _items) = repeated_scalar_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+
+    app.message = "stale notice".to_string();
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert!(
+        app.message.is_empty(),
+        "the next manage-pane key must dismiss a stale message: {}",
+        app.message
+    );
 }

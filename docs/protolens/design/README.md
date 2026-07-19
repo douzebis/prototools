@@ -113,8 +113,8 @@ from the pane files that present it.
 | [main-pane.md](main-pane.md) | Navigation, fold/unfold, mouse selection/clipboard, syntax highlighting |
 | [override-select-pane.md](override-select-pane.md) | Candidate ranking, sort modes, live preview |
 | [manage-pane.md](manage-pane.md) | The override collection's UI: lifecycle, grouping, kind rotation |
-| [command-line.md](command-line.md) | The shared bottom bar (commands/search/rename), Tab-completion |
-| [help-and-chrome.md](help-and-chrome.md) | Help overlay, splash, status bar, quit/suspend confirmation |
+| [command-line.md](command-line.md) | The global command/message row (commands/search/rename/messages), Tab-completion |
+| [help-and-chrome.md](help-and-chrome.md) | Help overlay, splash, local statuslines, quit/suspend confirmation |
 
 ## The `prototext_core` boundary
 

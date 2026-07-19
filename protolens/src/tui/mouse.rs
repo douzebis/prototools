@@ -5,9 +5,10 @@
 use super::*;
 
 impl App {
-    /// Handle one mouse event: wheel scroll moves the cursor like `j`/`k`;
-    /// a left click on a foldable node's marker column toggles its fold,
-    /// a click elsewhere on a node's line moves the cursor there.
+    /// Handle one mouse event: wheel scroll pans the hovered pane's
+    /// viewport (2026-07-19 feedback item 2); a left click on a foldable
+    /// node's marker column toggles its fold, a click elsewhere on a
+    /// node's line moves the cursor there.
     pub fn handle_mouse(&mut self, event: MouseEvent) {
         // A bare `Moved` event (no button held, no wheel) is pointer-
         // tracking noise, not user input — `EnableMouseCapture` turns on
@@ -72,20 +73,24 @@ impl App {
         };
         if pan_left || pan_right {
             if over_side {
-                let offset = if self.manage_open {
-                    &mut self.manage_pan_offset
+                // 2026-07-19 feedback item 4: clamped on the right, same
+                // as the main pane's own `pan_right` below. The wheel
+                // always pans at `WHEEL_PAN_STEP`, unlike Ctrl-Left/
+                // Ctrl-Right's `PAN_STEP` (2026-07-19 feedback).
+                if self.manage_open {
+                    self.manage_pan_horizontal(WHEEL_PAN_STEP, pan_left);
                 } else {
-                    &mut self.override_pan_offset
-                };
-                pan_by_step(offset, pan_left);
+                    self.override_pan_horizontal(WHEEL_PAN_STEP, pan_left);
+                }
             } else if over_main {
+                // Wheel step, not `PAN_STEP` (2026-07-19 feedback).
                 if pan_left {
-                    self.pan_left();
+                    self.wheel_pan_left();
                 } else {
-                    self.pan_right();
+                    self.wheel_pan_right();
                 }
             } else if over_cmd {
-                pan_by_step(&mut self.command_pan_offset, pan_left);
+                pan_by_step(&mut self.command_pan_offset, WHEEL_PAN_STEP, pan_left);
             }
             return;
         }
@@ -95,7 +100,10 @@ impl App {
         // item 4) — unlike `handle_key`, which always follows focus,
         // since a mouse event already carries its own screen position
         // (`event.column`/`event.row`), making hover-based routing both
-        // natural and unambiguous.
+        // natural and unambiguous. Pans the hovered pane's viewport
+        // (2026-07-19 feedback item 2) rather than moving the cursor/
+        // highlight, same distinction Shift+wheel already makes for
+        // horizontal scrolling above.
         if matches!(
             event.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -108,8 +116,8 @@ impl App {
                 }
             } else if over_main {
                 match event.kind {
-                    MouseEventKind::ScrollDown => self.move_down(),
-                    MouseEventKind::ScrollUp => self.move_up(),
+                    MouseEventKind::ScrollDown => self.wheel_pan_down(),
+                    MouseEventKind::ScrollUp => self.wheel_pan_up(),
                     _ => unreachable!(),
                 }
             }
@@ -264,14 +272,13 @@ impl App {
     }
 
     /// Mouse handling for the override selection pane (spec 0113 D30):
-    /// wheel scroll moves the highlight by one row (same effect as `j`/
-    /// `k`, which is what the render function's own auto-scroll-into-view
-    /// logic keys off of), click moves the highlight to the row under the
-    /// cursor.
+    /// wheel scroll pans the candidate list by one row (2026-07-19
+    /// feedback item 2 — it no longer moves the highlight, unlike `j`/
+    /// `k`), click moves the highlight to the row under the cursor.
     pub(super) fn handle_override_mouse(&mut self, event: MouseEvent) {
         match event.kind {
-            MouseEventKind::ScrollDown => self.move_override_highlight(1),
-            MouseEventKind::ScrollUp => self.move_override_highlight(-1),
+            MouseEventKind::ScrollDown => self.override_pan_vertical(WHEEL_PAN_STEP, false),
+            MouseEventKind::ScrollUp => self.override_pan_vertical(WHEEL_PAN_STEP, true),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.handle_override_click(event.column, event.row)
             }

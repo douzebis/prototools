@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: override selection pane
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-19*
 
 ## Executive summary
 
@@ -71,6 +71,17 @@ cached transparently triggers a one-time upgrade to the complete,
 freshly-scored list — the user never has to explicitly ask for "show me
 more"; the pane notices it's about to run out of cached rows and fetches
 the rest first.
+
+### No border — a local statusline, a vertical separator from the main pane
+
+Like every other pane, the override-select pane draws no border of its
+own — its area splits into a `Min(0)` candidate-list region above its
+own `Length(1)` local statusline, showing the target field's own
+positional path and current sort mode (`inferred types` vs. `all types`)
+plus a row ruler over the candidate list. When open, the pane sits beside
+the main pane, divided from it by a single neutral-styled `'│'` column
+rather than a left/right border — focus is conveyed by each side's own
+statusline accent, not by the divider.
 
 ### Search operates on the FQDN, not the score
 

@@ -376,12 +376,15 @@ pub fn manage_entry_style(auto: bool, theme: ThemeKind) -> Style {
     }
 }
 
-/// Focused-pane border/title accent, shared by every focus-tracked pane
-/// (main/override/manage — see `tui/mod.rs`'s `pane_focus_style`).
-/// Plain grayscale (bright white, bold) instead of the previous teal/
-/// cyan RGB accent, paired with `unfocused_pane_style`'s plain gray —
-/// deliberately theme-independent (same accent in both `Dark`/`Light`),
-/// unlike `style_for`'s own RGB-vs-theme dispatch (2026-07-17).
+/// Focused-pane local-statusline style, shared by every focus-tracked
+/// pane (main/override/manage — see `tui/mod.rs`'s `pane_focus_style`).
+/// Vim-style inverted video (`REVERSED`): `Color::White` is ANSI code 15
+/// ("bright white"), the brightest color available, so the focused
+/// pane's statusline reads as a distinctly brighter bar than
+/// `unfocused_pane_style`'s dimmer `Gray` (ANSI 7) once both are
+/// reversed — deliberately theme-independent (same accent in both
+/// `Dark`/`Light`), unlike `style_for`'s own RGB-vs-theme dispatch
+/// (2026-07-17, reversed-video styling added 2026-07-19).
 pub fn focus_style(theme: ThemeKind) -> Style {
     match theme {
         ThemeKind::System => {
@@ -389,16 +392,19 @@ pub fn focus_style(theme: ThemeKind) -> Style {
         }
         ThemeKind::Dark | ThemeKind::Light => Style::default()
             .fg(Color::White)
+            .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
     }
 }
 
-/// Unfocused-pane border/title accent, paired with `focus_style` above —
-/// plain gray, no bold, so the focused pane's brighter/bold accent reads
-/// clearly by contrast (previously `Style::default()`, i.e. no explicit
-/// color at all).
+/// Unfocused-pane local-statusline style, paired with `focus_style`
+/// above — plain gray, also reversed, so both statuslines read as solid
+/// bars (vim-style) while the focused pane's brighter white still
+/// stands out by contrast.
 pub fn unfocused_pane_style() -> Style {
-    Style::default().fg(Color::Gray)
+    Style::default()
+        .fg(Color::Gray)
+        .add_modifier(Modifier::REVERSED)
 }
 
 /// True-color 12-stop "heat" gradients (spec 0138 G6), dimmest (index 0,

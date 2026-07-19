@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0147 — protolens: borderless panes with vim-style local statuslines and a global command/message line
 
-Status: proposed
-Implemented in:
+Status: implemented
+Implemented in: 2026-07-19
 Refs: docs/specs/0127-protolens-pan-all-panes.md (§G1, the cursor-position
       convention and the "focused"/"unfocused" accent used throughout the
       bottom bar and pane borders this spec restructures),

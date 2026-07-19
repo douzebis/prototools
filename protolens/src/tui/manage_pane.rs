@@ -35,6 +35,7 @@ impl App {
         self.manage_focus = true;
         self.manage_highlight = self.initial_manage_highlight();
         self.manage_scroll = 0;
+        self.last_manage_highlight = None;
         self.manage_pan_offset = 0;
         self.manage_pending_kind = None;
         self.last_manage_click = None;
@@ -95,6 +96,56 @@ impl App {
         }
         self.manage_highlight = clamp_highlight(self.manage_highlight, delta, len - 1);
         self.manage_pending_kind = None;
+    }
+
+    /// Vertical pan for the management pane (Ctrl-Up/Ctrl-Down at `step
+    /// == PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`,
+    /// 2026-07-19 feedback items 1/2): scrolls the listing without
+    /// moving the highlight, bounded only by the content itself.
+    pub(super) fn manage_pan_vertical(&mut self, step: usize, up: bool) {
+        let max_scroll = self
+            .manage_display_rows()
+            .len()
+            .saturating_sub(self.manage_list_height);
+        pan_vertical_by_step(&mut self.manage_scroll, max_scroll, step, up);
+    }
+
+    /// Horizontal pan for the management pane (Ctrl-Left/Ctrl-Right,
+    /// Shift+wheel/native horizontal scroll, 2026-07-19 feedback item 4):
+    /// mirrors the main pane's own `pan_right`, stopping once the
+    /// rightmost character of the widest currently-visible row would be
+    /// shown — never further.
+    pub(super) fn manage_pan_horizontal(&mut self, step: usize, left: bool) {
+        let width = self.side_area.width as usize;
+        let max_offset = self.manage_max_visible_line_len().saturating_sub(width);
+        pan_by_step_clamped(&mut self.manage_pan_offset, max_offset, step, left);
+    }
+
+    /// One management-pane display row's rendered text — a `Header`'s own
+    /// label, or an `Entry`'s `manage_type_line` (2026-07-19 feedback
+    /// item 4, factored out so `manage_max_visible_line_len` matches
+    /// exactly what `render_manage_pane` shows).
+    pub(super) fn manage_row_text(&self, row: &ManageRow) -> String {
+        match row {
+            ManageRow::Header(label) => label.clone(),
+            ManageRow::Entry(idx) => self.manage_type_line(*idx),
+        }
+    }
+
+    /// Longest rendered row (in characters) among the management pane's
+    /// currently-visible window — the basis for `manage_pan_horizontal`'s
+    /// clamp (2026-07-19 feedback item 4), mirroring the main pane's own
+    /// `max_visible_line_len`.
+    pub(super) fn manage_max_visible_line_len(&self) -> usize {
+        let rows = self.manage_display_rows();
+        let total = rows.len();
+        let start = self.manage_scroll.min(total);
+        let end = (self.manage_scroll + self.manage_list_height).min(total);
+        rows[start..end]
+            .iter()
+            .map(|r| self.manage_row_text(r).chars().count())
+            .max()
+            .unwrap_or(0)
     }
 
     /// The management pane's grouped-by-origin display rows (spec 0117
@@ -333,18 +384,17 @@ impl App {
                     }
                 }
             }
-            // Vertical pan (2026-07-18 feedback item 2): scrolls the
-            // list without moving the highlight, bounded so the
-            // highlighted row never leaves view. Must precede the plain
+            // Vertical pan (2026-07-19 feedback item 1): scrolls the
+            // list without moving the highlight, bounded only by the
+            // content itself, no longer by the highlighted row (see
+            // `App::manage_pan_vertical`). Must precede the plain
             // `Up`/`Down` arms below, same "modifier-guard first"
             // convention as the horizontal pan below.
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let row = self.manage_highlighted_row();
-                pan_vertical_by_step(&mut self.manage_scroll, row, self.manage_list_height, true);
+                self.manage_pan_vertical(PAN_STEP, true)
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let row = self.manage_highlighted_row();
-                pan_vertical_by_step(&mut self.manage_scroll, row, self.manage_list_height, false);
+                self.manage_pan_vertical(PAN_STEP, false)
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_highlight(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_manage_highlight(-1),
@@ -365,15 +415,17 @@ impl App {
             // Horizontal pan (item 14 of 2026-07-17 feedback), mirroring
             // the main pane's own Ctrl-Left/Ctrl-Right (spec 0113 D24)
             // and the mouse's Shift-wheel/native horizontal-scroll pan
-            // over this pane (`handle_mouse`) — same `pan_by_step`
-            // helper, unclamped on the right like every other side-pane
-            // pan. Must precede the plain `Left`/`Right` arms below,
-            // since an unguarded arm there would otherwise shadow it.
+            // over this pane (`handle_mouse`) — clamped on the right so
+            // the rightmost character of the widest visible row is the
+            // limit (2026-07-19 feedback item 4, see
+            // `App::manage_pan_horizontal`). Must precede the plain
+            // `Left`/`Right` arms below, since an unguarded arm there
+            // would otherwise shadow it.
             KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                pan_by_step(&mut self.manage_pan_offset, true)
+                self.manage_pan_horizontal(PAN_STEP, true)
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                pan_by_step(&mut self.manage_pan_offset, false)
+                self.manage_pan_horizontal(PAN_STEP, false)
             }
             // Spec 0124 G1: circulate the main-pane cursor among the
             // fields the highlighted entry's origin currently matches,
@@ -624,7 +676,8 @@ impl App {
     }
 
     /// Mouse handling for the override management pane (spec 0113 D30):
-    /// wheel scroll moves the highlight by one entry, click moves the
+    /// wheel scroll pans the listing by one row (2026-07-19 feedback item
+    /// 2 — it no longer moves the highlight), click moves the
     /// highlight to the entry under the cursor (header rows under the
     /// click are ignored, same as clicking whitespace) and, when the
     /// click lands on that entry's own radio marker, also toggles it
@@ -637,8 +690,8 @@ impl App {
     /// terminals that do pass it through).
     pub(super) fn handle_manage_mouse(&mut self, event: MouseEvent) {
         match event.kind {
-            MouseEventKind::ScrollDown => self.move_manage_highlight(1),
-            MouseEventKind::ScrollUp => self.move_manage_highlight(-1),
+            MouseEventKind::ScrollDown => self.manage_pan_vertical(WHEEL_PAN_STEP, false),
+            MouseEventKind::ScrollUp => self.manage_pan_vertical(WHEEL_PAN_STEP, true),
             MouseEventKind::Down(MouseButton::Left) => self.handle_manage_click(
                 event.column,
                 event.row,
@@ -738,32 +791,50 @@ impl App {
     }
 
     /// Override management pane (spec 0117 §3) — always focused while
-    /// open (bold border unconditionally), lists the whole
-    /// `OverrideCollection` in its canonical sort order.
+    /// open, lists the whole `OverrideCollection` in its canonical sort
+    /// order.
     pub(super) fn render_manage_pane(&mut self, frame: &mut Frame, area: Rect) {
-        let title = format!(" Overrides ({} entries) ", self.overrides.entries().len());
         let style = pane_focus_style(self.manage_focus, self.theme);
-        let block = Block::bordered()
-            .title(Line::styled(title, style))
-            .border_style(style)
-            .border_type(BorderType::Rounded);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+
+        // Spec 0147 G1/G2: no border — content splits into a `Min(0)`
+        // area above its own `Length(1)` local statusline row.
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        let inner = split[0];
         self.side_area = inner;
 
         // Neither the rename buffer nor the `/`/`?` search buffer reserves
-        // a row here — both render in the shared bottom command/message
-        // bar instead (`render`, 2026-07-14 feedback / spec-0133-adjacent
-        // rework), which also gives them a real cursor.
+        // a row here — both render in the global command/message row
+        // instead (`render`, spec 0147 G4), which also gives them a real
+        // cursor.
         let list_height = inner.height as usize;
         self.manage_list_height = list_height;
 
         let rows = self.manage_display_rows();
         let total_rows = rows.len();
         let highlighted_row = self.manage_highlighted_row();
-        clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
+        // 2026-07-19 feedback item 3: auto-pan into view only on genuine
+        // highlight movement, mirroring the main pane's own
+        // `last_cursor_row` gate (`render.rs`).
+        if self.last_manage_highlight != Some(highlighted_row) {
+            clamp_scroll_to_visible(&mut self.manage_scroll, highlighted_row, list_height);
+            self.last_manage_highlight = Some(highlighted_row);
+        }
         let end = (self.manage_scroll + list_height).min(total_rows);
         let start = self.manage_scroll.min(total_rows);
+
+        let origin_path = self
+            .overrides
+            .entries()
+            .get(self.manage_highlight)
+            .map(|e| e.origin.label())
+            .unwrap_or_default();
+        let left = format!("{origin_path} - type overrides");
+        let right = format!("L{}/{}", highlighted_row + 1, total_rows);
+        let text = statusline_text(&left, Some(&right), split[1].width as usize);
+        frame.render_widget(Paragraph::new(Line::styled(text, style)), split[1]);
 
         let mut lines: Vec<Line> = Vec::new();
         for row in &rows[start..end] {

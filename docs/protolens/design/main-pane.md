@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Pane: main pane
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-19*
 
 ## Executive summary
 
@@ -80,6 +80,20 @@ has no acknowledgment protocol, the UI can never distinguish "the
 terminal actually honored it" from "the terminal silently ignored it," so
 the status message is deliberately optimistic rather than trying to
 report a definitive success/failure.
+
+### No border — a local statusline instead
+
+The main pane draws no border of its own. Its area splits into a
+`Min(0)` content region above its own `Length(1)` local statusline row,
+showing the cursor's own positional path, resolved type, byte range, and
+line number — dropped down to just the path and type once a side pane is
+open, since precise byte-range/line-ruler detail is secondary while
+focus is elsewhere and remains recoverable by closing the side pane.
+Focus is conveyed purely by that row's own accent color, the same way
+vim distinguishes an active window's statusline from an inactive one —
+there is no separate border color to also track. See
+[help-and-chrome.md](help-and-chrome.md) for how this local statusline
+relates to the one global command/message row shared by every pane.
 
 ### Syntax highlighting is a display transform over already-rendered text
 

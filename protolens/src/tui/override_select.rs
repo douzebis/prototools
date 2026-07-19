@@ -62,6 +62,7 @@ impl App {
         self.override_target = Some(self.cursor);
         self.override_focus = true;
         self.override_scroll = 0;
+        self.last_override_highlight = None;
         self.override_pan_offset = 0;
 
         // Spec 0139: smart initial sort-mode/highlight. Step A: an
@@ -69,14 +70,21 @@ impl App {
         // inactive-but-applicable entry from the management list
         // (`first_entry_matching_origin_candidates` — by construction,
         // since Step A found no active match, any entry it returns here
-        // is necessarily inactive); else Step B.5: for an enum-typed
-        // field with no override at all, its own schema-declared enum
-        // type (`natural_type`). Without this step such a field fell
-        // through to `open_override_on_default`'s `Inferred`-mode
-        // scoring, which is meaningless for an enum scalar (it scores
-        // the bytes as a prospective *message*) and so landed on the
-        // unrelated `None` sentinel row instead of the field's own
-        // current type (2026-07-18 feedback).
+        // is necessarily inactive); else Step B.5: for an enum- or
+        // primitive-typed field with no override at all, its own
+        // schema-declared type (`natural_type`) — a message-typed field
+        // is deliberately excluded (its schema is unknown/partial by
+        // nature, so `Inferred` scoring below still makes sense for it).
+        // Without this step such a field fell through to
+        // `open_override_on_default`'s `Inferred`-mode scoring, which is
+        // meaningless for a scalar (it scores the bytes as a prospective
+        // *message*) and so landed on the unrelated `None` sentinel row
+        // (or the top-scored message FQDN) instead of the field's own
+        // current type (2026-07-18 feedback, extended from enum-only to
+        // every primitive keyword 2026-07-19: `open_override_on_type`
+        // below naturally lands in `Lexicographic` mode for these, since
+        // no primitive keyword is ever a member of the `Inferred`
+        // candidate list).
         let candidate_type = self
             .resolve_active_override_entry(self.cursor)
             .map(|e| e.r#type.clone())
@@ -85,11 +93,11 @@ impl App {
                     .map(|i| self.overrides.entries()[i].r#type.clone())
             })
             .or_else(|| {
-                let is_enum = matches!(
+                let is_scalar = !matches!(
                     self.parent_field(self.cursor).map(|f| f.kind()),
-                    Some(prost_reflect::Kind::Enum(_))
+                    None | Some(prost_reflect::Kind::Message(_))
                 );
-                is_enum.then(|| self.natural_type(self.cursor))
+                is_scalar.then(|| self.natural_type(self.cursor))
             });
 
         match candidate_type {
@@ -141,6 +149,12 @@ impl App {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
         if self.override_candidates.is_empty() {
+            // Not superseded by spec 0147 G5's top-of-`handle_key` clear
+            // (which only dismisses a message left over from a *previous*
+            // keypress) — this clears the "no scoring graph available"
+            // message the `recompute_override_candidates` call just above
+            // set during *this* keypress, ahead of the silent fallback
+            // below.
             self.message.clear();
             self.override_sort = SortMode::Lexicographic;
             self.recompute_override_candidates();
@@ -239,6 +253,7 @@ impl App {
         self.override_target = Some(target);
         self.override_focus = true;
         self.override_scroll = 0;
+        self.last_override_highlight = None;
         self.override_pan_offset = 0;
         self.override_opened_from_manage = true;
         self.open_override_on_type(current_type);
@@ -309,6 +324,7 @@ impl App {
         };
         self.override_highlight = 0;
         self.override_scroll = 0;
+        self.last_override_highlight = None;
         self.override_pan_offset = 0;
     }
 
@@ -357,6 +373,76 @@ impl App {
         self.override_highlight = clamp_highlight(self.override_highlight, delta, max_index);
         // Spec 0132 §G2: live-preview the newly-highlighted candidate.
         self.preview_override_highlight();
+    }
+
+    /// Vertical pan for the override pane (Ctrl-Up/Ctrl-Down at `step ==
+    /// PAN_STEP`, plain mouse wheel at `step == WHEEL_PAN_STEP`,
+    /// 2026-07-19 feedback items 1/2): scrolls the candidate list
+    /// without moving the highlight, bounded only by the content itself.
+    pub(super) fn override_pan_vertical(&mut self, step: usize, up: bool) {
+        let max_scroll = self
+            .override_candidates
+            .len()
+            .saturating_sub(self.override_list_height);
+        pan_vertical_by_step(&mut self.override_scroll, max_scroll, step, up);
+    }
+
+    /// Horizontal pan for the override pane (Ctrl-Left/Ctrl-Right,
+    /// Shift+wheel/native horizontal scroll, 2026-07-19 feedback item 4):
+    /// mirrors the main pane's own `pan_right`, stopping once the
+    /// rightmost character of the widest currently-visible row would be
+    /// shown — never further.
+    pub(super) fn override_pan_horizontal(&mut self, step: usize, left: bool) {
+        let width = self.side_area.width as usize;
+        let max_offset = self.override_max_visible_line_len().saturating_sub(width);
+        pan_by_step_clamped(&mut self.override_pan_offset, max_offset, step, left);
+    }
+
+    /// One override-pane candidate row's display text + base style —
+    /// factored out of `render_override_pane`'s per-row loop (2026-07-19
+    /// feedback item 4) so `override_max_visible_line_len` can compute
+    /// exactly what will be rendered without duplicating the FQDN-
+    /// formatting logic.
+    pub(super) fn override_row_display(&self, row: usize) -> (String, Style) {
+        let (fqdn, score) = &self.override_candidates[row];
+        let (display_fqdn, base_style) = if fqdn == "protolens_internal.None" {
+            ("None".to_string(), Style::default())
+        } else if decode::primitive_type_for_keyword(fqdn).is_some() {
+            (fqdn.clone(), Style::default())
+        } else if self.ctx.pool().get_enum_by_name(fqdn).is_some() {
+            let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+                format!(".{fqdn} [enum]")
+            } else {
+                format!("{fqdn} [enum]")
+            };
+            (display, theme::style_for(SyntaxRole::Attribute, self.theme))
+        } else {
+            let display = if override_apply::fqdn_needs_dot_prefix(fqdn) {
+                format!(".{fqdn}")
+            } else {
+                fqdn.clone()
+            };
+            (display, Style::default())
+        };
+        let text = match score {
+            Some(s) => format!("{display_fqdn}  (score: {s})"),
+            None => display_fqdn,
+        };
+        (text, base_style)
+    }
+
+    /// Longest rendered row (in characters) among the override pane's
+    /// currently-visible window — the basis for `override_pan_horizontal`'s
+    /// clamp (2026-07-19 feedback item 4), mirroring the main pane's own
+    /// `max_visible_line_len`.
+    pub(super) fn override_max_visible_line_len(&self) -> usize {
+        let total = self.override_candidates.len();
+        let start = self.override_scroll.min(total);
+        let end = (self.override_scroll + self.override_list_height).min(total);
+        (start..end)
+            .map(|row| self.override_row_display(row).0.chars().count())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Spec 0132 §G2: live-previews the currently-highlighted override

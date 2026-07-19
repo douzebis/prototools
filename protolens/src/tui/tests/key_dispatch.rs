@@ -205,6 +205,13 @@ fn ctrl_left_right_pan_the_override_and_manage_panes() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
     assert!(app.override_focus);
+    // 2026-07-19 feedback item 4: pan is now clamped on the right by
+    // the widest visible row — set up a candidate list/pane width with
+    // plenty of room to pan by a full `PAN_STEP` twice over, so the
+    // clamp itself doesn't interfere with this test.
+    app.override_candidates = vec![("cand.SomeVeryLongTypeNameHere".to_string(), None)];
+    app.override_list_height = 5;
+    app.side_area = Rect::new(0, 0, 5, 10);
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert_eq!(app.override_pan_offset, PAN_STEP);
@@ -214,6 +221,8 @@ fn ctrl_left_right_pan_the_override_and_manage_panes() {
     app.close_override();
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.manage_focus);
+    app.manage_list_height = 5;
+    app.side_area = Rect::new(0, 0, 5, 10);
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert_eq!(app.manage_pan_offset, PAN_STEP);
@@ -221,9 +230,11 @@ fn ctrl_left_right_pan_the_override_and_manage_panes() {
     assert_eq!(app.manage_pan_offset, 0);
 }
 
-/// 2026-07-18 feedback item 2: `Ctrl-Up`/`Ctrl-Down` pan the override
+/// 2026-07-19 feedback items 1/2: `Ctrl-Up`/`Ctrl-Down` pan the override
 /// pane's candidate list vertically without moving the highlight,
-/// bounded so the highlighted row never leaves view.
+/// bounded only by the content itself (`0` at the top, `total -
+/// list_height` at the bottom) — no longer tied to keeping the
+/// highlighted row in view.
 #[test]
 fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
     let mut app = message_node_app();
@@ -233,14 +244,14 @@ fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
     app.override_candidates = (0..30).map(|i| (format!("cand.Type{i}"), None)).collect();
     app.override_list_height = 5;
     app.override_highlight = 19;
-    // Start at the bottom edge of the 5-row window, same as after a
-    // normal `clamp_scroll_to_visible` pass following cursor movement.
     app.override_scroll = 15;
+    let max_scroll = 30 - 5; // total candidates - list_height
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll, 19,
-        "Ctrl-Down must reveal rows below, capped at the highlight's own row"
+        app.override_scroll,
+        (15 + PAN_STEP).min(max_scroll),
+        "Ctrl-Down must pan toward the content's own bottom edge"
     );
     assert_eq!(
         app.override_highlight, 19,
@@ -249,31 +260,28 @@ fn ctrl_up_down_pan_the_override_pane_without_moving_the_highlight() {
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll, 19,
-        "further Ctrl-Down is a no-op once the highlight reaches the top edge"
+        app.override_scroll, max_scroll,
+        "further Ctrl-Down stops at the content's own bottom edge"
     );
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
-    assert_eq!(
-        app.override_scroll, 15,
-        "Ctrl-Up must reveal rows above, capped so the highlight stays visible"
-    );
+    assert_eq!(app.override_scroll, max_scroll.saturating_sub(PAN_STEP));
     assert_eq!(app.override_highlight, 19);
 
+    app.override_scroll = 0;
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.override_scroll, 15,
-        "further Ctrl-Up is a no-op once the highlight reaches the bottom edge"
+        app.override_scroll, 0,
+        "Ctrl-Up stops at the content's own top edge"
     );
 }
 
-/// 2026-07-18 feedback item 2: `Ctrl-Up`/`Ctrl-Down` pan the manage
-/// pane's list vertically without moving the highlight, bounded so the
-/// highlighted row never leaves view. Uses 30 distinct-origin entries
-/// (each gets its own `Header` row, spec 0117 §3 amendment) and asks
-/// `manage_highlighted_row()` for the resulting row instead of
-/// predicting the sort order, since `OverrideOrigin::label()` sorts
-/// lexicographically (not numerically) on the embedded field number.
+/// 2026-07-19 feedback items 1/2: `Ctrl-Up`/`Ctrl-Down` pan the manage
+/// pane's list vertically without moving the highlight, bounded only by
+/// the content itself (`0` at the top, `total - list_height` at the
+/// bottom) — no longer tied to keeping the highlighted row in view.
+/// Uses 30 distinct-origin entries (each gets its own `Header` row,
+/// spec 0117 §3 amendment).
 #[test]
 fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
     let mut app = message_node_app();
@@ -304,28 +312,33 @@ fn ctrl_up_down_pan_the_manage_pane_without_moving_the_highlight() {
         .unwrap();
     app.manage_highlight = target_idx;
     app.manage_list_height = 5;
-    let target_row = app.manage_highlighted_row();
-    app.manage_scroll = target_row.saturating_sub(4);
+    app.manage_scroll = 10;
+    let total_rows = app.manage_display_rows().len();
+    let max_scroll = total_rows - 5;
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
     assert_eq!(
         app.manage_scroll,
-        (target_row.saturating_sub(4) + PAN_STEP).min(target_row),
-        "Ctrl-Down must reveal rows below, capped at the highlight's own row"
+        (10 + PAN_STEP).min(max_scroll),
+        "Ctrl-Down must pan toward the content's own bottom edge"
     );
     assert_eq!(
         app.manage_highlight, target_idx,
         "panning must not move the highlight"
     );
 
-    app.manage_scroll = target_row; // top edge
+    app.manage_scroll = max_scroll;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+    assert_eq!(
+        app.manage_scroll, max_scroll,
+        "further Ctrl-Down stops at the content's own bottom edge"
+    );
+
+    app.manage_scroll = 0;
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
     assert_eq!(
-        app.manage_scroll,
-        target_row
-            .saturating_sub(PAN_STEP)
-            .max(target_row.saturating_sub(4)),
-        "Ctrl-Up must reveal rows above, capped so the highlight stays visible"
+        app.manage_scroll, 0,
+        "Ctrl-Up stops at the content's own top edge"
     );
     assert_eq!(app.manage_highlight, target_idx);
 }

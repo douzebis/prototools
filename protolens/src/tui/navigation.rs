@@ -173,34 +173,77 @@ impl App {
             .unwrap_or(0)
     }
 
+    /// Shared horizontal-pan arithmetic behind the main pane's Ctrl-Left/
+    /// Ctrl-Right (`pan_left`/`pan_right`, `PAN_STEP`) and Shift+wheel/
+    /// native horizontal scroll (`wheel_pan_left`/`wheel_pan_right`,
+    /// `WHEEL_PAN_STEP`, 2026-07-19 feedback) — bounded on the right by
+    /// `max_visible_line_len` so it stops once the rightmost character of
+    /// the widest currently-visible row would be shown, never further.
+    fn pan_horizontal(&mut self, step: usize, left: bool) {
+        if left {
+            self.pan_offset = self.pan_offset.saturating_sub(step);
+        } else {
+            // Column 0 of `main_area` is always the heat-cue gutter (spec
+            // 0138 N1), reserved but never panned — only `width - 1`
+            // columns actually show line text, so the clamp must leave
+            // room for that extra column or panning stops one character
+            // short of the line's true end.
+            let width = (self.main_area.width as usize).saturating_sub(1);
+            let max_offset = self.max_visible_line_len().saturating_sub(width);
+            self.pan_offset = (self.pan_offset + step).min(max_offset);
+        }
+    }
+
     pub(super) fn pan_left(&mut self) {
-        self.pan_offset = self.pan_offset.saturating_sub(PAN_STEP);
+        self.pan_horizontal(PAN_STEP, true);
     }
 
     pub(super) fn pan_right(&mut self) {
-        // Column 0 of `main_area` is always the heat-cue gutter (spec
-        // 0138 N1), reserved but never panned — only `width - 1` columns
-        // actually show line text, so the clamp must leave room for that
-        // extra column or panning stops one character short of the
-        // line's true end.
-        let width = (self.main_area.width as usize).saturating_sub(1);
-        let max_offset = self.max_visible_line_len().saturating_sub(width);
-        self.pan_offset = (self.pan_offset + PAN_STEP).min(max_offset);
+        self.pan_horizontal(PAN_STEP, false);
     }
 
-    /// Vertical pan (Ctrl-Up/Ctrl-Down, 2026-07-18 feedback item 2):
-    /// scrolls the main pane's viewport without moving the cursor,
-    /// bounded so the cursor's own row never leaves view.
-    pub(super) fn pan_vertical_up(&mut self) {
+    /// Shift+wheel/native horizontal-scroll pan over the main pane
+    /// (2026-07-19 feedback): same as `pan_left`/`pan_right` but at
+    /// `WHEEL_PAN_STEP`'s finer granularity.
+    pub(super) fn wheel_pan_left(&mut self) {
+        self.pan_horizontal(WHEEL_PAN_STEP, true);
+    }
+
+    pub(super) fn wheel_pan_right(&mut self) {
+        self.pan_horizontal(WHEEL_PAN_STEP, false);
+    }
+
+    /// Shared vertical-pan arithmetic behind the main pane's Ctrl-Up/
+    /// Ctrl-Down (`pan_vertical_up`/`pan_vertical_down`, `PAN_STEP`) and
+    /// plain mouse wheel (`wheel_pan_up`/`wheel_pan_down`,
+    /// `WHEEL_PAN_STEP`) — scrolls the viewport without moving the
+    /// cursor, bounded only by the content itself, no longer by the
+    /// cursor's own row (2026-07-19 feedback item 1, supersedes the
+    /// 2026-07-18 "cursor must never leave view" bound).
+    fn pan_vertical(&mut self, step: usize, up: bool) {
         let height = self.main_area.height as usize;
-        let cursor_row = self.cursor_display_row();
-        pan_vertical_by_step(&mut self.scroll_offset, cursor_row, height, true);
+        let max_scroll = self.visible_rows.len().saturating_sub(height);
+        pan_vertical_by_step(&mut self.scroll_offset, max_scroll, step, up);
+    }
+
+    pub(super) fn pan_vertical_up(&mut self) {
+        self.pan_vertical(PAN_STEP, true);
     }
 
     pub(super) fn pan_vertical_down(&mut self) {
-        let height = self.main_area.height as usize;
-        let cursor_row = self.cursor_display_row();
-        pan_vertical_by_step(&mut self.scroll_offset, cursor_row, height, false);
+        self.pan_vertical(PAN_STEP, false);
+    }
+
+    /// Plain mouse-wheel vertical pan (2026-07-19 feedback item 2): the
+    /// wheel now pans the viewport, same as Ctrl-Up/Ctrl-Down but at
+    /// `WHEEL_PAN_STEP`'s finer granularity — it no longer moves the
+    /// cursor (that was the pre-item-2 behavior, `move_up`/`move_down`).
+    pub(super) fn wheel_pan_up(&mut self) {
+        self.pan_vertical(WHEEL_PAN_STEP, true);
+    }
+
+    pub(super) fn wheel_pan_down(&mut self) {
+        self.pan_vertical(WHEEL_PAN_STEP, false);
     }
 
     /// Absolute last node in document order (regardless of visibility).

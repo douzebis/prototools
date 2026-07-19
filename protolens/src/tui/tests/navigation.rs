@@ -253,11 +253,11 @@ fn pan_right_reaches_the_true_end_of_the_longest_visible_line() {
     );
 }
 
-/// 2026-07-18 feedback item 2: Ctrl-Down/Ctrl-Up pan the main pane's
-/// viewport without moving the cursor, bounded so the cursor's own
-/// row never leaves view. 24 sibling leaf lines, a 5-row pane, cursor
-/// on line 19 (so `clamp_scroll_to_visible` first settles the scroll
-/// at 15, the minimum needed to keep row 19 visible).
+/// 2026-07-19 feedback item 1: Ctrl-Down/Ctrl-Up pan the main pane's
+/// viewport without moving the cursor, bounded only by the content
+/// itself (`0` at the top, `total - height` at the bottom) — no longer
+/// tied to keeping the cursor's own row in view. 24 sibling leaf lines,
+/// a 5-row pane.
 #[test]
 fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     let lines: Vec<String> = (0..24).map(|i| i.to_string()).collect();
@@ -266,30 +266,30 @@ fn ctrl_up_down_pan_the_main_pane_without_moving_the_cursor() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 5);
     app.cursor = 19;
-    clamp_scroll_to_visible(&mut app.scroll_offset, 19, 5);
-    assert_eq!(app.scroll_offset, 15);
+    app.scroll_offset = 15;
+    let max_scroll = 24 - 5;
 
     app.pan_vertical_down();
     assert_eq!(
-        app.scroll_offset, 19,
-        "must scroll by PAN_STEP, clamped so the cursor's row stays visible"
+        app.scroll_offset,
+        (15 + PAN_STEP).min(max_scroll),
+        "must scroll by PAN_STEP, clamped at the content's own bottom edge"
     );
     app.pan_vertical_down();
     assert_eq!(
-        app.scroll_offset, 19,
-        "already at the clamp bound, must not scroll past it"
+        app.scroll_offset, max_scroll,
+        "already at the content's own bottom edge, must not scroll past it"
     );
     assert_eq!(app.cursor, 19, "panning must not move the cursor");
 
     app.pan_vertical_up();
-    assert_eq!(
-        app.scroll_offset, 15,
-        "must scroll back by PAN_STEP, clamped so the cursor's row stays visible"
-    );
+    assert_eq!(app.scroll_offset, max_scroll.saturating_sub(PAN_STEP));
+
+    app.scroll_offset = 0;
     app.pan_vertical_up();
     assert_eq!(
-        app.scroll_offset, 15,
-        "already at the clamp bound, must not scroll past it"
+        app.scroll_offset, 0,
+        "already at the content's own top edge, must not scroll past it"
     );
     assert_eq!(app.cursor, 19, "panning must not move the cursor");
 }

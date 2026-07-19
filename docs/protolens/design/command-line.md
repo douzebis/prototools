@@ -4,20 +4,27 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# Pane: command line (shared bottom bar)
+# Pane: command line (global command/message row)
 
-*last verified: 2026-07-16*
+*last verified: 2026-07-19*
 
 ## Executive summary
 
-There is exactly one text-entry surface in protolens — the bottom bar —
-and every pane that needs to prompt for typed input (ex-commands,
-searches, the management pane's rename) shares it rather than growing its
-own. What the bar currently represents (a `:` command, a `/`/`?` search,
-or a rename) is tracked as a small enum alongside the buffer itself; the
-buffer's own editing model (cursor position, insert/delete,
-Tab-completion) is written once and is identical regardless of which of
-those three things is currently being typed.
+There is exactly one text-entry surface in protolens — a single
+`Length(1)` row fixed at the very bottom of the whole screen, shared
+across every pane regardless of how many are open — and every pane that
+needs to prompt for typed input (ex-commands, searches, the management
+pane's rename) shares it rather than growing its own. This same row also
+carries a passive `self.message` notice whenever no text entry is
+active, so it is never idle-blank except when there is genuinely nothing
+to show. What the row currently represents (a `:` command, a `/`/`?`
+search, a rename, or a message) is tracked by trying each source in a
+fixed priority order each frame; the buffer's own editing model (cursor
+position, insert/delete, Tab-completion) is written once and is
+identical regardless of which of the first three is currently being
+typed. This row never shows any pane's own cursor/position info — that
+lives in each pane's own local statusline instead (see
+[help-and-chrome.md](help-and-chrome.md)).
 
 ## Technical detail
 
