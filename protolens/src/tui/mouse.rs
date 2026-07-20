@@ -300,6 +300,11 @@ impl App {
         // `override_candidates` is indexed directly now, no `+ 1`.
         if absolute_row < self.override_candidates.len() {
             self.override_highlight = absolute_row;
+            // 2026-07-20 feedback: clicking a row must live-preview it in
+            // the main pane too, same as `move_override_highlight`'s
+            // arrow-key path — this call was missing, so clicking a type
+            // moved the highlight but left the old preview on screen.
+            self.preview_override_highlight();
         }
     }
 

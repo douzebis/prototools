@@ -16,7 +16,7 @@ use prototext_core::{
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
-    score_all, ScoringOpts,
+    score_all, score_one, ScoringOpts,
 };
 
 use crate::inputs::{expand_path, InputFile};
@@ -1064,7 +1064,7 @@ fn run_score(
         },
     }
 
-    let score_one = |data: &[u8]| -> Result<(bool, i64, u64, u64, u64, u64), String> {
+    let score_input = |data: &[u8]| -> Result<(bool, i64, u64, u64, u64, u64), String> {
         let binary = render_as_bytes(
             data,
             RenderOpts {
@@ -1076,10 +1076,7 @@ fn run_score(
             },
         )
         .map_err(|e: CodecError| format!("encoding prototext to binary: {}", e))?;
-        let results = score_all(&binary, graph, scoring_opts);
-        let result = results
-            .iter()
-            .find(|r| r.fqdn == type_name || r.fqdn == format!(".{}", type_name))
+        let result = score_one(&binary, type_name, graph, scoring_opts)
             .ok_or_else(|| format!("type '{}' not found in scoring graph", type_name))?;
         Ok((
             result.vetoed,
@@ -1098,7 +1095,7 @@ fn run_score(
         io::stdin()
             .read_to_end(&mut data)
             .map_err(|e| format!("reading stdin: {}", e))?;
-        let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_one(&data)?;
+        let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_input(&data)?;
         if vetoed {
             entries.push(ScoreEntry::Vetoed {
                 path: "<stdin>".into(),
@@ -1120,7 +1117,7 @@ fn run_score(
             let data = std::fs::read(&f.abs)
                 .map_err(|e| format!("reading '{}': {}", f.abs.display(), e))?;
             let label = f.abs.display().to_string();
-            let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_one(&data)?;
+            let (vetoed, score, matches, unknowns, mismatches, non_canonical) = score_input(&data)?;
             if vetoed {
                 entries.push(ScoreEntry::Vetoed {
                     path: label,

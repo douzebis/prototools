@@ -25,7 +25,7 @@
 
 use smallvec::SmallVec;
 
-use crate::build_scoring_graph::serial::ArchivedCompiledGraph;
+use crate::build_scoring_graph::serial::{ArchivedCompiledGraph, ArchivedNodeEntry};
 
 // ── Wire-type constants (mirrors prototext-core/src/helpers/wire.rs) ──────────
 
@@ -198,6 +198,45 @@ pub fn score_all(pb: &[u8], graph: &ArchivedCompiledGraph, opts: &ScoringOpts) -
     score_message_multi(pb, 0, initial_active, None, &mut ws);
 
     scores
+}
+
+/// Score a single named root entry in `graph` against `pb`, without walking
+/// any other root candidates.  `fqdn` may be given with or without a leading
+/// dot, matching either form stored in `graph.roots`.  Returns `None` if no
+/// root entry matches `fqdn`.
+pub fn score_one(
+    pb: &[u8],
+    fqdn: &str,
+    graph: &ArchivedCompiledGraph,
+    opts: &ScoringOpts,
+) -> Option<EntryScore> {
+    let want = fqdn.trim_start_matches('.');
+    let root = graph
+        .roots
+        .iter()
+        .find(|r| r.fqdn.trim_start_matches('.') == want)?;
+
+    let mut scores = vec![EntryScore {
+        fqdn: root.fqdn.as_str().to_owned(),
+        matches: 0,
+        unknowns: 0,
+        mismatches: 0,
+        non_canonical: 0,
+        vetoed: false,
+    }];
+
+    let mut entries: SmallVec<[u16; 4]> = SmallVec::new();
+    entries.push(0);
+    let initial_active = vec![ActiveEntry {
+        state_id: root.state_id.to_native(),
+        entries,
+        occurrences: Vec::new(),
+    }];
+
+    let mut ws = WalkState::new(graph, &mut scores, opts);
+    score_message_multi(pb, 0, initial_active, None, &mut ws);
+
+    scores.pop()
 }
 
 // ── Varint parser (mirrors parse_varint in prototext-core) ────────────────────
@@ -477,6 +516,23 @@ fn node_wire_type(graph: &ArchivedCompiledGraph, state_id: u32) -> u8 {
     }
     // Should never happen for a well-formed graph.
     u8::MAX
+}
+
+/// Binary search for the node with the given `state_id` (nodes are sorted by
+/// state_id, per the schema-lookup invariant above).
+fn find_node(graph: &ArchivedCompiledGraph, state_id: u32) -> Option<&ArchivedNodeEntry> {
+    let n = &graph.nodes;
+    let start = n.partition_point(|e| e.state_id.to_native() < state_id);
+    n.get(start).filter(|e| e.state_id.to_native() == state_id)
+}
+
+/// True iff `state_id` has at least one outgoing transition, i.e. is a
+/// message/group state rather than a leaf (string/bytes) state.
+fn state_has_transitions(graph: &ArchivedCompiledGraph, state_id: u32) -> bool {
+    let t = &graph.transitions;
+    let start = t.partition_point(|e| e.state_id.to_native() < state_id);
+    t.get(start)
+        .is_some_and(|e| e.state_id.to_native() == state_id)
 }
 
 // ── Cardinality check helpers ─────────────────────────────────────────────────
@@ -828,11 +884,7 @@ fn score_message_multi(
                                     ws.scores[e as usize].non_canonical += 1;
                                 }
                             }
-                            let node = ws
-                                .graph
-                                .nodes
-                                .iter()
-                                .find(|n| n.state_id.to_native() == child);
+                            let node = find_node(ws.graph, child);
                             let mut do_veto = false;
                             if let Some(n) = node {
                                 let wt = n.wire_type;
@@ -970,16 +1022,8 @@ fn score_message_multi(
                             }
                         }
                         Verdict::Found(child, _label) => {
-                            let is_message = ws
-                                .graph
-                                .transitions
-                                .iter()
-                                .any(|t| t.state_id.to_native() == child);
-                            let node = ws
-                                .graph
-                                .nodes
-                                .iter()
-                                .find(|n| n.state_id.to_native() == child);
+                            let is_message = state_has_transitions(ws.graph, child);
+                            let node = find_node(ws.graph, child);
                             if is_message {
                                 record_occurrence(&mut ae.occurrences, field_number as u32);
                                 for &e in &ae.entries {

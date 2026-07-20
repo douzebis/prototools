@@ -323,19 +323,20 @@ impl App {
             _ => None,
         };
 
-        // Spec 0138 (item 12, 2026-07-17 feedback): computed in its own
-        // pass, ahead of the (immutable-`self`) `text_lines` closure
-        // below, since populating the heat-cue caches needs `&mut self`.
-        let heat_cues: Vec<Option<heat_cue::HeatCue>> = window
+        // Spec 0138 (item 12, 2026-07-17 feedback), restructured by
+        // spec 0154 G6: computed in its own pass, ahead of the
+        // (immutable-`self`) `text_lines` closure below, since
+        // populating the heat-cue caches needs `&mut self`.
+        let heat_displays: Vec<heat_cue::HeatDisplay> = window
             .iter()
             .map(|&line_idx| self.heat_cue_for(line_idx))
             .collect();
 
         let text_lines: Vec<Line> = window
             .iter()
-            .zip(heat_cues.iter())
+            .zip(heat_displays.iter())
             .enumerate()
-            .map(|(row, (&line_idx, cue))| {
+            .map(|(row, (&line_idx, display))| {
                 let mut spans = pan_spans(self.render_line_spans(line_idx), self.pan_offset);
                 if self.line_has_active_override(line_idx) {
                     for span in &mut spans {
@@ -343,36 +344,63 @@ impl App {
                     }
                 }
                 // Leading gutter glyph + trailing suffix (spec 0138 N1,
-                // G9) — the glyph column is always reserved (a blank
-                // space when absent), so node indentation never shifts;
-                // both are appended/prepended after panning, so neither
-                // is affected by horizontal scroll. `heat_style` returns
-                // `None` on the ANSI-16 fallback for a low-confidence
-                // `best_score` (G7/G12's narrowing of the gate) — in
-                // that case no cue shows at all, glyph or suffix.
-                let glyph_style = cue.as_ref().and_then(|c| {
-                    let hue = match c.kind {
-                        heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
-                        heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
-                    };
-                    theme::heat_style(c.level, hue, self.theme)
-                });
-                match (glyph_style, cue) {
-                    (Some(style), Some(c)) => {
-                        let suffix = match c.kind {
-                            heat_cue::HeatCueKind::Mismatch { current, best } => Span::styled(
-                                format!(" [{current}/{best}]"),
-                                theme::heat_suffix_style(self.theme),
-                            ),
-                            heat_cue::HeatCueKind::Tie { tie_count } => Span::styled(
-                                format!(" [{tie_count}]"),
-                                theme::style_for(SyntaxRole::Boolean, self.theme),
-                            ),
+                // G9, spec 0154 G6) — the glyph column is always
+                // reserved (a blank space when absent), so node
+                // indentation never shifts; both are appended/prepended
+                // after panning, so neither is affected by horizontal
+                // scroll. The glyph is shown only for a complete
+                // `Cue` — never during a partial/pending state, even
+                // when `best` alone is known — and `heat_style` itself
+                // returns `None` on the ANSI-16 fallback for a
+                // low-confidence `best_score` (G7/G12's narrowing of
+                // the gate), in which case no cue shows at all, glyph
+                // or suffix.
+                let pending_style = || theme::style_for(SyntaxRole::Comment, self.theme);
+                match display {
+                    heat_cue::HeatDisplay::Cue(c) => {
+                        let hue = match c.kind {
+                            heat_cue::HeatCueKind::Mismatch { .. } => theme::HeatHue::Red,
+                            heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
                         };
-                        spans.push(suffix);
-                        spans.insert(0, Span::styled(heat_cue::HEAT_GLYPH.to_string(), style));
+                        match theme::heat_style(c.level, hue, self.theme) {
+                            Some(style) => {
+                                let suffix = match c.kind {
+                                    heat_cue::HeatCueKind::Mismatch { current, best } => {
+                                        let current = current
+                                            .map(|c| c.to_string())
+                                            .unwrap_or_else(|| "-".to_string());
+                                        Span::styled(
+                                            format!(" [{current}/{best}]"),
+                                            theme::heat_suffix_style(self.theme),
+                                        )
+                                    }
+                                    heat_cue::HeatCueKind::Tie { tie_count, score } => {
+                                        Span::styled(
+                                            format!(" [{tie_count}@{score}]"),
+                                            theme::style_for(SyntaxRole::Boolean, self.theme),
+                                        )
+                                    }
+                                };
+                                spans.push(suffix);
+                                spans.insert(
+                                    0,
+                                    Span::styled(heat_cue::HEAT_GLYPH.to_string(), style),
+                                );
+                            }
+                            None => spans.insert(0, Span::raw(" ")),
+                        }
                     }
-                    _ => spans.insert(0, Span::raw(" ")),
+                    heat_cue::HeatDisplay::PendingCurrent { best } => {
+                        spans.insert(0, Span::raw(" "));
+                        spans.push(Span::styled(format!(" [?/{best}]"), pending_style()));
+                    }
+                    heat_cue::HeatDisplay::Unknown => {
+                        spans.insert(0, Span::raw(" "));
+                        spans.push(Span::styled(" [?]", pending_style()));
+                    }
+                    heat_cue::HeatDisplay::None => {
+                        spans.insert(0, Span::raw(" "));
+                    }
                 }
                 let selected = selection_range
                     .as_ref()
@@ -390,10 +418,10 @@ impl App {
         // Local statusline (spec 0147 G2): the main pane's own position/
         // selection info, plain-styled (`main_style`, the same accent
         // `pane_focus_style` already chose above) across the whole row —
-        // no per-span coloring. The right-flushed range/ruler is dropped
-        // entirely (not truncated) when the side pane is open, since the
-        // main pane is only half-width then and there's rarely enough
-        // room for both halves.
+        // no per-span coloring. The byte-range part of the right-flushed
+        // ruler is dropped (not truncated) when the side pane is open,
+        // since the main pane is only half-width then and there's rarely
+        // enough room for it too — the line number stays either way.
         let path_label = self.blob_path.display();
         let (main_left, main_right) = if self.tree.is_empty() {
             (
@@ -403,29 +431,30 @@ impl App {
         } else {
             let node_path = self.positional_path(self.cursor);
             // `status_type_label` returns a bare keyword for a primitive
-            // scalar type (no tag), or a `<fqdn> [tag]`-suffixed label for
-            // a message/group/enum type — shown as-is (2026-07-19
-            // feedback), with a double space ahead of it to set it off
-            // from the node path.
+            // scalar type, or an fqdn for a message/group/enum type — both
+            // get a colon separator (2026-07-19/2026-07-20 feedback); the
+            // `[tag]` suffix is shown only for the latter, and only in
+            // full-width mode, since half-width rarely has room for it.
             let type_label = self.status_type_label(self.cursor);
             let left = match type_label {
-                Some(t) => format!("{path_label} {node_path}  {t}"),
+                Some((t, Some(tag))) if right_outer.is_none() => {
+                    format!("{path_label} {node_path}: {t} [{tag}]")
+                }
+                Some((t, _)) => format!("{path_label} {node_path}: {t}"),
                 None => format!("{path_label} {node_path}"),
             };
-            let range = self.display_range(self.cursor);
-            let right = format!(
-                "[{}..{})  L{}/{}",
-                range.start,
-                range.end,
-                self.cursor_line() + 1,
-                self.lines.len(),
-            );
+            // The byte-range ruler is dropped (not truncated) once a side
+            // pane is open and the main pane is only half-width, since
+            // there's rarely enough room for both halves — but the line
+            // number is short enough to always fit, so it stays.
+            let line_ruler = format!("L{}/{}", self.cursor_line() + 1, self.lines.len());
+            let right = if right_outer.is_some() {
+                line_ruler
+            } else {
+                let range = self.display_range(self.cursor);
+                format!("[{}..{})  {line_ruler}", range.start, range.end)
+            };
             (left, Some(right))
-        };
-        let main_right = if right_outer.is_some() {
-            None
-        } else {
-            main_right
         };
         let main_statusline = main_split[1];
         let main_text = statusline_text(
@@ -576,6 +605,11 @@ impl App {
         }
         let end = (self.override_scroll + list_height).min(total_rows);
         let start = self.override_scroll.min(total_rows);
+        // 2026-07-20 feedback: warm the wrapper-descriptor registration
+        // for the whole currently-visible window ahead of time, so
+        // arrowing through already-visible rows never re-pays the
+        // registration cost per keystroke.
+        self.warm_visible_override_wrappers(start, end);
 
         let mut lines: Vec<Line> = Vec::new();
         for row in start..end {

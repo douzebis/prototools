@@ -87,7 +87,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     let mut blob = vec![0x0Au8, node_payload.len() as u8];
     blob.extend_from_slice(&node_payload);
 
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -159,6 +159,21 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
     app.splice_override(node_idx, Some("test.Node".to_string()))
         .expect("third override must still succeed");
     assert_children(&app, "re-typed a third time");
+
+    // Regression (2026-07-19 crash report): `splice_override` appends
+    // fresh nodes to `app.tree` on every call but used to leave
+    // `heat_states` at its original `App::new`-time length, so
+    // `heat_cue_for` on one of those freshly-pushed nodes indexed past
+    // the end and panicked. `heat_states` must stay parallel to `tree`,
+    // and calling `heat_cue_for` for every line must not panic.
+    assert_eq!(
+        app.heat_states.len(),
+        app.tree.len(),
+        "heat_states must stay parallel to tree after repeated splices"
+    );
+    for line in 0..app.lines.len() {
+        app.heat_cue_for(line);
+    }
 
     // `line_to_node` must stay fully consistent with the doc chain:
     // every reachable node via `doc_next` from `first_node`, and
@@ -232,7 +247,7 @@ fn splice_override_on_an_incompatible_scalar_does_not_panic() {
     let label = b"hello";
     let mut blob = vec![0x0Au8, label.len() as u8];
     blob.extend_from_slice(label);
-    let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("incompat.StrHolder"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -313,7 +328,7 @@ fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotatio
 
     // IntHolder { type_id: 5 } — field 2, varint wire type.
     let blob = vec![0x10u8, 0x05];
-    let decoded = decode(&blob, &mut ctx, Some("varint_mismatch.IntHolder"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("varint_mismatch.IntHolder"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -611,7 +626,7 @@ fn splice_override_reactivating_root_type_still_expands_any_fields() {
     let mut blob = vec![0x0au8, any_bytes.len() as u8];
     blob.extend_from_slice(&any_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -762,7 +777,7 @@ fn message_set_item_status_and_manage_labels_show_the_friendly_fqdn_not_the_inte
         .position(|n| n.span.type_fqdn.as_deref() == Some(decode::MESSAGE_SET_ITEM_FQDN))
         .expect("Item group must be spliced to the synthetic MessageSetItem type");
 
-    let status_label = app
+    let (status_label, _tag) = app
         .status_type_label(item_idx)
         .expect("Item node must have a status-line type label");
     assert!(
@@ -864,7 +879,7 @@ fn no_resolved_root_type_seeds_no_override_and_still_renders_raw() {
     // A single varint field (tag 0x08, value 5) — no --type, and this
     // context has no hopcroft.rkyv, so autoinference is unavailable.
     let blob = [0x08u8, 0x05];
-    let decoded = decode(&blob, &mut ctx, None, 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, None, 2, false).unwrap();
     assert_eq!(decoded.root_type, "<raw / no type>");
 
     let app = App::new(

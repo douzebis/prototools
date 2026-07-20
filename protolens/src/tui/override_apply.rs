@@ -93,8 +93,10 @@ impl App {
     /// included (`natural_type`). `None` when nothing is resolvable at
     /// all, or when the pinned `<raw / no type>` override entry is
     /// explicitly active — either case means the status line shows no
-    /// fragment.
-    pub(super) fn status_type_label(&self, idx: usize) -> Option<String> {
+    /// fragment. The second tuple element is the `message`/`group`/
+    /// `enum` tag (2026-07-19 feedback: shown only in full-width mode,
+    /// via `render.rs`), `None` for a bare primitive keyword.
+    pub(super) fn status_type_label(&self, idx: usize) -> Option<(String, Option<&'static str>)> {
         let span = &self.tree[idx].span;
         if span.is_message {
             // `resettle_node` keeps `span.type_fqdn`/`is_message` in sync
@@ -112,23 +114,23 @@ impl App {
             // FQDN instead (2026-07-18 feedback item 4).
             if fqdn == decode::MESSAGE_SET_ITEM_FQDN {
                 if let Some(display) = self.message_set_item_display_fqdn(idx) {
-                    return Some(format_fqdn_label(&display, tag));
+                    return Some((format_fqdn_label(&display), Some(tag)));
                 }
             }
-            return Some(format_fqdn_label(fqdn, tag));
+            return Some((format_fqdn_label(fqdn), Some(tag)));
         }
         let effective = match self.resolve_active_override(idx) {
             Some(inner) => inner?,
             None => self.natural_type(idx)?,
         };
         if decode::primitive_type_for_keyword(&effective).is_some() {
-            return Some(effective);
+            return Some((effective, None));
         }
         // Not a primitive keyword: the only other possibility reaching
         // this branch is an enum FQDN from `natural_type` (an active
         // override can never resolve to a message FQDN here — see the
         // `is_message` branch above).
-        Some(format_fqdn_label(&effective, "enum"))
+        Some((format_fqdn_label(&effective), Some("enum")))
     }
 
     /// `true` when `idx`'s resolved type is `google.protobuf.Any` — spec
@@ -420,6 +422,31 @@ impl App {
         }
     }
 
+    /// Applies the winning fqdn from the async root-type resolver (spec
+    /// NNNN) to the document root — the deferred counterpart of
+    /// `App::new`'s `overrides.seed_root` + real-wrapper-descriptor
+    /// construction for the synchronous case. Seeding then delegating to
+    /// `render_overrides` (rather than a bespoke splice) reuses the exact
+    /// same mismatch-detection/splice/recurse path any other override
+    /// activation already goes through — including seeding Any/
+    /// MessageSet auto-expansion on the freshly-typed children
+    /// `splice_override` builds, and `splice_override`'s own `line_to_
+    /// node`/`rebuild_visible_rows` bookkeeping. A no-op if the user
+    /// already made their own choice for the root (`t`, a `type-as`
+    /// command, or explicitly confirming raw) by the time this lands —
+    /// an existing entry for the root's own origin always wins over the
+    /// worker's answer.
+    pub(super) fn apply_resolved_root_type(&mut self, fqdn: String) {
+        if self
+            .resolve_active_override_entry(self.first_node)
+            .is_some()
+        {
+            return;
+        }
+        self.overrides.seed_root(Some(fqdn));
+        self.render_overrides(self.first_node);
+    }
+
     /// Whether `entry` (assumed `auto == true`) would still be re-derived
     /// with the same `r#type` if `render_overrides` visited its node
     /// again right now — i.e. it is still "in scope" (spec 0125 §G2).
@@ -685,7 +712,7 @@ impl App {
                             self.ctx.pool_mut(),
                             field_number,
                             ft,
-                            target_desc.as_ref(),
+                            target_desc,
                         )
                         .map_err(|e| e.to_string())?,
                     ),
@@ -832,6 +859,14 @@ impl App {
                 rendered_as: None,
             });
         }
+
+        // Keep `heat_states` parallel to `tree` (spec 0152 G6) — every
+        // freshly pushed node starts all-pending; `idx` itself was just
+        // retyped, so any previously resolved cue for it is now stale
+        // and must be reset too, not left dangling as settled.
+        self.heat_states
+            .resize(self.tree.len(), heat_cue::HeatState::default());
+        self.heat_states[idx] = heat_cue::HeatState::default();
 
         // The pushed copy of the local root (at `new_self_idx`) is left
         // orphaned, never referenced again — its span/children are copied
@@ -1041,12 +1076,12 @@ impl App {
 /// prepended with a leading `.` only if omitting it would make the bare
 /// `fqdn` collide with a primitive keyword or the reserved `None`
 /// keyword (a future fake primitive type, per review — not yet wired up
-/// anywhere in this codebase), followed by a space and `[{tag}]`.
-fn format_fqdn_label(fqdn: &str, tag: &str) -> String {
+/// anywhere in this codebase).
+fn format_fqdn_label(fqdn: &str) -> String {
     if fqdn_needs_dot_prefix(fqdn) {
-        format!(".{fqdn} [{tag}]")
+        format!(".{fqdn}")
     } else {
-        format!("{fqdn} [{tag}]")
+        fqdn.to_string()
     }
 }
 

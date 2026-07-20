@@ -717,6 +717,65 @@ fn mt06_enum_oor_vetoes_only_enum_entry() {
     assert_eq!(inner.unknowns, 1);
 }
 
+/// SO-01: `score_one` against one entry of a multi-root graph matches the
+/// corresponding entry from `score_all` on the same blob.
+#[test]
+fn so01_matches_score_all_entry() {
+    let g = build_two_entry_graph();
+    let pb = field_varint(1, 42);
+
+    let all_results = walk::score_all(&pb, &g, &walk::ScoringOpts::default());
+    let expected = entry_score(&all_results, "Outer");
+
+    let one = walk::score_one(&pb, "Outer", &g, &walk::ScoringOpts::default())
+        .expect("Outer should be found");
+
+    assert_eq!(one.fqdn, expected.fqdn);
+    assert_eq!(one.matches, expected.matches);
+    assert_eq!(one.unknowns, expected.unknowns);
+    assert_eq!(one.mismatches, expected.mismatches);
+    assert_eq!(one.non_canonical, expected.non_canonical);
+    assert_eq!(one.vetoed, expected.vetoed);
+}
+
+/// SO-02: `score_one` does not walk or affect other entries — Inner sees the
+/// same veto behavior it would in isolation, unaffected by Outer's presence.
+#[test]
+fn so02_only_requested_entry_is_scored() {
+    let g = build_two_entry_graph();
+    // field 2 sent as VARINT — Outer expects LEN and would veto; Inner has no
+    // field 2 and would only see it as unknown.
+    let pb = field_varint(2, 99);
+
+    let inner = walk::score_one(&pb, "Inner", &g, &walk::ScoringOpts::default())
+        .expect("Inner should be found");
+    assert!(!inner.vetoed, "Inner: field 2 is unknown, should not veto");
+    assert_eq!(inner.unknowns, 1);
+}
+
+/// SO-03: `score_one` accepts a leading-dot fully-qualified name.
+#[test]
+fn so03_accepts_leading_dot_fqdn() {
+    let g = build_two_entry_graph();
+    let pb = field_varint(1, 42);
+
+    let bare = walk::score_one(&pb, "Outer", &g, &walk::ScoringOpts::default())
+        .expect("bare name should resolve");
+    let dotted = walk::score_one(&pb, ".Outer", &g, &walk::ScoringOpts::default())
+        .expect("dotted name should resolve");
+
+    assert_eq!(bare.matches, dotted.matches);
+}
+
+/// SO-04: `score_one` returns `None` for an fqdn absent from `graph.roots`.
+#[test]
+fn so04_unknown_fqdn_returns_none() {
+    let g = build_two_entry_graph();
+    let pb = field_varint(1, 42);
+
+    assert!(walk::score_one(&pb, "NoSuchType", &g, &walk::ScoringOpts::default()).is_none());
+}
+
 /// TC-20: Enum value exactly at boundary (0 and 2) — both valid.
 #[test]
 fn tc20_enum_boundary_values() {

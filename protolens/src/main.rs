@@ -201,11 +201,23 @@ fn main() -> ExitCode {
         }
     };
 
-    if cli.command.is_none() && ctx.graph.is_some() {
+    // Root-type inference (`score_all` over the whole blob) is deferred to
+    // the TUI's background worker when entering the TUI without an
+    // explicit `--type` (spec NNNN) — the batch `Extract` path has no
+    // event loop to hand it off to, so it always resolves synchronously,
+    // same as an explicit `--type`.
+    let defer_root_type = cli.command.is_none() && cli.r#type.is_none();
+    if cli.command.is_none() && ctx.graph.is_some() && !defer_root_type {
         eprintln!("protolens: resolving root type...");
     }
 
-    let decoded = match decode::decode(&blob, &mut ctx, cli.r#type.as_deref(), cli.indent) {
+    let decoded = match decode::decode(
+        &blob,
+        &mut ctx,
+        cli.r#type.as_deref(),
+        cli.indent,
+        defer_root_type,
+    ) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("error: {e}");

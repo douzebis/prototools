@@ -12,11 +12,13 @@ use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    self as term_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -109,16 +111,10 @@ const WARMUP_FIRST_DRAW_DELAY: Duration = Duration::from_millis(300);
 /// line turns out to be.
 const WARMUP_REDRAW_INTERVAL: Duration = Duration::from_millis(300);
 
-/// Byte budget for `App::candidate_cache` (spec 0114 §6) — tuned generously
-/// for a short-lived interactive session: at a rough ~50-70 bytes per
-/// cached `(fqdn, score)` entry, this comfortably holds capped previews for
-/// hundreds of distinct previously-viewed ranges. Exact cap left as an
-/// implementation-time tuning choice (spec Open Issue #1).
-const CANDIDATE_CACHE_MAX_BYTES: usize = 1 << 20;
-
-/// Byte budget for `App::render_cache` (spec 0116 §8) — same order of
-/// magnitude as `CANDIDATE_CACHE_MAX_BYTES`, its direct structural
-/// precedent, for the same short-lived-interactive-session reasoning.
+/// Byte budget for `App::render_cache` (spec 0116 §8) — tuned generously
+/// for a short-lived interactive session (spec 0114 §6's original
+/// `candidate_cache` reasoning, since superseded by spec 0152's
+/// entry-count-bounded `HeatCaches`, still applies to this one).
 const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 
 /// Single source-of-truth command-name registry (spec 0113 D26) — backs
@@ -714,35 +710,48 @@ pub struct App {
     /// scrolling by a full page, mirroring `main_area` (used the same way
     /// for the main pane's own `PageUp`/`PageDown`).
     override_list_height: usize,
-    /// Byte-bounded MRU cache of capped inferred-candidate previews for
-    /// ranges other than the one currently active (spec 0114 §6).
-    candidate_cache: override_pane::CandidateCache,
-    /// Entry-count-bounded MRU cache of small `RangeHeatStats` summaries
-    /// (`best_score`/`best_count`), keyed by a node's tag/length-stripped
-    /// payload range's `start` offset, for the main-pane inference-
-    /// mismatch heat cue (spec 0151 G1, superseding spec 0138 G1's
-    /// full-candidate-list `CandidateCache` reuse — see spec 0151
-    /// Background for why that reuse never actually cached anything
-    /// useful). Populated lazily, only for nodes actually visible in the
-    /// main-pane viewport (`heat_cue::heat_cue_for`); independent of the
-    /// node's current type. Independent of `candidate_cache`, which
-    /// serves the override *pane* rather than the main pane (though G6
-    /// opportunistically cross-populates it on a miss here).
-    heat_range_cache: heat_cue::BoundedMru<usize, heat_cue::RangeHeatStats>,
-    /// Entry-count-bounded MRU cache of one node's current-type score
-    /// within its range's candidate list (spec 0151 G1/G3), keyed by
-    /// `(range-start, current-type-FQDN)` — `None` when the current type
-    /// is confirmed absent from the candidate list (vetoed for this
-    /// range), distinct from "not yet looked up".
-    heat_current_score_cache: heat_cue::BoundedMru<(usize, String), Option<i64>>,
+    /// Shared, mutex-protected scoring cache (spec 0152 G4) — replaces
+    /// spec 0151's three separate fields (`heat_range_cache`/
+    /// `heat_current_score_cache`/`candidate_cache`), bundled under one
+    /// lock since every read/write of them is a handful of `Vec`
+    /// operations with no I/O. Both the render/input thread and
+    /// `heat_worker` (when spawned) read and write this same structure
+    /// directly — see `heat_worker::HeatCaches`.
+    heat_caches: Arc<Mutex<heat_worker::HeatCaches>>,
+    /// The background scoring worker thread (spec 0152 G1) — `None`
+    /// whenever no scoring graph is loaded (mirroring the warm-up
+    /// pass's own gate) or before `tui::run()` has spawned it; every
+    /// fork that checks `heat_worker.is_some()` falls through to the
+    /// existing synchronous logic when it's `None`.
+    heat_worker: Option<heat_worker::HeatWorkerHandle>,
+    /// `true` from `App::new` until the one-shot background root-type
+    /// resolver (spec NNNN) reports back via `AppEvent::RootTypeResolved`
+    /// — set from `Decoded::root_type_deferred`. `run()` only spawns the
+    /// resolver thread while this is `true`; the run-loop's event handler
+    /// clears it unconditionally on `RootTypeResolved`, whether or not a
+    /// winner was found, since either way there's nothing left to wait
+    /// for.
+    root_type_pending: bool,
+    /// Per-node heat-cue resolution state (spec 0152 G6), parallel to
+    /// `tree` — `Pending` until a cache check (only ever attempted on a
+    /// worker-progress wakeup or a real redraw-triggering input event)
+    /// resolves it; `Resolved` nodes are read directly, no cache lock.
+    heat_states: Vec<heat_cue::HeatState>,
+    /// `true` while `recompute_override_candidates`'s `SortMode::
+    /// Inferred` branch is waiting on a worker request for the
+    /// override pane's first page (spec 0152 G7).
+    override_candidates_pending: bool,
+    /// `true` while `upgrade_active_override_to_complete` is waiting on
+    /// a worker request for a wider window (spec 0152 G7).
+    override_complete_pending: bool,
     /// `true` while the main-pane heat cue (spec 0138) is toggled off by
     /// `i` (item 12, 2026-07-17 feedback) — hides the cue without
-    /// discarding `heat_range_cache`/`heat_current_score_cache`.
+    /// discarding `heat_caches`.
     heat_cues_hidden: bool,
     /// Byte-bounded MRU cache of `(range, type) -> (lines, spans, style
     /// hints)` renders (spec 0116 §8) — consulted/populated by
     /// `apply_override`, keyed by the same `payload_range`/type pair
-    /// `candidate_cache` already keys on.
+    /// `heat_caches` already keys its own entries on.
     render_cache: RenderCache,
     /// The tag/length-stripped target range whose complete-or-capped
     /// inferred-candidate list `override_inferred_raw` currently holds —
@@ -753,15 +762,26 @@ pub struct App {
     /// Raw `(fqdn, score)` list for `active_override_range`, source of
     /// truth `override_candidates` is derived from in `SortMode::Inferred`
     /// — either the complete ranked list, or (right after a
-    /// `candidate_cache` hit) a capped preview, per
+    /// `heat_caches` hit) a capped preview, per
     /// `override_candidates_complete`.
     override_inferred_raw: Vec<(String, i64)>,
     /// Whether `override_inferred_raw` is the complete ranked list for
     /// `active_override_range`, or just a capped preview pulled from
-    /// `candidate_cache` — an incomplete preview is upgraded to the
-    /// complete list (a fresh `score_all` call) the moment the user tries
-    /// to scroll past it (spec 0114 §6).
+    /// `heat_caches` — an incomplete preview is upgraded to the
+    /// complete list (a `heat_lookup` call for a wider window, spec
+    /// 0152 G7) the moment the user tries to scroll past it (spec
+    /// 0114 §6).
     override_candidates_complete: bool,
+    /// 2026-07-20 feedback: the FQDN (or the `None` sentinel string) an
+    /// `open_override_on_type` call is still trying to highlight once
+    /// fetched, when a cold cache left it unresolved at open time
+    /// (`override_candidates_pending`/`override_complete_pending`).
+    /// Consulted by `poll_pending_override_work` after each background
+    /// resolution; cleared once the row is found (or, having reached
+    /// `override_candidates_complete` without finding it, the pane
+    /// falls back to `Lexicographic` mode instead — mirroring
+    /// `open_override_on_type`'s own synchronous fallback).
+    override_seek_target: Option<String>,
     /// Persistent collection of overrides (spec 0117 §1) — distinct from,
     /// and unrelated to, the one-shot `apply_override` splice-render
     /// mechanism above; see spec 0117's Non-goals.
@@ -945,6 +965,7 @@ impl App {
         proto_root: Option<PathBuf>,
     ) -> Self {
         let all_type_fqdns = override_pane::all_type_fqdns(ctx.pool());
+        let tree_len = decoded.tree.len();
         let mut line_to_node = HashMap::new();
         let mut footer_line_to_node = HashMap::new();
         for (idx, node) in decoded.tree.iter().enumerate() {
@@ -1026,14 +1047,20 @@ impl App {
             last_override_search: None,
             term_width: 0,
             override_list_height: 0,
-            candidate_cache: override_pane::CandidateCache::new(CANDIDATE_CACHE_MAX_BYTES),
-            heat_range_cache: heat_cue::BoundedMru::new(heat_cue::HEAT_CACHE_MAX_ENTRIES),
-            heat_current_score_cache: heat_cue::BoundedMru::new(heat_cue::HEAT_CACHE_MAX_ENTRIES),
+            heat_caches: Arc::new(Mutex::new(heat_worker::HeatCaches::new(
+                heat_cue::HEAT_CACHE_MAX_ENTRIES,
+            ))),
+            heat_worker: None,
+            root_type_pending: decoded.root_type_deferred,
+            heat_states: vec![heat_cue::HeatState::default(); tree_len],
+            override_candidates_pending: false,
+            override_complete_pending: false,
             heat_cues_hidden: false,
             render_cache: RenderCache::new(RENDER_CACHE_MAX_BYTES),
             active_override_range: None,
             override_inferred_raw: Vec::new(),
             override_candidates_complete: false,
+            override_seek_target: None,
             overrides,
             manage_open: false,
             manage_focus: false,
@@ -1233,9 +1260,9 @@ fn marker_column(line: &str) -> u16 {
 fn drain_pending_input() {
     let deadline = Instant::now() + Duration::from_millis(60);
     while Instant::now() < deadline {
-        match event::poll(Duration::from_millis(15)) {
+        match term_event::poll(Duration::from_millis(15)) {
             Ok(true) => {
-                let _ = event::read();
+                let _ = term_event::read();
             }
             _ => break,
         }
@@ -1363,10 +1390,70 @@ pub fn run(app: &mut App) -> io::Result<()> {
         default_hook(info);
     }));
 
+    let (tx, rx) = mpsc::channel();
+    // `Option`-wrapped (2026-07-20 feedback) so `run_loop` can `take()`
+    // it and shut it down around the Neovim handoff below — see
+    // `run_loop`'s own doc comment on that block for why.
+    let mut input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
+
+    // Spec 0152 G1: spawned only when a scoring graph is loaded — with
+    // no graph, `app.heat_worker` stays `None` for the whole session,
+    // and every fork that checks `heat_worker.is_some()` falls through
+    // to the existing synchronous logic. Spawned *before* `warm_up_
+    // heat_cues` below (2026-07-19 feedback) so its initial-viewport
+    // pass can push requests onto the worker's queue and return
+    // immediately instead of scoring synchronously on this thread —
+    // fixes the multi-second "black screen" startup freeze against a
+    // large scoring graph, which the warm-up pass used to cause by
+    // always running before any worker existed to hand work off to.
+    if let Some(graph) = &app.ctx.graph {
+        let graph_ref = graph.graph; // 'static, Copy — spec 0152 G2
+        let blob = Arc::new(app.blob.clone()); // one-time clone, G2
+
+        // Spec NNNN: root-type inference is a single, one-shot `score_
+        // all` sweep over the *whole* blob — unlike heat-cue/override
+        // requests, it's never repeated, so it gets its own detached,
+        // fire-and-forget thread rather than a `HeatRequestQueue` entry.
+        // Not joined anywhere (deliberately, unlike `heat_worker`/
+        // `input_reader` below): it holds only `'static`/`Arc`-owned
+        // data, so an early `should_quit` simply lets the OS reclaim it
+        // mid-sweep — joining would otherwise make quitting wait out the
+        // very sweep this whole feature exists to get off the critical
+        // path.
+        if app.root_type_pending {
+            let root_type_tx = tx.clone();
+            // `determine_root_type` (spec NNNN's synchronous ancestor)
+            // scores the caller's original, unwrapped blob — recover it
+            // from the wrapped one `Decoded::blob` carries (see `Decoded::
+            // wrapper_offset`'s doc comment).
+            let original_blob = app.blob[app.wrapper_offset..].to_vec();
+            thread::spawn(move || {
+                let fqdn = decode::resolve_root_winner_fqdn(&original_blob, graph_ref);
+                let _ = root_type_tx.send(event::AppEvent::RootTypeResolved(fqdn));
+            });
+        }
+
+        app.heat_worker = Some(heat_worker::HeatWorkerHandle::spawn(
+            Arc::clone(&app.heat_caches),
+            graph_ref,
+            blob,
+            tx.clone(),
+        ));
+    }
+
     warm_up_heat_cues(&mut terminal, app)?;
 
-    let result = run_loop(&mut terminal, app);
+    let result = run_loop(&mut terminal, app, &rx, &mut input_reader, &tx);
 
+    // Spec 0152 G9: both threads joined, unconditionally, before
+    // `App`'s `ctx.graph` can drop — load-bearing for the worker's
+    // `'static` graph reference (see "Shutdown and safety").
+    if let Some(worker) = app.heat_worker.take() {
+        worker.shutdown();
+    }
+    if let Some(reader) = input_reader.take() {
+        reader.shutdown();
+    }
     let _ = std::panic::take_hook();
     restore_terminal();
     terminal.show_cursor()?;
@@ -1374,17 +1461,22 @@ pub fn run(app: &mut App) -> io::Result<()> {
     result
 }
 
-/// One-time warm-up pass (spec 0151 G8) populating heat cues for the
-/// initial viewport before the first `run_loop` iteration, so that cost
-/// (a first visit to each initially-visible range, G2) drives its own
-/// incremental redraws instead of computing silently inside a single
-/// `render()` call — the mechanism behind the original "stalled"
-/// report.
+/// One-time warm-up pass (spec 0151 G8) priming heat cues for the
+/// initial viewport before the first `run_loop` iteration. With the
+/// spec-0152 worker already spawned by the time this runs, each
+/// `heat_cue_for` call below either hits the cache or pushes a request
+/// onto the worker's queue and returns immediately — this loop no
+/// longer scores anything itself (that was the original, now-fixed,
+/// multi-second "black screen" startup freeze against a large scoring
+/// graph). Still runs while heat cues are hidden (`i`, 2026-07-19
+/// feedback): the background fetch/cache is worth priming regardless
+/// of whether a cue is currently shown — only `heat_cue_for`'s return
+/// value is suppressed while hidden, not the underlying work.
 fn warm_up_heat_cues<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
 where
     io::Error: From<B::Error>,
 {
-    if app.ctx.graph.is_none() || app.heat_cues_hidden {
+    if app.ctx.graph.is_none() {
         return Ok(());
     }
     let rows = terminal.size()?.height as usize;
@@ -1412,7 +1504,13 @@ where
     Ok(())
 }
 
-fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()>
+fn run_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    rx: &mpsc::Receiver<event::AppEvent>,
+    input_reader: &mut Option<event::InputReaderHandle>,
+    tx: &mpsc::Sender<event::AppEvent>,
+) -> io::Result<()>
 where
     io::Error: From<B::Error>,
 {
@@ -1421,30 +1519,31 @@ where
         // While a status message is pending auto-dismissal
         // (`message_deadline`, `track_message_timeout`) or the splash
         // screen hasn't yet auto-dismissed (`splash_deadline`, item 13
-        // of 2026-07-17 feedback), poll with a timeout instead of
-        // blocking indefinitely on `event::read()`, so the next
-        // `render()` (which actually clears an expired message/splash)
-        // runs even with no further keypress. No behavior change — same
-        // indefinite block as before — once both have elapsed, which is
-        // most of the time in ordinary navigation.
+        // of 2026-07-17 feedback), receive with a timeout instead of
+        // blocking indefinitely, so the next `render()` (which actually
+        // clears an expired message/splash) runs even with no further
+        // event. No behavior change — same indefinite block as before —
+        // once both have elapsed, which is most of the time in ordinary
+        // navigation. Spec 0152 G8: this replaces a direct `event::
+        // poll`/`event::read()` pair — the input-reader thread now owns
+        // those calls, forwarding through `rx` alongside the worker
+        // thread's own progress notifications, so this loop genuinely
+        // sleeps until there's a reason to wake instead of polling on a
+        // fixed schedule.
         let splash_deadline = app.splash.then_some(app.splash_deadline);
         let deadline = match (app.message_deadline, splash_deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(d), None) | (None, Some(d)) => Some(d),
             (None, None) => None,
         };
-        let event = match deadline {
+        let received = match deadline {
             Some(deadline) => {
                 let timeout = deadline.saturating_duration_since(Instant::now());
-                if event::poll(timeout)? {
-                    Some(event::read()?)
-                } else {
-                    None
-                }
+                rx.recv_timeout(timeout).ok() // timeout elapsed => None
             }
-            None => Some(event::read()?),
+            None => rx.recv().ok(),
         };
-        match event {
+        match received {
             // Some Kitty-protocol-aware terminals report a `Release`
             // event for a keystroke in addition to `Press`, even though
             // this app only requests `DISAMBIGUATE_ESCAPE_CODES` (not
@@ -1454,9 +1553,22 @@ where
             // would land in the *new* focus's handler instead of being a
             // no-op — surfacing as a keypress "leaking" into both panes.
             // Ignore anything but `Press`/`Repeat`.
-            Some(Event::Key(key)) if key.kind != KeyEventKind::Release => app.handle_key(key),
-            Some(Event::Mouse(mouse)) => app.handle_mouse(mouse),
-            _ => {}
+            Some(event::AppEvent::Term(Event::Key(key))) if key.kind != KeyEventKind::Release => {
+                app.handle_key(key)
+            }
+            Some(event::AppEvent::Term(Event::Mouse(mouse))) => app.handle_mouse(mouse),
+            Some(event::AppEvent::Term(_)) => {}
+            Some(event::AppEvent::HeatWorkerProgress) => {
+                app.recheck_pending_heat_states();
+                app.poll_pending_override_work();
+            }
+            Some(event::AppEvent::RootTypeResolved(fqdn_opt)) => {
+                app.root_type_pending = false;
+                if let Some(fqdn) = fqdn_opt {
+                    app.apply_resolved_root_type(fqdn);
+                }
+            }
+            None => {} // deadline elapsed with nothing received
         }
         if app.should_quit {
             return Ok(());
@@ -1468,13 +1580,35 @@ where
         }
         #[cfg(unix)]
         if let Some(req) = app.pending_editor_open.take() {
+            // 2026-07-20 feedback ("`v` is broken"): `open_editor`
+            // backgrounds this process's own process group relative to
+            // the terminal (`tcsetpgrp(io::stdin(), nvim_pgid)`) for as
+            // long as Neovim owns the foreground. The input-reader
+            // thread (spec 0152 G8) is otherwise permanently blocked in
+            // `event::read()` on that same stdin — a background
+            // process's read from its controlling terminal draws
+            // SIGTTIN, whose default disposition stops the *whole
+            // process* (every thread, not just this one), with nothing
+            // left to `SIGCONT` it back. Shutting it down before the
+            // handoff and respawning a fresh one right after
+            // `open_editor` reclaims the terminal avoids that entirely
+            // — exactly what the single-threaded code (before spec
+            // 0152's input-reader thread existed) did implicitly, since
+            // back then nothing else ever touched stdin during the
+            // handoff.
+            if let Some(reader) = input_reader.take() {
+                reader.shutdown();
+            }
             neovim::open_editor(terminal, app, req)?;
+            *input_reader = Some(event::InputReaderHandle::spawn(tx.clone()));
         }
     }
 }
 
 mod command_line;
+mod event;
 mod heat_cue;
+mod heat_worker;
 mod key_dispatch;
 mod manage_pane;
 mod mouse;

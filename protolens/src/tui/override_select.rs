@@ -4,6 +4,10 @@
 
 use super::*;
 
+use prost_reflect::prost_types::field_descriptor_proto::Type;
+
+use super::heat_worker::Priority;
+
 impl App {
     /// Whether `idx` is eligible as an override target (`t`, `type-as`,
     /// `type-as-raw`): a message/group node already (`NodeSpan::
@@ -70,20 +74,32 @@ impl App {
         // inactive-but-applicable entry from the management list
         // (`first_entry_matching_origin_candidates` — by construction,
         // since Step A found no active match, any entry it returns here
-        // is necessarily inactive); else Step B.5: for an enum- or
-        // primitive-typed field with no override at all, its own
-        // schema-declared type (`natural_type`) — a message-typed field
-        // is deliberately excluded (its schema is unknown/partial by
-        // nature, so `Inferred` scoring below still makes sense for it).
+        // is necessarily inactive); else Step B.5: with no override at
+        // all, the field's own *currently effective* type — for a
+        // message/group node, `span.type_fqdn` itself (2026-07-20 fix:
+        // previously routed through `natural_type`/`parent_field`,
+        // i.e. the *parent's* schema-declared field type; but a node's
+        // own `span.type_fqdn` can legitimately differ from that —
+        // e.g. a field decoded via best-effort inference rather than a
+        // strict schema declaration — in which case `parent_field`
+        // fails and `natural_type` returns `None` even though the main
+        // pane is already showing a perfectly good resolved type for
+        // this exact node. `span.type_fqdn` is the same value `status_
+        // type_label` shows in the status line, so it's always exactly
+        // "the type already shown in the main pane" the override pane
+        // should seed its highlight on); for any other kind (enum,
+        // primitive), `natural_type` as before — those have no
+        // standalone `span.type_fqdn` of their own to fall back on.
         // Without this step such a field fell through to
         // `open_override_on_default`'s `Inferred`-mode scoring, which is
         // meaningless for a scalar (it scores the bytes as a prospective
         // *message*) and so landed on the unrelated `None` sentinel row
         // (or the top-scored message FQDN) instead of the field's own
         // current type (2026-07-18 feedback, extended from enum-only to
-        // every primitive keyword 2026-07-19: `open_override_on_type`
-        // below naturally lands in `Lexicographic` mode for these, since
-        // no primitive keyword is ever a member of the `Inferred`
+        // every primitive keyword 2026-07-19, then to message/group
+        // nodes 2026-07-20: `open_override_on_type` below naturally
+        // lands in `Lexicographic` mode for scalar keywords, since no
+        // primitive keyword is ever a member of the `Inferred`
         // candidate list).
         let candidate_type = self
             .resolve_active_override_entry(self.cursor)
@@ -93,11 +109,12 @@ impl App {
                     .map(|i| self.overrides.entries()[i].r#type.clone())
             })
             .or_else(|| {
-                let is_scalar = !matches!(
-                    self.parent_field(self.cursor).map(|f| f.kind()),
-                    None | Some(prost_reflect::Kind::Message(_))
-                );
-                is_scalar.then(|| self.natural_type(self.cursor))
+                let span = &self.tree[self.cursor].span;
+                if span.is_message {
+                    span.type_fqdn.clone().map(Some)
+                } else {
+                    self.natural_type(self.cursor).map(Some)
+                }
             });
 
         match candidate_type {
@@ -115,7 +132,7 @@ impl App {
     /// in `Inferred` mode with the highlight on `fqdn_or_raw`'s row if
     /// that type is present in the node's *complete* inferred candidate
     /// list (`upgrade_active_override_to_complete` avoids a false
-    /// "not found" from a stale capped `candidate_cache` preview);
+    /// "not found" from a stale capped preview);
     /// otherwise open in `Lexicographic` mode, whose candidate set is
     /// the fixed universe of every selectable type and so is guaranteed
     /// to contain it.
@@ -126,15 +143,46 @@ impl App {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
         self.upgrade_active_override_to_complete();
-        if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
-            self.override_highlight = row;
+        if self.seek_override_highlight(&key) {
             return;
         }
+        // 2026-07-20 fix: a cold cache means the two calls above merely
+        // queued background requests rather than answering — the
+        // *complete* list isn't known yet, so "not found" would be a
+        // false negative (exactly what `upgrade_active_override_to_
+        // complete` above is meant to avoid). Stay in `Inferred` mode
+        // and remember `key` so `poll_pending_override_work` can keep
+        // trying to seek it as more of the list arrives in the
+        // background, instead of discarding it for `Lexicographic`
+        // outright.
+        if self.override_candidates_pending || self.override_complete_pending {
+            self.override_seek_target = Some(key);
+            return;
+        }
+        // 2026-07-20 fix: the `recompute_override_candidates` call above
+        // may have set the "no scoring graph available" message (no
+        // `ctx.graph` at all, so `Inferred` mode is unreachable) — this
+        // silent fallback already does what that message would have
+        // suggested, so it must not leak through (mirrors `open_
+        // override_on_default`'s own suppression of the same message).
+        self.message.clear();
         self.override_sort = SortMode::Lexicographic;
         self.recompute_override_candidates();
-        if let Some(row) = self.override_candidates.iter().position(|(f, _)| *f == key) {
-            self.override_highlight = row;
-        }
+        self.seek_override_highlight(&key);
+    }
+
+    /// Looks for `key` among the candidates currently on screen
+    /// (`override_candidates` — whichever sort mode is active) and, if
+    /// found, moves the highlight there and clears `override_seek_
+    /// target`. Shared by `open_override_on_type`'s own immediate
+    /// attempt and `poll_pending_override_work`'s follow-up retries.
+    fn seek_override_highlight(&mut self, key: &str) -> bool {
+        let Some(row) = self.override_candidates.iter().position(|(f, _)| f == key) else {
+            return false;
+        };
+        self.override_highlight = row;
+        self.override_seek_target = None;
+        true
     }
 
     /// Spec 0139 Steps C/D: neither an active nor an applicable-inactive
@@ -148,7 +196,17 @@ impl App {
     fn open_override_on_default(&mut self) {
         self.override_sort = SortMode::Inferred;
         self.recompute_override_candidates();
-        if self.override_candidates.is_empty() {
+        // 2026-07-20 fix: an empty list while `override_candidates_
+        // pending` is set means the cache was merely cold at open time
+        // (a background request was just queued) — not that `Inferred`
+        // mode has nothing to offer. Falling back to `Lexicographic`
+        // here discarded that in-flight fetch's eventual result outright
+        // (and, before the pending-flag fix above, could later resurface
+        // it as a permanently-capped, un-growable list once it resolved
+        // — spec 0152 G7 follow-up). Wait for it instead; the "no
+        // scoring graph available" case (no request ever queued, so
+        // `pending` stays false) still falls back immediately, as before.
+        if self.override_candidates.is_empty() && !self.override_candidates_pending {
             // Not superseded by spec 0147 G5's top-of-`handle_key` clear
             // (which only dismisses a message left over from a *previous*
             // keypress) — this clears the "no scoring graph available"
@@ -158,7 +216,15 @@ impl App {
             self.message.clear();
             self.override_sort = SortMode::Lexicographic;
             self.recompute_override_candidates();
+            return;
         }
+        // 2026-07-20 feedback: "too lazy" — eagerly begin fetching the
+        // rest of the list right away instead of waiting for the user
+        // to scroll to the loaded boundary. `poll_pending_override_
+        // work`'s background-driven follow-up (spec 0152 G7 update)
+        // takes it the rest of the way to `override_candidates_
+        // complete` on its own from here.
+        self.upgrade_active_override_to_complete();
     }
 
     /// `Enter`/double-click on a main-pane node (item 3, spec 0139
@@ -182,9 +248,10 @@ impl App {
 
     /// Close the override pane (cancelling — spec 0114 §2), regardless of
     /// which pane currently has focus. Demotes `override_inferred_raw` (if
-    /// any) into `candidate_cache`, capped to however many rows the pane
-    /// was actually showing — spec 0114 §6's "other entries keep only the
-    /// first N lines."
+    /// any) into `heat_caches`' shared `by_range` cache, capped to however
+    /// many rows the pane was actually showing — spec 0114 §6's "other
+    /// entries keep only the first N lines" (spec 0152 N8: relocked onto
+    /// the shared cache, logic otherwise unchanged).
     ///
     /// Spec 0132 §G3: first settles `override_target`'s main-pane
     /// rendering back to its actual effective type — reverting whatever
@@ -207,11 +274,40 @@ impl App {
         }
         if let Some(range) = self.active_override_range.take() {
             let n = self.override_list_height.max(1);
-            let capped: Vec<_> = self.override_inferred_raw.iter().take(n).cloned().collect();
-            self.candidate_cache.insert(range, capped);
+            let stats = heat_cue::derive_stats(&self.override_inferred_raw);
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            // Never shrinks an already-wider `top_n` (mirrors the
+            // worker's own widening-not-shrinking rule, spec 0152 G5).
+            let top_n_len = caches
+                .by_range
+                .peek(&range.start)
+                .map_or(0, |e| e.top_n.len())
+                .max(n);
+            caches.by_range.insert(
+                range.start,
+                heat_worker::RangeHeatEntry {
+                    best_score: stats.best_score,
+                    best_count: stats.best_count,
+                    top_n: self
+                        .override_inferred_raw
+                        .iter()
+                        .take(top_n_len.max(1))
+                        .cloned()
+                        .collect(),
+                },
+            );
+            if self.override_candidates_complete {
+                caches.complete = Some((range, self.override_inferred_raw.clone()));
+            }
         }
         self.override_inferred_raw.clear();
         self.override_candidates_complete = false;
+        // Spec 0152 G7: the in-flight worker request (if any) isn't
+        // cancelled — it finishes and writes into the shared cache
+        // regardless (N7) — the pane just stops waiting for it.
+        self.override_candidates_pending = false;
+        self.override_complete_pending = false;
+        self.override_seek_target = None;
         self.override_target = None;
         self.override_focus = false;
         // Item 11 (2026-07-17 feedback): a pane opened from the
@@ -269,12 +365,15 @@ impl App {
     /// both when the pane first opens and whenever `i` toggles the sort
     /// mode.
     ///
-    /// `SortMode::Inferred` consults `candidate_cache`/`active_override_range`
-    /// (spec 0114 §6) before calling `score_all`: toggling back to
-    /// `Inferred` within the same open-pane session reuses
-    /// `override_inferred_raw` as-is (no recomputation at all); opening on
-    /// a previously-viewed range reuses its cached capped preview; only a
-    /// genuinely new range pays for a fresh `score_all` call.
+    /// `SortMode::Inferred` consults `active_override_range` (spec 0114
+    /// §6) before calling `self.heat_lookup` (spec 0152 G7): toggling
+    /// back to `Inferred` within the same open-pane session reuses
+    /// `override_inferred_raw` as-is (no recomputation at all); a
+    /// genuinely new range asks the shared cache — a hit applies
+    /// immediately, a miss sets `override_candidates_pending` (the
+    /// request itself already pushed inside `heat_lookup`) and leaves
+    /// the pane showing its "Scoring candidates…" placeholder until a
+    /// worker-progress wakeup resolves it (`poll_pending_override_work`).
     pub(super) fn recompute_override_candidates(&mut self) {
         let Some(idx) = self.override_target else {
             return;
@@ -290,7 +389,7 @@ impl App {
                 .map(|f| (f, None))
                 .collect(),
             SortMode::Inferred => match &self.ctx.graph {
-                Some(graph) => {
+                Some(_graph) => {
                     let node = &self.tree[idx].span;
                     let range = extract::message_payload_range(
                         &self.blob,
@@ -298,14 +397,31 @@ impl App {
                         node.packed_record_start,
                     );
                     if self.active_override_range.as_ref() != Some(&range) {
-                        if let Some(cached) = self.candidate_cache.get(&range) {
-                            self.override_inferred_raw = cached;
-                            self.override_candidates_complete = false;
-                        } else {
-                            let range_bytes = &self.blob[range.clone()];
-                            self.override_inferred_raw =
-                                override_pane::inferred_candidates(range_bytes, graph);
-                            self.override_candidates_complete = true;
+                        // 2026-07-20 feedback: this directly follows the
+                        // user pressing `t`/`i` — it must jump the queue
+                        // ahead of unrelated background polling.
+                        match self.heat_lookup(
+                            &range,
+                            None,
+                            0,
+                            self.override_list_height,
+                            Priority::UserEvent,
+                        ) {
+                            Some(top_n) => {
+                                self.override_inferred_raw = top_n;
+                                self.override_candidates_complete = false;
+                                self.override_candidates_pending = false;
+                            }
+                            None => {
+                                // Request already pushed inside
+                                // `heat_lookup`; leave `override_
+                                // inferred_raw` as whatever it already
+                                // was (typically empty) — the pane
+                                // shows a "Scoring candidates…"
+                                // placeholder instead (spec 0152 G7/N3).
+                                self.override_candidates_pending = true;
+                                self.message = "Scoring candidates…".to_string();
+                            }
                         }
                         self.active_override_range = Some(range);
                     }
@@ -328,30 +444,149 @@ impl App {
         self.override_pan_offset = 0;
     }
 
-    /// Recompute the complete ranked list for `active_override_range`
-    /// (dropping a capped `candidate_cache` preview), and refresh
-    /// `override_candidates` from it. No-op if already complete. Called
-    /// when the user tries to scroll past a capped preview's last row
-    /// (spec 0114 §6).
+    /// Fetches the *complete*, full, unbounded candidate list for the
+    /// current override target in one shot (2026-07-20 feedback:
+    /// replaces growing `override_inferred_raw` one bounded page at a
+    /// time, which required the user to keep scrolling/paging all the
+    /// way to the end before the pane's real candidate count was ever
+    /// known). Requests `[0, usize::MAX)`: `HeatCaches::window`'s
+    /// `complete`-slot fallback always clamps `end` to the actual
+    /// candidate count (spec 0152 G5) rather than requiring `top_n` to
+    /// literally hold `usize::MAX` entries, so this resolves to the
+    /// true, full list — whatever that list's real length turns out to
+    /// be — as soon as the worker's one full sweep for this range
+    /// lands, instead of growing in bounded increments. A hit replaces
+    /// `override_inferred_raw` wholesale and marks the pane complete;
+    /// a miss (the request is already pushed inside `heat_lookup`)
+    /// sets `self.override_complete_pending = true` for `poll_pending_
+    /// override_work` to retry on the next worker-progress wakeup —
+    /// the pane's list stays at whatever it already had (typically the
+    /// fast bounded first page from `recompute_override_candidates`)
+    /// until then. No-op if already complete, or if `override_target`/
+    /// `ctx.graph` is absent. Called both when the pane first opens
+    /// (spec 0139, so the full fetch begins immediately rather than
+    /// waiting for the user to scroll) and, defensively, when the user
+    /// scrolls past the loaded window (spec 0114 §6).
     pub(super) fn upgrade_active_override_to_complete(&mut self) {
         if self.override_candidates_complete {
             return;
         }
-        let (Some(idx), Some(graph)) = (self.override_target, &self.ctx.graph) else {
+        let (Some(idx), Some(_graph)) = (self.override_target, &self.ctx.graph) else {
             return;
         };
         let node = &self.tree[idx].span;
         let range =
             extract::message_payload_range(&self.blob, &node.raw_range, node.packed_record_start);
-        let range_bytes = &self.blob[range.clone()];
-        self.override_inferred_raw = override_pane::inferred_candidates(range_bytes, graph);
-        self.override_candidates_complete = true;
+        // 2026-07-20 feedback: directly follows the user opening the
+        // pane or scrolling past the loaded window — a user event,
+        // jumps the queue.
+        match self.heat_lookup(&range, None, 0, usize::MAX, Priority::UserEvent) {
+            Some(candidates) => {
+                self.override_inferred_raw = candidates;
+                self.override_candidates_complete = true;
+                self.override_complete_pending = false;
+            }
+            None => {
+                self.override_complete_pending = true;
+            }
+        }
         self.active_override_range = Some(range);
-        self.override_candidates = self
-            .override_inferred_raw
-            .iter()
-            .map(|(f, s)| (f.clone(), Some(*s)))
-            .collect();
+        // 2026-07-20 fix: only sync the on-screen list when `Inferred` is
+        // still the active sort mode. `poll_pending_override_work`'s
+        // `override_complete_pending` branch calls this unguarded on a
+        // background wakeup — if the pane has since fallen back to
+        // `Lexicographic` (a cold-cache miss at open time, spec 0139's
+        // `open_override_on_type`/`open_override_on_default`), the
+        // now-resolved `Inferred` data must stay parked in `override_
+        // inferred_raw` for a later `i` toggle rather than clobbering the
+        // Lexicographic list actually on screen.
+        if self.override_sort == SortMode::Inferred {
+            self.override_candidates = self
+                .override_inferred_raw
+                .iter()
+                .map(|(f, s)| (f.clone(), Some(*s)))
+                .collect();
+        }
+    }
+
+    /// Re-checks the shared cache for the override pane's outstanding
+    /// requests (spec 0152 G7) — called whenever the main thread wakes
+    /// for a worker-progress event and either pending flag is set. A
+    /// hit applies the result and clears the flag; a miss (`heat_
+    /// lookup` just re-pushed the same request, merged by range and so
+    /// harmless per G3) leaves both alone. Also retries `override_
+    /// seek_target`, if any, once more data has arrived (2026-07-20
+    /// feedback).
+    pub(super) fn poll_pending_override_work(&mut self) {
+        let Some(idx) = self.override_target else {
+            return;
+        };
+        if self.override_candidates_pending {
+            let node = &self.tree[idx].span;
+            let range = extract::message_payload_range(
+                &self.blob,
+                &node.raw_range,
+                node.packed_record_start,
+            );
+            // 2026-07-20 feedback: a passive re-check after a worker-
+            // progress wakeup, not a fresh user action — must not
+            // preempt whatever the user has since asked for.
+            let lookup = self.heat_lookup(
+                &range,
+                None,
+                0,
+                self.override_list_height,
+                Priority::Background,
+            );
+            if let Some(top_n) = lookup {
+                self.override_inferred_raw = top_n;
+                self.override_candidates_complete = false;
+                self.override_candidates_pending = false;
+                // 2026-07-20 fix: `open_override_on_default`'s Lexicographic
+                // fallback (an Inferred-mode cache miss with nothing to
+                // show) leaves this pending flag set even though the pane
+                // has since moved on to a different sort mode — resolving
+                // it here must only refresh what's actually on screen when
+                // that mode is still `Inferred`. Otherwise the freshly-
+                // cached raw list stays parked in `override_inferred_raw`
+                // for a later `i` toggle to pick up, without clobbering the
+                // currently-displayed (and already complete) Lexicographic
+                // list.
+                if self.override_sort == SortMode::Inferred {
+                    self.override_candidates = self
+                        .override_inferred_raw
+                        .iter()
+                        .map(|(f, s)| (f.clone(), Some(*s)))
+                        .collect();
+                    self.override_highlight = 0;
+                    self.override_scroll = 0;
+                    self.last_override_highlight = None;
+                    self.message.clear();
+                }
+            }
+        }
+        if self.override_complete_pending {
+            self.upgrade_active_override_to_complete();
+        }
+        // 2026-07-20 feedback: once more of the list has arrived, retry
+        // seeking whatever `open_override_on_type` was still trying to
+        // highlight when the cache was cold at open time
+        // (`override_seek_target`). Falls back to `Lexicographic` mode
+        // — mirroring `open_override_on_type`'s own synchronous
+        // fallback — once `override_candidates_complete` is reached
+        // without finding it; the fixed Lexicographic universe is
+        // guaranteed to contain it.
+        if let Some(key) = self.override_seek_target.clone() {
+            if self.seek_override_highlight(&key) {
+                self.preview_override_highlight();
+            } else if self.override_candidates_complete {
+                self.override_sort = SortMode::Lexicographic;
+                self.recompute_override_candidates();
+                self.seek_override_highlight(&key);
+                self.override_seek_target = None;
+                self.preview_override_highlight();
+            }
+        }
     }
 
     /// Move the override pane's highlighted row by `delta` (spec 0114
@@ -396,6 +631,69 @@ impl App {
         let width = self.side_area.width as usize;
         let max_offset = self.override_max_visible_line_len().saturating_sub(width);
         pan_by_step_clamped(&mut self.override_pan_offset, max_offset, step, left);
+    }
+
+    /// Pre-registers the synthetic wrapper descriptor
+    /// (`decode::register_wrapper`) for every candidate FQDN currently
+    /// visible in the override pane's `[start, end)` row window
+    /// (2026-07-20 feedback: moving the cursor to a not-yet-visited
+    /// candidate used to stall for as long as `splice_override`'s own
+    /// `register_wrapper` call took to run). Called once per frame
+    /// from `render_override_pane`, right after `start`/`end` are
+    /// computed, so every row the user can currently see is already
+    /// registered in `self.ctx.pool` by the time `j`/`k` actually
+    /// lands on it. A no-op, cheap hashmap lookup for a candidate
+    /// that's already registered — the same fast path
+    /// `register_wrapper` itself uses — so calling this every frame
+    /// costs nothing once a row's been warmed once; a genuinely new
+    /// registration only happens the first frame a given candidate
+    /// scrolls into view, not once per keystroke that later visits it.
+    ///
+    /// Doesn't (and can't, without a `Mutex`-guarded pool shared
+    /// across threads — a much larger change) run on a real
+    /// background thread: registration mutates `self.ctx.pool` in
+    /// place, which is only ever safely mutable from this one thread.
+    /// Running it here, ahead of any specific row being highlighted,
+    /// still decouples the cost from individual keystrokes — the
+    /// whole visible batch is warmed in one pass instead of one row
+    /// at a time as the user arrows through it.
+    ///
+    /// Silently skips a candidate that fails to resolve (unknown
+    /// name, or a schema link error) — best-effort only; the real
+    /// error, if any, still surfaces the ordinary way once the user
+    /// actually highlights that row and `splice_override` runs for
+    /// real.
+    pub(super) fn warm_visible_override_wrappers(&mut self, start: usize, end: usize) {
+        let Some(idx) = self.override_target else {
+            return;
+        };
+        let span = &self.tree[idx].span;
+        let field_number = span.field_number;
+        let is_group = span.wire_type == prototext_core::helpers::WT_START_GROUP;
+        let end = end.min(self.override_candidates.len());
+        for row in start..end {
+            let name = self.override_candidates[row].0.clone();
+            if name == "protolens_internal.None" {
+                continue;
+            }
+            let (target_desc, field_type) =
+                if let Some(desc) = self.ctx.pool().get_message_by_name(&name) {
+                    let ft = if is_group { Type::Group } else { Type::Message };
+                    (Some(decode::WrapperTarget::Message(desc)), ft)
+                } else if let Some(prim) = decode::primitive_type_for_keyword(&name) {
+                    (None, prim)
+                } else if let Some(enum_desc) = self.ctx.pool().get_enum_by_name(&name) {
+                    (Some(decode::WrapperTarget::Enum(enum_desc)), Type::Enum)
+                } else {
+                    continue;
+                };
+            let _ = decode::register_wrapper(
+                self.ctx.pool_mut(),
+                field_number,
+                field_type,
+                target_desc,
+            );
+        }
     }
 
     /// One override-pane candidate row's display text + base style —

@@ -7,7 +7,14 @@
 //! finds a strictly better-scoring type for a node's byte range than the
 //! node's current effective type.
 
+use super::heat_worker::{Priority, RangeHeatEntry};
 use super::*;
+
+/// Preview width (spec 0152 G6) `heat_cue_for` asks `App::heat_lookup`
+/// for — big enough to answer `heat_cue_from_stats`'s gate/level *and*
+/// almost always big enough to double as the override pane's first
+/// page too (see spec 0152's "plain terms" note).
+pub(super) const HEAT_CUE_PREVIEW: usize = 8;
 
 /// Leading gutter glyph (spec 0138 N1) — a filled circle reads clearly at
 /// a single terminal cell width in both light and dark themes, and is
@@ -20,6 +27,7 @@ pub(super) const HEAT_GLYPH: char = '●';
 /// `current`) or a `Tie` (blue — `current` already equals `best`, but at
 /// least one other candidate shares that same top score, so the current
 /// typing, while optimal, isn't the *unique* optimum).
+#[derive(Clone, Copy)]
 pub(super) struct HeatCue {
     /// Brightness level, 1..=12 (spec 0138 G5), bucketed from `best`
     /// (`Mismatch`) or from the shared top score (`Tie`) — same
@@ -28,9 +36,68 @@ pub(super) struct HeatCue {
     pub(super) kind: HeatCueKind,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum HeatCueKind {
-    Mismatch { current: i64, best: i64 },
-    Tie { tie_count: usize },
+    /// `current: None` — the current type is vetoed (or unresolvable) for
+    /// this range, distinct from a genuine score of `0` (spec 0154 G5).
+    Mismatch { current: Option<i64>, best: i64 },
+    Tie {
+        tie_count: usize,
+        /// The shared top score itself (feedback, 2026-07-20: shown
+        /// alongside `tie_count` as `[{tie_count}@{score}]` — knowing
+        /// *how many* candidates tie isn't as useful without knowing
+        /// *at what score* they tie).
+        score: i64,
+    },
+}
+
+/// What a node's line should actually show (spec 0154 G6) — the
+/// progressive counterpart to the old two-state `Pending`/`Resolved`
+/// split: `best` and `current` each arrive independently, so the
+/// display has more than two shapes.
+#[derive(Clone, Copy)]
+pub(super) enum HeatDisplay {
+    /// `best` itself isn't known yet — `[?]`. Whether `current` is known
+    /// or not is irrelevant here: Mismatch vs. Tie can't be determined
+    /// without `best`, so there is no separate `[?/?]` state.
+    Unknown,
+    /// Nothing to show, and settled: either every candidate is vetoed
+    /// (`best_score: None`), or `current` is the unique optimum.
+    None,
+    /// `best` is known but `current` isn't yet — `[?/{best}]`.
+    PendingCurrent { best: i64 },
+    /// Both known — a genuine `Mismatch` or `Tie` cue, glyph shown.
+    Cue(HeatCue),
+}
+
+/// Per-node heat-cue resolution state (spec 0152 G6, restructured by
+/// spec 0154 G4), parallel to `App::tree` (`App::heat_states`) — `best`
+/// (from the range's window sweep) and `current` (the current type's
+/// exact score) each arrive independently, so each is its own
+/// pending-vs-available union rather than one all-or-nothing flag.
+#[derive(Clone, Copy, Default)]
+pub(super) struct HeatState {
+    /// `None` — the range hasn't been scored at all yet. `Some(stats)`
+    /// — scored; `stats.best_score: None` means every candidate was
+    /// vetoed.
+    pub(super) best: Option<RangeHeatStats>,
+    /// `None` — the current type's score hasn't been computed yet.
+    /// `Some(None)` — computed, vetoed (or no resolvable current type
+    /// at all). `Some(Some(c))` — computed, score `c`.
+    pub(super) current: Option<Option<i64>>,
+}
+
+impl HeatState {
+    /// No more per-frame rechecking needed — a computed property, not a
+    /// stored tag (spec 0154 G4): either every candidate is vetoed (in
+    /// which case `current` is irrelevant), or both `best` and `current`
+    /// are individually known.
+    pub(super) fn settled(&self) -> bool {
+        match self.best {
+            None => false,
+            Some(stats) => stats.best_score.is_none() || self.current.is_some(),
+        }
+    }
 }
 
 /// Small, fixed-size summary of a range's inference-candidate list
@@ -80,6 +147,21 @@ impl<K: PartialEq + Clone, V: Clone> BoundedMru<K, V> {
         Some(v)
     }
 
+    /// Non-promoting read (spec 0152 G3/G5) — a defensive already-done
+    /// check has no business reshuffling recency order just to look.
+    pub(super) fn peek(&self, key: &K) -> Option<V> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Removes and returns the most-recently-used (last) entry (spec
+    /// 0152 G3) — the queue's counterpart to `get`/`insert`.
+    pub(super) fn pop_mru(&mut self) -> Option<(K, V)> {
+        self.entries.pop()
+    }
+
     /// Replaces an existing entry for `key` in place (re-promoting it),
     /// or appends a new one; evicts the least-recently-used entry while
     /// over `max_entries`, always keeping at least the one just
@@ -91,6 +173,43 @@ impl<K: PartialEq + Clone, V: Clone> BoundedMru<K, V> {
         while self.entries.len() > self.max_entries.max(1) {
             self.entries.remove(0);
         }
+    }
+
+    /// Updates an existing entry's value in place, without touching its
+    /// position in the recency order (2026-07-20 feedback,
+    /// `HeatRequestQueue`'s background-priority push) — unlike
+    /// `insert`, a background/polling merge shouldn't re-promote an
+    /// already-queued entry ahead of whatever a user action queued
+    /// after it. A no-op if `key` isn't present; callers only use this
+    /// once `peek` has already confirmed the entry exists.
+    pub(super) fn update_in_place(&mut self, key: &K, value: V) {
+        if let Some(slot) = self.entries.iter_mut().find(|(k, _)| k == key) {
+            slot.1 = value;
+        }
+    }
+
+    /// Inserts a brand-new entry at the *least*-recently-used end
+    /// (2026-07-20 feedback) — the counterpart to `insert`'s always-
+    /// most-recently-used placement, for background/polling pushes
+    /// that shouldn't jump ahead of whatever a user action already
+    /// queued. Same eviction policy as `insert` (least-recently-used
+    /// entry dropped past `max_entries`) — at capacity, that's the
+    /// entry just inserted here, which is an intentional consequence
+    /// of it being the lowest-priority arrival, not a bug. Never
+    /// called for a key `peek` already found present — see
+    /// `HeatRequestQueue::push`.
+    pub(super) fn insert_back(&mut self, key: K, value: V) {
+        self.entries.insert(0, (key, value));
+        while self.entries.len() > self.max_entries.max(1) {
+            self.entries.remove(0);
+        }
+    }
+
+    /// Test-only entry-count introspection (spec 0152 test plan) — the
+    /// `HeatRequestQueue` cap-eviction test's assertion basis.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -164,27 +283,51 @@ impl App {
         }
     }
 
-    /// This line's heat cue, if any (spec 0138) — `None` both when the
-    /// cue is hidden (`i`) or gated absent (G4/G8), and when `line_idx`
-    /// isn't a node's own header line (`line_to_node`, mirroring
-    /// `line_has_active_override`'s restriction to header/footer lines —
-    /// only the header side applies here, since a cue is about the
-    /// node's own type, not its closing brace).
+    /// This line's heat cue display, if any (spec 0138, restructured by
+    /// spec 0154 G6) — `HeatDisplay::None` both when the cue is hidden
+    /// (`i`) or gated absent, and when `line_idx` isn't a node's own
+    /// header line (`line_to_node`, mirroring `line_has_active_
+    /// override`'s restriction to header/footer lines — only the header
+    /// side applies here, since a cue is about the node's own type, not
+    /// its closing brace).
     ///
-    /// Lazily populates `self.heat_range_cache`/`self.
-    /// heat_current_score_cache` (spec 0151 G1-G3) on a miss, keyed by
-    /// the node's tag/length-stripped payload range's `start` offset —
-    /// independent of any active override on that node for the
-    /// range-level stats, while the current-type score is additionally
-    /// keyed by the current type's FQDN so an override edit invalidates
-    /// only that one entry (G3).
-    pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> Option<HeatCue> {
-        if self.heat_cues_hidden {
-            return None;
-        }
-        let idx = *self.line_to_node.get(&line_idx)?;
+    /// Spec 0154 G4: a settled node is read directly, no cache lock at
+    /// all. An unsettled node goes through `self.heat_lookup` (pushing
+    /// a request if either half is still missing), then re-reads
+    /// `best`/`current` independently from the shared cache — either
+    /// may already be known even when `heat_lookup`'s own all-or-
+    /// nothing check reports a miss, which is what makes the
+    /// progressive `[?]`/`[?/{best}]` states possible. With no worker
+    /// (no scoring graph, or a test fixture), falls back to spec
+    /// 0151/0154's synchronous logic, filling only whichever half is
+    /// still missing.
+    ///
+    /// `heat_cues_hidden` (`i`) is checked *last*, after resolving —
+    /// the background worker keeps fetching and caching cues for every
+    /// visited line even while hidden (2026-07-19 feedback), so cues
+    /// are already warm the moment the user un-hides them; only the
+    /// returned value (what's actually shown) is suppressed here.
+    pub(super) fn heat_cue_for(&mut self, line_idx: usize) -> HeatDisplay {
+        let Some(&idx) = self.line_to_node.get(&line_idx) else {
+            return HeatDisplay::None;
+        };
         if !self.can_override(idx) {
-            return None;
+            return HeatDisplay::None;
+        }
+        let display = self.heat_cue_resolve(idx);
+        if self.heat_cues_hidden {
+            return HeatDisplay::None;
+        }
+        display
+    }
+
+    /// The shared core of `heat_cue_for` and `recheck_pending_heat_
+    /// states` (spec 0152 G6/G8, spec 0154 G4) — everything past the
+    /// line-index-to-node/eligibility gating, keyed directly on node
+    /// index.
+    fn heat_cue_resolve(&mut self, idx: usize) -> HeatDisplay {
+        if self.heat_states[idx].settled() {
+            return heat_display(self.heat_states[idx]);
         }
         let range = {
             let node = &self.tree[idx].span;
@@ -193,92 +336,194 @@ impl App {
         let start = range.start;
         let current_key = self.current_type_key(idx);
 
-        let stats = match self.heat_range_cache.get(&start) {
-            Some(s) => s,
-            None => {
-                let graph = self.ctx.graph.as_ref()?;
-                let range_bytes = &self.blob[range.clone()];
-                let candidates = override_pane::inferred_candidates(range_bytes, graph);
-                let stats = derive_stats(&candidates);
-                self.heat_range_cache.insert(start, stats);
-                if let Some(key) = current_key.as_ref() {
-                    let score = score_of(&candidates, key);
-                    self.heat_current_score_cache
-                        .insert((start, key.clone()), score);
-                }
-                // G6: opportunistically prime the override pane's own
-                // cache with this same, already-paid-for candidate list.
-                let capped: Vec<_> = candidates
-                    .into_iter()
-                    .take(self.override_list_height.max(1))
-                    .collect();
-                self.candidate_cache.insert(range.clone(), capped);
-                stats
+        // Side effect only (pushes a request if either half is still
+        // missing, merged into the queue per G3); the AND-gated return
+        // value itself is discarded — `best`/`current` are re-read
+        // independently just below, since either may already be known
+        // even when this reports a miss. `Priority::Background`
+        // (2026-07-20 feedback): this runs every frame for every
+        // visible node just to re-check its own pending status — it
+        // must not repeatedly jump ahead of a request a user action
+        // (`t`, arrow keys in the override pane) just queued.
+        self.heat_lookup(
+            &range,
+            current_key.as_deref(),
+            0,
+            HEAT_CUE_PREVIEW,
+            Priority::Background,
+        );
+
+        let state = {
+            let caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            let best = caches.by_range.peek(&start).map(|e| RangeHeatStats {
+                best_score: e.best_score,
+                best_count: e.best_count,
+            });
+            let current = match current_key.as_deref() {
+                None => Some(None),
+                Some(key) => caches.current_score.peek(&(start, key.to_string())),
+            };
+            HeatState { best, current }
+        };
+
+        if state.settled() || self.heat_worker.is_some() {
+            self.heat_states[idx] = state;
+            return heat_display(state);
+        }
+
+        // No worker and still unsettled after an independent cache read
+        // — either scoring is genuinely needed (spec 0151/0154's
+        // synchronous logic, below) or there's no scoring graph at all,
+        // in which case nothing is ever going to resolve this node
+        // further: show nothing rather than a permanent `[?]` (mirrors
+        // the old `Pending`-forever behavior, which never showed
+        // `[pending]` in that case either). `heat_states[idx]` is left
+        // untouched (still unsettled) so a cache write from elsewhere
+        // is still picked up on a later call.
+        let Some(graph) = self.ctx.graph.as_ref().map(|g| g.graph) else {
+            return HeatDisplay::None;
+        };
+        let range_bytes = &self.blob[range.clone()];
+        let state = if state.best.is_some() {
+            // Window already covered — only the current type's score is
+            // missing (spec 0154 G3's cheap path, mirrored here).
+            let key = current_key
+                .as_deref()
+                .expect("unsettled with best known implies current is still pending");
+            let score = override_pane::inferred_score(range_bytes, key, graph);
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            caches.current_score.insert((start, key.to_string()), score);
+            HeatState {
+                best: state.best,
+                current: Some(score),
+            }
+        } else {
+            let candidates = override_pane::inferred_candidates(range_bytes, graph);
+            let stats = derive_stats(&candidates);
+            let current_entry = current_key
+                .as_deref()
+                .and_then(|key| score_of(&candidates, key));
+
+            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            // At least `HEAT_CUE_PREVIEW` (what `heat_lookup` just
+            // checked coverage against), and at least
+            // `override_list_height` too (spec 0151 G6's original
+            // cross-population cap) — never narrower than either.
+            let cap = self.override_list_height.max(1).max(HEAT_CUE_PREVIEW);
+            let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
+            caches.by_range.insert(
+                start,
+                RangeHeatEntry {
+                    best_score: stats.best_score,
+                    best_count: stats.best_count,
+                    top_n,
+                },
+            );
+            if let Some(key) = current_key.as_ref() {
+                caches
+                    .current_score
+                    .insert((start, key.clone()), current_entry);
+            }
+            caches.complete = Some((range.clone(), candidates));
+            HeatState {
+                best: Some(stats),
+                current: Some(current_entry),
             }
         };
 
-        let current_entry: Option<i64> = match current_key.as_deref() {
-            None => None,
-            Some(key) => {
-                let cache_key = (start, key.to_string());
-                match self.heat_current_score_cache.get(&cache_key) {
-                    Some(entry) => entry,
-                    None => {
-                        let graph = self.ctx.graph.as_ref()?;
-                        let range_bytes = &self.blob[range.clone()];
-                        let candidates = override_pane::inferred_candidates(range_bytes, graph);
-                        let score = score_of(&candidates, key);
-                        self.heat_current_score_cache.insert(cache_key, score);
-                        // G6: same cross-population as the miss branch
-                        // above — this call's candidate list is
-                        // identical to what a fresh range-cache miss
-                        // would have produced for this range
-                        // (independent of current type), so it's just
-                        // as worth caching for the override pane.
-                        let capped: Vec<_> = candidates
-                            .into_iter()
-                            .take(self.override_list_height.max(1))
-                            .collect();
-                        self.candidate_cache.insert(range.clone(), capped);
-                        score
-                    }
-                }
-            }
-        };
+        self.heat_states[idx] = state;
+        heat_display(state)
+    }
 
-        heat_cue_from_stats(stats, current_entry)
+    /// Re-checks the shared cache for every node not yet `settled`
+    /// (spec 0152 G6/G8, spec 0154 G4) — called whenever the worker
+    /// thread reports progress. Reads `HeatCaches` directly rather than
+    /// going through `self.heat_lookup` (unlike `heat_cue_resolve`) so
+    /// a still-missing entry is never re-pushed onto the request queue
+    /// — pointless here: the queue already merges by range (G3), so any
+    /// earlier in-flight request for this node is either already
+    /// covering it or will itself report progress again once popped.
+    /// Updates every node's state to whatever is now known, even if
+    /// still only partially settled — that's what makes the
+    /// progressive `[?]` -> `[?/{best}]` -> cue sequence visible across
+    /// successive worker-progress wakeups.
+    pub(super) fn recheck_pending_heat_states(&mut self) {
+        for idx in 0..self.heat_states.len() {
+            if self.heat_states[idx].settled() {
+                continue;
+            }
+            if !self.can_override(idx) {
+                continue;
+            }
+            let range = {
+                let node = &self.tree[idx].span;
+                extract::message_payload_range(
+                    &self.blob,
+                    &node.raw_range,
+                    node.packed_record_start,
+                )
+            };
+            let start = range.start;
+            let current_key = self.current_type_key(idx);
+
+            let caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+            let best = caches.by_range.peek(&start).map(|e| RangeHeatStats {
+                best_score: e.best_score,
+                best_count: e.best_count,
+            });
+            let current = match current_key.as_deref() {
+                None => Some(None),
+                Some(key) => caches.current_score.peek(&(start, key.to_string())),
+            };
+            drop(caches);
+
+            self.heat_states[idx] = HeatState { best, current };
+        }
     }
 }
 
-/// Pure gate/level computation over an already-derived stats summary
-/// (spec 0151 G5, spec 0138 G2-G4/G9) — split out from `heat_cue_for` so
-/// it's directly unit-testable without a real scoring graph.
-/// `Option`-aware throughout: a `None` `current_entry` (vetoed current
-/// type) is never conflated with a genuine `0` score, and a `None`
-/// `stats.best_score` (every candidate vetoed) always yields no cue.
-pub(super) fn heat_cue_from_stats(
-    stats: RangeHeatStats,
-    current_entry: Option<i64>,
-) -> Option<HeatCue> {
-    let best = stats.best_score?; // every candidate vetoed — no cue possible
-    match current_entry {
-        None => Some(HeatCue {
+/// Pure gate/level computation over a `HeatState` (spec 0151 G5, spec
+/// 0138 G2-G4/G9, restructured by spec 0154 G6) — split out from
+/// `heat_cue_resolve` so it's directly unit-testable without a real
+/// scoring graph. Implements the full progressive display table: `[?]`
+/// whenever `best` isn't known yet (no separate `[?/?]` state —
+/// Mismatch vs. Tie can't be determined without `best` either way);
+/// nothing shown when every candidate is vetoed or `current` is the
+/// unique optimum; `[?/{best}]` while only `current` remains unknown;
+/// otherwise a genuine `Mismatch`/`Tie` cue. `Option`-aware throughout:
+/// a vetoed `current` is never conflated with a genuine `0` score.
+pub(super) fn heat_display(state: HeatState) -> HeatDisplay {
+    let Some(stats) = state.best else {
+        return HeatDisplay::Unknown;
+    };
+    let Some(best) = stats.best_score else {
+        return HeatDisplay::None; // every candidate vetoed — no cue possible
+    };
+    let Some(current) = state.current else {
+        return HeatDisplay::PendingCurrent { best };
+    };
+    match current {
+        None => HeatDisplay::Cue(HeatCue {
             level: heat_level(best),
-            // Display value only; the gating decision above already
-            // treated `None` as strictly worse than any `best`,
-            // independent of what's shown here.
-            kind: HeatCueKind::Mismatch { current: 0, best },
+            kind: HeatCueKind::Mismatch {
+                current: None,
+                best,
+            },
         }),
-        Some(current) if current < best => Some(HeatCue {
+        Some(current) if current < best => HeatDisplay::Cue(HeatCue {
             level: heat_level(best),
-            kind: HeatCueKind::Mismatch { current, best },
+            kind: HeatCueKind::Mismatch {
+                current: Some(current),
+                best,
+            },
         }),
-        Some(current) if current == best && stats.best_count > 1 => Some(HeatCue {
+        Some(current) if current == best && stats.best_count > 1 => HeatDisplay::Cue(HeatCue {
             level: heat_level(best),
             kind: HeatCueKind::Tie {
                 tie_count: stats.best_count,
+                score: best,
             },
         }),
-        _ => None,
+        _ => HeatDisplay::None, // unique optimum
     }
 }

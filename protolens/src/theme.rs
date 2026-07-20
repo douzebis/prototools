@@ -542,8 +542,8 @@ fn heat_rgb_color(level: u8, light: bool, hue: HeatHue) -> Color {
 /// brightest available red (truecolor level 12, or `Color::LightRed` on
 /// the ANSI-16 fallback) whenever the cue is present at all, regardless
 /// of `level` (spec 0138 N1) — unlike `heat_style`, which grades the
-/// leading glyph by `level`. The `Tie` cue's own ` [tie_count]` suffix
-/// uses no dedicated function of its own — it's styled with
+/// leading glyph by `level`. The `Tie` cue's own ` [tie_count@score]`
+/// suffix uses no dedicated function of its own — it's styled with
 /// `style_for(SyntaxRole::Boolean, theme)` directly, i.e. literally the
 /// same styling already used for a `true`/`false` value (spec 0138 G9's
 /// own wording), not a new color.

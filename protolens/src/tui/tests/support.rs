@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
+use super::super::heat_cue::HEAT_CUE_PREVIEW;
 use super::super::*;
 pub(super) use prototext_core::helpers::{WT_LEN, WT_VARINT};
 pub(super) use prototext_core::serialize::render_text::NodeSpan;
+use prototext_graph::build_scoring_graph::build_from_strings;
+use prototext_graph::score::load::LoadedGraph;
 pub(super) use ratatui::backend::TestBackend;
 
 pub(super) fn empty_app() -> App {
@@ -15,6 +18,7 @@ pub(super) fn empty_app() -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
+        root_type_deferred: false,
     };
     App::new(
         decoded,
@@ -64,6 +68,7 @@ pub(super) fn message_node_app() -> App {
         blob: vec![0x22, 0x08, 0, 0, 0, 0, 0, 0, 0, 0],
         wrapper_offset: 0,
         style_hints: vec![Vec::new(); 2],
+        root_type_deferred: false,
     };
     App::new(
         decoded,
@@ -74,6 +79,41 @@ pub(super) fn message_node_app() -> App {
         ThemeKind::Dark,
         None,
     )
+}
+
+/// A minimal, real, in-memory scoring graph (spec 0152 test plan) —
+/// `HEAT_CUE_PREVIEW` messages, each with a single `uint64` field 1 —
+/// built with zero file I/O via `build_from_strings` + `Box::leak` +
+/// `LoadedGraph::from_static_bytes` (as spec 0151's own notes
+/// anticipated). At least `HEAT_CUE_PREVIEW` non-vetoed candidates are
+/// needed for `heat_cue_for`'s `[0, HEAT_CUE_PREVIEW)` window to ever
+/// be satisfiable — a single-entry graph (as `heat_worker.rs`'s own,
+/// lower-level round-trip test uses) is never enough here.
+pub(super) fn test_scoring_graph() -> LoadedGraph {
+    let mut yaml = String::from("entries:\n");
+    for i in 0..HEAT_CUE_PREVIEW {
+        yaml.push_str(&format!("- Msg{i}\n"));
+    }
+    yaml.push_str("messages:\n");
+    for i in 0..HEAT_CUE_PREVIEW {
+        yaml.push_str(&format!(
+            "  Msg{i}:\n    fields:\n    - number: 1\n      type: uint64\n"
+        ));
+    }
+    let (bytes, _, _) =
+        build_from_strings(&[yaml], false, false, |_, _| {}).expect("test graph must build");
+    let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    LoadedGraph::from_static_bytes(bytes).expect("test graph must load")
+}
+
+/// `message_node_app` with a real scoring graph attached via
+/// `DescriptorContext::for_test_with_graph` (spec 0152 test plan) —
+/// for tests that need `App.ctx.graph` to be genuinely `Some`, e.g. to
+/// spawn a real `HeatWorkerHandle` end-to-end.
+pub(super) fn message_node_app_with_graph() -> App {
+    let mut app = message_node_app();
+    app.ctx = DescriptorContext::for_test_with_graph(test_scoring_graph());
+    app
 }
 
 /// `n` document-order-linked scalar sibling nodes at the root level
@@ -114,6 +154,7 @@ pub(super) fn sibling_leaves_app(texts: &[&str]) -> App {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
+        root_type_deferred: false,
     };
     App::new(
         decoded,
@@ -173,7 +214,7 @@ pub(super) fn repeated_scalar_fixture() -> (App, Vec<usize>) {
     // vals: field 1 (tag 0x0A, LEN/packed), length 3, payload
     // [0x05, 0x06, 0x07] (three one-byte varint elements).
     let blob = [0x0Au8, 0x03, 0x05, 0x06, 0x07];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -255,7 +296,7 @@ pub(super) fn type_as_fixture() -> (App, usize, usize) {
 
     // Outer { inner: Inner { id: 5 } }.
     let blob = [0x0Au8, 0x02, 0x08, 0x05];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -338,7 +379,7 @@ pub(super) fn empty_message_fixture() -> (App, usize) {
 
     // Outer { inner: Inner {} } — field 1 (LEN), length 0, no payload.
     let blob = [0x0Au8, 0x00];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -427,7 +468,7 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
     // Outer3 { durability: EPHEMERAL (0) } — field 1 (tag 0x08),
     // varint value 0.
     let blob = [0x08u8, 0x00];
-    let decoded = decode(&blob, &mut ctx, Some("test.Outer3"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("test.Outer3"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -530,7 +571,7 @@ pub(super) fn group_type_fixture_with_blob(blob: &[u8]) -> (App, usize) {
     let mut ctx = DescriptorContext::load(&descriptor_path).unwrap();
     std::fs::remove_file(&descriptor_path).unwrap();
 
-    let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2).unwrap();
+    let decoded = decode(blob, &mut ctx, Some("test.Outer2"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",
@@ -645,7 +686,7 @@ pub(super) fn message_set_fixture() -> App {
     let mut blob = vec![0x12u8, item_bytes.len() as u8];
     blob.extend_from_slice(&item_bytes);
 
-    let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2).unwrap();
+    let decoded = decode(&blob, &mut ctx, Some("ms_test.Container"), 2, false).unwrap();
     let mut app = App::new(
         decoded,
         "test.pb",

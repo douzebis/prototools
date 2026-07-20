@@ -20,6 +20,7 @@ use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, NodeSpan,
 };
 use prototext_core::{decode_pool, render_as_bytes, RenderOpts};
+use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
     score_all, ScoringOpts,
@@ -116,6 +117,20 @@ impl DescriptorContext {
             raw_bytes: Vec::new(),
         }
     }
+
+    /// Same as `empty_for_test`, but with a real `LoadedGraph` attached
+    /// (spec 0152 test plan) — for tests that exercise the worker
+    /// thread's `inferred_candidates` call against a real, tiny,
+    /// in-memory scoring graph (built via `build_from_strings` +
+    /// `Box::leak` + `LoadedGraph::from_static_bytes`, no file I/O).
+    #[cfg(test)]
+    pub(crate) fn for_test_with_graph(graph: LoadedGraph) -> Self {
+        DescriptorContext {
+            pool: DescriptorPool::new(),
+            graph: Some(graph),
+            raw_bytes: Vec::new(),
+        }
+    }
 }
 
 /// Read a descriptor file: accepts binary `FileDescriptorSet`, `#@` prototext
@@ -150,6 +165,44 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 
 // ── Root-type determination ────────────────────────────────────────────────
 
+/// The `score_all` + veto/tie-break winner-selection rule shared by
+/// `determine_root_type`'s synchronous graph branch and the TUI's
+/// asynchronous root-type worker (spec NNNN) — factored out so both can
+/// run the identical selection logic against a bare `ArchivedCompiledGraph`
+/// reference (the worker thread has no `DescriptorContext`/pool, only the
+/// `'static` graph and the blob, mirroring spec 0152's heat worker). `None`
+/// when there's no clean winner: no candidates, every candidate vetoed, or
+/// a top-score tie.
+pub(crate) fn resolve_root_winner_fqdn(
+    blob: &[u8],
+    graph: &ArchivedCompiledGraph,
+) -> Option<String> {
+    let scoring_opts = ScoringOpts::default();
+    let mut results = score_all(blob, graph, &scoring_opts);
+    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        (true, true) => a.fqdn.cmp(&b.fqdn),
+        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
+    });
+
+    if results.is_empty() {
+        return None;
+    }
+    let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
+    if non_vetoed.is_empty() {
+        return None;
+    }
+
+    let top_score = non_vetoed[0].score();
+    let tied = non_vetoed.iter().filter(|r| r.score() == top_score).count();
+    if tied > 1 {
+        return None;
+    }
+
+    Some(non_vetoed[0].fqdn.clone())
+}
+
 /// Resolve the root message type to decode `blob` as.
 ///
 /// - `type_override` given: looked up directly in the pool; a lookup
@@ -179,31 +232,10 @@ pub fn determine_root_type(
         return Ok(None);
     };
 
-    let scoring_opts = ScoringOpts::default();
-    let mut results = score_all(blob, graph, &scoring_opts);
-    results.sort_by(|a, b| match (a.vetoed, b.vetoed) {
-        (false, true) => std::cmp::Ordering::Less,
-        (true, false) => std::cmp::Ordering::Greater,
-        (true, true) => a.fqdn.cmp(&b.fqdn),
-        (false, false) => b.score().cmp(&a.score()).then(a.fqdn.cmp(&b.fqdn)),
-    });
-
-    if results.is_empty() {
+    let Some(fqdn) = resolve_root_winner_fqdn(blob, graph) else {
         return Ok(None);
-    }
-    let non_vetoed: Vec<_> = results.iter().filter(|r| !r.vetoed).collect();
-    if non_vetoed.is_empty() {
-        return Ok(None);
-    }
-
-    let top_score = non_vetoed[0].score();
-    let tied = non_vetoed.iter().filter(|r| r.score() == top_score).count();
-    if tied > 1 {
-        return Ok(None);
-    }
-
-    let fqdn = &non_vetoed[0].fqdn;
-    Ok(ctx.pool().get_message_by_name(fqdn))
+    };
+    Ok(ctx.pool().get_message_by_name(&fqdn))
 }
 
 // ── Navigation tree ─────────────────────────────────────────────────────────
@@ -344,6 +376,13 @@ pub struct Decoded {
     /// initial-load counterpart of `apply_override`'s per-splice
     /// colorize pass (`protolens/src/tui.rs`).
     pub style_hints: Vec<Vec<(std::ops::Range<usize>, SyntaxRole)>>,
+    /// `true` when `decode()`'s caller asked to skip synchronous graph-
+    /// based root-type inference (`defer_root_type`, spec NNNN) — always
+    /// paired with `root_type == "<raw / no type>"`. `App::new` picks this
+    /// up to know whether it should hand root-type resolution off to the
+    /// TUI's background worker instead of treating the raw fallback as
+    /// final.
+    pub root_type_deferred: bool,
 }
 
 /// Deterministic short name for a synthetic one-field wrapper descriptor
@@ -406,13 +445,26 @@ impl WrapperTarget {
 /// primitive target; `Some` for a message/group/enum target, supplying
 /// both `type_name` (`.{fqdn}`) and the `dependency` file entry.
 /// `pub(crate)`: also called from `tui.rs`'s `splice_override`.
+///
+/// `target` is taken *by value*, not `&WrapperTarget` — deliberately,
+/// so it can be dropped (below) before `add_file_descriptor_proto` is
+/// called. `target` owns a `MessageDescriptor`/`EnumDescriptor`, which
+/// in turn owns its own clone of `pool`'s `Arc<DescriptorPoolInner>`;
+/// leaving it alive across the mutating call would make `pool`'s own
+/// `Arc` non-unique right when `add_file_descriptor_proto` needs to
+/// mutate it, forcing prost-reflect's internal `Arc::make_mut` to deep-
+/// clone the *entire* pool (every file/message/enum) on every
+/// previously-unseen wrapper — the "cursor move to a new override
+/// candidate is slow" bug diagnosed 2026-07-20. Already-registered
+/// wrappers are unaffected (the early `get_message_by_name` return
+/// above never reaches the mutating call at all).
 pub(crate) fn register_wrapper(
     pool: &mut DescriptorPool,
     field_number: u64,
     field_type: Type,
-    target: Option<&WrapperTarget>,
+    target: Option<WrapperTarget>,
 ) -> Result<MessageDescriptor, DecodeError> {
-    let type_name = target.map(|t| format!(".{}", t.full_name()));
+    let type_name = target.as_ref().map(|t| format!(".{}", t.full_name()));
     let full_name =
         synthetic_wrapper_name(field_number, field_type, type_name.as_deref().unwrap_or(""));
     if let Some(existing) = pool.get_message_by_name(&full_name) {
@@ -436,8 +488,13 @@ pub(crate) fn register_wrapper(
         ..Default::default()
     };
     let dependency = target
+        .as_ref()
         .map(|t| vec![t.parent_file_name()])
         .unwrap_or_default();
+    // See the doc comment above: drop the last `target` handle (and
+    // with it, its private clone of `pool`'s `Arc`) before mutating
+    // `pool`, so the mutation below never has to deep-clone it.
+    drop(target);
     let file = FileDescriptorProto {
         name: Some(format!("protolens_internal/{short_name}.proto")),
         package: Some("protolens_internal".to_string()),
@@ -641,8 +698,21 @@ pub fn decode(
     ctx: &mut DescriptorContext,
     type_override: Option<&str>,
     indent_size: usize,
+    defer_root_type: bool,
 ) -> Result<Decoded, DecodeError> {
-    let root_desc = determine_root_type(blob, ctx, type_override)?;
+    // `defer_root_type` (spec NNNN): an explicit `type_override` is an
+    // O(1) pool lookup, never worth deferring — only the graph-based
+    // `score_all` sweep is. Skipping it here leaves `root_desc` `None`,
+    // same as `determine_root_type`'s own "no clean winner" outcome; the
+    // caller (`App::new`, via `Decoded::root_type_deferred`) is
+    // responsible for actually resolving it later and applying the
+    // result, or the root just stays the raw/no-type fallback forever.
+    let root_type_deferred = defer_root_type && type_override.is_none() && ctx.graph.is_some();
+    let root_desc = if root_type_deferred {
+        None
+    } else {
+        determine_root_type(blob, ctx, type_override)?
+    };
     let (root_type, wrapper_desc) = match &root_desc {
         Some(desc) => (
             desc.full_name().to_string(),
@@ -650,7 +720,7 @@ pub fn decode(
                 &mut ctx.pool,
                 1,
                 Type::Message,
-                Some(&WrapperTarget::Message(desc.clone())),
+                Some(WrapperTarget::Message(desc.clone())),
             )?),
         ),
         None => ("<raw / no type>".to_string(), None),
@@ -704,6 +774,7 @@ pub fn decode(
         blob: wrapped_blob,
         wrapper_offset,
         style_hints,
+        root_type_deferred,
     })
 }
 
@@ -806,7 +877,7 @@ mod tests {
         // context has no hopcroft.rkyv, so autoinference is unavailable.
         let blob = [0x08u8, 0x05];
 
-        let decoded = decode(&blob, &mut ctx, None, 2).unwrap();
+        let decoded = decode(&blob, &mut ctx, None, 2, false).unwrap();
         assert_eq!(decoded.root_type, "<raw / no type>");
         // The wrapper's own top-level field (the "virtual encompassing
         // message", spec 0114 §1.1) — level 0, no type resolved.
@@ -850,7 +921,7 @@ mod tests {
         std::fs::remove_file(&descriptor_path).unwrap();
 
         let blob = [0x08u8, 0x05];
-        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("test.Msg"), 2, false).unwrap();
         assert!(
             decoded.lines[0].starts_with("1 "),
             "root header line must show the root field number: {:?}",
@@ -953,7 +1024,7 @@ mod tests {
         let mut blob = vec![0x0au8, any_bytes.len() as u8];
         blob.extend_from_slice(&any_bytes);
 
-        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2).unwrap();
+        let decoded = decode(&blob, &mut ctx, Some("acme.Container"), 2, false).unwrap();
         let any_idx = decoded
             .tree
             .iter()

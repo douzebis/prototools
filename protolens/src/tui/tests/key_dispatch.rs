@@ -14,6 +14,7 @@ fn q_confirmation_is_cancelled_by_any_other_key() {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
+        root_type_deferred: false,
     };
     let mut app = App::new(
         decoded,
@@ -57,6 +58,7 @@ fn ctrl_z_sets_should_suspend_without_disturbing_quit_confirm() {
         blob: Vec::new(),
         wrapper_offset: 0,
         style_hints: Vec::new(),
+        root_type_deferred: false,
     };
     let mut app = App::new(
         decoded,

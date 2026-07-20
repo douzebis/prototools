@@ -3,11 +3,42 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_cue::{
-    derive_stats, heat_cue_from_stats, heat_level, score_of, BoundedMru, HeatCueKind,
-    RangeHeatStats, HEAT_GLYPH,
+    derive_stats, heat_display, heat_level, score_of, BoundedMru, HeatCue, HeatCueKind,
+    HeatDisplay, HeatState, RangeHeatStats, HEAT_CUE_PREVIEW, HEAT_GLYPH,
 };
+use std::thread;
+
+use super::super::heat_worker::{HeatWorkerHandle, Priority, RangeHeatEntry};
 use super::super::*;
 use super::support::*;
+
+/// Test helper (spec 0152): directly seeds `heat_caches` with a
+/// `RangeHeatEntry` covering `HEAT_CUE_PREVIEW` dummy candidates (so
+/// `heat_lookup`'s window check is satisfied) plus one exact
+/// current-type score — bypassing the need for a real scoring
+/// graph/worker, mirroring what a `heat_cue_for` cache hit expects to
+/// find.
+fn seed_range_heat_entry(
+    app: &mut App,
+    start: usize,
+    best_score: Option<i64>,
+    best_count: usize,
+    current_key: &str,
+    current_score: Option<i64>,
+) {
+    let mut caches = app.heat_caches.lock().unwrap();
+    caches.by_range.insert(
+        start,
+        RangeHeatEntry {
+            best_score,
+            best_count,
+            top_n: vec![("protolens_internal.dummy".to_string(), 0); HEAT_CUE_PREVIEW],
+        },
+    );
+    caches
+        .current_score
+        .insert((start, current_key.to_string()), current_score);
+}
 
 /// Spec 0138 G5: the Fibonacci boundaries partition the score axis into
 /// exactly 12 levels, each boundary itself belonging to the *lower*
@@ -118,151 +149,270 @@ fn bounded_mru_evicts_least_recently_used_past_entry_budget() {
     assert_eq!(cache.get(&4), Some(40));
 }
 
+/// Spec 0152 G3: `pop_mru` pops most-recently-inserted first, and a
+/// `get` promotion before popping re-orders accordingly.
+#[test]
+fn bounded_mru_pop_mru_returns_most_recently_touched_first() {
+    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.insert(3, 30);
+    // No promotion: insertion order is 1, 2, 3 — pop_mru pops 3 first.
+    assert_eq!(cache.pop_mru(), Some((3, 30)));
+    assert_eq!(cache.pop_mru(), Some((2, 20)));
+    assert_eq!(cache.pop_mru(), Some((1, 10)));
+    assert_eq!(cache.pop_mru(), None);
+
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.insert(3, 30);
+    // Promote key 1 via `get` — it becomes the most-recently-touched,
+    // ahead of 3 (which was inserted after it but not touched since).
+    assert_eq!(cache.get(&1), Some(10));
+    assert_eq!(cache.pop_mru(), Some((1, 10)));
+    assert_eq!(cache.pop_mru(), Some((3, 30)));
+    assert_eq!(cache.pop_mru(), Some((2, 20)));
+}
+
+/// 2026-07-20 feedback: `update_in_place` replaces an existing entry's
+/// value but leaves its position (recency order) untouched, unlike
+/// `insert`'s own always-promote behavior.
+#[test]
+fn bounded_mru_update_in_place_does_not_reorder() {
+    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.update_in_place(&1, 11);
+    // Key 2 was inserted after key 1 and never re-touched — it must
+    // still pop first despite key 1's value having just changed.
+    assert_eq!(cache.pop_mru(), Some((2, 20)));
+    assert_eq!(cache.pop_mru(), Some((1, 11)));
+}
+
+/// `update_in_place` on an absent key is a no-op (no panic, no new
+/// entry).
+#[test]
+fn bounded_mru_update_in_place_on_missing_key_is_a_no_op() {
+    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
+    cache.insert(1, 10);
+    cache.update_in_place(&99, 999);
+    assert_eq!(cache.pop_mru(), Some((1, 10)));
+    assert_eq!(cache.pop_mru(), None);
+}
+
+/// 2026-07-20 feedback: `insert_back` places a brand-new entry at the
+/// least-recently-used end — it pops *last*, unlike `insert`'s
+/// always-most-recently-used placement.
+#[test]
+fn bounded_mru_insert_back_places_a_new_entry_at_the_lru_end() {
+    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(8);
+    cache.insert(1, 10);
+    cache.insert_back(2, 20);
+    // Key 1 (via `insert`, MRU) must still pop before key 2 (via
+    // `insert_back`, LRU), even though key 2 was added second.
+    assert_eq!(cache.pop_mru(), Some((1, 10)));
+    assert_eq!(cache.pop_mru(), Some((2, 20)));
+}
+
+/// `insert_back` past `max_entries` evicts the least-recently-used
+/// entry, same as `insert` — at capacity, that's the entry just
+/// inserted here (the lowest-priority arrival), an intentional
+/// consequence, not a bug.
+#[test]
+fn bounded_mru_insert_back_past_capacity_evicts_the_new_entry() {
+    let mut cache: BoundedMru<u32, u32> = BoundedMru::new(2);
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.insert_back(3, 30);
+    assert_eq!(cache.pop_mru(), Some((2, 20)));
+    assert_eq!(cache.pop_mru(), Some((1, 10)));
+}
+
 // ---------------------------------------------------------------------
-// heat_cue_from_stats (spec 0151 G5, spec 0138 G4/G9)
+// heat_display (spec 0151 G5, spec 0138 G4/G9, spec 0154 G6 test plan
+// H-01..H-07)
 // ---------------------------------------------------------------------
 
-/// Spec 0138 G4 (amended): the `Mismatch` gate is `best > current`, not
-/// `best >= current` — an equal score never produces a `Mismatch` cue.
-/// (An equal score tied with another candidate instead produces a
-/// `Tie` cue per G9 — see `tie_gate_fires_when_current_shares_the_top_
-/// score_with_others` — so this test's own equal-score case must be a
-/// unique optimum, with no other candidate to tie against, to stay a
-/// true "no cue at all" case.)
+/// H-01: `best` unknown — bare `[?]`, regardless of `current`'s own
+/// state (there is no separate `[?/?]` state).
 #[test]
-fn gate_requires_best_strictly_greater_than_current() {
-    let stats = RangeHeatStats {
-        best_score: Some(50),
-        best_count: 1,
+fn h01_unknown_when_best_is_not_yet_known() {
+    let state = HeatState {
+        best: None,
+        current: None,
     };
-    assert!(heat_cue_from_stats(stats, Some(50)).is_none());
-
-    let stats = RangeHeatStats {
-        best_score: Some(51),
-        best_count: 1,
+    assert!(matches!(heat_display(state), HeatDisplay::Unknown));
+    let state = HeatState {
+        best: None,
+        current: Some(Some(5)),
     };
-    let cue = heat_cue_from_stats(stats, Some(50)).unwrap();
-    assert!(matches!(
-        cue.kind,
-        HeatCueKind::Mismatch {
-            current: 50,
-            best: 51
-        }
-    ));
+    assert!(matches!(heat_display(state), HeatDisplay::Unknown));
+    assert!(!state.settled());
 }
 
-/// Spec 0151 G5: a `None` current entry (current type not found in the
-/// range's candidate list — raw, primitive keyword, or vetoed) always
-/// yields `Mismatch`, displaying `current: 0` — but purely for display;
-/// the gating decision itself never collapses `None` into a coincidental
-/// `0` before comparing (see the next test for the case that fix
-/// actually matters).
+/// H-02 (spec 0138 G8): every candidate vetoed (`best_score: None`) —
+/// nothing shown, settled, regardless of `current`.
 #[test]
-fn current_absent_yields_mismatch_with_display_default_zero() {
-    let stats = RangeHeatStats {
-        best_score: Some(5),
-        best_count: 1,
-    };
-    let cue = heat_cue_from_stats(stats, None).unwrap();
-    assert!(matches!(
-        cue.kind,
-        HeatCueKind::Mismatch {
-            current: 0,
-            best: 5
-        }
-    ));
-}
-
-/// Spec 0151 G5 — the conflation-bug regression: a `None` current entry
-/// must still yield `Mismatch` even when `best_score` is `Some(0)`. The
-/// old `unwrap_or(0)` collapse silently treated this as `current ==
-/// best` and dropped the cue entirely.
-#[test]
-fn current_absent_still_triggers_mismatch_even_when_best_is_zero() {
-    let stats = RangeHeatStats {
-        best_score: Some(0),
-        best_count: 1,
-    };
-    let cue = heat_cue_from_stats(stats, None).unwrap();
-    assert!(matches!(
-        cue.kind,
-        HeatCueKind::Mismatch {
-            current: 0,
-            best: 0
-        }
-    ));
-}
-
-/// Spec 0138 G9: when the current type already achieves the top score
-/// but at least one other candidate ties it there, a `Tie` cue fires
-/// instead of no cue at all — `best_count` counts every candidate
-/// sharing that top score, including the current one.
-#[test]
-fn tie_gate_fires_when_current_shares_the_top_score_with_others() {
-    // Unique optimum (no other candidate ties the top score): no cue,
-    // same as before G9 existed.
-    let stats = RangeHeatStats {
-        best_score: Some(50),
-        best_count: 1,
-    };
-    assert!(heat_cue_from_stats(stats, Some(50)).is_none());
-
-    // Two-way tie at the top score, current is one of them.
-    let stats = RangeHeatStats {
-        best_score: Some(50),
-        best_count: 2,
-    };
-    let cue = heat_cue_from_stats(stats, Some(50)).unwrap();
-    assert!(matches!(cue.kind, HeatCueKind::Tie { tie_count: 2 }));
-
-    // Three-way tie.
-    let stats = RangeHeatStats {
-        best_score: Some(50),
-        best_count: 3,
-    };
-    let cue = heat_cue_from_stats(stats, Some(50)).unwrap();
-    assert!(matches!(cue.kind, HeatCueKind::Tie { tie_count: 3 }));
-}
-
-/// Spec 0151 G5 (spec 0138 G9): a `None` current entry never produces a
-/// `Tie` cue, even when `best_score` happens to be shared by multiple
-/// candidates — `Tie` requires the current type to be a genuine member
-/// of the tied top-scoring group, not the display-only `0` default.
-#[test]
-fn tie_never_fires_for_an_absent_current_entry() {
-    let stats = RangeHeatStats {
-        best_score: Some(0),
-        best_count: 2,
-    };
-    let cue = heat_cue_from_stats(stats, None).unwrap();
-    assert!(matches!(
-        cue.kind,
-        HeatCueKind::Mismatch {
-            current: 0,
-            best: 0
-        }
-    ));
-}
-
-/// Spec 0138 G8: every candidate vetoed (`best_score: None`) is absent,
-/// not a "level 0"/zero-score cue, regardless of `current_entry`.
-#[test]
-fn absent_when_every_candidate_is_vetoed() {
+fn h02_none_when_every_candidate_is_vetoed() {
     let stats = RangeHeatStats {
         best_score: None,
         best_count: 0,
     };
-    assert!(heat_cue_from_stats(stats, Some(5)).is_none());
-    assert!(heat_cue_from_stats(stats, None).is_none());
+    let state = HeatState {
+        best: Some(stats),
+        current: None,
+    };
+    assert!(matches!(heat_display(state), HeatDisplay::None));
+    assert!(state.settled());
+}
+
+/// H-03: `best` known, `current` not yet computed — `[?/{best}]`, not
+/// settled (still needs `current`).
+#[test]
+fn h03_pending_current_shows_best_only() {
+    let stats = RangeHeatStats {
+        best_score: Some(50),
+        best_count: 1,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: None,
+    };
+    assert!(matches!(
+        heat_display(state),
+        HeatDisplay::PendingCurrent { best: 50 }
+    ));
+    assert!(!state.settled());
+}
+
+/// H-04 (spec 0151 G5's conflation-bug regression, generalized): a
+/// vetoed/absent `current` (`Some(None)`) always yields `Mismatch`
+/// with `current: None` — displayed as `-`, not a coincidental `0` —
+/// even when `best_score` is itself `Some(0)`.
+#[test]
+fn h04_mismatch_for_a_vetoed_current() {
+    let stats = RangeHeatStats {
+        best_score: Some(0),
+        best_count: 1,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: Some(None),
+    };
+    let display = heat_display(state);
+    assert!(matches!(
+        display,
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Mismatch {
+                current: None,
+                best: 0
+            },
+            ..
+        })
+    ));
+    assert!(state.settled());
+}
+
+/// H-05 (spec 0138 G4, amended): the `Mismatch` gate is `best >
+/// current`, not `best >= current`.
+#[test]
+fn h05_mismatch_for_a_strictly_lower_current_score() {
+    let stats = RangeHeatStats {
+        best_score: Some(51),
+        best_count: 1,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: Some(Some(50)),
+    };
+    let display = heat_display(state);
+    assert!(matches!(
+        display,
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Mismatch {
+                current: Some(50),
+                best: 51
+            },
+            ..
+        })
+    ));
+}
+
+/// H-06 (spec 0138 G9): when the current type already achieves the top
+/// score but at least one other candidate ties it there, a `Tie` cue
+/// fires — `best_count` counts every candidate sharing that top score,
+/// including the current one. A `None`/vetoed current (H-04) never
+/// produces a `Tie`, even when `best_score` is shared by multiple
+/// candidates — `Tie` requires the current type to be a genuine member
+/// of the tied top-scoring group.
+#[test]
+fn h06_tie_when_current_shares_the_top_score_with_others() {
+    let stats = RangeHeatStats {
+        best_score: Some(50),
+        best_count: 2,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: Some(Some(50)),
+    };
+    assert!(matches!(
+        heat_display(state),
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Tie {
+                tie_count: 2,
+                score: 50
+            },
+            ..
+        })
+    ));
+
+    let stats = RangeHeatStats {
+        best_score: Some(50),
+        best_count: 3,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: Some(Some(50)),
+    };
+    assert!(matches!(
+        heat_display(state),
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Tie {
+                tie_count: 3,
+                score: 50
+            },
+            ..
+        })
+    ));
+}
+
+/// H-07: `current == best` with no other candidate tied at the top —
+/// a unique optimum — nothing shown, settled, same as before G9
+/// existed.
+#[test]
+fn h07_none_for_a_unique_optimum() {
+    let stats = RangeHeatStats {
+        best_score: Some(50),
+        best_count: 1,
+    };
+    let state = HeatState {
+        best: Some(stats),
+        current: Some(Some(50)),
+    };
+    assert!(matches!(heat_display(state), HeatDisplay::None));
+    assert!(state.settled());
 }
 
 // ---------------------------------------------------------------------
 // heat_cue_for (end-to-end, spec 0151 G1-G3)
 // ---------------------------------------------------------------------
 
-/// Spec 0138 G8: absent whenever no scoring graph is loaded for the
-/// session — even on an eligible node whose range isn't already cached
-/// — since `heat_cue_for` has no way to populate the cache without one.
+/// Spec 0138 G8 (spec 0154 G4): absent whenever no scoring graph is
+/// loaded for the session — even on an eligible node whose range isn't
+/// already cached — since `heat_cue_for` has no way to populate the
+/// cache without one. Shows `HeatDisplay::None` (nothing), not a
+/// permanent `[?]` — mirrors the old "never show `[pending]` forever"
+/// intent.
 #[test]
 fn absent_when_no_scoring_graph_is_loaded() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -271,7 +421,7 @@ fn absent_when_no_scoring_graph_is_loaded() {
         "fixture must have no scoring graph"
     );
     let header_line = app.tree[inner_idx].span.text_range.start;
-    assert!(app.heat_cue_for(header_line).is_none());
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
 }
 
 /// Spec 0138: `i` toggles `heat_cues_hidden`, suppressing the cue
@@ -288,36 +438,36 @@ fn i_toggles_heat_cues_hidden() {
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_range_cache.insert(
+    seed_range_heat_entry(
+        &mut app,
         range.start,
-        RangeHeatStats {
-            best_score: Some(50),
-            best_count: 1,
-        },
-    );
-    app.heat_current_score_cache.insert(
-        (range.start, "google.protobuf.DescriptorProto".to_string()),
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
         Some(10),
     );
     let header_line = app.tree[idx].span.text_range.start;
 
     assert!(!app.heat_cues_hidden);
-    let cue = app.heat_cue_for(header_line).expect("cue must be present");
+    let display = app.heat_cue_for(header_line);
     assert!(matches!(
-        cue.kind,
-        HeatCueKind::Mismatch {
-            current: 10,
-            best: 50
-        }
+        display,
+        HeatDisplay::Cue(HeatCue {
+            kind: HeatCueKind::Mismatch {
+                current: Some(10),
+                best: 50
+            },
+            ..
+        })
     ));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert!(app.heat_cues_hidden);
-    assert!(app.heat_cue_for(header_line).is_none());
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::None));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
     assert!(!app.heat_cues_hidden);
-    assert!(app.heat_cue_for(header_line).is_some());
+    assert!(matches!(app.heat_cue_for(header_line), HeatDisplay::Cue(_)));
 }
 
 /// End-to-end render check (spec 0138 N1): with a cue pre-cached (as
@@ -336,15 +486,12 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_range_cache.insert(
+    seed_range_heat_entry(
+        &mut app,
         range.start,
-        RangeHeatStats {
-            best_score: Some(50),
-            best_count: 1,
-        },
-    );
-    app.heat_current_score_cache.insert(
-        (range.start, "google.protobuf.DescriptorProto".to_string()),
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
         Some(10),
     );
 
@@ -390,8 +537,8 @@ fn render_shows_the_glyph_column_and_suffix_when_a_cue_is_present() {
 /// End-to-end render check (spec 0138 N1/G9): with a `Tie` cue
 /// pre-cached (current type tied for the top score with one other
 /// candidate), the main pane's header row shows `HEAT_GLYPH` in its own
-/// leading column and a trailing ` [<tie_count>]` suffix — distinct from
-/// the `Mismatch` cue's ` [current/best]` (no `/`).
+/// leading column and a trailing ` [<tie_count>@<score>]` suffix —
+/// distinct from the `Mismatch` cue's ` [current/best]` (no `/`).
 #[test]
 fn render_shows_the_tie_count_suffix_when_tied_for_best() {
     let mut app = message_node_app();
@@ -402,15 +549,12 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_range_cache.insert(
+    seed_range_heat_entry(
+        &mut app,
         range.start,
-        RangeHeatStats {
-            best_score: Some(50),
-            best_count: 2,
-        },
-    );
-    app.heat_current_score_cache.insert(
-        (range.start, "google.protobuf.DescriptorProto".to_string()),
+        Some(50),
+        2,
+        "google.protobuf.DescriptorProto",
         Some(50),
     );
 
@@ -435,8 +579,8 @@ fn render_shows_the_tie_count_suffix_when_tied_for_best() {
         "leading column must show the glyph: {header_row:?}"
     );
     assert!(
-        header_row.contains(" [2]"),
-        "must show the tie-count suffix: {header_row:?}"
+        header_row.contains(" [2@50]"),
+        "must show the tie-count and score suffix: {header_row:?}"
     );
     assert!(
         !header_row.contains('/'),
@@ -456,15 +600,7 @@ fn cue_never_appears_in_the_override_pane() {
         &app.tree[inner_idx].span.raw_range,
         app.tree[inner_idx].span.packed_record_start,
     );
-    app.heat_range_cache.insert(
-        range.start,
-        RangeHeatStats {
-            best_score: Some(50),
-            best_count: 1,
-        },
-    );
-    app.heat_current_score_cache
-        .insert((range.start, "test.Inner".to_string()), Some(10));
+    seed_range_heat_entry(&mut app, range.start, Some(50), 1, "test.Inner", Some(10));
     app.cursor = inner_idx;
     app.toggle_override();
     assert!(app.override_target.is_some());
@@ -506,15 +642,12 @@ fn second_call_for_the_same_line_is_a_pure_cache_hit() {
         &app.tree[idx].span.raw_range,
         app.tree[idx].span.packed_record_start,
     );
-    app.heat_range_cache.insert(
+    seed_range_heat_entry(
+        &mut app,
         range.start,
-        RangeHeatStats {
-            best_score: Some(50),
-            best_count: 1,
-        },
-    );
-    app.heat_current_score_cache.insert(
-        (range.start, "google.protobuf.DescriptorProto".to_string()),
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
         Some(10),
     );
     let header_line = app.tree[idx].span.text_range.start;
@@ -523,8 +656,8 @@ fn second_call_for_the_same_line_is_a_pure_cache_hit() {
     // short-circuit to `None` via `self.ctx.graph.as_ref()?`).
     let first = app.heat_cue_for(header_line);
     let second = app.heat_cue_for(header_line);
-    assert!(first.is_some());
-    assert!(second.is_some());
+    assert!(matches!(first, HeatDisplay::Cue(_)));
+    assert!(matches!(second, HeatDisplay::Cue(_)));
 }
 
 /// Regression for the "permanently-vetoed range never gets cached" bug
@@ -546,11 +679,12 @@ fn vetoed_range_is_still_cached_as_a_hit() {
     assert_eq!(hit.unwrap().best_score, None);
 }
 
-/// Cross-population (spec 0151 G6): once `heat_cue_for` pays for a full
+/// Cross-population (spec 0151 G6, relocked onto the shared cache by
+/// spec 0152 N8): once `heat_cue_for` pays for a full
 /// `inferred_candidates` call, the same candidate list — capped to
-/// `override_list_height` — is inserted into `App::candidate_cache`
-/// under the same range, so a later override-pane open (`t`) on that
-/// node hits the cache instead of re-scoring.
+/// `override_list_height` — is inserted into `App::heat_caches`'
+/// `by_range` under the same range, so a later override-pane open
+/// (`t`) on that node hits the cache instead of re-scoring.
 #[test]
 fn g6_cross_population_caps_to_override_list_height() {
     let (mut app, inner_idx, _id_idx) = type_as_fixture();
@@ -560,17 +694,27 @@ fn g6_cross_population_caps_to_override_list_height() {
         app.tree[inner_idx].span.packed_record_start,
     );
     app.override_list_height = 200; // simulates the eager `run()` init.
-    app.candidate_cache.insert(
-        range.clone(),
-        vec![("a.Type".to_string(), 5), ("b.Type".to_string(), 3)],
+    app.heat_caches.lock().unwrap().by_range.insert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(5),
+            best_count: 1,
+            top_n: vec![("a.Type".to_string(), 5), ("b.Type".to_string(), 3)],
+        },
     );
-    // The candidate_cache API itself is exercised elsewhere
-    // (override_pane.rs's own tests); this just pins that
+    // The `by_range` cache API itself is exercised elsewhere
+    // (`heat_worker.rs`'s own tests); this just pins that
     // `override_list_height` participates in the cap `heat_cue_for`
     // uses, per the `.max(1)` expression it shares with
     // `override_select.rs`.
     assert_eq!(app.override_list_height.max(1), 200);
-    assert!(app.candidate_cache.get(&range).is_some());
+    assert!(app
+        .heat_caches
+        .lock()
+        .unwrap()
+        .by_range
+        .peek(&range.start)
+        .is_some());
 }
 
 // ---------------------------------------------------------------------
@@ -585,10 +729,11 @@ fn g6_cross_population_caps_to_override_list_height() {
 /// `TestBackend` (mirrors `open_editor_reports_a_missing_nvim_instead_
 /// of_crashing`'s own precedent: `TestBackend`'s `Error` is
 /// `Infallible`, which doesn't satisfy `io::Error: From<B::Error>`).
-/// No existing fixture in this crate builds a real in-process
-/// `LoadedGraph` (every other graph-dependent test exercises the "no
-/// graph loaded" branch too), so the `ctx.graph.is_some()` populate/
-/// redraw path isn't separately unit-testable here.
+/// No test in this file drives `warm_up_heat_cues` itself against a
+/// real graph (`message_node_app_with_graph`, spec 0152 test plan,
+/// exists for the worker-round-trip tests below instead), so the
+/// `ctx.graph.is_some()` populate/redraw path isn't separately unit-
+/// tested here.
 #[test]
 fn warm_up_heat_cues_is_a_noop_without_a_scoring_graph() {
     let mut app = message_node_app();
@@ -610,20 +755,206 @@ fn warm_up_heat_cues_is_a_noop_without_a_scoring_graph() {
     );
 }
 
-/// `heat_cues_hidden` also short-circuits the pass, same as an absent
-/// graph (the `||` gate's second operand).
+/// `heat_cues_hidden` (2026-07-19 feedback) no longer skips
+/// `warm_up_heat_cues`'s own gate — the background worker must keep
+/// priming the cache even while cues are hidden, so `heat_cue_for`
+/// (called by the warm-up loop below) still pushes its request; only
+/// its returned cue is suppressed, at the `heat_cue_for` layer, not
+/// here.
 #[test]
-fn warm_up_heat_cues_is_a_noop_when_heat_cues_hidden() {
-    let mut app = message_node_app();
+fn heat_cue_for_still_pushes_a_request_when_heat_cues_hidden() {
+    let mut app = message_node_app_with_graph();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
     app.heat_cues_hidden = true;
-    // See the sibling test above for why this baseline isn't empty.
-    let before = app.message.clone();
-    let mut terminal = Terminal::new(CrosstermBackend::new(Vec::new())).unwrap();
+    let idx = 0;
+    let header_line = app.tree[idx].span.text_range.start;
 
-    warm_up_heat_cues(&mut terminal, &mut app).unwrap();
+    let cue = app.heat_cue_for(header_line);
 
+    assert!(
+        matches!(cue, HeatDisplay::None),
+        "no cue must be shown while hidden"
+    );
     assert_eq!(
-        app.message, before,
-        "the early-return branch must never touch app.message"
+        app.heat_worker.as_ref().unwrap().queue_len(),
+        1,
+        "the request must still be pushed while hidden, so the cache \
+         is already warm once cues are un-hidden"
+    );
+}
+
+// ---------------------------------------------------------------------
+// heat_lookup / heat_cue_for worker-aware forks (spec 0152 G6 test plan)
+// ---------------------------------------------------------------------
+
+/// Both the window and (when a `current_key` is given) the current
+/// type's exact score must be cached for `heat_lookup` to report a
+/// hit — a window-only or current-score-only cache still misses (and
+/// still pushes a request), pinning the "both must hold" AND-gating,
+/// not just the window half of it.
+#[test]
+fn heat_lookup_ands_window_and_current_score() {
+    let mut app = message_node_app();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let idx = 0;
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[idx].span.raw_range,
+        app.tree[idx].span.packed_record_start,
+    );
+    let key = "google.protobuf.DescriptorProto";
+
+    // Window covered, current_score missing.
+    app.heat_caches.lock().unwrap().by_range.insert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(5),
+            best_count: 1,
+            top_n: vec![("a.Type".to_string(), 5); HEAT_CUE_PREVIEW],
+        },
+    );
+    assert!(app
+        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Priority::Background)
+        .is_none());
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
+
+    // Symmetric case: current_score cached, window now insufficient.
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    app.heat_caches.lock().unwrap().by_range.insert(
+        range.start,
+        RangeHeatEntry {
+            best_score: Some(5),
+            best_count: 1,
+            top_n: vec![("a.Type".to_string(), 5)],
+        },
+    );
+    app.heat_caches
+        .lock()
+        .unwrap()
+        .current_score
+        .insert((range.start, key.to_string()), Some(3));
+    assert!(app
+        .heat_lookup(&range, Some(key), 0, HEAT_CUE_PREVIEW, Priority::Background)
+        .is_none());
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
+}
+
+/// With a manually-installed `HeatWorkerHandle`, a `heat_cue_for` call
+/// on a `Pending` node with an empty cache returns `None`, pushes
+/// exactly one `HeatRequest` (`[0, HEAT_CUE_PREVIEW)`), and leaves
+/// `heat_states[idx]` as `Pending`. A second call on the same node
+/// before any cache change pushes no additional request — since the
+/// queue would merge a second push anyway, this specifically pins
+/// that `heat_lookup`'s own before-push check, not just the queue's
+/// merge, is what prevents queue growth here.
+#[test]
+fn heat_cue_for_pushes_at_most_one_request_while_pending() {
+    let mut app = message_node_app();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let idx = 0;
+    let header_line = app.tree[idx].span.text_range.start;
+
+    assert!(matches!(
+        app.heat_cue_for(header_line),
+        HeatDisplay::Unknown
+    ));
+    assert!(!app.heat_states[idx].settled());
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 1);
+
+    assert!(matches!(
+        app.heat_cue_for(header_line),
+        HeatDisplay::Unknown
+    ));
+    assert!(!app.heat_states[idx].settled());
+    assert_eq!(
+        app.heat_worker.as_ref().unwrap().queue_len(),
+        1,
+        "a second call before any cache change must not grow the queue"
+    );
+}
+
+/// Pre-populating the cache with a `RangeHeatEntry` whose `top_n`
+/// already covers `[0, HEAT_CUE_PREVIEW)` (and the current key's exact
+/// score) resolves via `heat_cue_for` without pushing any request at
+/// all — the direct test for "don't trigger a `score_all` (or even a
+/// push) if the cache already covers the ask."
+#[test]
+fn heat_cue_for_pre_populated_cache_resolves_without_pushing() {
+    let mut app = message_node_app();
+    app.heat_worker = Some(HeatWorkerHandle::stub_for_test());
+    let idx = 0;
+    let range = extract::message_payload_range(
+        &app.blob,
+        &app.tree[idx].span.raw_range,
+        app.tree[idx].span.packed_record_start,
+    );
+    seed_range_heat_entry(
+        &mut app,
+        range.start,
+        Some(50),
+        1,
+        "google.protobuf.DescriptorProto",
+        Some(10),
+    );
+    let header_line = app.tree[idx].span.text_range.start;
+
+    let cue = app.heat_cue_for(header_line);
+    assert!(matches!(cue, HeatDisplay::Cue(_)));
+    assert!(app.heat_states[idx].settled());
+    assert_eq!(app.heat_worker.as_ref().unwrap().queue_len(), 0);
+}
+
+/// Real worker thread, real tiny in-memory graph, through the `App`
+/// layer end-to-end (spec 0152 test plan): a `heat_cue_for` miss with
+/// a real `HeatWorkerHandle` installed (via `DescriptorContext::
+/// for_test_with_graph`) leaves the node `Pending`; the worker's own
+/// cache write is later picked up by `recheck_pending_heat_states`
+/// (the same re-check `AppEvent::HeatWorkerProgress` triggers in
+/// `run_loop`), resolving it. Complements `heat_worker.rs`'s own
+/// lower-level round-trip test (which pins the exact cache contents
+/// and the no-re-score call-count guarantee); this one pins the
+/// `App`-level wiring instead.
+#[test]
+fn heat_cue_for_resolves_once_a_real_worker_populates_the_cache() {
+    let mut app = message_node_app_with_graph();
+    // Overwrite the fixture's all-zero payload (tag/length prefix
+    // unchanged, so the node's `raw_range` stays valid) with four
+    // repeated, structurally valid field-1 varint encodings — an
+    // all-zero payload's leading tag byte (field number 0) is
+    // structurally invalid and would veto every candidate, so
+    // `by_range`'s window could never fill.
+    app.blob = vec![0x22, 0x08, 0x08, 0x01, 0x08, 0x02, 0x08, 0x03, 0x08, 0x04];
+    let idx = 0;
+    let graph = app.ctx.graph.as_ref().unwrap().graph;
+    let blob = Arc::new(app.blob.clone());
+    let (tx, _rx) = mpsc::channel();
+    app.heat_worker = Some(HeatWorkerHandle::spawn(
+        Arc::clone(&app.heat_caches),
+        graph,
+        blob,
+        tx,
+    ));
+    let header_line = app.tree[idx].span.text_range.start;
+
+    assert!(matches!(
+        app.heat_cue_for(header_line),
+        HeatDisplay::Unknown
+    ));
+    assert!(!app.heat_states[idx].settled());
+
+    // Bounded poll, not `recv` — this isn't exercising the
+    // event-driven wiring, just the worker/cache-recheck contract.
+    let mut resolved = false;
+    for _ in 0..200 {
+        app.recheck_pending_heat_states();
+        if app.heat_states[idx].settled() {
+            resolved = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        resolved,
+        "the real worker must resolve the cache within the bounded poll"
     );
 }
