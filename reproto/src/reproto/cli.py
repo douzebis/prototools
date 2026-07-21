@@ -296,7 +296,9 @@ class _SectionedCommand(click.Command):
     shell_complete=complete_dir_path,
     help=(
         'Output directory for generated .proto files (created if absent). '
-        'Not required when using --schema-db-out, --scoring-html-out, or --dry-run.'
+        'Not required when using --schema-db-out, --scoring-html-out, or --dry-run. '
+        'When --schema-db-out is also given, DIR may not be inside its stub '
+        "directory unless DIR is that stub's immediate 'proto' child."
     ),
 )
 
@@ -470,7 +472,9 @@ class _SectionedCommand(click.Command):
         'Write the schema DB to FILE (must end in .desc). '
         'Writes FILE (FileDescriptorSet of all loaded FDPs), '
         'FILE-stem/hopcroft.rkyv (compiled scoring graph), and '
-        'FILE-stem/index.rkyv (lazy-loading FDS index).'
+        'FILE-stem/index.rkyv (lazy-loading FDS index). '
+        "If -O is also given, it may not be inside FILE-stem unless it "
+        "is exactly FILE-stem/proto."
     ),
 )
 
@@ -746,6 +750,24 @@ def main(
 
     if build_schema_db is not None and not str(build_schema_db).endswith('.desc'):
         raise click.UsageError('--schema-db-out PATH must end in .desc')
+
+    # spec 0155 G1: -O may not land inside --schema-db-out's stub
+    # directory (reserved for hopcroft.rkyv/index.rkyv) except as that
+    # stub's immediate 'proto' child.
+    if build_schema_db is not None and proto_out is not None:
+        stub_dir = build_schema_db.with_suffix('').resolve()
+        resolved_out = proto_out.resolve()
+        try:
+            rel = resolved_out.relative_to(stub_dir)
+        except ValueError:
+            rel = None  # proto_out is not inside stub_dir at all — fine
+        if rel is not None and rel != Path('proto'):
+            raise click.UsageError(
+                f"-O/--proto-out ({proto_out}) is inside the --schema-db-out "
+                f"stub directory ({stub_dir}); only an immediate 'proto' "
+                "child directory is allowed there — it otherwise holds "
+                "hopcroft.rkyv/index.rkyv."
+            )
 
     options = Options(
         binary=emit_binary,

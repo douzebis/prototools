@@ -45,8 +45,13 @@ struct Cli {
     /// Root directory `.proto` source files are resolved against for `v`'s
     /// jump-to-definition (spec 0144). Shares its env var naming with
     /// `PROTOTEXT_DESCRIPTOR_SET` (spec 0090); set externally by the
-    /// internal `prototools` package embedding this repo. Optional — `v`
-    /// reports a message (rather than failing at startup) when unset.
+    /// internal `prototools` package embedding this repo. When neither
+    /// this nor the env var is set, falls back to `<stub>/proto/` next
+    /// to `--descriptor-set` (`<stub>` = descriptor-set path with its
+    /// extension stripped — the same stub `reproto --schema-db-out`
+    /// uses), if that directory exists (spec 0155 G2). Still fully
+    /// optional — `v` reports a message rather than failing at startup
+    /// when no root is found either way.
     #[arg(long = "proto-root", short = 'I', env = "PROTOTEXT_PROTO_ROOT")]
     proto_root: Option<PathBuf>,
 
@@ -121,6 +126,67 @@ impl From<ExtractFormatArg> for extract::ExtractFormat {
             ExtractFormatArg::Text => extract::ExtractFormat::Text,
             ExtractFormatArg::Binary => extract::ExtractFormat::Binary,
         }
+    }
+}
+
+/// Default `proto_root` from `<descriptor_set-stub>/proto/` when the
+/// caller didn't set one explicitly (spec 0155 G2) — `None` (no
+/// fallback applied) whenever `cli_proto_root` is already `Some`, or
+/// whenever the candidate directory doesn't exist.
+fn resolve_proto_root(cli_proto_root: Option<PathBuf>, descriptor_set: &Path) -> Option<PathBuf> {
+    cli_proto_root.or_else(|| {
+        let candidate = descriptor_set.with_extension("").join("proto");
+        candidate.is_dir().then_some(candidate)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_proto_root_keeps_an_explicit_value_regardless_of_the_fallback_dir() {
+        let dir = std::env::temp_dir().join("protolens-resolve-proto-root-explicit");
+        let explicit = PathBuf::from("/explicit/root");
+        assert_eq!(
+            resolve_proto_root(Some(explicit.clone()), &dir.join("schema.desc")),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn resolve_proto_root_falls_back_to_the_stub_proto_dir_when_it_exists() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-ok-{n}"));
+        let proto_dir = base.join("schema").join("proto");
+        std::fs::create_dir_all(&proto_dir).unwrap();
+
+        let result = resolve_proto_root(None, &base.join("schema.desc"));
+
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(result, Some(proto_dir));
+    }
+
+    #[test]
+    fn resolve_proto_root_is_none_when_the_stub_proto_dir_is_missing() {
+        let base = std::env::temp_dir().join("protolens-resolve-proto-root-missing");
+        assert_eq!(resolve_proto_root(None, &base.join("schema.desc")), None);
+    }
+
+    #[test]
+    fn resolve_proto_root_is_none_when_the_stub_proto_path_is_a_file() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("protolens-resolve-proto-root-file-{n}"));
+        let stub_dir = base.join("schema");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        std::fs::write(stub_dir.join("proto"), b"").unwrap();
+
+        let result = resolve_proto_root(None, &base.join("schema.desc"));
+
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(result, None);
     }
 }
 
@@ -252,6 +318,7 @@ fn main() -> ExitCode {
         Some(_) => theme::ThemeKind::Dark,
     };
 
+    let proto_root = resolve_proto_root(cli.proto_root.clone(), descriptor_set);
     let mut app = tui::App::new(
         decoded,
         &blob_label,
@@ -259,7 +326,7 @@ fn main() -> ExitCode {
         cli.indent,
         ctx,
         theme,
-        cli.proto_root.clone(),
+        proto_root,
     );
 
     match cli.command {
