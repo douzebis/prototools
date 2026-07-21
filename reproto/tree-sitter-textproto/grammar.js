@@ -217,18 +217,30 @@ module.exports = grammar({
       ),
       seq(
     ".",
-    /\d+/,
+    $.frac_digits,
     optional($.exp)
       ),
       seq(
     $.dec_int,
     ".",
-    optional(/\d+/),
+    optional($.frac_digits),
     optional($.exp)
       ),
     ),
+    // Local fix: the `field_no` addition above (spec 0121) makes the
+    // LALR automaton merge float_lit's post-"." state with an unrelated
+    // field_no state, so plain (unprioritized) digit-run/exponent-lead
+    // tokens here lose the lexer's ambiguity tie-break to field_no's
+    // `/[1-9][0-9]*/` (or, for `exp`, to a plain `identifier`) — e.g.
+    // "48.8566" parses as float_lit "48." + ERROR "8566", silently
+    // dropping the fraction digits' `number` highlight past the
+    // decimal point. `token(prec(N, ...))` gives these two tokens
+    // lexer-level priority so they win that tie-break; named (not
+    // anonymous inline /\d+/) so the fraction digits get their own
+    // node distinct from `dec_int`.
+    frac_digits: $ => token(prec(2, /\d+/)),
     exp: $ => seq(
-      /[Ee][-+]?/,
+      token(prec(2, /[Ee][-+]?/)),
       /\d+/,
     ),
     float: $ => choice(

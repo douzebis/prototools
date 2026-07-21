@@ -81,6 +81,17 @@ h: 0xfffFF00aeF
 # <- attribute
 #^ punctuation.delimiter
 #    ^ number
+g: 48.8566
+# <- attribute
+#^ punctuation.delimiter
+#    ^ number
+#       ^ number
+i: 48.8566e2
+# <- attribute
+#^ punctuation.delimiter
+#    ^ number
+#       ^ number
+#          ^ number
 
 status: ACTIVE
 # <- attribute

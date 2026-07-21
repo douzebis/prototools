@@ -345,6 +345,25 @@ mod tests {
     }
 
     #[test]
+    fn decimal_point_float_fully_colored() {
+        // Regression test: the grammar's local `field_no` addition (spec
+        // 0121) made the LALR automaton merge float_lit's post-"." state
+        // with an unrelated field_no state, so the fraction digits lost
+        // the lexer's tie-break to field_no's own digit-run token,
+        // parsing "48.8566" as float_lit "48." + a sibling ERROR
+        // "8566" — coloring only the "48." part as Number. Fixed by
+        // giving `frac_digits`/`exp` explicit token precedence in
+        // grammar.js.
+        let text = "latitude: 48.8566\n";
+        assert_eq!(roles_at(text, "48.8566"), vec![SyntaxRole::Number]);
+
+        // Same bug also swallowed an exponent following the fraction
+        // digits (e.g. "48.8566e2"), for the same underlying reason.
+        let text = "latitude: 48.8566e2\n";
+        assert_eq!(roles_at(text, "48.8566e2"), vec![SyntaxRole::Number]);
+    }
+
+    #[test]
     fn hints_by_line_buckets_by_row() {
         let lines = vec!["flag: true".to_string(), "n: 1".to_string()];
         let text = lines.join("\n");
