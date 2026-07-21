@@ -1010,11 +1010,17 @@ impl App {
         (start..raw_end, text_range)
     }
 
-    /// Origin for a brand-new override, targeting node `idx` — always
-    /// created as kind `Path` (spec 0134 G1). Delegates to
-    /// `origin_for_kind`.
+    /// Origin for a brand-new override, targeting node `idx` — created
+    /// as kind `PathField` by default (feedback, 2026-07-21), since
+    /// path:field origins survive sibling reordering/insertion better
+    /// than a plain positional `Path`. Falls back to `Path` when `idx`
+    /// is the wrapper root (no parent), the one case `PathField` can
+    /// never resolve. Delegates to `origin_for_kind`.
     pub(super) fn override_origin_for_kind(&self, idx: usize) -> Result<OverrideOrigin, String> {
-        self.origin_for_kind(idx, OverrideKind::Path)
+        match self.origin_for_kind(idx, OverrideKind::PathField) {
+            Ok(origin) => Ok(origin),
+            Err(_) => self.origin_for_kind(idx, OverrideKind::Path),
+        }
     }
 
     /// Origin for an arbitrary `kind`, targeting node `idx` (spec 0117

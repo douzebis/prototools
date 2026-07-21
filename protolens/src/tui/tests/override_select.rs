@@ -48,7 +48,10 @@ fn override_pane_q_closes_pane() {
 
 /// Spec 0134 G1: the override selection pane no longer has a `z`/`Z`
 /// kind-rotation key — pressing either is a no-op (no panic, pane stays
-/// open, no kind rotation); `Enter` always creates a `Path`-kind origin.
+/// open, no kind rotation). `Enter` defaults to a `PathField`-kind
+/// origin (feedback, 2026-07-21), falling back to `Path` at the
+/// wrapper root — this fixture's single node has no parent, so it
+/// exercises that fallback and still asserts `Path`.
 /// (Spec 0147 G5: every keypress, `z`/`Z` included, now unconditionally
 /// dismisses a stale `self.message` — so unlike before spec 0147, `z`/`Z`
 /// are no longer asserted to leave `self.message` untouched.)
