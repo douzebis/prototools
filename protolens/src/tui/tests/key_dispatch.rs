@@ -699,6 +699,30 @@ fn default_export_descriptor_path_uses_no_range_at_the_root() {
     assert!(app.default_export_descriptor_path().contains(".no range."));
 }
 
+/// An active rename override (spec 0119 §G4's `f`) on the cursor node
+/// takes priority over both the `no range` root default and the
+/// `short_type` suffix: the segment is the renamed field name alone,
+/// e.g. `<stem>.exemplar.desc` rather than `<stem>.no range.Outer.desc`.
+#[test]
+fn default_export_descriptor_path_uses_an_active_rename_over_no_range() {
+    let (mut app, _, _) = type_as_fixture();
+    assert_eq!(app.cursor, app.first_node);
+    app.run_command("type-as test.Outer");
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.as_deref() == Some("test.Outer"))
+        .expect("type-as on root must have created an active entry");
+    app.overrides
+        .rename(entry_idx, Some("exemplar".to_string()));
+    let path = app.default_export_descriptor_path();
+    assert!(
+        path.ends_with(".exemplar.desc"),
+        "expected the renamed field name to replace `no range.<Type>`, got: {path}"
+    );
+}
+
 /// A cursor whose parent's schema resolves its field name uses that
 /// name as the segment.
 #[test]

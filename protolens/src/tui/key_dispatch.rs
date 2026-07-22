@@ -191,31 +191,41 @@ impl App {
 
     /// Propose a default `xdb`/`xdp`/`:export --descriptor-*` path (spec
     /// 0156 G5): same `<blob_stem>`/`<short_type>` construction as
-    /// `default_extract_path`, but `.desc` extension, and the range
-    /// segment replaced with `no range` at the document root, or the
-    /// cursor node's schema field name when resolvable — falling back to
-    /// the numeric range only when neither applies.
+    /// `default_extract_path`, but `.desc` extension. If the cursor node
+    /// (root or not) has an active override entry with a rename (`f` in
+    /// the manage pane), that name alone is used as the segment, with no
+    /// `short_type` suffix. Otherwise the segment is `no range` at the
+    /// document root, or the cursor node's schema field name when
+    /// resolvable — falling back to the numeric range only when neither
+    /// applies — and the `short_type` suffix is kept.
     pub(super) fn default_export_descriptor_path(&self) -> String {
         let stem = self
             .blob_path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "extract".to_string());
-        let node = &self.tree[self.cursor].span;
-        let short_type = node
-            .type_fqdn
-            .as_deref()
-            .and_then(|f| f.rsplit('.').next())
-            .unwrap_or("node");
-        let segment = if self.cursor == self.first_node {
-            "no range".to_string()
-        } else if let Some(field) = self.parent_field(self.cursor) {
-            field.name().to_string()
+        let renamed = self
+            .resolve_active_override_entry(self.cursor)
+            .and_then(|e| e.name.clone());
+        let filename = if let Some(name) = renamed {
+            format!("{stem}.{name}.desc")
         } else {
-            let range = self.display_range(self.cursor);
-            format!("{}-{}", range.start, range.end)
+            let node = &self.tree[self.cursor].span;
+            let short_type = node
+                .type_fqdn
+                .as_deref()
+                .and_then(|f| f.rsplit('.').next())
+                .unwrap_or("node");
+            let segment = if self.cursor == self.first_node {
+                "no range".to_string()
+            } else if let Some(field) = self.parent_field(self.cursor) {
+                field.name().to_string()
+            } else {
+                let range = self.display_range(self.cursor);
+                format!("{}-{}", range.start, range.end)
+            };
+            format!("{stem}.{segment}.{short_type}.desc")
         };
-        let filename = format!("{stem}.{segment}.{short_type}.desc");
         match self.blob_path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => {
                 dir.join(filename).to_string_lossy().into_owned()

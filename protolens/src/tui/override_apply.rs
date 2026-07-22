@@ -839,6 +839,10 @@ impl App {
 
         let field_number = old_span.field_number;
         let field_name = self.field_name_for(idx);
+        let renamed = self
+            .resolve_active_override_entry(idx)
+            .and_then(|e| e.name.clone())
+            .is_some();
 
         // Resolve `target` into the synthetic field's declared `Type`
         // (spec 0135 G1's "second subtlety" + G3, spec 0137 §G3/§G4): a
@@ -929,26 +933,37 @@ impl App {
         // replacement of the synthetic field's placeholder name (`"_"`,
         // `register_wrapper`'s fixed literal) with the real display name
         // — the header line itself is otherwise already correct (spec
-        // 0135 G1). No patch is needed at all for the raw (`target:
-        // None`) case, since there is no synthetic field/placeholder
-        // there. Nor for `Type::Group`: `TextSink::begin_nested` labels a
-        // group header with the group's own message type name, never the
-        // field's declared name — standard proto2 group text-format
+        // 0135 G1). Nor for `Type::Group`: `TextSink::begin_nested` labels
+        // a group header with the group's own message type name, never
+        // the field's declared name — standard proto2 group text-format
         // convention — so the `"_"` placeholder is never actually
         // present there. Any group target that needs a display name
         // other than its own type name must instead be named that way
         // at the source (e.g. `register_message_set_item`'s synthetic
         // shape is itself named `Item`, matching `prototext-core`'s own
         // native MessageSet rendering convention) rather than patched
-        // here after the fact.
+        // here after the fact. For the raw (`target: None`) case, there
+        // is no synthetic field/placeholder to patch — the header
+        // already shows the node's own numeric field number straight off
+        // the wire — except when an active override entry gives this
+        // node its own rename (spec 0119 §G4), which must still show up
+        // in place of that bare field number even though the node stays
+        // raw.
         let mut new_line_styles = colorize::hints_by_line(&new_lines, &new_style_hints);
-        if matches!(field_type, Some(ft) if ft != Type::Group) {
-            if let Some(patched) = decode::patch_synthetic_field_name(&new_lines[0], &field_name) {
-                new_lines[0] = patched;
-                new_line_styles[0] =
-                    colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
-                        .remove(0);
+        let patched_header = match field_type {
+            Some(ft) if ft != Type::Group => {
+                decode::patch_synthetic_field_name(&new_lines[0], &field_name)
             }
+            None if renamed => {
+                decode::patch_raw_field_name(&new_lines[0], field_number, &field_name)
+            }
+            _ => None,
+        };
+        if let Some(patched) = patched_header {
+            new_lines[0] = patched;
+            new_line_styles[0] =
+                colorize::hints_by_line(&new_lines[..1], &colorize::colorize(&new_lines[0]))
+                    .remove(0);
         }
 
         let delta = new_lines.len() as isize

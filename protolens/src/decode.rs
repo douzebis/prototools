@@ -548,6 +548,31 @@ pub(crate) fn patch_synthetic_field_name(line: &str, field_name: &str) -> Option
     }
 }
 
+/// Same substring patch as `patch_synthetic_field_name`, but for a raw
+/// (schema-less) render: with no wrapper descriptor at all, there is no
+/// `"_"` placeholder to begin with — the header line already shows the
+/// node's own numeric field number (decoded straight off the wire tag),
+/// in the same two shapes (`"N: "` scalar/value or `"N {"` nested-
+/// message header). Used only when an active override entry's rename
+/// (spec 0119 §G4) applies to an otherwise-raw node, so its custom name
+/// shows in place of the bare field number. Returns `None` (line left
+/// untouched) when the line doesn't actually start with that exact
+/// field number in one of those two shapes.
+pub(crate) fn patch_raw_field_name(
+    line: &str,
+    field_number: u64,
+    field_name: &str,
+) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let after = rest.strip_prefix(field_number.to_string().as_str())?;
+    if after.starts_with(": ") || after.starts_with(" {") {
+        Some(format!("{indent}{field_name}{after}"))
+    } else {
+        None
+    }
+}
+
 /// Resolve a `:type-as` primitive type keyword (spec 0135 §G3/§G4) to its
 /// `Type`. Covers exactly the fifteen keywords listed in G4 — `string`/
 /// `bytes` included, even though they share `WT_LEN` framing with

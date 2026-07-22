@@ -1205,6 +1205,118 @@ fn manage_pane_rename_updates_entry_and_rerenders_active_override() {
     );
 }
 
+/// The `f` rename feature (spec 0119 §G4) applies to the document root
+/// exactly like any other node: `type-as`-ing the root creates an
+/// active `Path { path: "/" }` entry (`override_origin_for_kind`'s
+/// root fallback), which the manage pane's `f` handler renames and
+/// re-renders in place, same as a non-root node.
+#[test]
+fn manage_pane_rename_works_on_the_document_root_with_a_real_type() {
+    let (mut app, _inner_idx, _) = type_as_fixture();
+    app.cursor = app.first_node;
+    app.run_command("type-as test.Outer");
+
+    app.toggle_manage_pane();
+    assert!(app.manage_open, "manage pane must open");
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.as_deref() == Some("test.Outer"))
+        .expect("type-as on root must have created an active entry");
+    app.manage_highlight = entry_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    assert!(app.manage_rename.is_some(), "f must open rename buffer");
+    for c in "root_name".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_rename.is_none());
+    assert_eq!(
+        app.overrides.entries()[entry_idx].name.as_deref(),
+        Some("root_name")
+    );
+    assert_eq!(app.field_name_for(app.first_node), "root_name");
+    let header = &app.lines[0];
+    assert!(
+        header.contains("root_name"),
+        "expected the renamed field name in the root's header line: {header}"
+    );
+}
+
+/// Same as above, but the root is explicitly `type-as-raw` (an active
+/// entry with `r#type: None`) rather than a real type. Renaming such a
+/// node must still show up in the header line: `splice_override`'s raw
+/// path has no synthetic-field placeholder to patch (no schema at all),
+/// so it patches the node's own numeric field-number label instead,
+/// whenever an active override entry gives it a rename.
+#[test]
+fn manage_pane_rename_works_on_a_raw_typed_root() {
+    let (mut app, _inner_idx, _) = type_as_fixture();
+    app.cursor = app.first_node;
+    app.run_command("type-as-raw");
+
+    app.toggle_manage_pane();
+    assert!(app.manage_open, "manage pane must open");
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.is_none())
+        .expect("type-as-raw on root must have created an active raw entry");
+    app.manage_highlight = entry_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    assert!(app.manage_rename.is_some(), "f must open rename buffer");
+    for c in "exemplar".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_rename.is_none());
+    assert_eq!(app.field_name_for(app.first_node), "exemplar");
+    let header = &app.lines[0];
+    assert!(
+        header.contains("exemplar"),
+        "expected the renamed field name in the raw root's header line: {header}"
+    );
+}
+
+/// Same fix as `manage_pane_rename_works_on_a_raw_typed_root`, but for
+/// an ordinary non-root node — confirms the raw-header rename patch is
+/// not root-specific.
+#[test]
+fn manage_pane_rename_works_on_a_raw_typed_non_root_node() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.run_command("type-as-raw");
+
+    app.toggle_manage_pane();
+    assert!(app.manage_open, "manage pane must open");
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.is_none())
+        .expect("type-as-raw must have created an active raw entry");
+    app.manage_highlight = entry_idx;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+    assert!(app.manage_rename.is_some(), "f must open rename buffer");
+    for c in "custom_raw_name".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage_rename.is_none());
+    assert_eq!(app.field_name_for(inner_idx), "custom_raw_name");
+    let line_idx = app.tree[inner_idx].span.text_range.start;
+    let header = &app.lines[line_idx];
+    assert!(
+        header.contains("custom_raw_name"),
+        "expected the renamed field name in the raw node's header line: {header}"
+    );
+}
+
 /// Regression test for the manage-pane toggle/reactivate bug reported
 /// against spec 0120's auto-expansion seeding: deactivating a
 /// MessageSet tier-1 (`MessageSetItem`) auto-derived override via
