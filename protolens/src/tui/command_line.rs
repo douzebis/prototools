@@ -92,6 +92,31 @@ impl App {
                 self.command_buffer = None;
                 self.command_cursor = 0;
             }
+            // Emacs/readline-style char motion (vim's own command-line mode
+            // supports these too): Ctrl-f/Ctrl-b as alternatives to the
+            // plain arrow keys below.
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let len = self.command_buffer_char_len();
+                self.command_cursor = (self.command_cursor + 1).min(len);
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.command_cursor = self.command_cursor.saturating_sub(1)
+            }
+            // Word motion: Alt-f/Alt-b and their Alt-Left/Alt-Right
+            // equivalents. Must precede the plain Left/Right arms below
+            // since match arms are checked in order.
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.command_cursor = self.next_word_boundary();
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.command_cursor = self.next_word_boundary();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.command_cursor = self.prev_word_boundary();
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.command_cursor = self.prev_word_boundary();
+            }
             KeyCode::Left => self.command_cursor = self.command_cursor.saturating_sub(1),
             KeyCode::Right => {
                 let len = self.command_buffer_char_len();
@@ -380,6 +405,49 @@ impl App {
             .as_deref()
             .map(|b| b.chars().count())
             .unwrap_or(0)
+    }
+
+    /// Char index of the start of the whitespace-delimited word the
+    /// cursor sits in/after (Alt-b/Alt-Left): skip any whitespace
+    /// immediately behind the cursor, then skip back to the start of the
+    /// non-whitespace run before it.
+    pub(super) fn prev_word_boundary(&self) -> usize {
+        let chars: Vec<char> = self
+            .command_buffer
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .collect();
+        let mut i = self.command_cursor.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        i
+    }
+
+    /// Char index just past the end of the whitespace-delimited word
+    /// the cursor sits in/before (Alt-f/Alt-Right): skip any whitespace
+    /// at/after the cursor, then skip forward to the end of the
+    /// following non-whitespace run.
+    pub(super) fn next_word_boundary(&self) -> usize {
+        let chars: Vec<char> = self
+            .command_buffer
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .collect();
+        let len = chars.len();
+        let mut i = self.command_cursor.min(len);
+        while i < len && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < len && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        i
     }
 
     /// Byte offset in `command_buffer` of the `char_idx`-th character (or

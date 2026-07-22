@@ -667,6 +667,61 @@ fn tab_completes_proto_root_directory_argument_excluding_files() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Ctrl-f/Ctrl-b move the cursor one char forward/backward, same as
+/// the plain arrow keys, and clamp at the buffer's ends.
+#[test]
+fn ctrl_f_and_ctrl_b_move_cursor_by_one_char() {
+    let mut app = empty_app();
+    app.command_buffer = Some("abc".to_string());
+    app.command_cursor = 1;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_cursor, 2);
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_cursor, 3);
+    // Clamped at the end.
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_cursor, 3);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_cursor, 2);
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    // Clamped at the start.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    assert_eq!(app.command_cursor, 0);
+}
+
+/// Alt-b/Alt-Left move the cursor to the start of the previous
+/// whitespace-delimited word; Alt-f/Alt-Right move it to the end of
+/// the next one — mirroring vim/readline command-line word motion.
+#[test]
+fn alt_word_motion_moves_by_whitespace_delimited_words() {
+    let mut app = empty_app();
+    app.command_buffer = Some("save foo bar".to_string());
+    app.command_cursor = 12; // end of buffer, right after "bar"
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 9); // start of "bar"
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 5); // start of "foo"
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 0); // start of "save"
+                                       // Clamped at the start.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 4); // end of "save"
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 8); // end of "foo"
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 12); // end of "bar"
+                                        // Clamped at the end.
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT));
+    assert_eq!(app.command_cursor, 12);
+}
+
 /// Glitch reported 2026-07-18: completing while the cursor sits right
 /// before an already-present `/` (e.g. after Left-arrow-ing back into an
 /// earlier path segment) must not double up the separator.
