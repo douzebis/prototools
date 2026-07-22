@@ -1450,6 +1450,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 if ctx.build_schema_db and slot is not None and slot.out is not None:
                     assert isinstance(slot.out, FileDescriptorProto)
                     ctx.schema_db_fdps.append(slot.out)
+                    ctx.schema_db_fdp_origins.append(re_fdp.name)
 
                 # Write .proto text (skipped in dry-run mode)
                 if not ctx.dry_run and not suppress_disk_output:
@@ -1634,8 +1635,30 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
             if slot.out is not None:
                 assert isinstance(slot.out, FileDescriptorProto)
                 ctx.schema_db_fdps.append(slot.out)
+                ctx.schema_db_fdp_origins.append(extra_node.name)
 
-    fdp_by_name = {f.name: f for f in ctx.schema_db_fdps}
+    # spec 0158: detect two entries that canonize to the same schema-db
+    # name but carry different content (e.g. an import_rewrites rule
+    # colliding a rewritten file's name with an already-canonical file of
+    # the same name) and abort loudly instead of silently keeping
+    # whichever entry happens to appear last.
+    seen: dict[str, tuple[str, FileDescriptorProto]] = {}
+    for origin, fdp in zip(ctx.schema_db_fdp_origins, ctx.schema_db_fdps):
+        prior = seen.get(fdp.name)
+        if prior is not None:
+            prior_origin, prior_fdp = prior
+            if prior_fdp.SerializeToString() != fdp.SerializeToString():
+                cli_error(
+                    f"error: schema-db name collision: '{prior_origin}' and "
+                    f"'{origin}' both canonize to '{fdp.name}' with "
+                    "different content — cannot build a valid "
+                    "FileDescriptorSet. Use -p/--prune to remove one of "
+                    "the colliding sources."
+                )
+                sys.exit(1)
+            continue
+        seen[fdp.name] = (origin, fdp)
+    fdp_by_name = {name: fdp for name, (_origin, fdp) in seen.items()}
     # Kahn's algorithm: process files whose deps are already placed.
     in_set: set[str] = set()
     sorted_fdps = []

@@ -172,6 +172,12 @@ class Context(Options):
         # ctx.build_schema_db is set; read by _phase_build_schema_db.
         self.schema_db_fdps: list[FileDescriptorProto] = []
 
+        # Original (pre-canonicalization) .name of each entry in
+        # schema_db_fdps, same index correspondence — spec 0158, used only
+        # to name both sides of a canonical-name collision in the error
+        # message.
+        self.schema_db_fdp_origins: list[str] = []
+
         # WKT/fallback nodes identified by phase 6 sub-pass 3 (spec 0080).
         # These are transitive dependencies of summoned files that were not
         # summoned themselves.  _phase_build_schema_db promotes and renders
