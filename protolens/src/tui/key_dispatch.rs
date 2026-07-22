@@ -150,7 +150,7 @@ impl App {
         self.fwd_stack.clear();
     }
 
-    /// Propose a default `:extract`/`x` path, in the same directory as the
+    /// Propose a default `:export`/`x` path, in the same directory as the
     /// original blob: `<blob_stem>.<raw_start>-<raw_end>.<short_type>.pb`.
     /// The byte range ties the filename back to the status line's
     /// `bytes[..]` display (and keeps repeated extracts from the same blob
@@ -172,6 +172,50 @@ impl App {
             .unwrap_or("node");
         let range = self.display_range(self.cursor);
         let filename = format!("{stem}.{}-{}.{short_type}.pb", range.start, range.end);
+        match self.blob_path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                dir.join(filename).to_string_lossy().into_owned()
+            }
+            _ => filename,
+        }
+    }
+
+    /// Pre-fills the command line with `export <flag> <path>` and opens
+    /// it (spec 0156 G3) — shared by all four chord resolutions.
+    fn prefill_export(&mut self, flag: &str, path: String) {
+        let buf = format!("export {flag} {path}");
+        self.command_kind = CommandLineKind::Command;
+        self.command_cursor = buf.chars().count();
+        self.command_buffer = Some(buf);
+    }
+
+    /// Propose a default `xdb`/`xdp`/`:export --descriptor-*` path (spec
+    /// 0156 G5): same `<blob_stem>`/`<short_type>` construction as
+    /// `default_extract_path`, but `.desc` extension, and the range
+    /// segment replaced with `no range` at the document root, or the
+    /// cursor node's schema field name when resolvable — falling back to
+    /// the numeric range only when neither applies.
+    pub(super) fn default_export_descriptor_path(&self) -> String {
+        let stem = self
+            .blob_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "extract".to_string());
+        let node = &self.tree[self.cursor].span;
+        let short_type = node
+            .type_fqdn
+            .as_deref()
+            .and_then(|f| f.rsplit('.').next())
+            .unwrap_or("node");
+        let segment = if self.cursor == self.first_node {
+            "no range".to_string()
+        } else if let Some(field) = self.parent_field(self.cursor) {
+            field.name().to_string()
+        } else {
+            let range = self.display_range(self.cursor);
+            format!("{}-{}", range.start, range.end)
+        };
+        let filename = format!("{stem}.{segment}.{short_type}.desc");
         match self.blob_path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => {
                 dir.join(filename).to_string_lossy().into_owned()
@@ -308,6 +352,58 @@ impl App {
         }
         self.pending_g = false;
 
+        // `x<b|p|d<b|p>>` chord (export-format leader key, spec 0156 G3):
+        // a first `x` press arms `ExportChord::Leader` silently; the next
+        // keypress either fires a data export (`b`/`p`), arms
+        // `ExportChord::Descriptor` (`d`, no fire yet), or cancels the
+        // chord (falls through unswallowed) — same pattern as the `gg`
+        // chord above, adapted for a two/three-key selection rather than
+        // a repeated key.
+        match self.pending_x {
+            ExportChord::Leader => {
+                self.pending_x = ExportChord::None;
+                match key.code {
+                    KeyCode::Char('b') => {
+                        let path = self.default_extract_path();
+                        self.prefill_export("--binary", path);
+                        return;
+                    }
+                    KeyCode::Char('p') => {
+                        let path = self.default_extract_path();
+                        self.prefill_export("--prototext", path);
+                        return;
+                    }
+                    KeyCode::Char('d') => {
+                        self.pending_x = ExportChord::Descriptor;
+                        return;
+                    }
+                    _ => {} // falls through, processed normally below
+                }
+            }
+            ExportChord::Descriptor => {
+                self.pending_x = ExportChord::None;
+                match key.code {
+                    KeyCode::Char('b') => {
+                        let path = self.default_export_descriptor_path();
+                        self.prefill_export("--descriptor-binary", path);
+                        return;
+                    }
+                    KeyCode::Char('p') => {
+                        let path = self.default_export_descriptor_path();
+                        self.prefill_export("--descriptor-prototext", path);
+                        return;
+                    }
+                    _ => {} // falls through, processed normally below
+                }
+            }
+            ExportChord::None => {
+                if key.code == KeyCode::Char('x') {
+                    self.pending_x = ExportChord::Leader;
+                    return;
+                }
+            }
+        }
+
         match key.code {
             KeyCode::Char('q') => self.request_quit(),
 
@@ -439,17 +535,6 @@ impl App {
                 } else {
                     self.message = "jumplist: at newest position".to_string();
                 }
-            }
-
-            // `x` is a shortcut that opens the ex-command line
-            // pre-filled with "extract " plus a proposed default path
-            // (0113 D21) — `:` itself is handled centrally above (item
-            // 9), regardless of focus.
-            KeyCode::Char('x') => {
-                let buf = format!("extract {}", self.default_extract_path());
-                self.command_kind = CommandLineKind::Command;
-                self.command_cursor = buf.chars().count();
-                self.command_buffer = Some(buf);
             }
 
             // In-pane search (spec 0114 §4, extended to the main pane):

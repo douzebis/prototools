@@ -660,13 +660,13 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                let buf = format!("save-overrides {}", self.default_save_overrides_path());
+                let buf = format!("save {}", self.default_save_overrides_path());
                 self.command_kind = CommandLineKind::Command;
                 self.command_cursor = buf.chars().count();
                 self.command_buffer = Some(buf);
             }
             KeyCode::Char('r') => {
-                let buf = "restore-overrides ".to_string();
+                let buf = "restore ".to_string();
                 self.command_kind = CommandLineKind::Command;
                 self.command_cursor = buf.chars().count();
                 self.command_buffer = Some(buf);

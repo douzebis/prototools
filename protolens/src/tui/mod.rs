@@ -4,7 +4,7 @@
 
 //! Minimal v1 navigate + extract slice: single scrollable pane, cursor/fold
 //! state, document-order / sibling-skip / parent / child movement, a
-//! jumplist, mouse wheel/click, and a vim-style `:extract`/`x` command line
+//! jumplist, mouse wheel/click, and a vim-style `:export`/`x` command line
 //! — spec 0111 §2/§4, Annex B, Annex C. No override picker yet.
 
 use std::collections::{HashMap, HashSet};
@@ -33,10 +33,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use prototext_core::serialize::render_text::{decode_and_render_indexed, DecodeRenderOpts};
+use prototext_core::serialize::render_text::{
+    decode_and_render, decode_and_render_indexed, DecodeRenderOpts,
+};
 
 use crate::colorize::{self, SyntaxRole};
 use crate::decode::{self, Decoded, DescriptorContext, TreeNode};
+use crate::export_descriptor;
 use crate::extract::{self, ExtractFormat};
 use crate::override_pane::{self, OverrideKind, OverrideOrigin, SortMode};
 use crate::render_cache::RenderCache;
@@ -122,12 +125,12 @@ const RENDER_CACHE_MAX_BYTES: usize = 1 << 20;
 /// command line's Tab-completion (`App::start_tab_completion`). Adding a
 /// command here is the only step needed for it to get both, automatically.
 const COMMANDS: &[&str] = &[
-    "extract",
+    "export",
     "quit",
     "type-as",
     "type-as-raw",
-    "save-overrides",
-    "restore-overrides",
+    "save",
+    "restore",
     "proto-root",
 ];
 
@@ -379,6 +382,16 @@ enum CommandLineKind {
     Search(SearchDir),
 }
 
+/// Export-chord leader state (spec 0156 G3): `None` (no chord armed),
+/// `Leader` (a lone `x` was just pressed), `Descriptor` (`xd` was just
+/// pressed — one more key selects binary vs. prototext).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportChord {
+    None,
+    Leader,
+    Descriptor,
+}
+
 /// Static key-binding reference shown by the `F1` help overlay (spec 0111
 /// Annex C, spec 0113 D22) — kept as one flat text block rather than
 /// generated from the `handle_key` match arms, so it can be phrased for
@@ -419,12 +432,18 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl-O           jump back",
     "  Ctrl-I           jump forward",
     "",
-    "Extract",
-    "  x                open the extract command line (prefilled",
-    "                   \"extract \")",
-    "  :extract [--binary|--text] <path>",
-    "                   extract the cursor node to <path> — default",
-    "                   format is #@ prototext text",
+    "Export",
+    "  x                arm the export chord — xb/xp pre-fill \":export\"",
+    "                   for binary/prototext data; xd arms a second",
+    "                   chord — xdb/xdp pre-fill \":export\" for binary/",
+    "                   prototext schema",
+    "  :export [--binary|--prototext|--descriptor-binary|",
+    "           --descriptor-prototext] <path>",
+    "                   export the cursor node to <path> — default",
+    "                   format is #@ prototext text; --descriptor-binary/",
+    "                   --descriptor-prototext export a synthetic schema",
+    "                   for the cursor's live-tree children instead of",
+    "                   its data",
     "",
     "Command line",
     "  Tab              complete the command name (longest common prefix,",
@@ -504,18 +523,18 @@ const HELP_TEXT: &[&str] = &[
     "                   inactive and is always manual, even if the",
     "                   original was auto-derived)",
     "  entry rows: auto-derived entries are plain, manual entries bold",
-    "  s                pre-fill \":save-overrides <default path>\"",
-    "  r                pre-fill \":restore-overrides \"",
-    "  :save-overrides <path>",
+    "  s                pre-fill \":save <default path>\"",
+    "  r                pre-fill \":restore \"",
+    "  :save <path>",
     "                   write the whole override collection to <path>",
     "                   as YAML",
-    "  :restore-overrides <path>",
+    "  :restore <path>",
     "                   replace the override collection wholesale with",
     "                   <path>'s contents (entries that no longer",
     "                   resolve are silently dropped; a target-hash",
     "                   mismatch warns but does not block)",
-    "  Tab              complete a filesystem path (save-overrides/",
-    "                   restore-overrides argument)",
+    "  Tab              complete a filesystem path (save/restore",
+    "                   argument)",
     "  (management-pane actions never change the current rendering —",
     "  only Enter in the override pane does)",
     "",
@@ -540,7 +559,7 @@ pub struct App {
     /// recover the caller's original (pre-wrap) numbering.
     wrapper_offset: usize,
     /// Original blob's own path — basis for `default_extract_path()`'s
-    /// proposed `:extract`/`x` default path.
+    /// proposed `:export`/`x` default path.
     blob_path: PathBuf,
     /// Whether the main pane currently shows each line's trailing `#@ ...`
     /// annotation (spec 0133) — a pure *display* attribute, toggled by the
@@ -852,6 +871,11 @@ pub struct App {
     /// press within the very next keystroke (`gg` chord, vim-style); any
     /// other key clears it.
     pending_g: bool,
+    /// Export-chord leader state (spec 0156 G3): `None` (no chord
+    /// armed), `Leader` (a lone `x` was just pressed), `Descriptor`
+    /// (`xd` was just pressed — one more key selects binary vs.
+    /// prototext).
+    pending_x: ExportChord,
     /// `Some(buffer)` while a `:`/`x`-triggered command line, or a `/`/`?`
     /// main-pane search prompt (spec 0114 §4, extended from the override
     /// pane — see `CommandLineKind`), is being edited; `None` in normal
@@ -1077,6 +1101,7 @@ impl App {
             fwd_stack: Vec::new(),
             first_node: cursor,
             pending_g: false,
+            pending_x: ExportChord::None,
             command_buffer: None,
             command_kind: CommandLineKind::Command,
             command_cursor: 0,

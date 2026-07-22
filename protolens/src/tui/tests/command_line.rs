@@ -7,14 +7,26 @@ use super::support::*;
 
 #[test]
 fn resolve_command_prefix_and_exact_match() {
-    assert_eq!(resolve_command("extract"), Ok("extract"));
-    assert_eq!(resolve_command("e"), Ok("extract"));
+    assert_eq!(resolve_command("export"), Ok("export"));
+    assert_eq!(resolve_command("e"), Ok("export"));
     assert!(resolve_command("zzz").is_err());
     // "type-as" is itself a prefix of "type-as-raw" — exact match
     // must still win (spec 0114 §7).
     assert_eq!(resolve_command("type-as"), Ok("type-as"));
     assert_eq!(resolve_command("type-as-raw"), Ok("type-as-raw"));
     assert!(resolve_command("type-a").is_err());
+}
+
+/// Spec 0156 G1/G10: the old command names no longer resolve at all
+/// (`COMMANDS` no longer lists them), and their replacements do,
+/// including unambiguous prefixes.
+#[test]
+fn resolve_command_reflects_the_0156_renames() {
+    assert!(resolve_command("extract").is_err());
+    assert!(resolve_command("save-overrides").is_err());
+    assert!(resolve_command("restore-overrides").is_err());
+    assert_eq!(resolve_command("save"), Ok("save"));
+    assert_eq!(resolve_command("restore"), Ok("restore"));
 }
 
 /// Item 9 (2026-07-17 feedback): `:quit`, and its unambiguous prefix
@@ -82,12 +94,12 @@ fn tab_completes_the_unique_command_name() {
     app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.command_buffer.as_deref(), Some("extract"));
-    assert_eq!(app.command_cursor, "extract".chars().count());
+    assert_eq!(app.command_buffer.as_deref(), Some("export"));
+    assert_eq!(app.command_cursor, "export".chars().count());
 }
 
 /// Spec 0113 D26: once a space precedes the cursor, `Tab` is a silent
-/// no-op for commands with no argument completion — `:extract` has
+/// no-op for commands with no argument completion — `:export` has
 /// none (spec 0114 §7 only adds argument completion for `:type-as`'s
 /// FQDN argument, exercised separately).
 #[test]
@@ -95,11 +107,11 @@ fn tab_is_a_no_op_once_past_the_first_space() {
     let mut app = empty_app();
     app.splash = false;
     app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
-    for c in "extract ".chars() {
+    for c in "export ".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    assert_eq!(app.command_buffer.as_deref(), Some("extract "));
+    assert_eq!(app.command_buffer.as_deref(), Some("export "));
 }
 
 /// Spec 0113 D26: repeated `Tab` cycles forward through a multi-
@@ -135,7 +147,7 @@ fn tab_cycles_forward_and_shift_tab_cycles_backward() {
     assert_eq!(app.command_buffer.as_deref(), Some("xygamma"));
 }
 
-/// Spec 0125 §G3: `:save-overrides` then `:restore-overrides`
+/// Spec 0125 §G3: `:save` then `:restore`
 /// round-trips an `auto: true` entry's `auto` flag exactly, and a
 /// pre-existing YAML file with no `auto` key still loads fine
 /// (defaults to `false`).
@@ -214,7 +226,7 @@ fn long_command_buffer_is_pannable_and_keeps_cursor_visible() {
 }
 
 /// Regression test for a bug found while implementing spec 0123's
-/// test plan: `load_overrides` (`:restore-overrides`/batch
+/// test plan: `load_overrides` (`:restore`/batch
 /// `--load-overrides`) wholesale-replaces `self.overrides` (spec
 /// 0117 §4), which used to silently drop the document root's own
 /// `seed_root` entry whenever the loaded file didn't carry one
@@ -238,7 +250,7 @@ fn load_overrides_without_a_root_entry_preserves_the_current_root_type() {
     let (blob_sha256, descriptor_set_sha256) = app.target_hashes();
 
     // Deliberately omits any `path: "/"` entry — exactly the shape a
-    // real `:save-overrides` produces is *not* what's being tested
+    // real `:save` produces is *not* what's being tested
     // here (that's covered by `save_and_restore_overrides_round_trips
     // _and_drops_unresolvable_entries`); this reproduces a
     // hand-authored/edited file, or any file saved before root ever
@@ -496,7 +508,7 @@ fn default_save_overrides_path_uses_blob_stem_with_yaml_extension() {
     assert_eq!(app.default_save_overrides_path(), "/tmp/some/target.yaml");
 }
 
-/// Spec 0117 §4: `:save-overrides`/`:restore-overrides` round-trip the
+/// Spec 0117 §4: `:save`/`:restore` round-trip the
 /// collection through YAML, and restore silently drops an entry whose
 /// origin no longer resolves against the current tree.
 #[test]
@@ -580,12 +592,12 @@ fn restore_overrides_warns_on_hash_mismatch_without_blocking() {
     assert_eq!(app.overrides.entries().len(), 1); // restore still applied
 }
 
-/// Spec 0117 §4: `Tab` completes `:save-overrides`/`:restore-overrides`'s
+/// Spec 0117 §4: `Tab` completes `:save`/`:restore`'s
 /// path argument against real directory entries, cycling on the
 /// longest common prefix — no `!arg_prefix.contains(' ')` restriction,
 /// unlike `:type-as`'s FQDN completer.
 #[test]
-fn tab_completes_filesystem_path_for_save_overrides_argument() {
+fn tab_completes_filesystem_path_for_save_argument() {
     let (mut app, _, _) = type_as_fixture();
     let dir =
         std::env::temp_dir().join(format!("protolens-tui-fs-complete-{}", std::process::id()));
@@ -593,13 +605,13 @@ fn tab_completes_filesystem_path_for_save_overrides_argument() {
     std::fs::write(dir.join("alpha.yaml"), b"").unwrap();
     std::fs::write(dir.join("alphabet.yaml"), b"").unwrap();
 
-    let prefix = format!("save-overrides {}/al", dir.to_string_lossy());
+    let prefix = format!("save {}/al", dir.to_string_lossy());
     app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
     for c in prefix.chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let expected = format!("save-overrides {}/alpha", dir.to_string_lossy());
+    let expected = format!("save {}/alpha", dir.to_string_lossy());
     assert_eq!(app.command_buffer.as_deref(), Some(expected.as_str()));
 
     std::fs::remove_dir_all(&dir).unwrap();

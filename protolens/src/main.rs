@@ -5,6 +5,7 @@
 mod colorize;
 mod complete;
 mod decode;
+mod export_descriptor;
 mod extract;
 mod override_pane;
 mod render_cache;
@@ -83,26 +84,28 @@ struct Cli {
 /// Batch (non-interactive) subcommands (spec 0123).
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Extract one node's rendering and exit, without entering the
-    /// interactive TUI.
-    Extract {
-        /// Field path of the node to extract, in positional-path
+    /// Export one node's rendering (or, for the two descriptor formats,
+    /// its synthetic schema) and exit, without entering the interactive
+    /// TUI.
+    Export {
+        /// Field path of the node to export, in positional-path
         /// notation (`/` = document root; `/1/2` = root's 1st child's
         /// 2nd child — same notation the TUI's status line displays per
         /// node).
         path: String,
 
         /// Previously-saved override collection (spec 0117 §4 YAML, the
-        /// same file `:save-overrides` writes) to apply before
-        /// extraction. A target-hash mismatch against the loaded blob/
-        /// descriptor-set is a warning (to stderr), not a hard error —
-        /// same policy as the `:restore-overrides` TUI command. A
-        /// missing file or malformed YAML, unlike the TUI, is a hard
-        /// error.
+        /// same file `:save` writes) to apply before exporting. A
+        /// target-hash mismatch against the loaded blob/descriptor-set
+        /// is a warning (to stderr), not a hard error — same policy as
+        /// the `:restore` TUI command. A missing file or malformed
+        /// YAML, unlike the TUI, is a hard error. Required when
+        /// `--format` is `descriptor-binary`/`descriptor-prototext`
+        /// (spec 0156 G9).
         #[arg(long = "load-overrides")]
         load_overrides: Option<PathBuf>,
 
-        /// Output format. Defaults to `text`.
+        /// Output format. Defaults to `prototext`.
         #[arg(long = "format", value_enum)]
         format: Option<ExtractFormatArg>,
 
@@ -112,19 +115,26 @@ enum Command {
     },
 }
 
-/// Mirrors `extract::ExtractFormat`'s two variants — a separate type
-/// since `ExtractFormat` itself has no `clap::ValueEnum` derive.
-#[derive(Clone, Copy, clap::ValueEnum)]
+/// Mirrors the TUI's `:export` flags (spec 0156 G2/G8) — a separate
+/// type since `extract::ExtractFormat` has no `clap::ValueEnum` derive
+/// and, unlike this type, has no variants for the two descriptor
+/// formats (those route to `export_descriptor` instead).
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
 enum ExtractFormatArg {
-    Text,
     Binary,
+    Prototext,
+    DescriptorBinary,
+    DescriptorPrototext,
 }
 
 impl From<ExtractFormatArg> for extract::ExtractFormat {
     fn from(f: ExtractFormatArg) -> Self {
         match f {
-            ExtractFormatArg::Text => extract::ExtractFormat::Text,
+            ExtractFormatArg::Prototext => extract::ExtractFormat::Text,
             ExtractFormatArg::Binary => extract::ExtractFormat::Binary,
+            ExtractFormatArg::DescriptorBinary | ExtractFormatArg::DescriptorPrototext => {
+                unreachable!("descriptor formats are routed to export_descriptor, not extract")
+            }
         }
     }
 }
@@ -330,7 +340,7 @@ fn main() -> ExitCode {
     );
 
     match cli.command {
-        Some(Command::Extract {
+        Some(Command::Export {
             path,
             load_overrides,
             format,
@@ -353,14 +363,55 @@ fn main() -> ExitCode {
                 }
             }
 
+            let is_descriptor = matches!(
+                format,
+                Some(ExtractFormatArg::DescriptorBinary)
+                    | Some(ExtractFormatArg::DescriptorPrototext)
+            );
+            if is_descriptor && load_overrides.is_none() {
+                eprintln!(
+                    "error: --format=descriptor-binary/descriptor-prototext requires \
+                     --load-overrides (batch mode has no interactive type-inference loop)"
+                );
+                return ExitCode::FAILURE;
+            }
+
+            let Some(idx) = app.resolve_path(&path) else {
+                eprintln!("error: export path '{path}' does not resolve");
+                return ExitCode::FAILURE;
+            };
+
+            if is_descriptor {
+                app.set_cursor(idx);
+                let as_prototext = format == Some(ExtractFormatArg::DescriptorPrototext);
+                let bytes = match app.export_descriptor_bytes(as_prototext) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                match output {
+                    Some(out_path) => {
+                        if let Err(e) = std::fs::write(&out_path, &bytes) {
+                            eprintln!("error: cannot write '{}': {e}", out_path.display());
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    None => {
+                        use std::io::Write as _;
+                        if let Err(e) = std::io::stdout().write_all(&bytes) {
+                            eprintln!("error: writing to stdout: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                return ExitCode::SUCCESS;
+            }
+
             let format = format
                 .map(Into::into)
                 .unwrap_or(extract::ExtractFormat::Text);
-
-            let Some(idx) = app.resolve_path(&path) else {
-                eprintln!("error: extract path '{path}' does not resolve");
-                return ExitCode::FAILURE;
-            };
 
             let bytes = app.extract_bytes(idx, format);
             match output {

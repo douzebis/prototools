@@ -588,3 +588,187 @@ fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
     assert!(app.message.contains("cannot launch nvim"));
     assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
 }
+
+// ── Spec 0156 G3: the `x<b|p|d<b|p>>` export chord ─────────────────────────
+
+/// `x` then `b`/`p` pre-fill `export --binary/--prototext <path>` and
+/// open the command line.
+#[test]
+fn x_b_and_x_p_prefill_export_data_format_and_open_the_command_line() {
+    for (key, flag) in [('b', "--binary"), ('p', "--prototext")] {
+        let (mut app, _, _) = type_as_fixture();
+        let expected_path = app.default_extract_path();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.pending_x, ExportChord::Leader);
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        assert_eq!(app.pending_x, ExportChord::None);
+        assert_eq!(
+            app.command_buffer.as_deref(),
+            Some(format!("export {flag} {expected_path}").as_str())
+        );
+        assert_eq!(app.command_kind, CommandLineKind::Command);
+    }
+}
+
+/// `x` then `d` then `b`/`p` pre-fill `export --descriptor-binary/
+/// --descriptor-prototext <path>` and open the command line.
+#[test]
+fn x_d_b_and_x_d_p_prefill_export_descriptor_format_and_open_the_command_line() {
+    for (key, flag) in [
+        ('b', "--descriptor-binary"),
+        ('p', "--descriptor-prototext"),
+    ] {
+        let (mut app, _, _) = type_as_fixture();
+        let expected_path = app.default_export_descriptor_path();
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(app.pending_x, ExportChord::Descriptor);
+        app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        assert_eq!(app.pending_x, ExportChord::None);
+        assert_eq!(
+            app.command_buffer.as_deref(),
+            Some(format!("export {flag} {expected_path}").as_str())
+        );
+        assert_eq!(app.command_kind, CommandLineKind::Command);
+    }
+}
+
+/// `x` then any other key clears `pending_x` back to `None`, does not
+/// open the command line, and still performs that key's normal action
+/// (cursor moves for `j`).
+#[test]
+fn x_then_other_key_cancels_and_falls_through_unswallowed() {
+    let (mut app, _, _) = type_as_fixture();
+    let cursor_before = app.cursor;
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::Leader);
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::None);
+    assert!(app.command_buffer.is_none());
+    assert_ne!(app.cursor, cursor_before, "the 'j' move must still fire");
+}
+
+/// `x` then `d` then any other key clears `pending_x` back to `None`,
+/// does not open the command line, and still performs that key's
+/// normal action.
+#[test]
+fn x_d_then_other_key_cancels_and_falls_through_unswallowed() {
+    let (mut app, _, _) = type_as_fixture();
+    let cursor_before = app.cursor;
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::Descriptor);
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::None);
+    assert!(app.command_buffer.is_none());
+    assert_ne!(app.cursor, cursor_before, "the 'j' move must still fire");
+}
+
+/// `x` then `x` again: the chord cancels (no pre-fill), and
+/// `pending_x` stays `None` afterward — it does not re-arm.
+#[test]
+fn x_then_x_cancels_without_prefill_and_does_not_rearm() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::Leader);
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert_eq!(app.pending_x, ExportChord::None);
+    assert!(app.command_buffer.is_none());
+}
+
+/// Plain `x` alone, or `x` then `d` alone (no follow-up key yet):
+/// `command_buffer` stays `None`.
+#[test]
+fn bare_x_and_x_d_alone_leave_the_command_buffer_untouched() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(app.command_buffer.is_none());
+
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(app.command_buffer.is_none());
+}
+
+/// `default_export_descriptor_path` (spec 0156 G5): at the document
+/// root, the segment is always `no range`.
+#[test]
+fn default_export_descriptor_path_uses_no_range_at_the_root() {
+    let (app, _, _) = type_as_fixture();
+    assert_eq!(app.cursor, app.first_node);
+    assert!(app.default_export_descriptor_path().contains(".no range."));
+}
+
+/// A cursor whose parent's schema resolves its field name uses that
+/// name as the segment.
+#[test]
+fn default_export_descriptor_path_uses_the_resolvable_field_name() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.set_cursor(inner_idx);
+    assert!(app.default_export_descriptor_path().contains(".inner."));
+}
+
+/// A non-root cursor with no resolvable schema field name falls back
+/// to the numeric `<start>-<end>` range (same as `default_extract_path`).
+#[test]
+fn default_export_descriptor_path_falls_back_to_the_numeric_range_when_unresolvable() {
+    // Two sibling varint scalar leaves, `parent: None` (so `parent_field`
+    // can't resolve a schema field name), each with a real, in-bounds
+    // `raw_range` into a real blob (`display_range`'s fallback path
+    // parses the wire tag at `raw_range.start`, so an empty/synthetic
+    // blob would panic).
+    let blob = vec![0x08u8, 0x05, 0x10u8, 0x07];
+    let make_node = |field_number: u64,
+                     raw_range: std::ops::Range<usize>,
+                     next_sibling: Option<usize>,
+                     prev_sibling: Option<usize>| TreeNode {
+        span: NodeSpan {
+            field_number,
+            raw_range,
+            text_range: 0..1,
+            level: 0,
+            type_fqdn: None,
+            is_message: false,
+            packed_record_start: None,
+            wire_type: WT_VARINT,
+            natural_annotation: None,
+        },
+        parent: None,
+        first_child: None,
+        last_child: None,
+        next_sibling,
+        prev_sibling,
+        doc_next: next_sibling,
+        doc_prev: prev_sibling,
+        rendered_as: None,
+    };
+    let tree = vec![
+        make_node(1, 0..2, Some(1), None),
+        make_node(2, 2..4, None, Some(0)),
+    ];
+    let decoded = Decoded {
+        lines: vec!["a".to_string(), "b".to_string()],
+        tree,
+        root_type: "google.protobuf.FileDescriptorProto".to_string(),
+        blob,
+        wrapper_offset: 0,
+        style_hints: vec![Vec::new(); 2],
+        root_type_deferred: false,
+    };
+    let mut app = App::new(
+        decoded,
+        "test.pb",
+        PathBuf::from("test.pb"),
+        2,
+        DescriptorContext::empty_for_test(),
+        ThemeKind::Dark,
+        None,
+    );
+    app.set_cursor(1);
+    assert_ne!(app.cursor, app.first_node);
+    let path = app.default_export_descriptor_path();
+    assert!(
+        !path.contains("no range") && !path.contains(".inner."),
+        "expected a numeric range segment, got: {path}"
+    );
+}

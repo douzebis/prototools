@@ -57,7 +57,7 @@ impl App {
     /// cursor`'s value alone against a stashed old value. Always resets
     /// `cursor_footer` to `false` (spec 0142) — every caller of this
     /// method targets a node's own header row.
-    pub(super) fn set_cursor(&mut self, idx: usize) {
+    pub(crate) fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx;
         self.cursor_footer = false;
         self.cursor_moves += 1;

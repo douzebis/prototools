@@ -4,6 +4,16 @@
 
 use super::*;
 
+/// `run_export`'s parsed `--binary`/`--prototext`/`--descriptor-binary`/
+/// `--descriptor-prototext` flag (spec 0156 G2).
+#[derive(PartialEq)]
+enum ExportFormat {
+    Binary,
+    Prototext,
+    DescriptorBinary,
+    DescriptorPrototext,
+}
+
 impl App {
     /// Edit the in-progress command-line buffer at `command_cursor`
     /// (a proper single-line text-input model — `Left`/`Right`/`Home`/`End`
@@ -163,10 +173,7 @@ impl App {
                 self.complete_type_as_fqdn(cmd, arg_prefix);
             }
             Some((cmd, arg_prefix))
-                if matches!(
-                    resolve_command(cmd),
-                    Ok("save-overrides") | Ok("restore-overrides")
-                ) =>
+                if matches!(resolve_command(cmd), Ok("save") | Ok("restore")) =>
             {
                 self.complete_fs_path(cmd, arg_prefix);
             }
@@ -224,7 +231,7 @@ impl App {
         self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
 
-    /// `:save-overrides`/`:restore-overrides`'s argument completion (spec
+    /// `:save`/`:restore`'s argument completion (spec
     /// 0117 §4) — candidates are `std::fs::read_dir`'s entries for the
     /// argument's directory portion (everything up to and including its
     /// last `/`, or the current directory if there is none), filtered by
@@ -401,7 +408,7 @@ impl App {
             return;
         };
         match resolve_command(name) {
-            Ok("extract") => self.run_extract(tokens.collect()),
+            Ok("export") => self.run_export(tokens.collect()),
             // Item 9 (2026-07-17 feedback): `:quit` (or any unambiguous
             // prefix, e.g. `:q` — no other command starts with `q`)
             // quits directly, same effect as confirming `q` twice —
@@ -410,8 +417,8 @@ impl App {
             Ok("quit") => self.should_quit = true,
             Ok("type-as") => self.run_type_as(tokens.collect()),
             Ok("type-as-raw") => self.run_type_as_raw(),
-            Ok("save-overrides") => self.run_save_overrides(tokens.collect()),
-            Ok("restore-overrides") => self.run_restore_overrides(tokens.collect()),
+            Ok("save") => self.run_save_overrides(tokens.collect()),
+            Ok("restore") => self.run_restore_overrides(tokens.collect()),
             Ok("proto-root") => self.run_proto_root(tokens.collect()),
             Ok(other) => unreachable!("resolve_command returned unregistered command: {other}"),
             Err(e) => self.message = e,
@@ -488,30 +495,100 @@ impl App {
         Ok(())
     }
 
-    /// `extract [--binary|--text] <path>` — default format is `#@ prototext`
-    /// text (0113 D21); the underlying render always carries full
-    /// annotations now (spec 0133), so there's no longer a binary-default
-    /// fallback case.
-    pub(super) fn run_extract(&mut self, args: Vec<&str>) {
-        let mut format = ExtractFormat::Text;
+    /// `export [--binary|--prototext|--descriptor-binary|
+    /// --descriptor-prototext] <path>` — default format is `#@ prototext`
+    /// text (0113 D21). The two `--descriptor-*` flags build and write a
+    /// `FileDescriptorSet` per spec 0156 G6/G7, instead of slicing the
+    /// node's own data.
+    pub(super) fn run_export(&mut self, args: Vec<&str>) {
+        let mut format = ExportFormat::Prototext;
         let mut path_parts = Vec::new();
         for a in args {
             match a {
-                "--binary" => format = ExtractFormat::Binary,
-                "--text" => format = ExtractFormat::Text,
+                "--binary" => format = ExportFormat::Binary,
+                "--prototext" => format = ExportFormat::Prototext,
+                "--descriptor-binary" => format = ExportFormat::DescriptorBinary,
+                "--descriptor-prototext" => format = ExportFormat::DescriptorPrototext,
                 other => path_parts.push(other),
             }
         }
         if path_parts.is_empty() {
-            self.message = "extract: missing path".to_string();
+            self.message = "export: missing path".to_string();
             return;
         }
         let path = path_parts.join(" ");
-        let node = &self.tree[self.cursor];
-        match extract::extract(Path::new(&path), format, &self.blob, &self.lines, node) {
-            Ok(()) => self.message = format!("extracted to {path}"),
-            Err(e) => self.message = format!("extract error: {e}"),
+        match format {
+            ExportFormat::DescriptorBinary | ExportFormat::DescriptorPrototext => {
+                let as_prototext = format == ExportFormat::DescriptorPrototext;
+                self.message = match self.export_descriptor(&path, as_prototext) {
+                    Ok(()) => format!("exported to {path}"),
+                    Err(e) => e,
+                };
+            }
+            ExportFormat::Binary | ExportFormat::Prototext => {
+                let extract_format = if format == ExportFormat::Binary {
+                    ExtractFormat::Binary
+                } else {
+                    ExtractFormat::Text
+                };
+                let node = &self.tree[self.cursor];
+                match extract::extract(
+                    Path::new(&path),
+                    extract_format,
+                    &self.blob,
+                    &self.lines,
+                    node,
+                ) {
+                    Ok(()) => self.message = format!("exported to {path}"),
+                    Err(e) => self.message = format!("export error: {e}"),
+                }
+            }
         }
+    }
+
+    /// Shared core of `xdb`/`xdp` (TUI) and batch's
+    /// `--format=descriptor-binary`/`descriptor-prototext` (spec 0156 G6/
+    /// G7): resolves the cursor node's synthetic fields (G6a-c) and
+    /// builds the `FileDescriptorSet` (`export_descriptor::build`), as
+    /// raw bytes, or (`as_prototext`) rendered through the `#@ prototext`
+    /// pipeline against G7's located meta-schema.
+    pub(crate) fn export_descriptor_bytes(&self, as_prototext: bool) -> Result<Vec<u8>, String> {
+        let span = &self.tree[self.cursor].span;
+        if !span.is_message {
+            return Err("export --descriptor: cursor node is not a message/group".to_string());
+        }
+        let message_name =
+            export_descriptor::synthetic_message_name(&self.field_name_for(self.cursor));
+        let fields = self.resolve_export_fields(self.cursor)?;
+        let fds = export_descriptor::build(&message_name, fields);
+        use prost_reflect::prost::Message as _;
+        let bytes = fds.encode_to_vec();
+        if as_prototext {
+            let fds_type = export_descriptor::locate_file_descriptor_set_type(self.ctx.pool())
+                .ok_or_else(|| {
+                    "export --descriptor --prototext: no descriptor.proto (with \
+                     FileDescriptorSet/FileDescriptorProto messages) found in the \
+                     loaded --descriptor-set; use --descriptor-binary instead, or \
+                     rebuild the schema-db so descriptor.proto is included"
+                        .to_string()
+                })?;
+            let opts = DecodeRenderOpts {
+                annotations: true,
+                indent_size: self.indent_size,
+                emit_header: true,
+                ..DecodeRenderOpts::default()
+            };
+            Ok(decode_and_render(&bytes, Some(&fds_type), opts))
+        } else {
+            Ok(bytes)
+        }
+    }
+
+    /// `path`-writing counterpart of `export_descriptor_bytes`, used by
+    /// the TUI's `:export --descriptor-*` command (spec 0156 G6/G7).
+    pub(super) fn export_descriptor(&self, path: &str, as_prototext: bool) -> Result<(), String> {
+        let bytes = self.export_descriptor_bytes(as_prototext)?;
+        std::fs::write(path, bytes).map_err(|e| format!("export error: {e}"))
     }
 
     /// `idx`'s extracted rendering, in the requested format — the
@@ -522,7 +599,7 @@ impl App {
         extract::extract_bytes(format, &self.blob, &self.lines, &self.tree[idx])
     }
 
-    /// Propose a default `:save-overrides` path — same directory/stem as
+    /// Propose a default `:save` path — same directory/stem as
     /// the target blob, `.yaml` extension (spec 0117 §4, mirroring
     /// `default_extract_path`).
     pub(super) fn default_save_overrides_path(&self) -> String {
@@ -610,11 +687,11 @@ impl App {
         }
     }
 
-    /// `save-overrides <path>` (spec 0117 §4): writes the entire
-    /// collection, plus the current target's hashes, to `<path>` as YAML.
+    /// `save <path>` (spec 0117 §4): writes the entire collection, plus
+    /// the current target's hashes, to `<path>` as YAML.
     pub(super) fn run_save_overrides(&mut self, args: Vec<&str>) {
         if args.is_empty() {
-            self.message = "save-overrides: missing path".to_string();
+            self.message = "save: missing path".to_string();
             return;
         }
         let path = args.join(" ");
@@ -622,7 +699,7 @@ impl App {
         let yaml = self.overrides.to_yaml(blob_sha256, descriptor_set_sha256);
         match std::fs::write(&path, yaml) {
             Ok(()) => self.message = format!("saved overrides to {path}"),
-            Err(e) => self.message = format!("save-overrides error: {e}"),
+            Err(e) => self.message = format!("save error: {e}"),
         }
     }
 
@@ -643,7 +720,7 @@ impl App {
         self.proto_root = Some(dir);
     }
 
-    /// Shared core of `restore-overrides`/batch `--load-overrides` (spec
+    /// Shared core of `restore`/batch `--load-overrides` (spec
     /// 0117 §4, spec 0123 G4): loads and parses the YAML override
     /// collection at `path`, silently drops any entry that doesn't
     /// resolve against the current tree/descriptor pool, then replaces
@@ -701,11 +778,11 @@ impl App {
         Ok(warnings)
     }
 
-    /// `restore-overrides <path>` (spec 0117 §4): replaces the collection
-    /// wholesale with `<path>`'s contents — see `load_overrides`.
+    /// `restore <path>` (spec 0117 §4): replaces the collection wholesale
+    /// with `<path>`'s contents — see `load_overrides`.
     pub(super) fn run_restore_overrides(&mut self, args: Vec<&str>) {
         if args.is_empty() {
-            self.message = "restore-overrides: missing path".to_string();
+            self.message = "restore: missing path".to_string();
             return;
         }
         let path = args.join(" ");
@@ -715,7 +792,7 @@ impl App {
                 "restored overrides from {path} (warning: {})",
                 warnings.join(", ")
             ),
-            Err(e) => format!("restore-overrides error: {e}"),
+            Err(e) => format!("restore error: {e}"),
         };
     }
 }

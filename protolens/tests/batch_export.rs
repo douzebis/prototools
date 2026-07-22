@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 //! CLI-level (black-box, subprocess) integration tests for `protolens`'s
-//! batch `extract` subcommand — spec 0123 Test plan items 2-6.
+//! batch `export` subcommand — spec 0123 Test plan items 2-6, plus
+//! spec 0156's rename/descriptor-format additions.
 //!
 //! `protolens` is a binary-only crate (no `lib.rs`), so unlike
 //! `prototext/tests/e2e.rs` (which pulls in `protocraft` via a `#[path]`
@@ -43,7 +44,7 @@ fn temp_path(name: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "protolens-batch-extract-{name}-{}-{n}.tmp",
+        "protolens-batch-export-{name}-{}-{n}.tmp",
         std::process::id()
     ))
 }
@@ -193,10 +194,10 @@ fn message_set_fixture() -> (TempFile, TempFile) {
     (descriptor, blob)
 }
 
-// ── Item 2: `extract /` matches the fixture's known-good rendering ───────
+// ── Item 2: `export /` matches the fixture's known-good rendering ───────
 
 #[test]
-fn extract_root_produces_the_expected_prototext() {
+fn export_root_produces_the_expected_prototext() {
     let (descriptor, blob) = outer_inner_fixture();
     let out = run(&[
         "--descriptor-set",
@@ -204,12 +205,12 @@ fn extract_root_produces_the_expected_prototext() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/",
     ]);
     assert!(
         out.status.success(),
-        "extract / must succeed: {}",
+        "export / must succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8_lossy(&out.stdout);
@@ -230,7 +231,7 @@ fn extract_root_produces_the_expected_prototext() {
 // ── Item 3: `--load-overrides` alongside a MessageSet auto-override ──────
 
 #[test]
-fn extract_with_load_overrides_still_shows_message_set_auto_expansion() {
+fn export_with_load_overrides_still_shows_message_set_auto_expansion() {
     let (descriptor, blob) = message_set_fixture();
     let descriptor_bytes = std::fs::read(&descriptor.0).unwrap();
     let blob_bytes = std::fs::read(&blob.0).unwrap();
@@ -273,14 +274,14 @@ overrides:
         "--type",
         "ms_test.Container",
         blob.path(),
-        "extract",
+        "export",
         "/",
         "--load-overrides",
         overrides.path(),
     ]);
     assert!(
         out.status.success(),
-        "extract with a hash-matching --load-overrides must succeed: {}",
+        "export with a hash-matching --load-overrides must succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -296,10 +297,10 @@ overrides:
     );
 }
 
-// ── Item 4: an unresolvable extract path is a hard error, no TUI ─────────
+// ── Item 4: an unresolvable export path is a hard error, no TUI ─────────
 
 #[test]
-fn extract_unresolvable_path_fails_without_entering_the_tui() {
+fn export_unresolvable_path_fails_without_entering_the_tui() {
     let (descriptor, blob) = outer_inner_fixture();
     // Command::output() would hang forever waiting for a child that has
     // entered the TUI's raw-mode input loop (stdin/stdout are not a TTY
@@ -312,12 +313,12 @@ fn extract_unresolvable_path_fails_without_entering_the_tui() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/99",
     ]);
     assert!(
         !out.status.success(),
-        "extract with an unresolvable path must fail"
+        "export with an unresolvable path must fail"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -329,7 +330,7 @@ fn extract_unresolvable_path_fails_without_entering_the_tui() {
 // ── Item 4a: bad --load-overrides is a hard error ─────────────────────────
 
 #[test]
-fn extract_load_overrides_missing_file_is_a_hard_error() {
+fn export_load_overrides_missing_file_is_a_hard_error() {
     let (descriptor, blob) = outer_inner_fixture();
     let missing = temp_path("missing-overrides");
     let out = run(&[
@@ -338,7 +339,7 @@ fn extract_load_overrides_missing_file_is_a_hard_error() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/",
         "--load-overrides",
         missing.to_str().unwrap(),
@@ -355,7 +356,7 @@ fn extract_load_overrides_missing_file_is_a_hard_error() {
 }
 
 #[test]
-fn extract_load_overrides_malformed_yaml_is_a_hard_error() {
+fn export_load_overrides_malformed_yaml_is_a_hard_error() {
     let (descriptor, blob) = outer_inner_fixture();
     let overrides = write_temp("malformed-overrides", b"{not valid yaml: [1, 2\n");
     let out = run(&[
@@ -364,7 +365,7 @@ fn extract_load_overrides_malformed_yaml_is_a_hard_error() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/",
         "--load-overrides",
         overrides.path(),
@@ -383,9 +384,9 @@ fn extract_load_overrides_malformed_yaml_is_a_hard_error() {
 /// By contrast (spec 0123 Test plan item 4a's clarifying note): a
 /// hash-mismatched but otherwise-valid overrides collection is a
 /// stderr-only warning, not a hard error — same policy as the TUI's own
-/// `:restore-overrides`.
+/// `:restore`.
 #[test]
-fn extract_load_overrides_hash_mismatch_warns_but_still_succeeds() {
+fn export_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     let (descriptor, blob) = outer_inner_fixture();
     let yaml = format!(
         "version: 1\ntarget:\n  blob_sha256: \"{}\"\n  descriptor_set_sha256: \"{}\"\noverrides: []\n",
@@ -399,7 +400,7 @@ fn extract_load_overrides_hash_mismatch_warns_but_still_succeeds() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/",
         "--load-overrides",
         overrides.path(),
@@ -416,15 +417,15 @@ fn extract_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     );
 }
 
-// ── Item 6: round-trip regression, extract + encode == original blob ─────
+// ── Item 6: round-trip regression, export + encode == original blob ─────
 
-/// `extract /`'s text output, piped through `prototext encode`'s
+/// `export /`'s text output, piped through `prototext encode`'s
 /// equivalent library function (`encode_text_to_binary` — used directly
 /// rather than spawning the sibling `prototext` binary, since
 /// `CARGO_BIN_EXE_<name>` is only guaranteed for the current package's own
 /// binaries), must byte-for-byte reproduce the original blob.
 #[test]
-fn extract_root_round_trips_losslessly_through_encode() {
+fn export_root_round_trips_losslessly_through_encode() {
     let (descriptor, blob) = outer_inner_fixture();
     let original = std::fs::read(&blob.0).unwrap();
     let out = run(&[
@@ -433,23 +434,23 @@ fn extract_root_round_trips_losslessly_through_encode() {
         "--type",
         "test.Outer",
         blob.path(),
-        "extract",
+        "export",
         "/",
     ]);
     assert!(
         out.status.success(),
-        "extract / must succeed: {}",
+        "export / must succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let reencoded = prototext_core::serialize::encode_text::encode_text_to_binary(&out.stdout);
     assert_eq!(
         reencoded, original,
-        "extract + encode round-trip must be byte-for-byte lossless"
+        "export + encode round-trip must be byte-for-byte lossless"
     );
 }
 
 #[test]
-fn extract_message_set_round_trips_losslessly_through_encode() {
+fn export_message_set_round_trips_losslessly_through_encode() {
     let (descriptor, blob) = message_set_fixture();
     let original = std::fs::read(&blob.0).unwrap();
     let out = run(&[
@@ -458,17 +459,262 @@ fn extract_message_set_round_trips_losslessly_through_encode() {
         "--type",
         "ms_test.Container",
         blob.path(),
-        "extract",
+        "export",
         "/",
     ]);
     assert!(
         out.status.success(),
-        "extract / must succeed: {}",
+        "export / must succeed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let reencoded = prototext_core::serialize::encode_text::encode_text_to_binary(&out.stdout);
     assert_eq!(
         reencoded, original,
-        "extract + encode round-trip must be byte-for-byte lossless"
+        "export + encode round-trip must be byte-for-byte lossless"
     );
+}
+
+// ── Spec 0156 G9/G6/G7: the two descriptor formats ────────────────────────
+
+fn hash_matching_overrides_yaml(blob: &[u8], descriptor: &[u8]) -> TempFile {
+    let yaml = format!(
+        "version: 1\ntarget:\n  blob_sha256: \"{}\"\n  descriptor_set_sha256: \"{}\"\noverrides: []\n",
+        sha256_hex(blob),
+        sha256_hex(descriptor),
+    );
+    write_temp("descriptor-export-overrides", yaml.as_bytes())
+}
+
+#[test]
+fn export_descriptor_binary_without_load_overrides_is_a_hard_error() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-binary",
+    ]);
+    assert!(
+        !out.status.success(),
+        "export --format=descriptor-binary without --load-overrides must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--load-overrides"),
+        "expected a --load-overrides diagnostic, got: {stderr}"
+    );
+}
+
+#[test]
+fn export_descriptor_binary_with_load_overrides_succeeds_and_is_decodable() {
+    let (descriptor, blob) = outer_inner_fixture();
+    let descriptor_bytes = std::fs::read(&descriptor.0).unwrap();
+    let blob_bytes = std::fs::read(&blob.0).unwrap();
+    let overrides = hash_matching_overrides_yaml(&blob_bytes, &descriptor_bytes);
+
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-binary",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(
+        out.status.success(),
+        "export --format=descriptor-binary --load-overrides must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let fds = FileDescriptorSet::decode(out.stdout.as_slice())
+        .expect("stdout must be a decodable FileDescriptorSet");
+    let synthetic = fds
+        .file
+        .iter()
+        .find_map(|f| f.message_type.iter().find(|m| m.name() == "F1"))
+        .expect("expected a synthetic message named F1 (root's field_number)");
+    assert_eq!(
+        synthetic.field.iter().map(|f| f.name()).collect::<Vec<_>>(),
+        vec!["inner"],
+        "the synthetic message must have one field per live child"
+    );
+}
+
+#[test]
+fn export_descriptor_prototext_with_load_overrides_and_descriptor_proto_present_succeeds() {
+    let (descriptor, blob) = outer_inner_fixture();
+
+    // Append a minimal `descriptor.proto`-suffixed file, carrying
+    // `FileDescriptorSet`/`FileDescriptorProto` by simple name (G7's
+    // heuristic is name-based only, not a real-schema match) alongside
+    // the fixture's own `test.proto`, into one combined descriptor-set.
+    let mut fds =
+        FileDescriptorSet::decode(std::fs::read(&descriptor.0).unwrap().as_slice()).unwrap();
+    let field_descriptor_proto = DescriptorProto {
+        name: Some("FieldDescriptorProto".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("name".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("number".to_string()),
+                number: Some(3),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("label".to_string()),
+                number: Some(4),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("type".to_string()),
+                number: Some(5),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("type_name".to_string()),
+                number: Some(6),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let descriptor_proto = DescriptorProto {
+        name: Some("DescriptorProto".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("name".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("field".to_string()),
+                number: Some(2),
+                label: Some(Label::Repeated as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".meta.FieldDescriptorProto".to_string()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let file_descriptor_proto = DescriptorProto {
+        name: Some("FileDescriptorProto".to_string()),
+        field: vec![
+            FieldDescriptorProto {
+                name: Some("name".to_string()),
+                number: Some(1),
+                label: Some(Label::Optional as i32),
+                r#type: Some(Type::String as i32),
+                ..Default::default()
+            },
+            FieldDescriptorProto {
+                name: Some("message_type".to_string()),
+                number: Some(4),
+                label: Some(Label::Repeated as i32),
+                r#type: Some(Type::Message as i32),
+                type_name: Some(".meta.DescriptorProto".to_string()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let file_descriptor_set = DescriptorProto {
+        name: Some("FileDescriptorSet".to_string()),
+        field: vec![FieldDescriptorProto {
+            name: Some("file".to_string()),
+            number: Some(1),
+            label: Some(Label::Repeated as i32),
+            r#type: Some(Type::Message as i32),
+            type_name: Some(".meta.FileDescriptorProto".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    fds.file.push(FileDescriptorProto {
+        name: Some("descriptor.proto".to_string()),
+        package: Some("meta".to_string()),
+        message_type: vec![
+            file_descriptor_set,
+            file_descriptor_proto,
+            descriptor_proto,
+            field_descriptor_proto,
+        ],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    });
+    let descriptor = write_temp("outer-inner-plus-meta-desc", &fds.encode_to_vec());
+    let descriptor_bytes = std::fs::read(&descriptor.0).unwrap();
+    let blob_bytes = std::fs::read(&blob.0).unwrap();
+    let overrides = hash_matching_overrides_yaml(&blob_bytes, &descriptor_bytes);
+
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-prototext",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(
+        out.status.success(),
+        "export --format=descriptor-prototext --load-overrides must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.is_empty(),
+        "expected non-empty prototext output, got: {text}"
+    );
+}
+
+#[test]
+fn export_format_binary_and_prototext_still_succeed() {
+    let (descriptor, blob) = outer_inner_fixture();
+    for format in ["binary", "prototext"] {
+        let out = run(&[
+            "--descriptor-set",
+            descriptor.path(),
+            "--type",
+            "test.Outer",
+            blob.path(),
+            "export",
+            "/",
+            "--format",
+            format,
+        ]);
+        assert!(
+            out.status.success(),
+            "export --format={format} must succeed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
