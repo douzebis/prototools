@@ -22,9 +22,14 @@ jobs:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
           - os: macos-15
-          - os: macos-15-intel
-            skip-clippy: true
-            ci-target: ci-no-clippy
+          # macos-15-intel disabled: the Determinate Nix Installer no
+          # longer supports macOS on Intel (see
+          # https://github.com/DeterminateSystems/nix-src/issues/224).
+          # Re-enable once there's a working installer path for Intel
+          # Macs, or drop this target for good.
+          # - os: macos-15-intel
+          #   skip-clippy: true
+          #   ci-target: ci-no-clippy
     steps:
       - uses: actions/checkout@v6
 
