@@ -40,7 +40,11 @@ struct Cli {
     /// FileDescriptorSet. Shares its env var with `prototext`/`reproto`
     /// (spec 0090), so a single `PROTOTEXT_DESCRIPTOR_SET` covers the
     /// whole toolset.
-    #[arg(long = "descriptor-set", env = "PROTOTEXT_DESCRIPTOR_SET")]
+    #[arg(
+        long = "descriptor-set",
+        env = "PROTOTEXT_DESCRIPTOR_SET",
+        add = ArgValueCompleter::new(complete::complete_any_path),
+    )]
     descriptor_set: Option<PathBuf>,
 
     /// Root directory `.proto` source files are resolved against for `v`'s
@@ -53,7 +57,12 @@ struct Cli {
     /// uses), if that directory exists (spec 0155 G2). Still fully
     /// optional — `v` reports a message rather than failing at startup
     /// when no root is found either way.
-    #[arg(long = "proto-root", short = 'I', env = "PROTOTEXT_PROTO_ROOT")]
+    #[arg(
+        long = "proto-root",
+        short = 'I',
+        env = "PROTOTEXT_PROTO_ROOT",
+        add = ArgValueCompleter::new(complete::complete_dir_path),
+    )]
     proto_root: Option<PathBuf>,
 
     /// Root message type. If omitted, inferred automatically from
@@ -78,6 +87,7 @@ struct Cli {
     theme: theme::ThemeKind,
 
     /// Binary protobuf to decode.
+    #[arg(add = ArgValueCompleter::new(complete::complete_any_path))]
     blob: PathBuf,
 }
 
