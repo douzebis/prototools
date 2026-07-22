@@ -29,7 +29,7 @@ from .base import NodeBase
 from .context import Context, Fqdn, SourceCodeInfoOut
 from .fake_types import Prefix, Ref
 from .globals import FILE
-from .mappings import canonize_dependency
+from .mappings import apply_variant_namespace_to_package, canonize_dependency
 from .source_info import closing_line, resolve_source_code_info_locations
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
@@ -339,7 +339,11 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         # Package
         if self.package != "":
-            out.append(BlockLine(f'package {self.package};', depth))
+            out_package = (
+                self.package if ctx.keep_variant_descriptor
+                else apply_variant_namespace_to_package(ctx, self.package)
+            )
+            out.append(BlockLine(f'package {out_package};', depth))
             out.append(BlockLine('', depth))
         out.append_div_maybe(depth)
 
@@ -511,6 +515,12 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             fdp_out.name = canonize_dependency(ctx, fdp_out.name)
             for i, dep in enumerate(fdp_out.dependency):
                 fdp_out.dependency[i] = canonize_dependency(ctx, dep)
+            # package: canonize via variant namespace rules, so
+            # self-referencing type names (rewritten below and in
+            # ReFieldDescriptorProto/ReMethodDescriptorProto) stay
+            # consistent with this file's own declared package (spec 0159)
+            if not ctx.keep_variant_descriptor:
+                fdp_out.package = apply_variant_namespace_to_package(ctx, fdp_out.package)
             # source_code_info: synthesized from the text pass (spec 0141),
             # or omitted if synthesis is disabled / produced nothing.
             fdp_out.ClearField('source_code_info')

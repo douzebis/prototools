@@ -77,6 +77,23 @@ def apply_variant_namespace(ctx: Context, r: Ref) -> Ref:
     return Ref(s)
 
 
+def apply_variant_namespace_to_package(ctx: Context, package: str) -> str:
+    """Rewrite a file's own `package` field through the same
+    variant_ns_rules that apply_variant_namespace applies to type
+    references, treating `package` as an implicit '.' + package + '.'
+    for matching purposes (spec 0159).
+
+    Callers are responsible for checking ctx.keep_variant_descriptor
+    first — this function itself applies the rules unconditionally,
+    matching apply_variant_namespace's own unconditional-application
+    contract.
+    """
+    if not package:
+        return package
+    rewritten = str(apply_variant_namespace(ctx, Ref(f'.{package}.')))
+    return rewritten.strip('.')
+
+
 # match.group(3) is the intangible part of the option, e.g.: FileOptions.java_package
 # match.group(5) it the option short name, e.g.: java_package
 proto2_options_pattern: re._Regexp = re.compile(

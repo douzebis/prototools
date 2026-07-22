@@ -474,13 +474,18 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             outer_slot = ctx.out_desc
             field_out = _FDP()
             field_out.CopyFrom(self.this)
-            # type_name / extendee: canonize via variant namespace rules (spec 0086)
-            from .mappings import apply_variant_namespace
-            from .fake_types import Ref as _Ref
-            if field_out.type_name:
-                field_out.type_name = str(apply_variant_namespace(ctx, _Ref(field_out.type_name)))
-            if field_out.extendee:
-                field_out.extendee = str(apply_variant_namespace(ctx, _Ref(field_out.extendee)))
+            # type_name / extendee: canonize via variant namespace rules
+            # (spec 0086), unless --keep-descriptor-path suppresses
+            # namespace rewriting entirely (spec 0159 — matches the
+            # existing precedent in utils.py's shorten_type_name/
+            # parse_fqdn for the text-render path)
+            if not ctx.keep_variant_descriptor:
+                from .mappings import apply_variant_namespace
+                from .fake_types import Ref as _Ref
+                if field_out.type_name:
+                    field_out.type_name = str(apply_variant_namespace(ctx, _Ref(field_out.type_name)))
+                if field_out.extendee:
+                    field_out.extendee = str(apply_variant_namespace(ctx, _Ref(field_out.extendee)))
             # label: translation-aware (also handles map field → LABEL_REPEATED)
             if is_map_field:
                 field_out.label = _FDP.LABEL_REPEATED

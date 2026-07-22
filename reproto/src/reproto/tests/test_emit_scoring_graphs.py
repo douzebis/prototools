@@ -505,6 +505,19 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
         f"phone_number.pb fdp.name must be canonized, got {pn_fdp.name!r}"
     )
 
+    # spec 0159 — phone_number.pb's own package must be canonized alongside
+    # its self-referencing type names, so PhoneNumber.type's type_name stays
+    # consistent with its own file's declared package.
+    assert pn_fdp.package == "canonical.tutorial", (
+        f"phone_number.pb package must be canonized, got {pn_fdp.package!r}"
+    )
+    phone_number_msg = next(m for m in pn_fdp.message_type if m.name == "PhoneNumber")
+    type_field = next(f for f in phone_number_msg.field if f.name == "type")
+    assert type_field.type_name == ".canonical.tutorial.PhoneNumber.PhoneType", (
+        f"PhoneNumber.type type_name must stay consistent with the canonized "
+        f"package, got {type_field.type_name!r}"
+    )
+
     # §86.3 — binary address_book.pb must carry the canonized dependency path
     ab_pb_path = out_dir / "address_book.pb"
     assert ab_pb_path.exists(), "address_book.pb must be written"

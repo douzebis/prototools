@@ -119,13 +119,16 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
             from google.protobuf.descriptor_pb2 import MethodDescriptorProto as _MDP
             method_out = _MDP()
             method_out.CopyFrom(self.this)
-            # input_type / output_type: canonize via variant namespace rules (spec 0086)
-            from .mappings import apply_variant_namespace
-            from .fake_types import Ref as _Ref
-            if method_out.input_type:
-                method_out.input_type = str(apply_variant_namespace(ctx, _Ref(method_out.input_type)))
-            if method_out.output_type:
-                method_out.output_type = str(apply_variant_namespace(ctx, _Ref(method_out.output_type)))
+            # input_type / output_type: canonize via variant namespace
+            # rules (spec 0086), unless --keep-descriptor-path suppresses
+            # namespace rewriting entirely (spec 0159)
+            if not ctx.keep_variant_descriptor:
+                from .mappings import apply_variant_namespace
+                from .fake_types import Ref as _Ref
+                if method_out.input_type:
+                    method_out.input_type = str(apply_variant_namespace(ctx, _Ref(method_out.input_type)))
+                if method_out.output_type:
+                    method_out.output_type = str(apply_variant_namespace(ctx, _Ref(method_out.output_type)))
             if method_out.HasField('options') and ctx.target_syntax != "editions":
                 method_out.options.ClearField('features')
             ctx.out_desc.out = method_out
