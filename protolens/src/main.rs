@@ -143,9 +143,12 @@ impl From<ExtractFormatArg> for extract::ExtractFormat {
 /// caller didn't set one explicitly (spec 0155 G2) — `None` (no
 /// fallback applied) whenever `cli_proto_root` is already `Some`, or
 /// whenever the candidate directory doesn't exist.
-fn resolve_proto_root(cli_proto_root: Option<PathBuf>, descriptor_set: &Path) -> Option<PathBuf> {
+fn resolve_proto_root(
+    cli_proto_root: Option<PathBuf>,
+    descriptor_set: Option<&Path>,
+) -> Option<PathBuf> {
     cli_proto_root.or_else(|| {
-        let candidate = descriptor_set.with_extension("").join("proto");
+        let candidate = descriptor_set?.with_extension("").join("proto");
         candidate.is_dir().then_some(candidate)
     })
 }
@@ -159,7 +162,7 @@ mod tests {
         let dir = std::env::temp_dir().join("protolens-resolve-proto-root-explicit");
         let explicit = PathBuf::from("/explicit/root");
         assert_eq!(
-            resolve_proto_root(Some(explicit.clone()), &dir.join("schema.desc")),
+            resolve_proto_root(Some(explicit.clone()), Some(&dir.join("schema.desc"))),
             Some(explicit)
         );
     }
@@ -172,7 +175,7 @@ mod tests {
         let proto_dir = base.join("schema").join("proto");
         std::fs::create_dir_all(&proto_dir).unwrap();
 
-        let result = resolve_proto_root(None, &base.join("schema.desc"));
+        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
 
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(result, Some(proto_dir));
@@ -181,7 +184,10 @@ mod tests {
     #[test]
     fn resolve_proto_root_is_none_when_the_stub_proto_dir_is_missing() {
         let base = std::env::temp_dir().join("protolens-resolve-proto-root-missing");
-        assert_eq!(resolve_proto_root(None, &base.join("schema.desc")), None);
+        assert_eq!(
+            resolve_proto_root(None, Some(&base.join("schema.desc"))),
+            None
+        );
     }
 
     #[test]
@@ -193,7 +199,7 @@ mod tests {
         std::fs::create_dir_all(&stub_dir).unwrap();
         std::fs::write(stub_dir.join("proto"), b"").unwrap();
 
-        let result = resolve_proto_root(None, &base.join("schema.desc"));
+        let result = resolve_proto_root(None, Some(&base.join("schema.desc")));
 
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(result, None);
@@ -210,13 +216,11 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
-    let Some(descriptor_set) = cli.descriptor_set.as_deref() else {
-        eprintln!(
-            "error: --descriptor-set is required in v1 (no schemaless mode); \
-             pass --descriptor-set <path>"
-        );
+    let descriptor_set = cli.descriptor_set.as_deref();
+    if descriptor_set.is_none() && cli.r#type.is_some() {
+        eprintln!("error: --type requires --descriptor-set");
         return ExitCode::FAILURE;
-    };
+    }
 
     let blob = match std::fs::read(&cli.blob) {
         Ok(b) => b,
@@ -239,37 +243,48 @@ fn main() -> ExitCode {
     };
 
     if cli.command.is_none() {
-        let name = descriptor_set
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| descriptor_set.display().to_string());
-        // Best effort (spec 0151 G7): a metadata read failure simply
-        // omits the size suffix rather than aborting or erroring, since
-        // this is pure UX decoration, not load-bearing for correctness.
-        let size_suffix = |p: &Path| -> String {
-            match std::fs::metadata(p) {
-                Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
-                Err(_) => String::new(),
+        match descriptor_set {
+            Some(descriptor_set) => {
+                let name = descriptor_set
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| descriptor_set.display().to_string());
+                // Best effort (spec 0151 G7): a metadata read failure simply
+                // omits the size suffix rather than aborting or erroring, since
+                // this is pure UX decoration, not load-bearing for correctness.
+                let size_suffix = |p: &Path| -> String {
+                    match std::fs::metadata(p) {
+                        Ok(m) => format!(" ({} MB)", m.len() / (1024 * 1024)),
+                        Err(_) => String::new(),
+                    }
+                };
+                // Mirrors the sibling-graph check `DescriptorContext::load`
+                // itself performs (`decode.rs:87-89`).
+                let rkyv_path = descriptor_set.with_extension("").join("hopcroft.rkyv");
+                if rkyv_path.exists() {
+                    eprintln!(
+                        "protolens: loading descriptor set '{name}'{} and scoring graph{}...",
+                        size_suffix(descriptor_set),
+                        size_suffix(&rkyv_path)
+                    );
+                } else {
+                    eprintln!(
+                        "protolens: loading descriptor set '{name}'{}...",
+                        size_suffix(descriptor_set)
+                    );
+                }
             }
-        };
-        // Mirrors the sibling-graph check `DescriptorContext::load`
-        // itself performs (`decode.rs:87-89`).
-        let rkyv_path = descriptor_set.with_extension("").join("hopcroft.rkyv");
-        if rkyv_path.exists() {
-            eprintln!(
-                "protolens: loading descriptor set '{name}'{} and scoring graph{}...",
-                size_suffix(descriptor_set),
-                size_suffix(&rkyv_path)
-            );
-        } else {
-            eprintln!(
-                "protolens: loading descriptor set '{name}'{}...",
-                size_suffix(descriptor_set)
-            );
+            None => {
+                eprintln!("protolens: no --descriptor-set — decoding without a schema...");
+            }
         }
     }
 
-    let mut ctx = match decode::DescriptorContext::load(descriptor_set) {
+    let ctx_result = match descriptor_set {
+        Some(path) => decode::DescriptorContext::load(path),
+        None => Ok(decode::DescriptorContext::schemaless()),
+    };
+    let mut ctx = match ctx_result {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("error: {e}");

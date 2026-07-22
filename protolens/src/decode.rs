@@ -118,6 +118,18 @@ impl DescriptorContext {
         }
     }
 
+    /// A schemaless `DescriptorContext` (spec 0157 G3): empty pool, no
+    /// scoring graph. Used when `--descriptor-set` is absent — the
+    /// production counterpart of `empty_for_test()` (same shape, kept
+    /// separate so each call site's intent stays clear).
+    pub(crate) fn schemaless() -> Self {
+        DescriptorContext {
+            pool: DescriptorPool::new(),
+            graph: None,
+            raw_bytes: Vec::new(),
+        }
+    }
+
     /// Same as `empty_for_test`, but with a real `LoadedGraph` attached
     /// (spec 0152 test plan) — for tests that exercise the worker
     /// thread's `inferred_candidates` call against a real, tiny,

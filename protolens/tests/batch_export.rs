@@ -718,3 +718,101 @@ fn export_format_binary_and_prototext_still_succeed() {
         );
     }
 }
+
+// ── Spec 0157: schemaless launch (no --descriptor-set) ──────────────────
+
+#[test]
+fn export_binary_with_no_descriptor_set_succeeds_and_produces_a_raw_rendering() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let original = std::fs::read(&blob.0).unwrap();
+    let out = run(&[blob.path(), "export", "/", "--format", "binary"]);
+    assert!(
+        out.status.success(),
+        "export --format=binary with no --descriptor-set must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.stdout, original,
+        "root's raw binary export must reproduce the whole blob"
+    );
+}
+
+#[test]
+fn export_descriptor_binary_with_no_descriptor_set_degrades_every_field_to_a_tier4_guess() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let blob_bytes = std::fs::read(&blob.0).unwrap();
+    let overrides = hash_matching_overrides_yaml(&blob_bytes, &[]);
+
+    let out = run(&[
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-binary",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(
+        out.status.success(),
+        "export --format=descriptor-binary with no --descriptor-set must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let fds = FileDescriptorSet::decode(out.stdout.as_slice())
+        .expect("stdout must be a decodable FileDescriptorSet");
+    let synthetic = fds
+        .file
+        .iter()
+        .find_map(|f| f.message_type.iter().find(|m| m.name() == "F1"))
+        .expect("expected a synthetic message named F1 (root's field_number)");
+    assert_eq!(
+        synthetic.field.iter().map(|f| f.name()).collect::<Vec<_>>(),
+        vec!["f1"],
+        "with no schema, the field name falls back to the digit-guarded field number"
+    );
+    assert_eq!(
+        synthetic.field[0].r#type(),
+        Type::Bytes,
+        "with no schema, a LEN-wire-type field degrades to the tier-4 Bytes guess"
+    );
+}
+
+#[test]
+fn export_descriptor_prototext_with_no_descriptor_set_fails_with_meta_schema_not_found() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let blob_bytes = std::fs::read(&blob.0).unwrap();
+    let overrides = hash_matching_overrides_yaml(&blob_bytes, &[]);
+
+    let out = run(&[
+        blob.path(),
+        "export",
+        "/",
+        "--format",
+        "descriptor-prototext",
+        "--load-overrides",
+        overrides.path(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "export --format=descriptor-prototext with no --descriptor-set must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no descriptor.proto"),
+        "expected a meta-schema-not-found diagnostic, got: {stderr}"
+    );
+}
+
+#[test]
+fn type_with_no_descriptor_set_fails_before_reading_the_blob() {
+    let (_descriptor, blob) = outer_inner_fixture();
+    let out = run(&["--type", "test.Outer", blob.path(), "export", "/"]);
+    assert!(
+        !out.status.success(),
+        "--type without --descriptor-set must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--type requires --descriptor-set"),
+        "expected the --type-requires-descriptor-set diagnostic, got: {stderr}"
+    );
+}
