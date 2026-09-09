@@ -411,12 +411,10 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--no-emit-descriptor',
+    '--emit-descriptor/--no-emit-descriptor',
     'emit_descriptor',
-    is_flag=True,
-    flag_value=False,
     default=True,
-    help='Suppress writing descriptor.proto to the output directory',
+    help='Write descriptor.proto to the output directory (default: on)',
 )
 
 @click.option(
