@@ -1788,11 +1788,10 @@ def _synthesize_message_set_item(
 
 def _field_label(field: Any) -> str:
     """Return 'required', 'repeated', or 'optional' for a FieldDescriptor (spec 0045)."""
-    from google.protobuf.descriptor import FieldDescriptor as FD
-    label = field.label
-    if label == FD.LABEL_REQUIRED:
+    from .field_descriptor import fd_is_repeated, fd_is_required
+    if fd_is_required(field):
         return 'required'
-    if label == FD.LABEL_REPEATED:
+    if fd_is_repeated(field):
         return 'repeated'
     return 'optional'
 

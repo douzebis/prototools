@@ -17,6 +17,7 @@ from typing import Any
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import FieldDescriptor
+from .field_descriptor import fd_is_repeated, fd_is_required
 
 
 # ── PRNG seeding ──────────────────────────────────────────────────────────────
@@ -166,9 +167,7 @@ def _generate_message(
         if field.number in oneof_field_numbers:
             continue
 
-        label = field.label
-
-        if label == FieldDescriptor.LABEL_REPEATED:
+        if fd_is_repeated(field):
             max_count = max(1, round(p * max_repeated))
             min_count = 1 if depth == 0 else 0
             count = rng.randint(min_count, max_count)
@@ -198,7 +197,7 @@ def _generate_message(
                 except (AttributeError, ValueError):
                     pass
 
-        elif label == FieldDescriptor.LABEL_REQUIRED:
+        elif fd_is_required(field):
             val = _random_value(field, rng, depth, max_depth, max_repeated, pool)
             if val is not None:
                 try:
