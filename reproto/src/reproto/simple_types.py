@@ -14,7 +14,7 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.message import Message
 
 from .context import Context
-from .field_descriptor import ReFieldDescriptor  # re-export
+from .field_descriptor import ReFieldDescriptor, fd_is_repeated  # re-export
 from .globals import FIELD_NUM_MAX
 from .text import (
     MAX_LINE_LENGTH,
@@ -57,7 +57,7 @@ class ReMessage:
         # This is consistent with how options are rendered throughout the codebase.
         for field, value in msg.ListFields():
             # Handle repeated fields
-            if field.label == FieldDescriptor.LABEL_REPEATED:
+            if fd_is_repeated(field):
                 for item in value:
                     if field.type == FieldDescriptor.TYPE_MESSAGE:
                         out.append(BlockLine(f'{field.name}: {{', depth))

@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 
-from google.protobuf.descriptor import Descriptor, FieldDescriptor
+from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import Message
 
 
 from .context import Context
+from .field_descriptor import fd_is_repeated
 from .simple_types import ReFieldDescriptor
 from .text import (
     CODE,
@@ -51,7 +52,7 @@ class ReOptions:
 
             opt = ReFieldDescriptor(fd_desc)
 
-            if fd_desc.label == FieldDescriptor.LABEL_REPEATED:
+            if fd_is_repeated(fd_desc):
                 # val is already the list/repeated container
                 for v in val:
                     block, is_orp = opt.dump_option(ctx, v, lev)
@@ -105,7 +106,7 @@ class ReExtensions:
             opt = ReFieldDescriptor(ext_desc)
             val = self.this.Extensions[ext_desc]
 
-            if ext_desc.label == FieldDescriptor.LABEL_REPEATED:
+            if fd_is_repeated(ext_desc):
                 for v in val:
                     block, is_orp = opt.dump_option(
                         ctx, v, lev, True)

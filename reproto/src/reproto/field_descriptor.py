@@ -21,6 +21,32 @@ from .scalar import Scalar
 from .text import Block, BlockLine
 
 
+def fd_is_repeated(field: FieldDescriptor) -> bool:
+    """Return True if field is a repeated FieldDescriptor.
+
+    Uses is_repeated when available (protobuf >= 4.x / upb) and falls back to
+    field.label for older versions (protobuf 3.x).  This avoids AttributeError
+    on raw upb FieldDescriptor objects that surface when imported _pb2 modules
+    are missing (the Python wrapper layer is never applied in that case, so
+    .label is absent even before its official deprecation in 6.x).
+    """
+    try:
+        return field.is_repeated  # type: ignore[attr-defined]
+    except AttributeError:
+        return field.label == FieldDescriptor.LABEL_REPEATED
+
+
+def fd_is_required(field: FieldDescriptor) -> bool:
+    """Return True if field is a required FieldDescriptor.
+
+    Same compatibility rationale as fd_is_repeated.
+    """
+    try:
+        return field.is_required  # type: ignore[attr-defined]
+    except AttributeError:
+        return field.label == FieldDescriptor.LABEL_REQUIRED
+
+
 class ReFieldDescriptor:
     def __init__(self, field: FieldDescriptor) -> None:
         assert isinstance(field, FieldDescriptor)
@@ -39,8 +65,12 @@ class ReFieldDescriptor:
         return self.this.enum_type
 
     @property
-    def label(self) -> Any:
-        return self.this.label
+    def label(self) -> int:
+        if fd_is_repeated(self.this):
+            return FieldDescriptor.LABEL_REPEATED
+        if fd_is_required(self.this):
+            return FieldDescriptor.LABEL_REQUIRED
+        return FieldDescriptor.LABEL_OPTIONAL
 
     @property
     def name(self) -> str:

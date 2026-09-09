@@ -14,6 +14,7 @@ from google.protobuf.internal.extension_dict import _ExtensionDict
 from google.protobuf.message import Message
 
 from .context import Context
+from .field_descriptor import fd_is_repeated
 from .globals import ENUM, MESSAGE, METHOD, SERVICE
 from .fake_types import parse_fqdn
 from .text import CODE, ORPHAN, Block, BlockLine
@@ -114,7 +115,7 @@ def render_options_from_message(
 
         opt = ReFieldDescriptor(fd_desc)
 
-        if fd_desc.label == FieldDescriptor.LABEL_REPEATED:
+        if fd_is_repeated(fd_desc):
             for v in val:
                 block, is_orp = opt.dump_option(ctx, v, depth)
                 if not block:
@@ -145,7 +146,7 @@ def render_options_from_message(
         opt = ReFieldDescriptor(ext_desc)
         val = opts_msg.Extensions[ext_desc]
 
-        if ext_desc.label == FieldDescriptor.LABEL_REPEATED:
+        if fd_is_repeated(ext_desc):
             for v in val:
                 block, is_orp = opt.dump_option(ctx, v, depth, True)
                 if not composite:
