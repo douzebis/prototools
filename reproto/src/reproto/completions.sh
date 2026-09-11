@@ -23,6 +23,7 @@ _reproto_completion() {
         ["--prune"]=1        ["-p"]=1
         ["--go-root"]=1
         ["--graph"]=1
+        ["--fdp-plugin"]=1
         ["--phase2-plugin"]=1
         ["--dump-resolved-features"]=1
     )

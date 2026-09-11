@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Spec 0369: the file an --fdp-plugin adds an import of.
+// Nothing in the input set references it, so it is reached only if the
+// plugin's patch lands before the phase-1 import-discovery loop.
+
+syntax = "proto3";
+
+package plugin_test;
+
+message Target {
+  int32 value = 1;
+}

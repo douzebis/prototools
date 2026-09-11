@@ -9,6 +9,7 @@ from google.protobuf import text_format
 from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 from reproto import Context, Fqdn
+from reproto.context import apply_fdp_plugin
 from reproto.split_fdps import split_fdps
 
 logger = logging.getLogger(__name__)
@@ -316,14 +317,18 @@ def parse_qfile(
         if isinstance(fragment, bytes):
             fdp = FileDescriptorProto()
             fdp.ParseFromString(fragment)
-            qf.desc = fdp
         else:
-            qf.desc = text_format.Parse(
+            fdp = text_format.Parse(
                 fragment,
                 FileDescriptorProto(),
                 allow_unknown_field=True,
                 allow_unknown_extension=True,
             )
+        # Before the QualFile reaches ReFile, hence before targets is
+        # built from fdp.dependency — this is the application that lets
+        # a plugin-added import be discovered at all (spec 0369 S2).
+        apply_fdp_plugin(ctx, fdp)
+        qf.desc = fdp
         if ctx.debug:
             logger.warning(
                 "Parsing file '%s'", file.rel_path,

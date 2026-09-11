@@ -253,18 +253,12 @@ def name(self) -> str:
 A delegation property that is self-evident from the type annotation and name
 does not need a docstring.
 
-### 4.5 `# Ruff does not like lambda expressions (E731)` in `reproto.py:647`
-
-This is an implementation note that belongs in the commit message, not in
-production code.  The no-op `phase2_plugin` lambda replacement is clear enough
-without the explanation.
-
-### 4.6 `# TODO: Needs factoring???` in `simple_types.py:386`
+### 4.5 `# TODO: Needs factoring???` in `simple_types.py:386`
 
 A `TODO` comment with three question marks is not actionable.  Either file a
 proper issue and reference it, or address the factoring.
 
-### 4.7 `# type: ignore` patterns explained in `NodeBase` docstring
+### 4.6 `# type: ignore` patterns explained in `NodeBase` docstring
 
 `base.py:96–99` explains the benefit of the refactored class as "No type: ignore
 needed in most cases".  This is a historical justification for the refactoring,

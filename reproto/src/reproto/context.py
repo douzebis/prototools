@@ -19,6 +19,7 @@ from google.protobuf.message import Message
 from .fake_types import Fqdn
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import Any
 
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
@@ -105,7 +106,12 @@ class Options:
     # SourceCodeInfo synthesized from reproto's own render pass instead of
     # an empty one.
     source_info: bool = True
-    phase2_plugin: CodeType | None = None
+    # Caller-supplied FDP patch hook (spec 0369). Compiled source; the
+    # callable is resolved once at Context construction into
+    # ctx.fdp_plugin_fn. fdp_plugin_legacy records that it came from the
+    # deprecated --phase2-plugin, whose entry point takes (ctx, fdp).
+    fdp_plugin: CodeType | None = None
+    fdp_plugin_legacy: bool = False
     force_proto2_output: bool = False
     force_proto2_for_editions: bool = False
     # Variant fields (spec 0001) — populated at startup from the variant file.
@@ -170,6 +176,15 @@ class Context(Options):
         # pass, and reset to None before its second (binary) pass begins.
         # None outside of a file render() call, or when synthesis is disabled.
         self.out_sci: SourceCodeInfoOut | None = None
+
+        # Caller's FDP patch hook, resolved from self.fdp_plugin by
+        # _make_context (spec 0369 S2).  The None default is load-bearing:
+        # Context is also built directly, bypassing _make_context, and
+        # apply_fdp_plugin runs on every parse.
+        # Returns object, not None: the contract says a plugin returns None,
+        # but it is arbitrary user code and nothing verifies that.  We call
+        # it and discard the result.
+        self.fdp_plugin_fn: Callable[..., object] | None = None
 
         # FDPs collected by _phase7_output for --build-schema-db (spec 0076 §7).
         # Populated in topological order during the phase 7 render loop when
@@ -272,3 +287,34 @@ class Context(Options):
         if fqdn in self.new_files:
             return self.new_files[fqdn]
         return None
+
+
+class PluginError(Exception):
+    """A caller-supplied FDP plugin raised (spec 0369 S4).
+
+    Wrapping matters: three of the four call sites sit inside handlers
+    that would otherwise absorb the throw and blame the input file —
+    the embedded-fallback load, the phase-2 DecodeError guard, and the
+    pool_db.Add TypeError guard.
+    """
+
+
+def apply_fdp_plugin(ctx: Context, fdp: 'FileDescriptorProto') -> None:
+    """Apply the caller's plugin to fdp, in place (spec 0369 S2).
+
+    Called immediately after every FDP is parsed and before anything
+    reads it, so that topology, import discovery and ranking all see the
+    patched dependency list.  A no-op when no plugin is configured; the
+    null check lives here rather than at each call site.
+    """
+    if ctx.fdp_plugin_fn is None:
+        return
+    try:
+        if ctx.fdp_plugin_legacy:
+            ctx.fdp_plugin_fn(ctx, fdp)
+        else:
+            ctx.fdp_plugin_fn(fdp)
+    except Exception as e:
+        raise PluginError(
+            f"plugin raised {type(e).__name__} on '{fdp.name}': {e}"
+        ) from e
