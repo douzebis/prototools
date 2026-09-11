@@ -34,6 +34,7 @@ from rapidfuzz import fuzz
 from .lib.warnings import cli_attention, cli_error, cli_info, cli_warning
 from reproto import Context, Fqdn, Node, Options
 
+from .context import PluginError, apply_fdp_plugin
 from .fake_types import parse_fqdn
 from .feature_resolution import ResolvedFeatures, build_edition_defaults
 from .globals import FILE
@@ -430,6 +431,33 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     print(yaml.dump(doc, sort_keys=False, allow_unicode=True), end="")
 
 
+def _resolve_fdp_plugin(ctx: Context) -> 'Callable[..., object] | None':
+    """exec() the caller's plugin source and pull out its entry point.
+
+    Done once, at Context construction, so that a plugin file missing
+    its entry point fails at startup naming the file rather than with a
+    bare KeyError from inside phase 2 (spec 0369 S2).  The result is not
+    cached in a module global: the test suite runs reproto repeatedly in
+    one process, and a global would leak one run's plugin into the next.
+    """
+    if ctx.fdp_plugin is None:
+        return None
+    entry = 'phase2_plugin' if ctx.fdp_plugin_legacy else 'fdp_plugin'
+    exec_context: dict[str, Any] = {}
+    exec(ctx.fdp_plugin, exec_context)
+    fn = exec_context.get(entry)
+    if fn is None:
+        raise PluginError(
+            f"plugin '{ctx.fdp_plugin.co_filename}' does not define {entry}()"
+        )
+    if not callable(fn):
+        raise PluginError(
+            f"plugin '{ctx.fdp_plugin.co_filename}' defines {entry} "
+            f"as {type(fn).__name__}, which is not callable"
+        )
+    return fn
+
+
 def _make_context(
     options: Options | None,
     prunings: list[Fqdn],
@@ -443,6 +471,7 @@ def _make_context(
         ctx = Context(set(prunings), pruned_paths, seed_paths)
     else:
         ctx = Context.from_options(set(prunings), pruned_paths, seed_paths, options)
+    ctx.fdp_plugin_fn = _resolve_fdp_plugin(ctx)
     import_annotations(
         ctx.variant_annotation_modules,
         str(ctx.variant_root.joinpath(ctx.variant_stem)),
@@ -544,8 +573,11 @@ def _phase1_load_files(
             fds = FileDescriptorSet()
             fds.ParseFromString(data)
             fdp = fds.file[0]
+            # contents keeps the *unpatched* serialization, so the
+            # contents/desc invariant holds here too (spec 0369 S1).
             qual_file = QualFile(Path('internal'), Path(proto_name), fdp.SerializeToString())
             qual_file.name = fdp.name
+            apply_fdp_plugin(ctx, fdp)
             qual_file.desc = fdp
             ReFile(topo, qual_file)
 
@@ -863,17 +895,6 @@ def _phase2_build_pool(
     leaves: set[ReFile] = set()
     non_leaves: set[ReFile] = set()
 
-    if ctx.phase2_plugin:
-        exec_context = {}
-        exec(ctx.phase2_plugin, exec_context)
-        phase2_plugin = exec_context["phase2_plugin"]
-    else:
-        def phase2_plugin(
-            _ctx: Context,
-            _fdp: FileDescriptorProto,
-        ) -> None:
-            pass
-
     total_files = 0 if ctx.quiet else len(topo.files)
     with _progress('Loading descriptors', total_files, quiet=ctx.quiet) as advance:
         for i in itertools.count(start=1):
@@ -915,7 +936,7 @@ def _phase2_build_pool(
                                 allow_unknown_extension=True,
                                 descriptor_pool=ctx.pool,
                             )
-                            phase2_plugin(ctx, fdp)
+                            apply_fdp_plugin(ctx, fdp)
                             patch_go_package(ctx, fdp)
                             _strip_self_dependency(fdp)
                             if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
@@ -931,7 +952,7 @@ def _phase2_build_pool(
                             fdp = FileDescriptorProto()
                             fdp.ParseFromString(contents)
                             try:
-                                phase2_plugin(ctx, fdp)
+                                apply_fdp_plugin(ctx, fdp)
                                 patch_go_package(ctx, fdp)
                                 _strip_self_dependency(fdp)
                                 if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):

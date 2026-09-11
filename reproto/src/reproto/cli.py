@@ -196,7 +196,7 @@ _SECTIONS: dict[str, str] = {
     '--with-leaf-nodes':     'Advanced',
     '--hide':                'Advanced',
     '--debug':               'Advanced',
-    '--phase2-plugin':       'Advanced',
+    '--fdp-plugin':          'Advanced',
     '--keep-duplicates':     'Advanced',
     '--detailed-warnings':   'Diagnostics',
     '--quiet':               'Diagnostics',
@@ -604,13 +604,25 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
-    '--phase2-plugin',
+    '--fdp-plugin',
     type=click.Path(path_type=Path),
     shell_complete=complete_py_path,
     help=(
-        'Python file executed as a transformation hook during '
-        'phase 2. Must define phase2_plugin(ctx, fdp).'
+        'Python file executed as a transformation hook on every '
+        'FileDescriptorProto reproto parses, before anything reads it. '
+        'Must define fdp_plugin(fdp), which mutates fdp in place. '
+        'Called more than once per input file, so it must be '
+        'deterministic; it must not read reproto state.'
     ),
+)
+
+@click.option(
+    '--phase2-plugin',
+    'phase2_plugin_deprecated',
+    type=click.Path(path_type=Path),
+    shell_complete=complete_py_path,
+    hidden=True,
+    help='Deprecated alias for --fdp-plugin; entry point phase2_plugin(ctx, fdp).',
 )
 
 @click.option(
@@ -687,7 +699,8 @@ def main(
         emit_pyvis: Path | None,
         with_leaf_nodes: bool,
         pyvis_hide: tuple[str, ...],
-        phase2_plugin: str | None,
+        fdp_plugin: Path | None,
+        phase2_plugin_deprecated: Path | None,
         dump_resolved_features: str,
         debug: bool,
         debug_fqdn: bool,
@@ -720,7 +733,23 @@ def main(
         if emit_scoring_html is None:
             emit_scoring_html = emit_scoring_html_deprecated
 
+    # --phase2-plugin is a deprecated alias, but not merged like the ones
+    # above: the two flags name different files holding differently-shaped
+    # entry points, so preferring one silently would run the wrong code
+    # (spec 0369 S3).
+    if fdp_plugin is not None and phase2_plugin_deprecated is not None:
+        raise click.UsageError(
+            '--fdp-plugin and --phase2-plugin are mutually exclusive; '
+            '--phase2-plugin is deprecated, use --fdp-plugin alone'
+        )
+    fdp_plugin_legacy = phase2_plugin_deprecated is not None
+    if fdp_plugin_legacy:
+        if not quiet:
+            _sys.stderr.write('warning: --phase2-plugin is deprecated; use --fdp-plugin\n')
+        fdp_plugin = phase2_plugin_deprecated
+
     from reproto import Fqdn
+    from .context import PluginError
     from .reproto import DescriptorProtoMissingError, DescriptorProtoUnresolvedError, DescriptorProtoHasTargetsError, Options, reproto
     from . import variant as variant_mod
     from .lib.warnings import configure_collector
@@ -782,11 +811,11 @@ def main(
     # Load variant (path arg > REPROTO_VARIANT env > built-in google-protobuf.yaml)
     variant = variant_mod.load(str(proto_variant) if proto_variant else None)
 
-    if phase2_plugin:
-        source = Path(phase2_plugin).read_text(encoding='utf-8')
-        phase2_plugin_function = compile(source, phase2_plugin, 'exec')
+    if fdp_plugin:
+        source = Path(fdp_plugin).read_text(encoding='utf-8')
+        fdp_plugin_code = compile(source, str(fdp_plugin), 'exec')
     else:
-        phase2_plugin_function = None
+        fdp_plugin_code = None
 
     well_known = variant['variant_well_known']  # maps canonical path -> variant path
     # Reverse map: canonical name -> variant path (or canonical if not remapped)
@@ -878,7 +907,8 @@ def main(
         quiet=quiet,
         redact_comments=redact_comments,
         redact_orphans=redact_orphans,
-        phase2_plugin=phase2_plugin_function,
+        fdp_plugin=fdp_plugin_code,
+        fdp_plugin_legacy=fdp_plugin_legacy,
     )
     _FQDN_PREFIXES = ('file', 'desc', 'enum', 'serv', 'meth', 'fdsc')
     _VALID_PREFIXES = _FQDN_PREFIXES + ('path',)
@@ -1007,6 +1037,11 @@ def main(
         raise click.ClickException(
             'descriptor.proto appears corrupted: it has dependencies of its own'
         )
+    except PluginError as e:
+        # A fault in the caller's plugin, not in reproto: report it as an
+        # ordinary CLI error rather than letting a traceback read as a
+        # reproto crash (spec 0369 S4).
+        raise click.ClickException(f'{fdp_plugin}: {e}')
 
 if __name__ == '__main__':
     main()

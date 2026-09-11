@@ -1,0 +1,14 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Spec 0369: the file an --fdp-plugin patches.
+// Imports nothing, so every import in the output came from the plugin.
+
+syntax = "proto3";
+
+package plugin_test;
+
+message Subject {
+  int32 id = 1;
+}

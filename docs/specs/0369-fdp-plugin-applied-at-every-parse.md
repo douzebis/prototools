@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0369 — the FDP plugin is applied at every parse, starting before phase 1
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-11
 App: reproto
 Refs: docs/specs/0051-fallback-object-identity.md (why topo-sort
       object identity is load-bearing — the same ranking machinery this
