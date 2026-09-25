@@ -49,11 +49,13 @@ submessage when the schema says it is one. Under `--raw` those submessages stay
 opaque strings and the anomalies inside them are never seen.
 
 Every *other* example is wrapped the same way, though nothing forces it to be,
-and each wrapper is introduced by a top-level `name` line carrying its heading.
+and each wrapper is introduced by a top-level `dependency` line carrying its
+heading.
 A folded node shows no preview of its contents, so a heading written inside the
 wrapper folds away with it; written beside it, the whole document folds down to
-twenty-four readable headings. `name` is `FileDescriptorProto`'s own field 1 —
-singular, but a singular field repeated on the wire renders once per occurrence.
+twenty-four readable headings. `dependency` is `FileDescriptorProto`'s field 3,
+a repeated string, so two dozen headings are what the schema allows and none of
+them is flagged `repeated_singular`.
 And wherever an anomaly has an
 ordinary counterpart, the two are written side by side inside that submessage —
 the padded tag above, the same string with a one-byte tag below; the five-byte
@@ -115,7 +117,7 @@ above it, and `anomalies.script` walks them one anomaly per step in that order:
    fields.
 
 Each anomaly is explained twice: by a `#` comment for a reader with the file
-open in an editor, and by a **string field value** — the `name` heading above
+open in an editor, and by a **string field value** — the `dependency` heading above
 its wrapper — for the audience looking at protolens. The comments are dropped
 by the encoder and never reach the wire; the string values are the wire.
 

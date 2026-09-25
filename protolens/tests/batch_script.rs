@@ -132,11 +132,13 @@ fn a_missing_explicit_script_is_refused() {
     );
 }
 
-/// The heading label a top-level `name` line carries — `"2.c."` in
-/// `name: "2.c. A bool written as 2 instead of 1."` — or `None` for any
-/// other top-level line.
+/// The heading label a top-level `dependency` line carries — `"2.c."` in
+/// `dependency: "2.c. A bool written as 2 instead of 1."` — or `None` for
+/// any other top-level line.
 fn heading_label(line: &str) -> Option<&str> {
-    line.strip_prefix("name: \"")?.split_whitespace().next()
+    line.strip_prefix("dependency: \"")?
+        .split_whitespace()
+        .next()
 }
 
 /// The label a step's text cites: its first `N.x.` token, else its first

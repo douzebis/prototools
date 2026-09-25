@@ -121,7 +121,7 @@ varints) is also a veto in the scorer (checked 2026-09-25).
   `tests/fixtures/anomalies.pb` produces are *equal*, so `bool_val` goes
   into its `VOCABULARY` (non-canonical group) and the fixture gains a
   record that produces it:
-  - A new heading and wrapper after 2.b, `name: "2.c. A bool written as
+  - A new heading and wrapper after 2.b, `dependency: "2.c. A bool written as
     2 instead of 1."`. Section 2 is "Values that survive a round trip
     but not a re-encode", beside `nan_bits` (2.b), the pattern
     `bool_val` follows; section 3 is about schema evolution, which a
@@ -195,7 +195,7 @@ guard and passes on both.
    `protolens/tests/batch_script.rs`): for every script step whose
    `node` lies under a top-level wrapper, the step's text cites the
    heading of that wrapper — the most specific `N.x.` (else `N.`) token
-   in the text equals the prefix of the top-level `name` line just
+   in the text equals the prefix of the top-level heading line just
    before the wrapper (a heading with no letter, `4.`, covers `4.a.`
    and `4.b.`). And every other path the step names — `wire_node`,
    `wire_line`, a `wire_lines` range, its `fold` entries — lies under

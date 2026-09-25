@@ -6,7 +6,7 @@
 # carries in its own string values, and always in the blob's own order:
 # the unusual bytes first, the ordinary ones under them.
 #
-# Every heading is a top-level `name` line and every example is the
+# Every heading is a top-level `dependency` line and every example is the
 # submessage under it, so the blob's top level alternates the two and a
 # wrapper's position is twice its anomaly's number.
 #
