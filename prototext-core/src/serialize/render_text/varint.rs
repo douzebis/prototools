@@ -54,13 +54,10 @@ pub(super) fn decode_varint_typed(val: u64, fs: &FieldOrExt) -> (VarintKind, u64
                 (VarintKind::Mismatch, val)
             }
         }
-        Kind::Bool => {
-            if val > 1 {
-                (VarintKind::Mismatch, val)
-            } else {
-                (VarintKind::Bool, val)
-            }
-        }
+        // Spec 0372 S1: every varint is a legal bool — parsers read any
+        // non-zero value as `true`. A value above 1 is rendered `true` and
+        // keeps its raw number in `bool_val` (see `render_varint_field`).
+        Kind::Bool => (VarintKind::Bool, val),
         Kind::Uint32 => {
             if val >= (1 << 32) {
                 (VarintKind::Mismatch, val)
@@ -211,6 +208,12 @@ pub(super) fn render_varint_field(
             }
             if enum_unknown {
                 aw.push(out, b"ENUM_UNKNOWN");
+            }
+            // Spec 0372 S1/S3: the text form of a bool carries only
+            // true/false, so a raw value other than 0 or 1 is kept here for
+            // the encoder — as `nan_bits` keeps a NaN's payload.
+            if kind == VarintKind::Bool && raw_val > 1 {
+                aw.push_u64_mod(out, b"bool_val: ", raw_val);
             }
         }
     }

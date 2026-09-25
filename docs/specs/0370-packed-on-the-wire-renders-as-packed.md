@@ -110,7 +110,8 @@ a lossless round trip into a lossy one.
   already does for a field declared packed. The per-element validity
   rules don't change. They are stricter than the scorer's: a bool `2`
   is `INVALID_PACKED_RECORDS` here, but only an `out_of_range` penalty
-  in `walk.rs`. Aligning the two is out of scope.
+  in `walk.rs`. Aligning the two is out of scope. (Spec 0372 has since
+  aligned them: a bool `2` now renders `true` with `bool_val: 2`.)
 - **G4.** No input that round-trips byte-exactly today stops doing so.
   In particular, an `INVALID_PACKED_RECORDS` or `INVALID_STRING` record
   with an overlong length prefix round-trips, whatever the field
@@ -274,7 +275,7 @@ rather than a test of its own.
 
     | field | payload | expected rendering |
     |---|---|---|
-    | `bool` | `02` | `INVALID_PACKED_RECORDS` |
+    | `bool` | `02` | `INVALID_PACKED_RECORDS` (since spec 0372: `true`, `bool_val: 2`) |
     | `bool` | `81 00` | `true`, `ohb: 1` |
     | `int32` | `80 80 80 80 20` (2³³, the 32-bit gap) | `INVALID_PACKED_RECORDS` |
     | `int32` | `ff ff ff ff 0f` | `-1`, `neg` |

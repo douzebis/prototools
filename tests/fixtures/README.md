@@ -52,7 +52,7 @@ Every *other* example is wrapped the same way, though nothing forces it to be,
 and each wrapper is introduced by a top-level `name` line carrying its heading.
 A folded node shows no preview of its contents, so a heading written inside the
 wrapper folds away with it; written beside it, the whole document folds down to
-twenty-three readable headings. `name` is `FileDescriptorProto`'s own field 1 —
+twenty-four readable headings. `name` is `FileDescriptorProto`'s own field 1 —
 singular, but a singular field repeated on the wire renders once per occurrence.
 And wherever an anomaly has an
 ordinary counterpart, the two are written side by side inside that submessage —
@@ -96,7 +96,7 @@ above it, and `anomalies.script` walks them one anomaly per step in that order:
    `val_ohb`. Varints may carry padding, so a tag, a length prefix and a value
    can each be written longer than they need to be. Every parser accepts them.
 2. **Values that survive a round trip but not a re-encode** — `truncated_neg`,
-   `nan_bits`. Two producers disagree and both are right.
+   `nan_bits`, `bool_val`. Two producers disagree and both are right.
 3. **A newer producer against an older schema** — `ENUM_UNKNOWN`, plus four
    fields the schema does not declare at all, rendered by wire type
    (`varint`, `fixed64`, `fixed32`, `bytes`).

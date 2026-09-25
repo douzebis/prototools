@@ -319,7 +319,12 @@ fn packed_record_on_repeated_extension_roundtrips() {
 #[test]
 fn packed_element_edge_cases_roundtrip_on_unpacked_fields() {
     let cases: &[(&str, &[u8], &str)] = &[
-        ("bool 2", &[0x1a, 0x01, 0x02], "INVALID_PACKED_RECORDS"),
+        // Spec 0372: a bool above 1 is `true`, with its raw value kept.
+        (
+            "bool 2",
+            &[0x1a, 0x01, 0x02],
+            "b: true  #@ repeated bool = 3; pack_size: 1; bool_val: 2",
+        ),
         (
             "bool ohb",
             &[0x1a, 0x02, 0x81, 0x00],

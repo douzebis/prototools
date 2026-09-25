@@ -527,6 +527,7 @@ mod tests {
             enum_scalar_value: None,
             enum_packed_values: vec![],
             nan_bits: None,
+            bool_val: None,
             pack_size: None,
             elem_ohb: None,
             elem_neg_trunc: false,

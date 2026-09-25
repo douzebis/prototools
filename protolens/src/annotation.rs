@@ -60,7 +60,11 @@ pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes",
 /// scorer charges nothing; that is accepted, because the annotation
 /// text carries no trace of `is_closed` and saying nothing would lose
 /// the closed case entirely.
-pub const NON_CANONICAL: [&str; 12] = [
+///
+/// `bool_val` is the same charge for a bool (spec 0372 S5): a bool written
+/// as neither 0 nor 1 reads as `true` everywhere, and costs the scorer an
+/// `out_of_range`.
+pub const NON_CANONICAL: [&str; 13] = [
     "tag_ohb",
     "val_ohb",
     "len_ohb",
@@ -73,6 +77,7 @@ pub const NON_CANONICAL: [&str; 12] = [
     "packed_truncated_neg",
     "repeated_singular",
     "ENUM_UNKNOWN",
+    "bool_val",
 ];
 
 /// [`Tier::Invalid`]'s members.
@@ -141,6 +146,7 @@ pub fn clause(keyword: &str) -> Option<&'static str> {
         // keyword is emitted for both (spec 0343 A1).
         "repeated_singular" => "the schema declares this field singular, and it already appeared",
         "ENUM_UNKNOWN" => "no name in the declared enum has this number",
+        "bool_val" => "a bool is true for any non-zero value; this one was not written as 1",
         "TYPE_MISMATCH" => "the schema declares this field with another wire type",
         "OPEN_GROUP" => "this group is never closed",
         "END_MISMATCH" => "this group end names a different field than its start",

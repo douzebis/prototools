@@ -31,6 +31,9 @@ pub(crate) struct Ann<'a> {
     /// Non-canonical NaN bit pattern from `nan_bits: 0x…` annotation modifier.
     /// Applies to float (32-bit, stored as u64) and double (64-bit) fields.
     pub(crate) nan_bits: Option<u64>,
+    /// Raw value of a bool written as neither 0 nor 1, from `bool_val: N`
+    /// (spec 0372 S4). Replaces the 0/1 the `true` value token would give.
+    pub(crate) bool_val: Option<u64>,
     /// Number of elements in a per-line packed wire record (`pack_size: N`).
     /// `None` means this is not the first element of a packed record.
     pub(crate) pack_size: Option<usize>,
@@ -95,6 +98,7 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                             inner.split(',').map(|s| s.trim() == "1").collect();
                     }
                     "nan_bits" => ann.nan_bits = Some(parse_u64_str(value)),
+                    "bool_val" => ann.bool_val = Some(parse_u64_str(value)),
                     "pack_size" => ann.pack_size = Some(parse_u64_str(value) as usize),
                     "ohb" => ann.elem_ohb = Some(parse_u64_str(value)),
                     _ => {}

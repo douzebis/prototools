@@ -85,7 +85,9 @@ message_type {  #@ repeated DescriptorProto = 4
 # specified to travel as a ten-byte varint (sign-extended to 64 bits), but some
 # writers truncate it to five bytes; the value is identical, the bytes are not.
 # And IEEE 754 has 2^52 distinct NaN payloads while protobuf text has one
-# spelling, `nan`, so a re-encode would silently pick the canonical one.
+# spelling, `nan`, so a re-encode would silently pick the canonical one.  A
+# bool is the same story in one bit: every parser reads any non-zero varint as
+# `true`, so a 2 on the wire is `true` in text, and `bool_val` keeps the 2.
 # ---------------------------------------------------------------------------
 
 name: "2.a. -1 written in five bytes instead of the specified ten."  #@ string = 1
@@ -109,6 +111,22 @@ options {  #@ FileOptions = 8
   uninterpreted_option {  #@ repeated UninterpretedOption = 999
     identifier_value: "canonical"  #@ string = 3
     double_value: nan  #@ double = 6
+  }
+}
+
+name: "2.c. A bool written as 2 instead of 1."  #@ string = 1
+message_type {  #@ repeated DescriptorProto = 4
+  field {  #@ repeated FieldDescriptorProto = 2
+    name: "two"  #@ string = 1
+    options {  #@ FieldOptions = 8
+      deprecated: true  #@ bool = 3; bool_val: 2
+    }
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+    name: "canonical"  #@ string = 1
+    options {  #@ FieldOptions = 8
+      deprecated: true  #@ bool = 3
+    }
   }
 }
 

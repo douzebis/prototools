@@ -54,6 +54,9 @@ pub(super) struct PackedElem {
     nan_bits: Option<u64>,
     /// For ENUM: raw i32 numeric value (for the EnumName(N) annotation).
     enum_num: Option<i32>,
+    /// For BOOL: the raw value when it is neither 0 nor 1 (spec 0372 S2).
+    /// The element renders `true`; this is what the encoder writes back.
+    bool_val: Option<u64>,
     /// This element's own byte span *within the packed payload* (`data`,
     /// the field's LEN-delimited contents after tag+length) — not yet
     /// translated to absolute document coordinates (spec 0115 §1).
@@ -120,6 +123,7 @@ fn decode_packed_fixed_elems(
             neg_trunc: false,
             nan_bits,
             enum_num: None,
+            bool_val: None,
             byte_range: i..i + elem_size,
         });
         i += elem_size;
@@ -143,6 +147,7 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
         let ohb = vr.varint_ohb.unwrap_or(0);
         let v = vr.varint.unwrap();
 
+        let mut bool_val = None;
         let (value_str, neg_trunc, enum_num) = match fs.kind() {
             Kind::Int64 => (
                 format_int64_protoc(crate::helpers::decode_int64(v)),
@@ -161,9 +166,11 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
                     return Err(());
                 }
             }
+            // Spec 0372 S2: any varint is a legal bool, as on the expanded
+            // path; a value above 1 keeps its raw number in `bool_val`.
             Kind::Bool => {
                 if v > 1 {
-                    return Err(());
+                    bool_val = Some(v);
                 }
                 (format_bool_protoc(v != 0).to_owned(), false, None)
             }
@@ -205,6 +212,7 @@ fn decode_packed_varint_elems(data: &[u8], fs: &FieldOrExt) -> Result<Vec<Packed
             neg_trunc,
             nan_bits: None,
             enum_num: if is_enum { enum_num } else { None },
+            bool_val,
             byte_range: elem_start..i,
         });
     }
@@ -280,6 +288,9 @@ fn write_packed_elem_ann(
         aw.sep(out);
         out.extend_from_slice(b"nan_bits: 0x");
         write_nan_hex(bits, out);
+    }
+    if let Some(v) = elem.bool_val {
+        aw.push_u64_mod(out, b"bool_val: ", v);
     }
     // ENUM_UNKNOWN: when the enum value has no symbolic name.
     if let (Some(n), Kind::Enum(ref enum_desc)) = (elem.enum_num, foe.kind()) {

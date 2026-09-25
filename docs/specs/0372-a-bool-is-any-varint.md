@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0372 — a bool is any varint: render it, keep the raw value
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-25
 App: prototext-core, protolens
 Refs: docs/specs/0370-packed-on-the-wire-renders-as-packed.md (its G3
       records the renderer being stricter than the scorer on bool;
@@ -89,16 +90,26 @@ varints) is also a veto in the scorer (checked 2026-09-25).
   the value is printed in its canonical text form, and the raw wire
   value that the text form cannot carry goes in a modifier.
 - **S4. Encoder.** `encode_annotation.rs` parses `bool_val: N` into a new
-  `Ann::bool_val: Option<u64>`. Both bool arms in `fields.rs` — the
-  expanded one (today `num.as_u64() & 1`) and `encode_packed_elem`'s
-  (today `"true" → 1`) — write `bool_val` when present, and the
-  canonical 0/1 otherwise. Overhang (`val_ohb` / per-element `ohb`)
-  applies to whichever value is written.
+  `Ann::bool_val: Option<u64>`. The two sites that write a bool literal
+  in `fields.rs` — the `true`/`false` branch at the top of
+  `encode_scalar_line` (expanded) and `encode_packed_elem`'s `"bool"`
+  arm — write `bool_val` when present, and the canonical 0/1 otherwise.
+  Overhang (`val_ohb` / per-element `ohb`) applies to whichever value is
+  written. (`encode_num`'s `"bool"` arm serves a bool written as a
+  number, never a literal, and the legacy `[v1, v2, …]` array form has
+  one annotation per run; neither can carry `bool_val`, and neither
+  changes.)
 - **S5. protolens.** `bool_val` joins `annotation::NON_CANONICAL`, with a
   hover description: "a bool is true for any non-zero value; this one
   was written as N rather than 1". It sits in the same tier as
   `ENUM_UNKNOWN`, the renderer's counterpart of the same `out_of_range`
-  charge.
+  charge. `reproto/tree-sitter-textproto/highlights.scm` gains it in its
+  `@annotation.non_canonical` list: protolens colors annotations from
+  that file, and `colorize`'s `every_keyword_is_colored_by_its_tier`
+  fails until the two agree. (The dev shell compiles in a Nix-built copy
+  of the file, fixed at shell entry; set
+  `TREE_SITTER_TEXTPROTO_QUERIES_DIR=reproto/tree-sitter-textproto`, or
+  re-enter the shell, to test an edit locally. `nix-build` rebuilds it.)
 - **S6. Documentation.** `annotation-format.md` lists `bool_val` in the
   element-level modifier table, with an expanded and a packed example.
   Spec 0370's G3 gets a pointer: the bool example it gives no longer
@@ -110,20 +121,23 @@ varints) is also a veto in the scorer (checked 2026-09-25).
   `tests/fixtures/anomalies.pb` produces are *equal*, so `bool_val` goes
   into its `VOCABULARY` (non-canonical group) and the fixture gains a
   record that produces it:
-  - A new heading and wrapper after 3.b, `name: "3.c. A bool written as
-    2 instead of 1."` — section 3 is where the schema meets a value it
-    has no name for, beside `ENUM_UNKNOWN`. Following 3.a's pattern, the
-    wrapper holds the anomaly and its ordinary counterpart side by side:
-    `message_type { field { name: "two" options { deprecated: true
-    …; bool_val: 2 } } field { name: "one" options { deprecated: true } } }`
+  - A new heading and wrapper after 2.b, `name: "2.c. A bool written as
+    2 instead of 1."`. Section 2 is "Values that survive a round trip
+    but not a re-encode", beside `nan_bits` (2.b), the pattern
+    `bool_val` follows; section 3 is about schema evolution, which a
+    bool written as 2 is not. Its header comment gains one sentence.
+    Following 2.a's pattern, the wrapper holds the anomaly and its
+    ordinary counterpart side by side: `message_type { field { name:
+    "two" options { deprecated: true …; bool_val: 2 } } field { name:
+    "canonical" options { deprecated: true } } }`
     (`FieldOptions.deprecated`, a bool, field 3). No other anomaly in
     the wrapper.
-  - `tests/fixtures/anomalies.script` gains a 3.c step. A wrapper's
-    top-level position is twice its number, so inserting 3.c moves every
+  - `tests/fixtures/anomalies.script` gains two 2.c steps. A wrapper's
+    top-level position is twice its number, so inserting 2.c moves every
     later wrapper by 2: **every** later path in `fold`, `node`,
-    `wire_line` and `wire_lines` is renumbered.
+    `wire_node`, `wire_line` and `wire_lines` is renumbered.
   - `tests/fixtures/README.md`: "twenty-three readable headings" becomes
-    twenty-four.
+    twenty-four, and section 2's list gains `bool_val`.
 
 ### Visible consequences
 
@@ -182,7 +196,10 @@ guard and passes on both.
    `node` lies under a top-level wrapper, the step's text cites the
    heading of that wrapper — the most specific `N.x.` (else `N.`) token
    in the text equals the prefix of the top-level `name` line just
-   before the wrapper. `anomalies_script_walks_without_a_broken_position`
+   before the wrapper (a heading with no letter, `4.`, covers `4.a.`
+   and `4.b.`). And every other path the step names — `wire_node`,
+   `wire_line`, a `wire_lines` range, its `fold` entries — lies under
+   the same wrapper. `anomalies_script_walks_without_a_broken_position`
    only catches a path that no longer resolves; after S8's shift by 2,
    almost every stale path still resolves, to the wrong anomaly. This
    test catches that, for this renumbering and every later one (spec
@@ -201,4 +218,19 @@ guard and passes on both.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-09-25, `--profile quick` build.
+
+- New tests (`prototext/tests/bool_values.rs`) against the parent
+  commit, in a worktree: tests 1–4 fail, test 5 passes (the no-change
+  guard), and test 6 fails too, at its first case:
+  `b = 0x2: the scorer accepts it, the renderer does not:
+  1: 2  #@ varint; TYPE_MISMATCH`. All six pass after.
+- Test 8 was written before the script was renumbered and failed on the
+  stale script ("the step citing 3.a. has node /12/1/2, which lies
+  under heading 2.c."). Its path check was added after a first
+  renumbering pass missed the seven `wire_node` lines; with those lines
+  reverted it fails with "the step at /18/1/1 names wire_node /16/1/1,
+  under another wrapper".
+- The fixture round-trips byte-exactly, and renders 24 headings.
+- Workspace suite: 33 test binaries, all green; clippy clean with all
+  features.

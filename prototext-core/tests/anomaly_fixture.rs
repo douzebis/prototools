@@ -45,6 +45,7 @@ const VOCABULARY: &[&str] = &[
     "neg",
     "repeated_singular",
     "ENUM_UNKNOWN",
+    "bool_val",
     // Invalid
     "TAG_OOR",
     "ETAG_OOR",

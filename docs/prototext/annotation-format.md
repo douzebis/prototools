@@ -149,7 +149,7 @@ Zero or more `name: value` pairs (or bare flag names) describing non-canonical
 or anomalous aspects of the binary encoding.  On packed field lines, order is:
 
 1. Record-level modifiers (`pack_size`, `tag_ohb`, `TAG_OOR`, `len_ohb`)
-2. Element-level modifiers (`ohb`, `neg`, `nan_bits`, `ENUM_UNKNOWN`, etc.)
+2. Element-level modifiers (`ohb`, `neg`, `nan_bits`, `bool_val`, `ENUM_UNKNOWN`, etc.)
 
 ---
 
@@ -167,6 +167,7 @@ Non-canonical encodings are losslessly recoverable — they round-trip exactly.
 | `etag_ohb: N` | integer | END_GROUP tag varint uses N redundant continuation bytes |
 | `truncated_neg` | flag | Negative int32/enum encoded as 5-byte truncated varint instead of canonical 10-byte sign-extended form |
 | `nan_bits: 0xHH…` | hex integer | Non-canonical NaN bit pattern for a `float` (8 hex digits) or `double` (16 hex digits) field |
+| `bool_val: N` | integer | Raw value of a `bool` written as neither 0 nor 1 (the value renders `true`) |
 | `ohb: N` | integer | Per-element varint overhang bytes (packed varint fields, on each element line) |
 | `neg` | flag | Per-element truncated-negative int32/enum (packed fields, on each element line) |
 | `repeated_singular` | flag | The schema declares this field singular, and this is not its first record in the enclosing message. Emitted on the second and every later occurrence, for scalar, enum, message and group fields alike. Never emitted for a repeated field, nor for one no schema describes |
@@ -202,7 +203,7 @@ line carries its own annotation.
 The **first element** of each wire record carries a `pack_size: N` modifier
 indicating how many elements belong to that record.  Record-level anomaly
 modifiers (`tag_ohb`, `TAG_OOR`, `len_ohb`) also appear on the first element
-line.  Element-level anomaly modifiers (`ohb`, `neg`, `nan_bits`) appear on
+line.  Element-level anomaly modifiers (`ohb`, `neg`, `nan_bits`, `bool_val`) appear on
 each respective element's line.
 
 ```
@@ -278,6 +279,28 @@ NaN element:
 floatPk: nan  #@ repeated float [packed=true] = 87; pack_size: 3
 floatPk: nan  #@ repeated float [packed=true] = 87; nan_bits: 0x7f800001
 floatPk: nan  #@ repeated float [packed=true] = 87; nan_bits: 0xffc00000
+```
+
+---
+
+## Bool encoding
+
+On the wire a `bool` is a varint, and parsers read any non-zero value as
+`true`.  The value renders `true` or `false`, matching `protoc --decode`; a
+raw value other than 0 or 1 is recorded in a `bool_val` modifier, which the
+encoder writes back instead of `1` (spec 0372):
+
+```
+b: true  #@ repeated bool = 1; bool_val: 2
+b: true  #@ repeated bool = 1
+```
+
+In packed arrays, `bool_val` appears on the element line it belongs to:
+
+```
+b: false  #@ repeated bool [packed=true] = 1; pack_size: 3
+b: true  #@ repeated bool [packed=true] = 1
+b: true  #@ repeated bool [packed=true] = 1; bool_val: 2
 ```
 
 ---
@@ -381,6 +404,7 @@ modifier := noncanon_valued | noncanon_flag | invalid_valued | invalid_flag
 
 noncanon_valued := ("tag_ohb" | "val_ohb" | "len_ohb" | "etag_ohb" | "ohb") ":" SP INTEGER
                |  "nan_bits: 0x" HEX+
+               |  "bool_val" ":" SP INTEGER
 noncanon_flag   := "truncated_neg" | "neg" | "repeated_singular"
 
 invalid_valued  := ("MISSING" | "END_MISMATCH") ":" SP INTEGER

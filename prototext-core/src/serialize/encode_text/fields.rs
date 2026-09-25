@@ -283,9 +283,12 @@ pub(super) fn encode_scalar_line(
 
     let ft = ann.field_type;
 
-    // bool literal
+    // bool literal. Spec 0372 S4: `bool_val` is the raw value the text form
+    // could not carry; without it the literal's 0/1 is canonical.
     if value_str == "true" || value_str == "false" {
-        let v: u64 = if value_str == "true" { 1 } else { 0 };
+        let v: u64 = ann
+            .bool_val
+            .unwrap_or(if value_str == "true" { 1 } else { 0 });
         write_tag_ohb_local(field_number, WT_VARINT, tag_ohb, out);
         write_varint_ohb(v, val_ohb, out);
         return;
@@ -604,7 +607,10 @@ pub(super) fn encode_packed_elem(value_str: &str, ann: &Ann<'_>, payload: &mut V
             }
         }
         "bool" => {
-            let v: u64 = if value_str == "true" { 1 } else { 0 };
+            // Spec 0372 S4, as on the expanded path.
+            let v = ann
+                .bool_val
+                .unwrap_or(if value_str == "true" { 1 } else { 0 });
             write_varint_ohb(v, ohb, payload);
         }
         "int32" | "enum" => {
