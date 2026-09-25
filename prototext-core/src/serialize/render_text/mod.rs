@@ -73,30 +73,6 @@ impl FieldOrExt {
         }
     }
 
-    /// Returns the raw value of the `packed` field option from the descriptor:
-    /// - `None`  — option absent (proto3 default applies)
-    /// - `Some(true)`  — `[packed=true]` explicitly set
-    /// - `Some(false)` — `[packed=false]` explicitly set
-    ///
-    /// Uses `prost_types::FieldDescriptorProto.options.packed: Option<bool>` directly —
-    /// O(1), zero allocation (no DynamicMessage decoding).
-    #[cfg(feature = "prost-bug-workaround")]
-    pub(super) fn raw_packed_option(&self) -> Option<bool> {
-        let proto = match self {
-            FieldOrExt::Field(f) => f.field_descriptor_proto(),
-            FieldOrExt::Ext(e) => e.field_descriptor_proto(),
-        };
-        proto.options.as_ref().and_then(|o| o.packed)
-    }
-
-    #[cfg(feature = "prost-bug-workaround")]
-    pub(super) fn parent_file_syntax(&self) -> prost_reflect::Syntax {
-        match self {
-            FieldOrExt::Field(f) => f.parent_file().syntax(),
-            FieldOrExt::Ext(e) => e.parent_file().syntax(),
-        }
-    }
-
     /// Append the name to use in field-line output directly to `out`.
     ///
     /// Regular field: `name`. Extension field: `[full.qualified.name]`.

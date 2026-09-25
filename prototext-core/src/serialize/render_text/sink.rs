@@ -629,15 +629,7 @@ impl Sink for TextSink {
                             CBL_START.with(|c| c.set(self.out.len()));
                         }
                         Err(_) => {
-                            render_invalid(
-                                field_number,
-                                tag.tag_ohb,
-                                tag.tag_oor,
-                                tag.repeated_singular,
-                                "INVALID_STRING",
-                                data,
-                                self,
-                            );
+                            render_invalid(field_number, tag, "INVALID_STRING", data, self);
                         }
                     },
                     Some(fs) if fs.kind() == Kind::Bytes => {
@@ -931,62 +923,22 @@ impl Sink for TextSink {
                 super::helpers::render_invalid_tag_type(raw, self);
             }
             MalformedKind::InvalidVarint => {
-                render_invalid(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
-                    "INVALID_VARINT",
-                    raw,
-                    self,
-                );
+                render_invalid(field_number, tag, "INVALID_VARINT", raw, self);
             }
             MalformedKind::InvalidFixed64 => {
-                render_invalid(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
-                    "INVALID_FIXED64",
-                    raw,
-                    self,
-                );
+                render_invalid(field_number, tag, "INVALID_FIXED64", raw, self);
             }
             MalformedKind::InvalidFixed32 => {
-                render_invalid(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
-                    "INVALID_FIXED32",
-                    raw,
-                    self,
-                );
+                render_invalid(field_number, tag, "INVALID_FIXED32", raw, self);
             }
             MalformedKind::InvalidLen => {
-                render_invalid(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
-                    "INVALID_LEN",
-                    raw,
-                    self,
-                );
+                render_invalid(field_number, tag, "INVALID_LEN", raw, self);
             }
             MalformedKind::TruncatedBytes { missing } => {
                 render_truncated_bytes(field_number, tag, missing, raw, self);
             }
             MalformedKind::InvalidGroupEnd => {
-                render_invalid(
-                    field_number,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
-                    "INVALID_GROUP_END",
-                    raw,
-                    self,
-                );
+                render_invalid(field_number, tag, "INVALID_GROUP_END", raw, self);
             }
         }
     }

@@ -140,9 +140,8 @@ So this costs no compiled-graph format change and no version bump.
   does today, under whatever `strict_ranges` gives it.
 - **Packed strings, bytes, messages and groups.** Protobuf forbids
   packing them, so there is no encoding to accept.
-- **`prototext`'s decoder and renderer.** They already read packed
-  payloads (spec 0016, `NodeSpan::packed_record_start`). This spec is
-  scoring only.
+- **`prototext`'s decoder and renderer.** This spec is scoring only;
+  the renderer's side of the same rule is spec 0370.
 - **Float/double element scrutiny** (NaN, denormals). Out of scope; a
   fixed-width element is validated by length alone.
 

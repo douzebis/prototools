@@ -102,11 +102,15 @@ pub(in super::super) fn render_scalar(
 /// Takes no `field_schema`: an invalid field emits no `field_decl`, so
 /// there is nothing for the renderer to say about the declared type even
 /// when one is known.
+///
+/// `raw` is the payload only, not the record: the encoder rebuilds tag and
+/// length prefix from the annotation. That is why `tag.len_ohb` must reach
+/// it — `INVALID_PACKED_RECORDS` and `INVALID_STRING` have a parsed length
+/// prefix whose overhang is otherwise lost (spec 0370 S5). Every other
+/// caller's `TagFacts` has `len_ohb: None`.
 pub(in super::super) fn render_invalid(
     field_number: u64,
-    tag_ohb: Option<u64>,
-    tag_oor: bool,
-    repeated_singular: bool,
+    tag: TagFacts,
     inv_name: &str,
     raw: &[u8],
     sink: &mut TextSink,
@@ -121,7 +125,14 @@ pub(in super::super) fn render_invalid(
     if annotations {
         let mut aw = AnnWriter::new();
         aw.push_invalid(out, inv_name);
-        push_tag_modifiers(&mut aw, out, tag_ohb, tag_oor, None, repeated_singular);
+        push_tag_modifiers(
+            &mut aw,
+            out,
+            tag.tag_ohb,
+            tag.tag_oor,
+            tag.len_ohb,
+            tag.repeated_singular,
+        );
         // v2: NO field_decl for invalid fields.
     }
     sink.newline();

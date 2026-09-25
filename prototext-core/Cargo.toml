@@ -19,11 +19,10 @@ name       = "prototext_core"
 crate-type = ["rlib"]
 
 [features]
-# Workaround for prost-reflect bug: is_packed() returns false for proto3
-# repeated scalar/enum fields when FieldOptions is present-but-empty in the
-# FDS (e.g. because an unrelated custom option is set on the field).
-# Enable this feature until the bug is fixed upstream.
-# See docs/prototext/PROST-ISSUES.md §1.
+# No-op since spec 0370, kept so that dependents enabling it still build.
+# It used to work around prost-reflect's wrong is_packed() for proto3
+# fields with FieldOptions present (docs/prototext/PROST-ISSUES.md §1);
+# the renderer no longer asks is_packed() whether a LEN record is packed.
 prost-bug-workaround = []
 
 [dependencies]

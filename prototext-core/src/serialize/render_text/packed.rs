@@ -21,7 +21,7 @@ use crate::serialize::common::{
 };
 
 use super::helpers::{push_indent, wfl_prefix_n, AnnWriter};
-use super::sink::TextSink;
+use super::sink::{TagFacts, TextSink};
 use super::{ANNOTATIONS, CBL_START};
 
 /// Write `bits` as zero-padded lowercase hex into `out` without heap allocation.
@@ -309,11 +309,14 @@ pub(super) fn render_packed(
         Err(()) => {
             render_invalid(
                 field_number,
-                tag_ohb,
-                tag_oor,
-                // A packed record is only ever a repeated field, so spec
-                // 0343 A1's finding cannot arise here.
-                false,
+                TagFacts {
+                    tag_ohb,
+                    tag_oor,
+                    len_ohb,
+                    // A packed record is only ever a repeated field, so
+                    // spec 0343 A1's finding cannot arise here.
+                    repeated_singular: false,
+                },
                 "INVALID_PACKED_RECORDS",
                 data,
                 sink,

@@ -370,30 +370,33 @@ pub fn encode_text_to_binary_into(text: &[u8], out: &mut Vec<u8>) {
         }
 
         // ── Per-line packed: first element (pack_size: N) ─────────────────────
-        if ann.is_packed {
-            if let Some(n) = ann.pack_size {
-                if n == 0 {
-                    // Empty record — emit immediately.
-                    write_tag_ohb_local(field_number, WT_LEN, ann.tag_overhang_count, out);
-                    write_varint_ohb(0, ann.length_overhang_count, out);
-                } else {
-                    // Start buffering.
-                    packed_field_number = field_number;
-                    packed_tag_ohb = ann.tag_overhang_count;
-                    packed_len_ohb = ann.length_overhang_count;
-                    packed_remaining = n - 1; // this line is element 0
+        // Spec 0370 S2: `pack_size` alone starts a packed record. It is
+        // written only on the first element of a record that was packed on
+        // the wire, whereas `[packed=true]` (`ann.is_packed`) states the
+        // schema's declaration — and a field declared expanded may still
+        // arrive packed.
+        if let Some(n) = ann.pack_size {
+            if n == 0 {
+                // Empty record — emit immediately.
+                write_tag_ohb_local(field_number, WT_LEN, ann.tag_overhang_count, out);
+                write_varint_ohb(0, ann.length_overhang_count, out);
+            } else {
+                // Start buffering.
+                packed_field_number = field_number;
+                packed_tag_ohb = ann.tag_overhang_count;
+                packed_len_ohb = ann.length_overhang_count;
+                packed_remaining = n - 1; // this line is element 0
+                packed_payload.clear();
+                encode_packed_elem(value_str, &ann, &mut packed_payload);
+                if packed_remaining == 0 {
+                    // Single-element record — flush immediately.
+                    write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, out);
+                    write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, out);
+                    out.extend_from_slice(&packed_payload);
                     packed_payload.clear();
-                    encode_packed_elem(value_str, &ann, &mut packed_payload);
-                    if packed_remaining == 0 {
-                        // Single-element record — flush immediately.
-                        write_tag_ohb_local(packed_field_number, WT_LEN, packed_tag_ohb, out);
-                        write_varint_ohb(packed_payload.len() as u64, packed_len_ohb, out);
-                        out.extend_from_slice(&packed_payload);
-                        packed_payload.clear();
-                    }
                 }
-                continue;
             }
+            continue;
         }
 
         encode_scalar_line(field_number, value_str, &ann, out);

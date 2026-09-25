@@ -125,7 +125,10 @@ Format: `[label " "] type [" [packed=true]"] " = " field_number`
   `EnumTypeName([n1, n2, …])`.  Packed non-enum varint types (int32, int64,
   bool, sint32, sint64, uint32, uint64) also use the scalar proto type name
   (e.g. `repeated int32 [packed=true]`).
-- **packed**: `[packed=true]` appended when the field uses packed wire encoding.
+- **packed**: `[packed=true]` appended when the schema declares the field
+  packed.  It says nothing about the wire: a record that is packed on the wire
+  is marked by `pack_size: N` on its first element, whatever the declaration
+  says (spec 0370).
 - **field_number**: the field's tag number in the `.proto` file.
 
 The field declaration is omitted for:
@@ -225,11 +228,25 @@ rendered as a comment-only annotation line with no leading spaces before `#@`:
 #@ repeated int64 [packed=true] = 83; pack_size: 0
 ```
 
+A reader must accept both encodings of a repeated scalar, whatever the field
+declares, so a packed record on a field declared expanded (proto2's default,
+or proto3 `[packed=false]`) renders the same way.  Only the declaration
+differs; `pack_size` is what tells the encoder to rebuild a packed record:
+
+```
+lane: 1  #@ repeated int32 = 1; pack_size: 3
+lane: 2  #@ repeated int32 = 1
+lane: 3  #@ repeated int32 = 1
+```
+
 If the packed payload cannot be decoded, the field is rendered as a single
-`INVALID_PACKED_RECORDS` line with the raw bytes:
+`INVALID_PACKED_RECORDS` line with the raw payload bytes.  The tag and length
+prefix are rebuilt from the annotation, so a non-canonical one is recorded as
+`tag_ohb`/`len_ohb`:
 
 ```
 85: "\200\200\200\200\020\002\003\004"  #@ INVALID_PACKED_RECORDS
+1: "\200"  #@ INVALID_PACKED_RECORDS; len_ohb: 1
 ```
 
 ---

@@ -195,38 +195,15 @@ pub(in super::super) fn render_len_field<S: Sink>(
             | Kind::Double
             | Kind::Enum(_)
     );
-    // Determine whether this LEN record encodes a packed repeated field.
-    //
-    // Normally we trust prost-reflect's precomputed `is_packed()`.  However,
-    // prost-reflect has a bug (see docs/prototext/PROST-ISSUES.md §1): for proto3
-    // repeated scalar/enum fields, `is_packed()` returns false when
-    // `FieldOptions` is present-but-empty in the FDS (e.g. because an
-    // unrelated custom option such as `google.api.field_behavior` is set on
-    // another field in the same message).  The proto3 spec mandates packed
-    // encoding for such fields unless `[packed=false]` is explicitly set.
-    //
-    // When the `prost-bug-workaround` feature is enabled and the conditions
-    // for the bug are met (proto3, repeated, packable kind), we apply the
-    // correct rule ourselves: packed unless `raw_packed_option()` is
-    // `Some(false)`.
-    let use_packed = if is_repeated && is_packable_kind {
-        #[cfg(feature = "prost-bug-workaround")]
-        {
-            if fs.parent_file_syntax() == prost_reflect::Syntax::Proto3 {
-                // Correct proto3 rule: packed unless explicitly set to false.
-                fs.raw_packed_option() != Some(false)
-            } else {
-                fs.is_packed()
-            }
-        }
-        #[cfg(not(feature = "prost-bug-workaround"))]
-        {
-            fs.is_packed()
-        }
-    } else {
-        false
-    };
-    if use_packed {
+    // Spec 0370 S1: a LEN record on a repeated packable scalar is a packed
+    // run, whatever the field declares. The `packed` option and proto3's
+    // default choose what a *writer* emits; a reader must accept both
+    // encodings in either direction (protobuf encoding guide, "Packed
+    // Repeated Fields"), and the scorer already does (spec 0175). Asking
+    // `is_packed()` here would turn a legal record into a TYPE_MISMATCH —
+    // and would also inherit prost-reflect's wrong answer for proto3
+    // fields that carry options (docs/prototext/PROST-ISSUES.md §1).
+    if is_repeated && is_packable_kind {
         sink.scalar_field(
             field_number,
             Some(fs),
