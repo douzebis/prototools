@@ -1155,14 +1155,14 @@ fn only_the_bound_ctrl_and_alt_chords_do_anything_in_the_main_pane() {
     // through the gate would move one of these.
     fn state(app: &App) -> String {
         format!(
-            "{} {} {} {} {} {:?} {} {} {} {} {} {} {:?}",
+            "{} {} {} {} {} {:?} {:?} {} {} {} {} {} {:?}",
             app.cursor,
             app.cursor_column,
             app.cursor_line_in_node,
             app.user_folds().len(),
             app.annotations,
             app.wire,
-            format!("{:?}", app.heat_cues),
+            app.heat_cues,
             app.override_target.is_some(),
             app.manage_open,
             app.command_buffer.is_some(),
