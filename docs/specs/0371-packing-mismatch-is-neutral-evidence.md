@@ -160,8 +160,14 @@ spec does not change that rule.
   same move `child_wire_type` made in the 4 → 5 bump. `GRAPH_VERSION` goes 6 → 7, with a history
   entry beside the constant in `serial.rs`: a v6 file read as v7 would
   find padding garbage there and charge at random. Every `.rkyv` must be
-  rebuilt: `hopcroft.rkyv` files, and the WKT graph including
-  `prototext/wkt/prebuilt/`.
+  rebuilt, and the loader refuses the old ones with a version error:
+  - `prototext/wkt/prebuilt/wkt.rkyv` is **committed**. Regenerate it
+    with the procedure in `prototext/wkt/prebuilt/README.md`
+    (`nix-build -A prototext`, copy `wkt.rkyv` from the `wkt-rkyv` store
+    path) and commit it in the same change. `wkt_index.rkyv` is a
+    separate format (`fds_index.rs`, `VERSION`) and does not change.
+  - Every user's own `hopcroft.rkyv` must be rebuilt with `reproto`,
+    e.g. `/tmp/g3/hopcroft.rkyv` for this spec's measured outcome.
 - **S5. Why a new byte, not `label = 3`.** Rejected: `label == 2` is
   tested as "repeated" throughout the walk (`apply_cardinality_multi`,
   occurrence recording), and a fourth value would silently turn every
@@ -185,8 +191,14 @@ spec does not change that rule.
   - Every arm that counts a match for a non-LEN occurrence of a
     repeated packable leaf (`Verdict::Found` with `label == 2`): if
     `declared_packed == 1`, `packing += 1` on every entry.
-  The verdict must carry what the arm needs (`declared_packed`, or the
-  transition) the same way `Verdict::Found` already carries `label`.
+  Both verdicts must carry the transition's `declared_packed`.
+  `Verdict::Found(child_state_id, label)` gains it as a third field.
+  `Verdict::FoundPacked(child_state_id, elem_wt)` carries the element
+  wire type *instead of* a label, so it gains the byte too. Both are
+  built at the one site that reads the transition (`walk.rs`, the
+  verdict loop), where `tr` is in hand. A message or group child never
+  has `declared_packed == 1` (S2 emits it for packable fields only), so
+  the `Found` check needs no separate test for the leaf's kind.
 
 ### Reports
 
@@ -198,8 +210,17 @@ spec does not change that rule.
     and its own copy of the formula gains `- self.packing`; the score
     box rows (`tui/popup.rs`) gain
     `(self.packing, "packing differs from the declaration", -1)`.
-  - Any other site that lists the counters or re-derives the formula
-    (find them by grepping for `non_canonical`).
+  - `fdp-scan-pyo3`: the test asserting that `protoc`-written
+    descriptor records score clean (no unknowns, mismatches,
+    `non_canonical` or `out_of_range`) also asserts `packing == 0`.
+    `protoc` always writes packing as declared, so this is a
+    real-world check of S2 and S8 for free.
+  - `prototext/src/lib.rs`: the `--detailed-score` help text, which
+    lists the dimensions.
+  - `prototext-graph/examples/{group_probe,part_probe,part_work}.rs`:
+    each sums the counters; they add `packing`.
+  - Any other site found by grepping for `non_canonical` at
+    implementation time.
 - **S10. CLI.** Every `prototext` subcommand that takes
   `--no-expand-any` also takes `--no-packing-penalty` (help heading
   "Advanced options"), which sets `packing_penalty: false`. protolens
@@ -230,11 +251,46 @@ spec does not change that rule.
   (its length constant grows by one) and gets a hover description in
   `annotation.rs`: "this record is packed, but the field is declared
   expanded (or the reverse); legal, but a writer following this schema
-  would not produce it".
+  would not produce it". It also joins the `@annotation.non_canonical`
+  list in `reproto/tree-sitter-textproto/highlights.scm`: protolens
+  colors annotations from that file, and `colorize`'s
+  `every_keyword_is_colored_by_its_tier` fails until the two agree. (As
+  in spec 0372: the dev shell compiles in a copy of the file fixed at
+  shell entry, so test locally with
+  `TREE_SITTER_TEXTPROTO_QUERIES_DIR=reproto/tree-sitter-textproto`.)
 - **S14. Documentation.** `annotation-format.md` lists `packing_mismatch`
   in the modifier tables and adds an example in § Packed field
   encoding. Spec 0175 gets a one-line pointer from S3's "What is *not*
   penalized" to this spec.
+- **S15. The anomaly fixture.** `prototext-core/tests/anomaly_fixture.rs`
+  requires the renderer's vocabulary and what `tests/fixtures/anomalies.pb`
+  produces to be *equal*, so `packing_mismatch` goes into its
+  `VOCABULARY` (non-canonical group) and the fixture gains a record that
+  produces it:
+  - In section 4's `Location` (`SourceCodeInfo.Location`, whose `path`
+    and `span` are both `repeated int32 [packed = true]` in
+    `descriptor.proto`), a third run, **4.c**: `path` values written
+    *expanded*, one tag each, each line marked `packing_mismatch`. It
+    fits the section's theme exactly, and appending children at the end
+    of that `Location` moves no existing path, so nothing in
+    `anomalies.script` is renumbered.
+  - The heading becomes `"4. Three runs below: …"`, the section's
+    header comment describes the third run, and `anomalies.script`
+    gains a 4.c step. The guard test `every_step_lands_under_its_heading`
+    already accepts `4.c.` under the letterless heading `4.`.
+  - Only one direction is shown. The other — a packed record on a field
+    declared expanded — would need a top-level `public_dependency`
+    record, which would shift every later wrapper; the vocabulary test
+    needs the keyword once, not twice.
+- **S16. Existing expectations that change.** Packed records on fields
+  declared expanded gain `packing_mismatch` on their first element line,
+  so these assertions change, and are **updated, not loosened**:
+  `prototext/tests/packed_on_the_wire.rs` (tests 1, 2 and 4, and the
+  test-11 table rows whose expected substring contains `pack_size`) and
+  `prototext/tests/bool_values.rs` (its packed cases). `roundtrip.rs` and
+  the protolens tests that mention `pack_size` only use fields declared
+  packed and written packed, so they should not change; any that do are
+  reported at implementation rather than edited silently.
 
 ## Alternatives considered
 
@@ -291,6 +347,20 @@ See N1.
 7. Reports: header shows `packing: N`; `--detailed-score` YAML carries
    it; protolens `ScoreBreakdown::score()` equals `EntryScore::score()`
    on a charged case.
+8. `fdp-scan-pyo3`'s clean-records test with its new `packing == 0`
+   (S9).
+
+### Regression checks
+
+- Tests 4 (its charged cases), 5, 6 and 7 must **fail on the parent
+  commit**, checked in a worktree as for specs 0370, 0372 and 0373.
+  Tests 1–3 exercise new code (`fd_is_packed`, `declared_packed()`, the
+  `packed` key) and cannot build there, which is expected.
+- Existing suites that must stay green: the S16 files with their
+  updated expectations; `anomaly_fixture` (S15); `batch_script`,
+  including `every_step_lands_under_its_heading`; protolens's
+  `annotation` and `colorize` tests; the `prototext-graph` score tests;
+  the `reproto` scoring tests; the full workspace suite and `nix-build`.
 
 ## Measured outcome
 
