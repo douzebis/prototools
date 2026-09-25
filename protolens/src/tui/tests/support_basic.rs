@@ -315,3 +315,24 @@ pub(super) fn pan_to_the_bound(app: &mut App, pane: Pannable, down: bool) {
         pane.backdate(app);
     }
 }
+
+/// A crossterm-backed `Terminal` writing into memory, for code under test
+/// whose signature needs `io::Error: From<B::Error>` — which `TestBackend`
+/// (`Error = Infallible`) cannot satisfy.
+///
+/// The viewport is fixed on purpose. `Terminal::new` asks the backend for
+/// its size, and crossterm answers that from the *real* terminal whatever
+/// `W` is: an ioctl on the tty, then a `tput cols`/`tput lines` fallback.
+/// With no tty (an agent's shell, CI) and a `$TERM` the fallback's
+/// terminfo does not know (`xterm-kitty` against nixpkgs' ncurses), both
+/// fail and the test panics before it starts. A fixed viewport is never
+/// resized, so nothing here reads the real terminal.
+pub(super) fn in_memory_crossterm_terminal() -> Terminal<CrosstermBackend<Vec<u8>>> {
+    Terminal::with_options(
+        CrosstermBackend::new(Vec::new()),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 80, 24)),
+        },
+    )
+    .expect("a fixed viewport queries no terminal")
+}

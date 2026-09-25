@@ -691,10 +691,8 @@ fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
     neovim::EDITOR_PROGRAM.set("protolens-test-no-such-editor");
     let mut app = empty_app();
     // `open_editor` requires `io::Error: From<B::Error>` (it propagates
-    // real I/O errors via `?`) — `TestBackend`'s `Error` is `Infallible`,
-    // which doesn't convert, so a `CrosstermBackend` over an in-memory
-    // buffer is used instead; it never touches a real terminal.
-    let mut terminal = Terminal::new(CrosstermBackend::new(Vec::new())).unwrap();
+    // real I/O errors via `?`), which `TestBackend` cannot satisfy.
+    let mut terminal = in_memory_crossterm_terminal();
     let req = neovim::EditorRequest {
         path: PathBuf::from("/tmp/protolens-test-does-not-exist.proto"),
         line: 1,

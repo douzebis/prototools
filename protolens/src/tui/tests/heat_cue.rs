@@ -1210,7 +1210,7 @@ fn warm_up_heat_cues_is_a_noop_without_a_scoring_graph() {
     // artifact unrelated to `warm_up_heat_cues`. Compare against this
     // baseline rather than asserting emptiness.
     let before = app.message.clone();
-    let mut terminal = Terminal::new(CrosstermBackend::new(Vec::new())).unwrap();
+    let mut terminal = in_memory_crossterm_terminal();
 
     warm_up_heat_cues(&mut terminal, &mut app).unwrap();
 
