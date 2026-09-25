@@ -9,6 +9,7 @@ use super::preview_truncate::{
 use super::*;
 
 use prost_reflect::prost_types::field_descriptor_proto::Type;
+use prost_reflect::Cardinality;
 use prototext_core::serialize::render_text::NodeSpan;
 use std::borrow::Cow;
 
@@ -1561,6 +1562,15 @@ impl App {
                     // TRUNCATED_MESSAGE/TRUNCATED_GROUP; MISSING: N when this
                     // node was a TRUNCATED_BYTES field opened as a message.
                     missing_payload_bytes,
+                    // Spec 0373 S3: this render sees the node alone, so the
+                    // parent frame's `repeated_singular` verdict is handed
+                    // in — on preview and commit alike — unless the
+                    // cardinality it now renders under makes the field
+                    // repeated, in which case the mark goes with it. A raw
+                    // override (`target: None`) keeps it: the verdict was
+                    // made under the parent's schema, which is unchanged.
+                    header_repeated_singular: old_span.repeated_singular()
+                        && cardinality != Cardinality::Repeated,
                     ..Default::default()
                 };
                 // Spec 0248: an extension on a spliced subtree resolves the

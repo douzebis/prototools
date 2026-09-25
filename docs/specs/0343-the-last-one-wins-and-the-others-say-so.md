@@ -368,6 +368,11 @@ the descriptor says which of it happens.
   whole later. A body therefore never carries a partial set of marks —
   it carries all of them or it is not yet drawn.
 
+  (Spec 0373: this holds for the marks *inside* a body, not for the
+  mark on the node's own header, which is the parent frame's verdict. A
+  node rendered whole later is rendered alone, with no parent frame, so
+  that verdict is recorded on its span and handed in.)
+
 ## Specification — B. protolens: the shadow sweep
 
 ### The rule

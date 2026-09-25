@@ -30,6 +30,7 @@ mod preview_truncate;
 mod profiling;
 mod prune;
 mod render;
+mod repeated_singular_splice;
 mod script;
 mod search;
 mod search_cursor;

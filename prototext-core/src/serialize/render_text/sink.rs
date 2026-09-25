@@ -1300,6 +1300,9 @@ impl Label {
 const WIRE_TYPE_MASK: u8 = 0b0000_0111;
 /// Bits 3-4 of `NodeSpan::wire_and_label`: the label.
 const LABEL_SHIFT: u32 = 3;
+/// Bit 5 of `NodeSpan::wire_and_label`: the parent frame's
+/// `repeated_singular` verdict on this node (spec 0373 S1).
+const REPEATED_SINGULAR_BIT: u8 = 0b0010_0000;
 
 /// The structural reading the renderer chose for a node (spec 0352).
 ///
@@ -1471,6 +1474,29 @@ impl NodeSpan {
     pub fn label(&self) -> Label {
         Label::from_bits((self.wire_and_label >> LABEL_SHIFT) & 0b11)
     }
+
+    /// Whether the frame that rendered this node judged it a
+    /// `repeated_singular` occurrence (spec 0373 S1).
+    ///
+    /// Kept on the node because that verdict belongs to the *parent*
+    /// frame (spec 0343 A2): a node re-rendered alone — protolens's bake,
+    /// a type override — has no parent frame to recompute it from, and
+    /// is handed it instead (`DecodeRenderOpts::header_repeated_singular`).
+    pub fn repeated_singular(&self) -> bool {
+        self.wire_and_label & REPEATED_SINGULAR_BIT != 0
+    }
+
+    /// Set or clear [`Self::repeated_singular`]. A separate setter rather
+    /// than a third [`Self::pack`] argument: `pack` has many callers, and
+    /// only the two span pushes that hold the record's `TagFacts` ever
+    /// know the verdict.
+    pub fn set_repeated_singular(&mut self, on: bool) {
+        if on {
+            self.wire_and_label |= REPEATED_SINGULAR_BIT;
+        } else {
+            self.wire_and_label &= !REPEATED_SINGULAR_BIT;
+        }
+    }
 }
 
 /// Narrow a byte offset or line number to the `u32` a `NodeSpan` stores it
@@ -1504,6 +1530,9 @@ pub(super) struct IndexMark {
     /// with at `end_nested`, and to restore `raw_base` to once this
     /// node's children are done being visited.
     raw_base: usize,
+    /// The record's `repeated_singular` verdict, carried to `end_nested`
+    /// where the node's span is pushed (spec 0373 S1).
+    repeated_singular: bool,
     inner: TextMark,
 }
 
@@ -1558,6 +1587,16 @@ pub(super) struct IndexingTextSink<'f> {
     /// and shared with every other render whose spans may be compared with
     /// these (spec 0212 S4).
     fqdns: &'f mut FqdnTable,
+    /// Spec 0373 S2: the parent frame's `repeated_singular` verdict on the
+    /// node this render re-renders alone, owed to the first record the
+    /// render emits and cleared as it is paid.
+    ///
+    /// Held here rather than in `TextSink`, where `missing_payload_bytes`
+    /// is consumed, because the verdict must reach *both* the row and the
+    /// node's own span: ORed into `tag` before delegating, the inner sink
+    /// writes it and [`NodeSpan::set_repeated_singular`] records it, so a
+    /// later splice of the same node can hand it on again.
+    pending_repeated_singular: bool,
 }
 
 impl<'f> IndexingTextSink<'f> {
@@ -1568,6 +1607,20 @@ impl<'f> IndexingTextSink<'f> {
             undescended: Vec::new(),
             raw_base: 0,
             fqdns,
+            pending_repeated_singular: false,
+        }
+    }
+
+    /// Spec 0373 S2: see [`Self::pending_repeated_singular`].
+    pub(super) fn set_header_repeated_singular(&mut self) {
+        self.pending_repeated_singular = true;
+    }
+
+    /// Pay the owed verdict (spec 0373 S2) into the first record's facts.
+    #[inline]
+    fn take_pending(&mut self, tag: &mut TagFacts) {
+        if std::mem::take(&mut self.pending_repeated_singular) {
+            tag.repeated_singular = true;
         }
     }
 
@@ -1608,11 +1661,12 @@ impl Sink for IndexingTextSink<'_> {
         &mut self,
         field_number: u64,
         field_schema: Option<&FieldOrExt>,
-        tag: TagFacts,
+        mut tag: TagFacts,
         value: ScalarValue<'_>,
         raw_range: Range<usize>,
         schema_present: bool,
     ) {
+        self.take_pending(&mut tag);
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
         // Captured before `value` is moved into the delegated call below,
@@ -1712,7 +1766,7 @@ impl Sink for IndexingTextSink<'_> {
 
         // Every other scalar (including an empty or undecodable packed
         // record — spec 0115 §2.4/§2.5): one span for the whole field.
-        self.spans.push(NodeSpan {
+        let mut span = NodeSpan {
             field_number: field_number as u32,
             raw_range: narrow(base + raw_range.start)..narrow(base + raw_range.end),
             text_range: narrow(text_start)..narrow(text_end),
@@ -1721,18 +1775,21 @@ impl Sink for IndexingTextSink<'_> {
             kind: scalar_kind,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(wire_type as u8, declared_label(field_schema)),
-        });
+        };
+        span.set_repeated_singular(tag.repeated_singular);
+        self.spans.push(span);
     }
 
     fn begin_nested(
         &mut self,
         field_number: u64,
         field_schema: Option<&FieldOrExt>,
-        tag: TagFacts,
+        mut tag: TagFacts,
         kind: NestedKind,
         raw_start: usize,
         payload_start: usize,
     ) -> IndexMark {
+        self.take_pending(&mut tag);
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
         let type_fqdn = declared_type_fqdn(field_schema, self.fqdns);
@@ -1759,6 +1816,7 @@ impl Sink for IndexingTextSink<'_> {
             wire_type,
             label: declared_label(field_schema),
             raw_base,
+            repeated_singular: tag.repeated_singular,
             inner,
         }
     }
@@ -1778,12 +1836,13 @@ impl Sink for IndexingTextSink<'_> {
             wire_type,
             label,
             raw_base,
+            repeated_singular,
             inner,
         } = mark;
         self.inner.end_nested(inner, raw_range.clone(), close_facts);
         self.raw_base = raw_base;
         let text_end = self.inner.line_count();
-        self.spans.push(NodeSpan {
+        let mut span = NodeSpan {
             field_number: field_number as u32,
             raw_range: narrow(raw_base + raw_range.start)..narrow(raw_base + raw_range.end),
             text_range: narrow(text_start)..narrow(text_end),
@@ -1792,7 +1851,9 @@ impl Sink for IndexingTextSink<'_> {
             kind,
             packed_record_start: NO_PACKED_RECORD,
             wire_and_label: NodeSpan::pack(wire_type as u8, label),
-        });
+        };
+        span.set_repeated_singular(repeated_singular);
+        self.spans.push(span);
     }
 
     fn virtual_scalar(
@@ -1840,6 +1901,8 @@ impl Sink for IndexingTextSink<'_> {
             // describes it (spec 0343 A4).
             label: Label::NoSchema,
             raw_base,
+            // Nor can it recur: it is a view, not a record.
+            repeated_singular: false,
             inner,
         }
     }

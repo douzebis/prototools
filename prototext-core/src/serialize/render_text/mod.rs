@@ -400,6 +400,13 @@ pub struct DecodeRenderOpts {
     /// original declared length on re-encode.  `None` for every normal
     /// render; only `splice_override` sets this, and only on the commit path.
     pub missing_payload_bytes: Option<u64>,
+    /// The parent frame's `repeated_singular` verdict on the node this
+    /// render re-renders alone (spec 0373 S2). The verdict depends on the
+    /// node's siblings, which a lone render cannot see, so it is handed in
+    /// and marks the first record the render emits, and no other. Like
+    /// `missing_payload_bytes`, only `splice_override` sets it — but on the
+    /// preview path too, since nothing about it is commit-specific.
+    pub header_repeated_singular: bool,
 }
 
 impl Default for DecodeRenderOpts {
@@ -414,6 +421,7 @@ impl Default for DecodeRenderOpts {
             emit_header: false,
             row_budget: None,
             missing_payload_bytes: None,
+            header_repeated_singular: false,
         }
     }
 }
@@ -444,6 +452,7 @@ pub fn decode_and_render(
         emit_header,
         row_budget,
         missing_payload_bytes: _, // not applicable to the non-indexed path
+        header_repeated_singular: _, // likewise: only a splice re-renders alone
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
@@ -547,12 +556,16 @@ pub fn decode_and_render_indexed(
         emit_header,
         row_budget,
         missing_payload_bytes,
+        header_repeated_singular,
     } = opts;
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity, fqdns);
     sink.set_row_budget(row_budget);
     if let Some(missing) = missing_payload_bytes {
         sink.set_missing_payload_bytes(missing);
+    }
+    if header_repeated_singular {
+        sink.set_header_repeated_singular();
     }
 
     if annotations && emit_header {
@@ -1320,6 +1333,48 @@ mod tests {
             String::from_utf8_lossy(&out),
             String::from_utf8_lossy(expected)
         );
+    }
+
+    /// Spec 0373 S2 (test plan 7). `header_repeated_singular` marks the
+    /// first record the render emits and nothing under it, in the text and
+    /// in the spans alike — the span's bit is what a later splice reads.
+    #[test]
+    fn header_repeated_singular_marks_only_the_outermost_record() {
+        let pb: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
+        let schema = crate::parse_schema(pb, "google.protobuf.FileDescriptorProto")
+            .expect("descriptor.pb is self-describing");
+        let desc = schema.root_descriptor();
+        // message_type { name: "A" field { name: "f" } }
+        let wire = [0x22, 0x08, 0x0a, 0x01, 0x41, 0x12, 0x03, 0x0a, 0x01, 0x66];
+        let render = |flag: bool| {
+            let mut fqdns = FqdnTable::new();
+            let opts = DecodeRenderOpts {
+                annotations: true,
+                header_repeated_singular: flag,
+                ..Default::default()
+            };
+            decode_and_render_indexed(&wire, desc.as_ref(), &mut fqdns, opts).expect("render")
+        };
+
+        let marked = render(true);
+        let text = String::from_utf8(marked.text.clone()).unwrap();
+        let rows: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("repeated_singular"))
+            .collect();
+        assert_eq!(rows.len(), 1, "exactly one row is marked:\n{text}");
+        assert!(rows[0].starts_with("message_type {"), "{text}");
+        let flagged: Vec<u32> = marked
+            .spans
+            .iter()
+            .filter(|s| s.repeated_singular())
+            .map(|s| s.field_number)
+            .collect();
+        assert_eq!(flagged, [4], "only the outermost span carries the bit");
+
+        let plain = render(false);
+        assert!(!String::from_utf8_lossy(&plain.text).contains("repeated_singular"));
+        assert!(plain.spans.iter().all(|s| !s.repeated_singular()));
     }
 
     #[test]

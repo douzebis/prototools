@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0373 — a re-rendered header keeps its `repeated_singular`
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-25
 App: prototext-core, protolens
 Refs: docs/specs/0343-the-last-one-wins-and-the-others-say-so.md (the
       mark, its frame-local state (A2), and A7's claim this spec
@@ -201,4 +202,16 @@ the full workspace suite and `nix-build`.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-09-25, `--profile quick` build.
+
+- Tests 1–6 live in `protolens/src/tui/tests/repeated_singular_splice.rs`,
+  test 7 in `prototext-core`'s `render_text` tests. Against the parent
+  commit, in a worktree: tests 1, 2, 3, 5 and 6 fail, and test 4 passes
+  (it asserts an absence, which the parent commit trivially has). Test 7
+  cannot build there: the option does not exist yet. All pass after.
+- Test 4 is not vacuous: had the override entry not resolved, the
+  field would have stayed singular, the mark would have been kept, and
+  the test would fail.
+- The `NodeSpan` size assertion still builds (32 bytes).
+- Workspace suite: 33 test binaries, all green; clippy clean with all
+  features.
