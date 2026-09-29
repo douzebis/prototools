@@ -245,10 +245,14 @@ def test_TC4_packed_option_is_not_consulted(tmp_path: Path) -> None:
     """Every repeated scalar emits its element kind, whatever [packed] says.
 
     Spec 0175: a repeated scalar has two legal wire encodings and a reader must
-    accept both, so the option carries no information a scorer may act on.
-    Emitting the old `LEN_PACKED` collapse traded away the one thing the scorer
-    does need — the element type — for a bit it then had to ignore.  All three
-    fields below differ only in their [packed] option, so all three must agree.
+    accept both, so the kind must not depend on the option. Emitting the old
+    `LEN_PACKED` collapse traded away the one thing the scorer does need — the
+    element type.  All three fields below differ only in their [packed]
+    option, so all three kinds must agree.
+
+    The declaration travels separately, as the `packed` key (spec 0371 S2), so
+    that the scorer can charge an encoding that contradicts it: present and
+    true exactly where the field is declared packed, absent otherwise.
     """
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
@@ -280,6 +284,12 @@ def test_TC4_packed_option_is_not_consulted(tmp_path: Path) -> None:
     assert fields[6]["type"] == "int32"
     assert "range" not in fields[6]
     assert fields[6].get("label") == "repeated"
+
+    # Spec 0371 S2: proto3 declares a repeated packable field packed unless
+    # it says `[packed = false]`; strings and bytes are never packable.
+    packed = {n for n, f in fields.items() if f.get("packed") is True}
+    assert packed == {1, 2, 6, 7, 9, 10}, packed
+    assert all(f.get("packed", True) is True for f in fields.values())
 
 
 # ---------------------------------------------------------------------------

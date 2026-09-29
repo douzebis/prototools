@@ -168,6 +168,9 @@ pub struct InferredType {
     /// Number of frames cut mid-stream (spec 0310, spec 0347).  Zero is the
     /// normal case; suppressed in the score header when zero.
     pub truncated: u64,
+    /// Records whose encoding contradicts their declared packing (spec
+    /// 0371); suppressed in the score header when zero.
+    pub packing: u64,
 }
 
 /// Outcome of attempting to infer the message type of a protobuf blob.
@@ -234,6 +237,7 @@ pub fn infer_type(
                 non_canonical: r.non_canonical,
                 mismatches: r.mismatches,
                 truncated: r.truncated,
+                packing: r.packing,
             })
             .collect();
         ambiguous.sort_by(|a, b| a.fqdn.cmp(&b.fqdn));
@@ -251,6 +255,7 @@ pub fn infer_type(
         non_canonical: winner.non_canonical,
         mismatches: winner.mismatches,
         truncated: winner.truncated,
+        packing: winner.packing,
     }))
 }
 
@@ -280,6 +285,9 @@ fn inferred_header(inferred: &InferredType) -> String {
     if inferred.truncated != 0 {
         parts.push(format!("truncated: {}", inferred.truncated));
     }
+    if inferred.packing != 0 {
+        parts.push(format!("packing: {}", inferred.packing));
+    }
     let detail = if parts.is_empty() {
         String::new()
     } else {
@@ -304,6 +312,7 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
         let _ = writeln!(w, "{indent}  non_canonical: {}", t.non_canonical);
         let _ = writeln!(w, "{indent}  mismatches: {}", t.mismatches);
         let _ = writeln!(w, "{indent}  truncated: {}", t.truncated);
+        let _ = writeln!(w, "{indent}  packing: {}", t.packing);
     }
 }
 
@@ -406,6 +415,7 @@ pub fn list_schemas_one(
             non_canonical: r.non_canonical,
             mismatches: r.mismatches,
             truncated: r.truncated,
+            packing: r.packing,
         })
         .collect();
 
@@ -450,6 +460,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             no_annotations,
             detailed_score,
             no_expand_any,
+            no_packing_penalty,
             no_expand_message_set,
             hide_unknown_fields,
             strict,
@@ -459,6 +470,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             let output_root = cli.output_root.clone();
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                packing_penalty: !no_packing_penalty,
                 // Every buffer this CLI scores is a whole input (spec 0314).
                 end_undeclared: true,
                 ..Default::default()
@@ -526,6 +538,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             assume_binary,
             detailed_score,
             no_expand_any,
+            no_packing_penalty,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -539,6 +552,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                packing_penalty: !no_packing_penalty,
                 // Every buffer this CLI scores is a whole input (spec 0314).
                 end_undeclared: true,
                 ..Default::default()
@@ -559,6 +573,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             r#type,
             assume_binary,
             no_expand_any,
+            no_packing_penalty,
             paths,
         } => {
             let graph = desc_ctx.graph.as_ref().ok_or_else(|| {
@@ -572,6 +587,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             })?;
             let scoring_opts = ScoringOpts {
                 expand_any: !no_expand_any,
+                packing_penalty: !no_packing_penalty,
                 // Every buffer this CLI scores is a whole input (spec 0314).
                 end_undeclared: true,
                 ..Default::default()
@@ -1144,6 +1160,9 @@ fn run_score(
         mismatches: u64,
         /// Number of frames cut mid-stream (spec 0310, spec 0347).
         truncated: u64,
+        /// Records whose encoding contradicts their declared packing
+        /// (spec 0371).
+        packing: u64,
     }
 
     #[derive(Serialize)]
@@ -1186,6 +1205,7 @@ fn run_score(
                 non_canonical: result.non_canonical,
                 mismatches: result.mismatches,
                 truncated: result.truncated,
+                packing: result.packing,
             },
         ))
     };
@@ -1495,4 +1515,46 @@ fn expand_all_paths(paths: &[String], base: &Path) -> Result<Vec<InputFile>, Str
     }
 
     Ok(all_files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inferred(packing: u64) -> InferredType {
+        InferredType {
+            fqdn: "p.M".to_string(),
+            score: 5,
+            matches: 229,
+            unknowns: 0,
+            out_of_range: 0,
+            non_canonical: 0,
+            mismatches: 0,
+            truncated: 0,
+            packing,
+        }
+    }
+
+    /// Spec 0371 test plan 7: the header names the `packing` charge when
+    /// there is one, and stays as it was when there is none.
+    #[test]
+    fn the_score_header_shows_packing() {
+        assert_eq!(
+            inferred_header(&inferred(224)),
+            "# Type: p.M\n# Score: 5  (matched: 229, packing: 224)\n\n"
+        );
+        assert_eq!(
+            inferred_header(&inferred(0)),
+            "# Type: p.M\n# Score: 5  (matched: 229)\n\n"
+        );
+    }
+
+    /// Spec 0371 test plan 7: `--detailed-score` lists `packing`.
+    #[test]
+    fn the_detailed_score_lists_packing() {
+        let mut out = Vec::new();
+        write_type_entry(&mut out, "", &inferred(3), true);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("  packing: 3\n"), "{text}");
+    }
 }

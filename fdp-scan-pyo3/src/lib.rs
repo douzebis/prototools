@@ -609,14 +609,19 @@ mod tests {
                     && e.unknowns == 0
                     && e.mismatches == 0
                     && e.non_canonical == 0
-                    && e.out_of_range == 0,
+                    && e.out_of_range == 0
+                    // Spec 0371 S9: protoc writes every repeated scalar
+                    // exactly as declared, so a real descriptor is never
+                    // charged for packing.
+                    && e.packing == 0,
                 "record at {start} is not clean: vetoed={} unknowns={} \
-                 mismatches={} non_canonical={} out_of_range={}",
+                 mismatches={} non_canonical={} out_of_range={} packing={}",
                 e.vetoed,
                 e.unknowns,
                 e.mismatches,
                 e.non_canonical,
                 e.out_of_range,
+                e.packing,
             );
             assert_eq!(e.truncated, 0, "record at {start}: `Scan` cannot set this");
             assert_eq!(e.termination, end - start, "record at {start}");

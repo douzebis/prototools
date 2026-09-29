@@ -215,6 +215,11 @@ pub(super) fn render_varint_field(
             if kind == VarintKind::Bool && raw_val > 1 {
                 aw.push_u64_mod(out, b"bool_val: ", raw_val);
             }
+            // Spec 0371 S11: an expanded occurrence of a field declared
+            // packed (this path never renders a packed record).
+            if field_schema.is_some_and(FieldOrExt::declared_packed) {
+                aw.push(out, b"packing_mismatch");
+            }
         }
     }
     sink.newline();

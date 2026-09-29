@@ -178,23 +178,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
     let is_repeated = fs.cardinality() == Cardinality::Repeated;
 
     // ── Packed repeated ───────────────────────────────────────────────────────
-    let is_packable_kind = matches!(
-        fs.kind(),
-        Kind::Bool
-            | Kind::Int32
-            | Kind::Int64
-            | Kind::Uint32
-            | Kind::Uint64
-            | Kind::Sint32
-            | Kind::Sint64
-            | Kind::Fixed32
-            | Kind::Fixed64
-            | Kind::Sfixed32
-            | Kind::Sfixed64
-            | Kind::Float
-            | Kind::Double
-            | Kind::Enum(_)
-    );
+    let is_packable_kind = super::super::is_packable_kind(&fs.kind());
     // Spec 0370 S1: a LEN record on a repeated packable scalar is a packed
     // run, whatever the field declares. The `packed` option and proto3's
     // default choose what a *writer* emits; a reader must accept both

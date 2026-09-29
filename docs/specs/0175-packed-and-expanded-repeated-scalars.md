@@ -245,6 +245,10 @@ serialization. That is a voluntary posture, and it is the reason
 `non_canonical` exists (confirmed 2026-07-26). The governing principle in
 `docs/scoring-flaws.md` constrains **veto**, not penalty.
 
+(Spec 0371 has since reversed the paragraph below: with schemas and blobs
+from the same build, a record whose encoding contradicts its declaration
+now scores net zero.)
+
 **What is *not* penalized: the encoding the schema's own `packed` option
 does not name.** The same posture might seem to argue for keeping
 `is_packed` purely as a penalty signal, at the cost of a `packed` flag in

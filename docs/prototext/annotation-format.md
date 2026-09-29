@@ -171,6 +171,7 @@ Non-canonical encodings are losslessly recoverable — they round-trip exactly.
 | `ohb: N` | integer | Per-element varint overhang bytes (packed varint fields, on each element line) |
 | `neg` | flag | Per-element truncated-negative int32/enum (packed fields, on each element line) |
 | `repeated_singular` | flag | The schema declares this field singular, and this is not its first record in the enclosing message. Emitted on the second and every later occurrence, for scalar, enum, message and group fields alike. Never emitted for a repeated field, nor for one no schema describes |
+| `packing_mismatch` | flag | This record's encoding contradicts the field's declared packing: a packed record on a field declared expanded (on the record's first element line, or its empty-record line), or an expanded occurrence of a field declared packed (on each such line). Legal; the scorer charges it (spec 0371) |
 
 ### Invalid modifiers (ALL CAPS)
 
@@ -232,12 +233,22 @@ rendered as a comment-only annotation line with no leading spaces before `#@`:
 A reader must accept both encodings of a repeated scalar, whatever the field
 declares, so a packed record on a field declared expanded (proto2's default,
 or proto3 `[packed=false]`) renders the same way.  Only the declaration
-differs; `pack_size` is what tells the encoder to rebuild a packed record:
+differs; `pack_size` is what tells the encoder to rebuild a packed record,
+and `packing_mismatch` says the encoding contradicts the declaration
+(spec 0371):
 
 ```
-lane: 1  #@ repeated int32 = 1; pack_size: 3
+lane: 1  #@ repeated int32 = 1; pack_size: 3; packing_mismatch
 lane: 2  #@ repeated int32 = 1
 lane: 3  #@ repeated int32 = 1
+```
+
+The reverse — an expanded occurrence of a field declared packed — marks each
+line, since each is a record of its own:
+
+```
+path: 4  #@ repeated int32 [packed=true] = 1; packing_mismatch
+path: 0  #@ repeated int32 [packed=true] = 1; packing_mismatch
 ```
 
 If the packed payload cannot be decoded, the field is rendered as a single
@@ -405,7 +416,7 @@ modifier := noncanon_valued | noncanon_flag | invalid_valued | invalid_flag
 noncanon_valued := ("tag_ohb" | "val_ohb" | "len_ohb" | "etag_ohb" | "ohb") ":" SP INTEGER
                |  "nan_bits: 0x" HEX+
                |  "bool_val" ":" SP INTEGER
-noncanon_flag   := "truncated_neg" | "neg" | "repeated_singular"
+noncanon_flag   := "truncated_neg" | "neg" | "repeated_singular" | "packing_mismatch"
 
 invalid_valued  := ("MISSING" | "END_MISMATCH") ":" SP INTEGER
 invalid_flag    := "TAG_OOR" | "ETAG_OOR" | "OPEN_GROUP" | "TYPE_MISMATCH"

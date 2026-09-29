@@ -31,7 +31,8 @@ use super::serial::{NO_EXT_RANGES, WT_NODE_MESSAGE};
 
 /// The three attributes that separate message blocks in the initial partition:
 /// framing (`wire_type`), extensibility (`ext_range_idx`, spec 0238 S7) and the
-/// outgoing `(field_number, label)` signature.
+/// outgoing `(field_number, symbol)` signature, where the symbol is the
+/// label plus the declared packing (`RawEdge::symbol`, spec 0371 S4).
 type MessageBlockKey = (u8, u16, Vec<(u32, u8)>);
 
 // ── Partition ─────────────────────────────────────────────────────────────────
@@ -97,12 +98,12 @@ pub fn minimize(
         }
     };
 
-    // ── Alphabet Σ: all (field_number, label) pairs in the graph ─────────────
+    // ── Alphabet Σ: all (field_number, symbol) pairs in the graph ────────────
     let alphabet: Vec<(u32, u8)> = {
         let set: HashSet<(u32, u8)> = raw
             .edges
             .iter()
-            .map(|e| (e.field_number, e.label))
+            .map(|e| (e.field_number, e.symbol()))
             .collect();
         let mut v: Vec<(u32, u8)> = set.into_iter().collect();
         v.sort_unstable();
@@ -114,14 +115,14 @@ pub fn minimize(
     for edge in &raw.edges {
         let si = node_index(edge.src);
         let di = node_index(edge.dst);
-        rev[di].push((si, edge.field_number, edge.label));
+        rev[di].push((si, edge.field_number, edge.symbol()));
     }
 
     // ── Outgoing signature per node ───────────────────────────────────────────
     let mut sig: Vec<Vec<(u32, u8)>> = vec![Vec::new(); n];
     for edge in &raw.edges {
         let si = node_index(edge.src);
-        sig[si].push((edge.field_number, edge.label));
+        sig[si].push((edge.field_number, edge.symbol()));
     }
     for s in sig.iter_mut() {
         s.sort_unstable();

@@ -200,7 +200,7 @@ fn packed_bool_above_one_renders_true_with_bool_val() {
     assert_eq!(
         roundtrip(&schema(), &[0x0a, 0x03, 0x00, 0x01, 0x02]),
         [
-            "b: false  #@ repeated bool = 1; pack_size: 3",
+            "b: false  #@ repeated bool = 1; pack_size: 3; packing_mismatch",
             "b: true  #@ repeated bool = 1",
             "b: true  #@ repeated bool = 1; bool_val: 2",
         ]
@@ -217,7 +217,7 @@ fn bool_val_with_overhang_roundtrips() {
     );
     assert_eq!(
         roundtrip(&s, &[0x0a, 0x02, 0x82, 0x00]),
-        ["b: true  #@ repeated bool = 1; pack_size: 1; ohb: 1; bool_val: 2"]
+        ["b: true  #@ repeated bool = 1; pack_size: 1; packing_mismatch; ohb: 1; bool_val: 2"]
     );
 }
 
@@ -256,7 +256,7 @@ fn canonical_bools_unchanged() {
     assert_eq!(
         roundtrip(&s, &[0x0a, 0x02, 0x00, 0x01]),
         [
-            "b: false  #@ repeated bool = 1; pack_size: 2",
+            "b: false  #@ repeated bool = 1; pack_size: 2; packing_mismatch",
             "b: true  #@ repeated bool = 1"
         ]
     );

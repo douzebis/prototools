@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0371 — a record whose packing contradicts its declaration scores net zero
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-26
 App: prototext-graph, reproto, prototext-core, prototext, protolens
 Refs: docs/specs/0175-packed-and-expanded-repeated-scalars.md (the reader
       rule and the one-match-per-packed-record rule this spec keeps;
@@ -168,6 +169,18 @@ spec does not change that rule.
     separate format (`fds_index.rs`, `VERSION`) and does not change.
   - Every user's own `hopcroft.rkyv` must be rebuilt with `reproto`,
     e.g. `/tmp/g3/hopcroft.rkyv` for this spec's measured outcome.
+- **S4b. Packing is part of the minimization key.** Hopcroft merges
+  states whose outgoing transitions agree; its alphabet was
+  `(field_number, label)`. Two types that differ only in a field's
+  declared packing are not equivalent — the scorer charges one and not
+  the other — so they must not merge: merged, `compile`'s
+  `or_insert` would keep whichever edge it met first and charge one of
+  the two wrongly. `RawEdge` gains `packed`, and `RawEdge::symbol()`
+  (label in bits 0–1, packing in bit 2) replaces `label` in all three
+  places `hopcroft.rs` builds its alphabet, reverse adjacency and
+  signatures. (Found at implementation; the test
+  `packing_keeps_otherwise_identical_types_apart` fails when `symbol()`
+  returns the bare label.)
 - **S5. Why a new byte, not `label = 3`.** Rejected: `label == 2` is
   tested as "repeated" throughout the walk (`apply_cardinality_multi`,
   occurrence recording), and a fourth value would silently turn every
@@ -226,6 +239,11 @@ spec does not change that rule.
   "Advanced options"), which sets `packing_penalty: false`. protolens
   takes the same flag and passes it to every `ScoringOpts` it builds
   (`sweep.rs`, `override_pane.rs`). `fdp-scan-pyo3` keeps the default.
+  In protolens the flag is one process-wide `AtomicBool`
+  (`override_pane::set_packing_penalty`, read by `scoring_opts()`), set
+  by `main` before anything is scored: its options are built in free
+  functions, on the main thread and on the inference and heat-cue
+  workers, none of which sees the CLI.
 
 ### Rendering
 
@@ -364,8 +382,48 @@ See N1.
 
 ## Measured outcome
 
-Filled in at implementation. Expected: `NvlinkInfoEntry` on
-`CONFIG_NETWORK_DEVICE_vars_software` drops from 229 to 5
-(`matched: 229, packing: 224`), with 224 `packing_mismatch` rows; the
-new winner to be recorded, whatever it is. Also to be recorded: how
-many winners change across `../assets/` with the penalty on versus off.
+Measured 2026-09-26, `--profile quick` build.
+
+**The motivating case.** `/tmp/g3.desc`'s graph was rebuilt at version 7
+(`reproto --schema-db-out` on the descriptor set itself, with the graph
+extension built from this tree; 9.5 min). On
+`CONFIG_NETWORK_DEVICE_vars_software`, `NvlinkInfoEntry` drops from 229 to
+**5** (`matched: 229, packing: 224`), and inference no longer names a
+winner: at least 10 types (the report's cap; `list-schemas` counts 15) tie
+at 5, `NvlinkInfoEntry` among the `dos_quotas.pb.*Request` family that
+explains the same five outer fields and reads the payload as bytes. The
+true type is not in this descriptor set, so an ambiguous verdict is the
+honest one where a confident wrong one stood. With `--no-packing-penalty`
+the output is exactly as before.
+
+**Across `../assets/` (27 files), penalty on versus off:** 17 verdicts
+change, but only one changes the answer — the case above. The other 16
+(`…acl-publishing_data.rec_*`) were ties and stay ties at the same top
+score (6); the tie shrinks from 13 candidates to 11. Every file with a
+unique winner keeps it at an identical score
+(`AuthorizationRuleFileMessage` 1255, `ganpati.Entities` 12146,
+`Dependencies` 627, `TestPermissionsResponse` 5625,
+`SharedResourcesProto` 21). Three files are not protobuf blobs and get no
+candidates either way.
+
+**Tests.** New tests 1–8 pass. On the parent commit, renderer tests 2
+and 5 fail as required (no `packing_mismatch`; and the proto3 field with
+another option declared unpacked, prost-reflect's §1); the scorer,
+report and parity tests use `EntryScore.packing` / `ScoringField.packed`
+and cannot build there. S4b's test fails when packing is left out of the
+Hopcroft key. The S16 expectations were updated to exact lines. The
+workspace suite is green (34 test binaries); clippy clean; `nix-build`
+passes, Python suites included.
+
+**The graph version bump needs a bootstrap.** The committed
+`prototext/wkt/prebuilt/wkt.rkyv` could not be regenerated with the
+README's `nix-build -A prototext`: the workspace tests (which embed the
+prebuilt graph) gate the graph extension, which builds the `wkt-rkyv`
+derivation — circular across a `GRAPH_VERSION` change. It was bootstrapped
+locally instead: the extension built from this tree
+(`cargo build -p prototext_graph_lib`), laid out as a package ahead of the
+installed one on `PYTHONPATH`, running the `wkt-rkyv` recipe. The result
+differs from the old file in exactly four bytes (the version, and the
+`declared_packed` of `descriptor.proto`'s three `[packed = true]` fields);
+`wkt_index.rkyv` is byte-identical. The prebuilt README should say so for
+the next bump.

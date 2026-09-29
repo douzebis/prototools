@@ -168,6 +168,22 @@ pub struct RawEdge {
     pub field_number: u32,
     pub dst: u32,
     pub label: u8, // 0=optional, 1=required, 2=repeated
+    /// Declared packed (spec 0371 S4).
+    pub packed: bool,
+}
+
+impl RawEdge {
+    /// The edge's letter in Hopcroft's alphabet: `label` in bits 0-1 and
+    /// the declared packing in bit 2.
+    ///
+    /// Packing must be part of the key, as the label already is: two
+    /// states whose transitions differ only in a field's declared packing
+    /// are *not* equivalent — the scorer charges one and not the other —
+    /// so minimization must not merge them. Merged, `compile` would keep
+    /// whichever edge it met first and charge one of the two types wrongly.
+    pub fn symbol(&self) -> u8 {
+        self.label | (u8::from(self.packed) << 2)
+    }
 }
 
 pub struct RawGraph {
@@ -270,6 +286,7 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
                 field_number: f.number,
                 dst,
                 label,
+                packed: f.packed,
             });
         }
     }
@@ -344,7 +361,7 @@ pub fn compile(
     // After the Hopcroft fix (label part of bisimulation key), each
     // (src_block, field_number) pair has at most one label — no merge needed.
     let msg_count = raw.node_ids.len() as u32;
-    let mut seen: HashMap<(u32, u32), (u32, u8)> = HashMap::new();
+    let mut seen: HashMap<(u32, u32), (u32, u8, bool)> = HashMap::new();
     for edge in &raw.edges {
         let src_block = partition.block_of(edge.src);
         let dst_block = if edge.dst < msg_count {
@@ -352,18 +369,21 @@ pub fn compile(
         } else {
             partition.block_of_sentinel(edge.dst, reg)
         };
+        // Packing is in the bisimulation key too (`RawEdge::symbol`), so a
+        // merged block's edges agree on it and `or_insert` loses nothing.
         seen.entry((src_block, edge.field_number))
-            .or_insert((dst_block, edge.label));
+            .or_insert((dst_block, edge.label, edge.packed));
     }
     let mut transitions: Vec<TransitionEntry> = seen
         .into_iter()
         .map(
-            |((state_id, field_number), (child_state_id, label))| TransitionEntry {
+            |((state_id, field_number), (child_state_id, label, packed))| TransitionEntry {
                 state_id,
                 field_number,
                 label,
                 // Placeholder; `link_transitions` fills it from the child node.
                 child_wire_type: 0,
+                declared_packed: u8::from(packed),
                 child_state_id,
             },
         )
@@ -531,6 +551,7 @@ pub fn compile_initial(raw: &RawGraph, reg: &LeafRegistry, roots: &[String]) -> 
                 label: e.label,
                 // Placeholder; `link_transitions` fills it from the child node.
                 child_wire_type: 0,
+                declared_packed: u8::from(e.packed),
                 child_state_id: dst_id,
             }
         })

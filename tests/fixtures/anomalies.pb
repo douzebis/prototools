@@ -177,13 +177,19 @@ message_type {  #@ repeated DescriptorProto = 4
 # canonical run is the LONGER of the two, twelve bytes against nine: dropping
 # the padding saves two, and sign-extending the -1 costs five.
 #
-# The two runs are the twin of the rule above, so they share one submessage --
+# Then `path` a second time, written EXPANDED: one tag per number, three wire
+# records.  A reader accepts either encoding of a repeated scalar, so this is
+# legal -- but `path` is declared packed, and a writer following the schema
+# never writes it this way.  Each line says so with `packing_mismatch`, and a
+# scorer charges each one against the type (spec 0371).
+#
+# The runs are the twin of the rule above, so they share one submessage --
 # and therefore one heading, which is why this section's heading is the only
-# one carrying no letter.  `anomalies.script` letters the two runs 4.a. and
-# 4.b. as it steps onto each.
+# one carrying no letter.  `anomalies.script` letters the runs 4.a., 4.b. and
+# 4.c. as it steps onto each.
 # ---------------------------------------------------------------------------
 
-dependency: "4. Two runs below: three text lines each, one wire record each."  #@ repeated string = 3
+dependency: "4. Three runs below: two packed, and one expanded against its declaration."  #@ repeated string = 3
 source_code_info {  #@ SourceCodeInfo = 9
   location {  #@ repeated Location = 1
     path: 4  #@ repeated int32 [packed=true] = 1; pack_size: 3
@@ -192,6 +198,9 @@ source_code_info {  #@ SourceCodeInfo = 9
     span: 4  #@ repeated int32 [packed=true] = 2; pack_size: 3
     span: 0  #@ repeated int32 [packed=true] = 2
     span: -1  #@ repeated int32 [packed=true] = 2
+    path: 4  #@ repeated int32 [packed=true] = 1; packing_mismatch
+    path: 0  #@ repeated int32 [packed=true] = 1; packing_mismatch
+    path: -1  #@ repeated int32 [packed=true] = 1; packing_mismatch
   }
 }
 

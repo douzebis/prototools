@@ -245,8 +245,10 @@ impl ScoreBreakdown {
     /// read, whereas the one or two lines that are actually non-zero
     /// are the finding.
     fn lines(&self) -> Vec<String> {
-        let terms: [(u64, &str, i64); 5] = [
+        let terms: [(u64, &str, i64); 6] = [
             (self.matches, "fields matched", 1),
+            // Spec 0371: each cancels one of the matches above.
+            (self.packing, "packing differs from the declaration", -1),
             (self.unknowns, "not declared by this type", -10),
             (self.out_of_range, "outside a declared range", -15),
             (self.non_canonical, "non-canonical encoding", -20),

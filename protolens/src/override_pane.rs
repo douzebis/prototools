@@ -149,6 +149,9 @@ pub struct ScoreBreakdown {
     /// everything before the cut was read normally; what is unknown is
     /// only what the cut removed.
     pub truncated: u64,
+    /// Spec 0371: records whose encoding contradicts their declared
+    /// packing, each cancelling its own match.
+    pub packing: u64,
 }
 
 impl ScoreBreakdown {
@@ -156,6 +159,7 @@ impl ScoreBreakdown {
     /// can assert the decomposition really does decompose it.
     pub fn score(&self) -> i64 {
         self.matches as i64
+            - self.packing as i64
             - 5 * self.truncated as i64
             - 10 * self.unknowns as i64
             - 15 * self.out_of_range as i64
@@ -186,6 +190,7 @@ pub fn inferred_breakdown(
         mismatches: r.mismatches,
         vetoed: r.vetoed,
         truncated: r.truncated,
+        packing: r.packing,
     })
 }
 
@@ -194,6 +199,30 @@ pub fn inferred_breakdown(
 fn cut_opts(cut: bool) -> ScoringOpts {
     ScoringOpts {
         end_undeclared: cut,
+        ..scoring_opts()
+    }
+}
+
+/// Spec 0371 S10: protolens's `--no-packing-penalty`, set once from the
+/// command line before anything is scored.
+///
+/// Process-wide rather than threaded through as a parameter: options are
+/// built in free functions here and in `sweep`, on the main thread and on
+/// the inference and heat-cue workers alike, none of which sees the CLI.
+/// An atomic set before the first score and only read afterwards gives
+/// every one of them the same answer without widening their signatures.
+static PACKING_PENALTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Set [`PACKING_PENALTY`]; `main` calls this once, from `--no-packing-penalty`.
+pub fn set_packing_penalty(on: bool) {
+    PACKING_PENALTY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The [`ScoringOpts`] every protolens score starts from: the defaults,
+/// with the packing penalty as the command line set it.
+pub fn scoring_opts() -> ScoringOpts {
+    ScoringOpts {
+        packing_penalty: PACKING_PENALTY.load(std::sync::atomic::Ordering::Relaxed),
         ..Default::default()
     }
 }

@@ -46,6 +46,7 @@ const VOCABULARY: &[&str] = &[
     "repeated_singular",
     "ENUM_UNKNOWN",
     "bool_val",
+    "packing_mismatch",
     // Invalid
     "TAG_OOR",
     "ETAG_OOR",

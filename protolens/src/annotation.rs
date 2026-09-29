@@ -64,7 +64,11 @@ pub const WIRE_TYPE_NAMES: [&str; 5] = ["varint", "fixed64", "fixed32", "bytes",
 /// `bool_val` is the same charge for a bool (spec 0372 S5): a bool written
 /// as neither 0 nor 1 reads as `true` everywhere, and costs the scorer an
 /// `out_of_range`.
-pub const NON_CANONICAL: [&str; 13] = [
+///
+/// `packing_mismatch` is the renderer's side of the scorer's `packing`
+/// charge (spec 0371 S13): legal, but not how a writer following the
+/// schema encodes the field.
+pub const NON_CANONICAL: [&str; 14] = [
     "tag_ohb",
     "val_ohb",
     "len_ohb",
@@ -78,6 +82,7 @@ pub const NON_CANONICAL: [&str; 13] = [
     "repeated_singular",
     "ENUM_UNKNOWN",
     "bool_val",
+    "packing_mismatch",
 ];
 
 /// [`Tier::Invalid`]'s members.
@@ -147,6 +152,9 @@ pub fn clause(keyword: &str) -> Option<&'static str> {
         "repeated_singular" => "the schema declares this field singular, and it already appeared",
         "ENUM_UNKNOWN" => "no name in the declared enum has this number",
         "bool_val" => "a bool is true for any non-zero value; this one was not written as 1",
+        "packing_mismatch" => {
+            "packed on the wire but declared expanded, or the reverse: legal, but not how a writer following this schema encodes it"
+        }
         "TYPE_MISMATCH" => "the schema declares this field with another wire type",
         "OPEN_GROUP" => "this group is never closed",
         "END_MISMATCH" => "this group end names a different field than its start",

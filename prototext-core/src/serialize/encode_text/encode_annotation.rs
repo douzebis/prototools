@@ -129,8 +129,12 @@ pub(crate) fn parse_annotation(ann_str: &str) -> Ann<'_> {
                 // `repeated_singular` (spec 0343 A1) is one of these: the
                 // repeat is already expressed by the record being written
                 // twice, so the keyword restates what the bytes say.
-                "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" | "repeated_singular" => {
-                }
+                // `packing_mismatch` (spec 0371 S12) is another: the record
+                // is written packed or expanded by `pack_size`'s presence,
+                // and the keyword only compares that with the declaration.
+                // Not optional — the arm below would read it as a wire type.
+                "TAG_OOR" | "ETAG_OOR" | "TYPE_MISMATCH" | "ENUM_UNKNOWN" | "repeated_singular"
+                | "packing_mismatch" => {}
                 // Everything else is a wire-type name (lowercase valid or ALLCAPS invalid).
                 _ => {
                     ann.wire_type = token;

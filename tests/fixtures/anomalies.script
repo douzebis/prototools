@@ -177,6 +177,18 @@ steps:
     wire_node: /18/1/2
 
   - text: |
+      4.c. The same path again, written expanded: one tag per number,
+      three records where 4.a. has one. Every reader accepts it, but the
+      field is declared packed, so no writer following the schema writes
+      it this way — each line says packing_mismatch, and a type whose
+      declaration disagrees with the bytes gains nothing from them.
+    fold: ["/ 1", "/18 1", "/18/1 Z"]
+    node: /18/1/3
+    wire_lines:
+      from: /18/1/3
+      to: /18/1/5
+
+  - text: |
       5. The blob and the schema disagree.
 
       5.a. The schema says field 1 here is a string. The tag says varint.

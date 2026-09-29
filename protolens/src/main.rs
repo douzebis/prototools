@@ -192,6 +192,13 @@ struct Cli {
     #[arg(long = "no-script", conflicts_with = "script")]
     no_script: bool,
 
+    /// Do not charge records whose packing contradicts the schema's
+    /// declaration (spec 0371). By default such a record scores net zero,
+    /// which is right when blobs and schemas come from the same build; turn
+    /// it off for a corpus whose writers ignore the declaration.
+    #[arg(long = "no-packing-penalty")]
+    no_packing_penalty: bool,
+
     /// Rows for the script pane, overriding its computed share of the
     /// terminal (spec 0271 S4).
     #[arg(long = "script-height", value_parser = clap::value_parser!(u16).range(1..))]
@@ -423,6 +430,8 @@ fn main() -> ExitCode {
     man::generate_and_exit_if_requested(Cli::command());
 
     let cli = Cli::parse();
+    // Spec 0371 S10: before anything is scored, so every score agrees.
+    override_pane::set_packing_penalty(!cli.no_packing_penalty);
 
     // Spec 0264: on a machine whose kernel says which CPUs are the fast
     // ones, the thread that draws every frame runs on them. Here rather

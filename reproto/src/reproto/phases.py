@@ -1820,11 +1820,12 @@ def _field_label(field: Any) -> str:
 def _scoring_kind(field: Any) -> 'tuple[str, str | None, tuple[int, int] | None]':
     """Map a FieldDescriptor to a (type_str, child_fqdn, range) tuple (spec 0077 §5).
 
-    `field.is_packed` is deliberately not consulted (spec 0175). Every repeated
-    scalar has two legal wire encodings — packed and expanded — and a reader
-    must accept both whatever the option says, so the option carries no
-    information a scorer may act on. What the scorer does need is the element
-    type, which the old `LEN_PACKED` collapse discarded.
+    `field.is_packed` is deliberately not consulted *here* (spec 0175): every
+    repeated scalar has two legal wire encodings, and the kind must accept
+    both, so what it needs is the element type, which the old `LEN_PACKED`
+    collapse discarded. The declaration itself travels separately, as the
+    entry's `packed` key (spec 0371 S2), so that the scorer can charge an
+    encoding that contradicts it without refusing it.
     """
     from google.protobuf.descriptor import FieldDescriptor as FD
     TYPE = field.type
@@ -1947,6 +1948,7 @@ def _collect_scoring_messages(
     wrapped in the synthesized `Item` group), so including them here would
     wrongly claim those field numbers as direct transitions.
     """
+    from .field_descriptor import fd_is_packed
     msg_node = ctx.nodes.get(Fqdn(f'desc:.{desc.full_name}'))
     if msg_node is not None and msg_node.is_pruned:
         return
@@ -1967,6 +1969,10 @@ def _collect_scoring_messages(
         label = _field_label(f)
         if label != 'optional':
             entry['label'] = label
+        # Spec 0371 S2: the declared packing, which the scorer compares
+        # with the encoding it meets. Omitted when false, the default.
+        if fd_is_packed(f):
+            entry['packed'] = True
         fields_out.append(entry)
     name = rename(desc.full_name)
     # Must precede `messages[name]`: `yaml.dump(sort_keys=False)` makes the

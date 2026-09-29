@@ -250,6 +250,8 @@ struct PackedRecordAnn {
     tag_ohb: Option<u64>,
     tag_oor: bool,
     len_ohb: Option<u64>,
+    /// Spec 0371 S11: the field is not declared packed, yet this record is.
+    packing_mismatch: bool,
 }
 
 /// Write the annotation for a packed element line.
@@ -275,6 +277,9 @@ fn write_packed_elem_ann(
         }
         if let Some(v) = rec.len_ohb {
             aw.push_u64_mod(out, b"len_ohb: ", v);
+        }
+        if rec.packing_mismatch {
+            aw.push(out, b"packing_mismatch");
         }
     }
     // Element-level anomaly modifiers.
@@ -337,6 +342,11 @@ pub(super) fn render_packed(
     };
 
     let pack_size = elems.len();
+    // Spec 0371 S11: this record is packed; say so when the field is not
+    // declared packed. Only here, past a successful decode: a record that
+    // renders `INVALID_PACKED_RECORDS` above is one the scorer vetoes, so
+    // it carries no charge to mark.
+    let packing_mismatch = !foe.declared_packed();
 
     // ── Empty packed record ────────────────────────────────────────────────────
     // No elements: emit a comment-only annotation line.
@@ -355,6 +365,10 @@ pub(super) fn render_packed(
             }
             if let Some(v) = len_ohb {
                 aw.push_u64_mod(out, b"len_ohb: ", v);
+            }
+            // Spec 0371 S11: an empty run is a packed record too.
+            if packing_mismatch {
+                aw.push(out, b"packing_mismatch");
             }
         }
         sink.newline();
@@ -378,6 +392,7 @@ pub(super) fn render_packed(
                     tag_ohb,
                     tag_oor,
                     len_ohb,
+                    packing_mismatch,
                 },
                 elem,
                 out,

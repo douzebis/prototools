@@ -71,6 +71,12 @@ pub struct EntryScore<'g> {
     /// Despite the name this is **not** a wire-type mismatch, which vetoes and
     /// never reaches here.
     pub mismatches: u64,
+    /// Records whose encoding contradicts their field's declared packing
+    /// (spec 0371): a packed record on a field declared expanded, or an
+    /// expanded occurrence of a field declared packed. Each is still a
+    /// match — the reader accepts both encodings (spec 0175) — and this
+    /// charge cancels it exactly; see [`EntryScore::score`].
+    pub packing: u64,
     pub vetoed: bool,
     /// Counts the number of distinct frames (nodes) that were cut rather than
     /// vetoed (spec 0310 S2, spec 0347 S1).  Each `cut_or_veto` call that
@@ -121,8 +127,14 @@ impl EntryScore<'_> {
     /// Within one candidate list the charge is levied equally on every
     /// survivor, so it cannot reorder within a range; its effects are on
     /// comparisons *between* ranges.
+    ///
+    /// `packing` weighs exactly one match (spec 0371 S6), so a record whose
+    /// encoding contradicts its declaration is accepted and neutral: it no
+    /// longer counts as evidence for the candidate, and never counts
+    /// against it more than a missing record would.
     pub fn score(&self) -> i64 {
         self.matches as i64
+            - self.packing as i64
             - 5 * self.truncated as i64
             - 10 * self.unknowns as i64
             - 15 * self.out_of_range as i64
@@ -144,12 +156,12 @@ enum Verdict {
     /// neither validated nor held against the candidate.
     Extension,
     Mismatch,
-    Found(u32, u8), // (child_state_id, label)
+    Found(u32, u8, bool), // (child_state_id, label, declared packed)
     /// A LEN tag on a repeated scalar field: the packed encoding of the same
     /// values the field's own wire type would carry expanded (spec 0175 S2).
     /// The element wire type is carried instead of the label, since only a
     /// repeated field is packable and the LEN arm needs it to read the run.
-    FoundPacked(u32, u8), // (child_state_id, element wire type)
+    FoundPacked(u32, u8, bool), // (child_state_id, element wire type, declared packed)
 }
 
 /// One entry in the active set: a state_id shared by one or more entry indices.
@@ -274,6 +286,8 @@ struct WalkState<'a, 'g> {
     debug_fqdn: Option<String>,
     expand_any: bool,
     policy: Policy,
+    /// [`ScoringOpts::packing_penalty`].
+    packing_penalty: bool,
     /// See [`score_subset`]'s `cancel` parameter.
     cancel: Option<&'a AtomicBool>,
     /// The decoded `(value, overhang)` elements of the packed varint payload
@@ -345,6 +359,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
             debug_fqdn: std::env::var("PROTOTEXT_DEBUG_FQDN").ok(),
             expand_any: opts.expand_any,
             policy: opts.policy,
+            packing_penalty: opts.packing_penalty,
             cancel,
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
@@ -506,6 +521,13 @@ pub struct ScoringOpts {
     /// termination-offset contract that a demoted overrun would have to
     /// define a value for.
     pub end_undeclared: bool,
+    /// Charge a record whose encoding contradicts its field's declared
+    /// packing (spec 0371 S7). On by default: schemas and blobs normally
+    /// come from the same build, where such a record is strong evidence
+    /// against the candidate. Off (`--no-packing-penalty`) for a corpus
+    /// whose writers do not follow the declaration; the walk then behaves
+    /// exactly as before spec 0371.
+    pub packing_penalty: bool,
 }
 
 impl Default for ScoringOpts {
@@ -514,6 +536,7 @@ impl Default for ScoringOpts {
             expand_any: true,
             policy: Policy::default(),
             end_undeclared: false,
+            packing_penalty: true,
         }
     }
 }
@@ -606,6 +629,7 @@ pub fn score_subset<'g>(
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
+            packing: 0,
             vetoed: false,
             truncated: 0,
             // Overwritten only by an S12 termination, so "ran to the end" is
@@ -653,6 +677,7 @@ fn report_last_clean_boundary(scores: &mut [EntryScore], snapshots: &[Snapshot],
     s.unknowns = 0;
     s.mismatches = 0;
     s.non_canonical = 0;
+    s.packing = 0;
     s.out_of_range = 0;
     s.termination = snap.at;
 }
@@ -900,6 +925,8 @@ struct TransitionResult {
     /// The child's protobuf wire type, read straight off the edge — see
     /// `TransitionEntry::child_wire_type`.
     child_wire_type: u8,
+    /// `TransitionEntry::declared_packed` (spec 0371 S8).
+    declared_packed: u8,
 }
 
 /// Find `field_number` within one state's run of transitions.
@@ -935,6 +962,7 @@ fn find_transition(
                 child_state_id: t[mid].child_state_id.to_native(),
                 label: t[mid].label,
                 child_wire_type: t[mid].child_wire_type,
+                declared_packed: t[mid].declared_packed,
             });
         } else {
             hi = mid;
@@ -1142,6 +1170,22 @@ fn apply_value_verdict(ws: &mut WalkState<'_, '_>, ae: &ActiveEntry, v: ValueVer
         let s = &mut ws.scores[e as usize];
         s.non_canonical += v.non_canonical;
         s.out_of_range += v.out_of_range;
+    }
+}
+
+/// Charge one wire record whose encoding contradicts its field's declared
+/// packing (spec 0371 S8) to every entry of `ae`, when the option is on.
+///
+/// Called only where the record has just been counted as a match, so the
+/// charge cancels exactly that match and nothing else: a vetoed record is
+/// never charged, and neither is anything the walk did not accept.
+#[inline]
+fn charge_packing(ws: &mut WalkState<'_, '_>, ae: &ActiveEntry, contradicts: bool) {
+    if !contradicts || !ws.packing_penalty {
+        return;
+    }
+    for &e in &ae.entries {
+        ws.scores[e as usize].packing += 1;
     }
 }
 
@@ -1758,7 +1802,7 @@ fn score_message_multi_inner(
                     Some(tr) => {
                         let expected_wt = tr.child_wire_type as u32;
                         if wire_type == expected_wt {
-                            Verdict::Found(tr.child_state_id, tr.label)
+                            Verdict::Found(tr.child_state_id, tr.label, tr.declared_packed != 0)
                         } else if wire_type == WT_LEN
                             && tr.label == LABEL_REPEATED
                             && matches!(expected_wt, WT_VARINT | WT_I64 | WT_I32)
@@ -1772,7 +1816,11 @@ fn score_message_multi_inner(
                             // outside {0, 1, 5} without a special case —
                             // including an empty message state, which has no
                             // transitions but still reports 2.
-                            Verdict::FoundPacked(tr.child_state_id, expected_wt as u8)
+                            Verdict::FoundPacked(
+                                tr.child_state_id,
+                                expected_wt as u8,
+                                tr.declared_packed != 0,
+                            )
                         } else {
                             Verdict::Mismatch
                         }
@@ -1818,7 +1866,7 @@ fn score_message_multi_inner(
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => ae.pending_unknowns += 1,
-                        Verdict::Found(child, _label) => {
+                        Verdict::Found(child, _label, declared_packed) => {
                             let node = find_node(ws.graph, child);
                             let v = check_varint_value(ws.graph, node, val, vr.overhang);
                             apply_value_verdict(ws, ae, v);
@@ -1835,6 +1883,9 @@ fn score_message_multi_inner(
                                 for &e in &ae.entries {
                                     ws.scores[e as usize].matches += 1;
                                 }
+                                // Spec 0371 S8: an expanded occurrence of a
+                                // field declared packed.
+                                charge_packing(ws, ae, declared_packed);
                             }
                         }
                         // `FoundPacked` is produced only for a LEN tag, so it
@@ -1846,7 +1897,7 @@ fn score_message_multi_inner(
                         // Spec 0238 S15: an extension is read like an unknown
                         // but costs nothing, so there is nothing to do.
                         Verdict::Extension => {}
-                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
+                        Verdict::Mismatch | Verdict::FoundPacked(..) => {}
                     }
                 }
                 active.retain(|ae| !ae.entries.is_empty());
@@ -1861,16 +1912,19 @@ fn score_message_multi_inner(
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => ae.pending_unknowns += 1,
-                        Verdict::Found(_, _) => {
+                        Verdict::Found(_, _, declared_packed) => {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
                                 ws.scores[e as usize].matches += 1;
                             }
+                            // Spec 0371 S8: an expanded occurrence of a
+                            // field declared packed.
+                            charge_packing(ws, ae, declared_packed);
                         }
                         // Spec 0238 S15: an extension is read like an unknown
                         // but costs nothing, so there is nothing to do.
                         Verdict::Extension => {}
-                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
+                        Verdict::Mismatch | Verdict::FoundPacked(..) => {}
                     }
                 }
             }
@@ -1901,7 +1955,7 @@ fn score_message_multi_inner(
                     // the renderer annotates as repeated_singular.
                     if end_undeclared {
                         for ae in active.iter_mut() {
-                            if matches!(ae.verdict, Verdict::Found(_, _)) {
+                            if matches!(ae.verdict, Verdict::Found(..)) {
                                 record_occurrence(&mut ae.occurrences, field_number as u32);
                             }
                         }
@@ -1951,7 +2005,7 @@ fn score_message_multi_inner(
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => ae.pending_unknowns += 1,
-                        Verdict::FoundPacked(child, elem_wt) => {
+                        Verdict::FoundPacked(child, elem_wt, declared_packed) => {
                             let run_ok = match elem_wt as u32 {
                                 WT_I64 => payload.len().is_multiple_of(8),
                                 WT_I32 => payload.len().is_multiple_of(4),
@@ -2045,9 +2099,13 @@ fn score_message_multi_inner(
                                 for &e in &ae.entries {
                                     ws.scores[e as usize].matches += 1;
                                 }
+                                // Spec 0371 S8: a packed record on a field
+                                // declared expanded. An empty run is charged
+                                // too, on top of its `non_canonical`.
+                                charge_packing(ws, ae, !declared_packed);
                             }
                         }
-                        Verdict::Found(child, _label) => {
+                        Verdict::Found(child, _label, _) => {
                             // Spec 0324 S3: asked of the node, not of the
                             // transition table. "Has an outgoing edge" and
                             // "is a message" are different questions, and a
@@ -2168,7 +2226,7 @@ fn score_message_multi_inner(
 
                 for ae in active.iter_mut() {
                     match ae.verdict {
-                        Verdict::Found(child, _label) => {
+                        Verdict::Found(child, _label, _) => {
                             for &e in &ae.entries {
                                 recurse_into.push((child, e));
                             }
@@ -2185,7 +2243,7 @@ fn score_message_multi_inner(
                         // which `parse_group_blind` supplies when no entry
                         // recursed.
                         Verdict::Extension => {}
-                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {} // already vetoed above
+                        Verdict::Mismatch | Verdict::FoundPacked(..) => {} // already vetoed above
                     }
                 }
 
@@ -2205,7 +2263,7 @@ fn score_message_multi_inner(
                     propagate_vetoes(active, ws, veto_epoch);
                     // Record occurrences and matches for surviving Found entries.
                     for ae in active.iter_mut() {
-                        if matches!(ae.verdict, Verdict::Found(_, _)) {
+                        if matches!(ae.verdict, Verdict::Found(..)) {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
                                 ws.scores[e as usize].matches += 1;
@@ -2229,7 +2287,7 @@ fn score_message_multi_inner(
                 let final_pos = if !recurse_into.is_empty()
                     && active
                         .iter()
-                        .all(|ae| !matches!(ae.verdict, Verdict::Found(_, _)))
+                        .all(|ae| !matches!(ae.verdict, Verdict::Found(..)))
                 {
                     // All Found entries were vetoed; need blind walk for stay_out boundary.
                     match parse_group_blind(buf, pos, field_number) {
@@ -2298,16 +2356,19 @@ fn score_message_multi_inner(
                 for ae in active.iter_mut() {
                     match ae.verdict {
                         Verdict::Unknown => ae.pending_unknowns += 1,
-                        Verdict::Found(_, _) => {
+                        Verdict::Found(_, _, declared_packed) => {
                             record_occurrence(&mut ae.occurrences, field_number as u32);
                             for &e in &ae.entries {
                                 ws.scores[e as usize].matches += 1;
                             }
+                            // Spec 0371 S8: an expanded occurrence of a
+                            // field declared packed.
+                            charge_packing(ws, ae, declared_packed);
                         }
                         // Spec 0238 S15: an extension is read like an unknown
                         // but costs nothing, so there is nothing to do.
                         Verdict::Extension => {}
-                        Verdict::Mismatch | Verdict::FoundPacked(_, _) => {}
+                        Verdict::Mismatch | Verdict::FoundPacked(..) => {}
                     }
                 }
             }
@@ -2338,6 +2399,7 @@ mod set_vetoed_tests {
             debug_fqdn,
             expand_any: true,
             policy: Policy::Score,
+            packing_penalty: true,
             cancel: None,
             packed_scratch: Vec::new(),
             elem_verdicts: Vec::new(),
@@ -2361,6 +2423,7 @@ mod set_vetoed_tests {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             }],
         );
         let merged = Merged {
@@ -2387,6 +2450,7 @@ mod set_vetoed_tests {
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
+            packing: 0,
             vetoed: false,
             truncated: 0,
             termination: 0,

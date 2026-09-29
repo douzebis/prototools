@@ -70,6 +70,7 @@ fn make_merged() -> Merged {
         child: None,
         range: None,
         label: FieldLabel::Optional,
+        packed: false,
     }];
 
     let outer_fields = vec![
@@ -79,6 +80,7 @@ fn make_merged() -> Merged {
             child: None,
             range: None,
             label: FieldLabel::Required,
+            packed: false,
         },
         ScoringField {
             number: 2,
@@ -86,6 +88,7 @@ fn make_merged() -> Merged {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 3,
@@ -93,6 +96,7 @@ fn make_merged() -> Merged {
             child: None,
             range: None,
             label: FieldLabel::Repeated,
+            packed: false,
         },
         ScoringField {
             number: 4,
@@ -100,6 +104,7 @@ fn make_merged() -> Merged {
             child: Some("Inner".to_string()),
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 5,
@@ -107,6 +112,7 @@ fn make_merged() -> Merged {
             child: None,
             range: Some((0, 2)),
             label: FieldLabel::Optional,
+            packed: false,
         },
     ];
 
@@ -208,6 +214,7 @@ fn score_coefficients_rank_by_suspicion() {
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
+            packing: 0,
             vetoed: false,
             truncated: 0,
             termination: 0,
@@ -500,6 +507,7 @@ fn tc16_fixed_fields_known() {
                         child: None,
                         range: None,
                         label: FieldLabel::Optional,
+                        packed: false,
                     },
                     ScoringField {
                         number: 2,
@@ -507,6 +515,7 @@ fn tc16_fixed_fields_known() {
                         child: None,
                         range: None,
                         label: FieldLabel::Optional,
+                        packed: false,
                     },
                 ],
             );
@@ -615,6 +624,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
         child: None,
         range: None,
         label: FieldLabel::Optional,
+        packed: false,
     }];
 
     let outer_fields = vec![
@@ -624,6 +634,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
             child: None,
             range: None,
             label: FieldLabel::Required,
+            packed: false,
         },
         ScoringField {
             number: 2,
@@ -631,6 +642,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 4,
@@ -638,6 +650,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
             child: Some("Inner".to_string()),
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 5,
@@ -645,6 +658,7 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
             child: None,
             range: Some((0, 2)),
             label: FieldLabel::Optional,
+            packed: false,
         },
     ];
 
@@ -932,6 +946,7 @@ fn map_entry_states_are_distinct() {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 2,
@@ -939,6 +954,7 @@ fn map_entry_states_are_distinct() {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
     ];
     let multi_option_entry_fields = vec![
@@ -948,6 +964,7 @@ fn map_entry_states_are_distinct() {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
         ScoringField {
             number: 2,
@@ -955,6 +972,7 @@ fn map_entry_states_are_distinct() {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         },
     ];
     let map_with_options_fields = vec![
@@ -964,6 +982,7 @@ fn map_entry_states_are_distinct() {
             child: Some("AnnotatedMapEntry".to_string()),
             range: None,
             label: FieldLabel::Repeated,
+            packed: false,
         },
         ScoringField {
             number: 2,
@@ -971,6 +990,7 @@ fn map_entry_states_are_distinct() {
             child: Some("MultiOptionMapEntry".to_string()),
             range: None,
             label: FieldLabel::Repeated,
+            packed: false,
         },
     ];
 
@@ -1018,6 +1038,7 @@ fn build_single_field_graph(
                     child: None,
                     range,
                     label: FieldLabel::Optional,
+                    packed: false,
                 }],
             );
             m
@@ -1195,6 +1216,7 @@ fn tc77_12_bool_vs_int32_discrimination() {
                     child: None,
                     range: Some((0, 1)),
                     label: FieldLabel::Optional,
+                    packed: false,
                 }],
             );
             m.insert(
@@ -1205,6 +1227,7 @@ fn tc77_12_bool_vs_int32_discrimination() {
                     child: None,
                     range: None,
                     label: FieldLabel::Optional,
+                    packed: false,
                 }],
             );
             m
@@ -1267,6 +1290,7 @@ fn make_merged_any() -> Merged {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
             ScoringField {
                 number: 2,
@@ -1274,6 +1298,7 @@ fn make_merged_any() -> Merged {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
         ],
     );
@@ -1285,6 +1310,7 @@ fn make_merged_any() -> Merged {
             child: Some("google.protobuf.Any".to_string()),
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         }],
     );
     states.insert(
@@ -1295,6 +1321,7 @@ fn make_merged_any() -> Merged {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         }],
     );
     states.insert(
@@ -1305,6 +1332,7 @@ fn make_merged_any() -> Merged {
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         }],
     );
 
@@ -1446,6 +1474,7 @@ fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
         child: None,
         range: None,
         label: FieldLabel::Optional,
+        packed: false,
     }];
 
     let mut states = std::collections::HashMap::new();
@@ -1537,6 +1566,7 @@ fn build_recursive_graph() -> score_load::LoadedGraph {
                     child: Some("Node".to_string()),
                     range: None,
                     label: FieldLabel::Optional,
+                    packed: false,
                 }],
             );
             m
@@ -1783,6 +1813,7 @@ fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
             ScoringField {
                 number: string,
@@ -1790,6 +1821,7 @@ fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
         ]
     }
@@ -1877,6 +1909,7 @@ fn build_packed_graph() -> score_load::LoadedGraph {
         child: None,
         range,
         label,
+        packed: false,
     };
     let fields = vec![
         f(1, ScoringKind::Uint64, None, FieldLabel::Repeated),
@@ -2129,6 +2162,7 @@ fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             }],
         );
     }
@@ -2162,6 +2196,7 @@ fn build_lopsided_root_graph(big: u32, singles: u32) -> score_load::LoadedGraph 
             child: None,
             range: None,
             label: FieldLabel::Optional,
+            packed: false,
         }]
     };
     // Field number 1 throughout, so Hopcroft collapses these onto one state.
@@ -2410,6 +2445,7 @@ fn uint32(number: u32, label: FieldLabel) -> ScoringField {
         child: None,
         range: None,
         label,
+        packed: false,
     }
 }
 
@@ -2420,6 +2456,7 @@ fn string(number: u32, label: FieldLabel) -> ScoringField {
         child: None,
         range: None,
         label,
+        packed: false,
     }
 }
 
@@ -2819,6 +2856,7 @@ fn an_anomaly_stops_the_walk() {
                 child: None,
                 range: Some((0, 2)),
                 label: FieldLabel::Optional,
+                packed: false,
             },
         ],
         &[],
@@ -2883,6 +2921,7 @@ fn zero_field_child_merged() -> Merged {
                 child: Some("Nothing".to_string()),
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
             ScoringField {
                 number: 2,
@@ -2890,6 +2929,7 @@ fn zero_field_child_merged() -> Merged {
                 child: None,
                 range: None,
                 label: FieldLabel::Optional,
+                packed: false,
             },
         ],
     );
@@ -3010,5 +3050,163 @@ fn a_message_node_is_not_a_bytes_leaf() {
             .iter()
             .all(|t| t.child_wire_type != serial::WT_NODE_MESSAGE),
         "no edge may carry the internal discriminant"
+    );
+}
+
+// ── Packing that contradicts the declaration (spec 0371) ─────────────────────
+
+/// Compile `states` (FQDN → fields) with `roots` as entries, as
+/// [`build_packed_graph`] does for its single root.
+fn compile_states(
+    states: Vec<(&str, Vec<ScoringField>)>,
+    roots: &[&str],
+) -> score_load::LoadedGraph {
+    let merged = Merged {
+        states: states
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        node_kinds: std::collections::HashMap::new(),
+        roots: roots.iter().map(|r| r.to_string()).collect(),
+        ..Default::default()
+    };
+    let (raw, reg) = graph::build(&merged);
+    let partition = hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+    let compiled = graph::compile(&raw, &reg, &partition, &merged.roots);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("packing.bin");
+    serial::write(&compiled, &path).expect("write");
+    let _ = std::mem::ManuallyDrop::new(dir);
+    score_load::load_graph(&path).expect("load")
+}
+
+/// Repeated `uint64` (1), `fixed64` (2) and `fixed32` (3) fields, all
+/// declared with packing `packed`.
+fn packing_fields(packed: bool) -> Vec<ScoringField> {
+    [
+        (1, ScoringKind::Uint64),
+        (2, ScoringKind::I64),
+        (3, ScoringKind::I32),
+    ]
+    .into_iter()
+    .map(|(number, kind)| ScoringField {
+        number,
+        kind,
+        child: None,
+        range: None,
+        label: FieldLabel::Repeated,
+        packed,
+    })
+    .collect()
+}
+
+/// `E` declares its fields expanded, `K` declares the same fields packed.
+fn build_packing_graph() -> score_load::LoadedGraph {
+    compile_states(
+        vec![("E", packing_fields(false)), ("K", packing_fields(true))],
+        &["E", "K"],
+    )
+}
+
+/// Test plan 4: a packed record on a field declared expanded is still one
+/// match, and one `packing` charge cancels it — net zero.
+#[test]
+fn packed_record_on_expanded_declaration_nets_zero() {
+    let g = build_packing_graph();
+    let mut payload = varint(1);
+    payload.extend(varint(300));
+    let pb = field_len(1, &payload);
+    let s = score_entry(&pb, &g, "E");
+    assert!(!s.vetoed);
+    assert_eq!((s.matches, s.packing), (1, 1));
+    assert_eq!(s.score(), 0);
+    // The declaration it agrees with charges nothing.
+    let s = score_entry(&pb, &g, "K");
+    assert_eq!((s.matches, s.packing), (1, 0));
+}
+
+/// Test plan 4: each expanded occurrence of a field declared packed is a
+/// record of its own, so each is charged — varint, fixed64 and fixed32.
+#[test]
+fn expanded_occurrences_of_a_packed_declaration_net_zero() {
+    let g = build_packing_graph();
+    let mut pb = field_varint(1, 1);
+    pb.extend(field_varint(1, 2));
+    pb.extend(field_varint(1, 3));
+    let s = score_entry(&pb, &g, "K");
+    assert_eq!((s.matches, s.packing), (3, 3));
+    assert_eq!(s.score(), 0);
+    let s = score_entry(&pb, &g, "E");
+    assert_eq!((s.matches, s.packing), (3, 0));
+
+    let mut pb = field_fixed64(2, 7);
+    pb.extend(field_fixed32(3, 7));
+    let s = score_entry(&pb, &g, "K");
+    assert_eq!((s.matches, s.packing), (2, 2));
+    assert_eq!(score_entry(&pb, &g, "E").packing, 0);
+}
+
+/// Test plan 4: `packing_penalty: false` charges nothing, in either
+/// direction.
+#[test]
+fn packing_penalty_off_charges_nothing() {
+    let g = build_packing_graph();
+    let off = walk::ScoringOpts {
+        packing_penalty: false,
+        ..Default::default()
+    };
+    let packed = field_len(1, &varint(5));
+    let expanded = field_varint(1, 5);
+    assert_eq!(score_entry_opts(&packed, &g, "E", &off).packing, 0);
+    assert_eq!(score_entry_opts(&expanded, &g, "K", &off).packing, 0);
+}
+
+/// Test plan 4: a run that vetoes is never charged, and an empty run is —
+/// on top of its existing `non_canonical`.
+#[test]
+fn invalid_runs_are_not_charged_and_empty_ones_are() {
+    let g = build_packing_graph();
+    let s = score_entry(&field_len(1, &[0x80]), &g, "E");
+    assert!(s.vetoed);
+    assert_eq!(s.packing, 0);
+
+    let s = score_entry(&field_len(1, &[]), &g, "E");
+    assert!(!s.vetoed);
+    assert_eq!((s.matches, s.non_canonical, s.packing), (1, 1, 1));
+}
+
+/// Spec 0371 S4: two types that differ only in a field's declared packing
+/// are not equivalent, so minimization must not merge them. Merged, both
+/// would share one `declared_packed` byte and one of them would be
+/// charged wrongly.
+#[test]
+fn packing_keeps_otherwise_identical_types_apart() {
+    let g = build_packing_graph();
+    let pb = field_len(1, &varint(9));
+    assert_eq!(score_entry(&pb, &g, "E").packing, 1);
+    assert_eq!(score_entry(&pb, &g, "K").packing, 0);
+}
+
+/// Test plan 3: the YAML `packed` key reaches `TransitionEntry`, and the
+/// entry has not grown.
+#[test]
+fn packed_yaml_key_reaches_the_transition() {
+    let yaml = "entries:\n- M\nmessages:\n  M:\n    fields:\n    \
+                - number: 1\n      type: int32\n      label: repeated\n      packed: true\n    \
+                - number: 2\n      type: int32\n      label: repeated\n";
+    let (bytes, dump, _) =
+        crate::build_scoring_graph::build_from_strings(&[yaml.to_string()], true, false, |_, _| {})
+            .expect("build");
+    let dump = dump.expect("yaml dump");
+    assert_eq!(dump.matches("packed: true").count(), 1, "{dump}");
+    let g = score_load::LoadedGraph::from_static_bytes(Box::leak(bytes.into_boxed_slice()))
+        .expect("load");
+    let expanded = field_varint(1, 5);
+    assert_eq!(score_entry(&expanded, &g, "M").packing, 1);
+    assert_eq!(score_entry(&field_varint(2, 5), &g, "M").packing, 0);
+    assert_eq!(
+        std::mem::size_of::<serial::ArchivedTransitionEntry>(),
+        16,
+        "declared_packed must fit in the padding"
     );
 }

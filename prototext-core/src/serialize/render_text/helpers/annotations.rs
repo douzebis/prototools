@@ -85,7 +85,11 @@ pub(in super::super) fn field_decl(
         Kind::Enum(enum_desc) => enum_desc.name().to_string(),
         _ => type_str.to_string(),
     };
-    let packed = if fi.is_packed() { " [packed=true]" } else { "" };
+    let packed = if fi.declared_packed() {
+        " [packed=true]"
+    } else {
+        ""
+    };
     // v2: no trailing `;`
     Some(format!(
         "{}{}{} = {}",
@@ -243,7 +247,7 @@ impl AnnWriter {
             };
             out.extend_from_slice(type_display.as_bytes());
         }
-        if fi.is_packed() {
+        if fi.declared_packed() {
             out.extend_from_slice(b" [packed=true]");
         }
         out.extend_from_slice(b" = ");

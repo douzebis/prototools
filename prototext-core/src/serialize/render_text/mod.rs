@@ -36,6 +36,28 @@ const PROTOTEXT_MAGIC: &[u8] = b"#@ prototext:";
 
 // ── FieldOrExt adapter ────────────────────────────────────────────────────────
 
+/// A kind protobuf allows to be packed: every scalar numeric type, bool and
+/// enum — everything but string, bytes, message and group.
+pub(super) fn is_packable_kind(kind: &Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Bool
+            | Kind::Int32
+            | Kind::Int64
+            | Kind::Uint32
+            | Kind::Uint64
+            | Kind::Sint32
+            | Kind::Sint64
+            | Kind::Fixed32
+            | Kind::Fixed64
+            | Kind::Sfixed32
+            | Kind::Sfixed64
+            | Kind::Float
+            | Kind::Double
+            | Kind::Enum(_)
+    )
+}
+
 /// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
 /// (extension field) for the subset of accessors used by the renderer.
 pub(super) enum FieldOrExt {
@@ -66,10 +88,33 @@ impl FieldOrExt {
         }
     }
 
-    pub(super) fn is_packed(&self) -> bool {
-        match self {
-            FieldOrExt::Field(f) => f.is_packed(),
-            FieldOrExt::Ext(_) => false,
+    /// Whether the schema *declares* this field packed (spec 0371 S1/S3):
+    /// repeated, of a packable kind, and `[packed = true]` in proto2 or
+    /// anything but `[packed = false]` in proto3.
+    ///
+    /// Read from the raw descriptor rather than prost-reflect's
+    /// `is_packed()`, which answers `false` for a proto3 field carrying any
+    /// other option (docs/prototext/PROST-ISSUES.md section 1), and which
+    /// this wrapper used to hard-code to `false` for every extension. An
+    /// editions file never reaches here: prost-reflect 0.16 refuses its
+    /// syntax, and `reproto` rewrites editions to proto2 with an explicit
+    /// `[packed = true]` wherever features resolve to PACKED (spec 0371 N3).
+    ///
+    /// The scorer's graph is built from the same rule, by `reproto`, which
+    /// is what keeps a row's `packing_mismatch` and the score's `packing`
+    /// counter in agreement (spec 0371 G3).
+    pub(super) fn declared_packed(&self) -> bool {
+        if self.cardinality() != Cardinality::Repeated || !is_packable_kind(&self.kind()) {
+            return false;
+        }
+        let (proto, syntax) = match self {
+            FieldOrExt::Field(f) => (f.field_descriptor_proto(), f.parent_file().syntax()),
+            FieldOrExt::Ext(e) => (e.field_descriptor_proto(), e.parent_file().syntax()),
+        };
+        let explicit = proto.options.as_ref().and_then(|o| o.packed);
+        match syntax {
+            prost_reflect::Syntax::Proto3 => explicit != Some(false),
+            _ => explicit == Some(true),
         }
     }
 

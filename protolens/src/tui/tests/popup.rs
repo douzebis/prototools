@@ -197,6 +197,32 @@ fn a_bare_move_costs_no_frame() {
     );
 }
 
+/// Spec 0371 test plan 7: `packing` reaches the breakdown, and protolens's
+/// own copy of the formula still sums to what the scorer computes.
+#[test]
+fn the_breakdown_carries_packing() {
+    let yaml = "entries:\n- P\nmessages:\n  P:\n    fields:\n    \
+                - number: 1\n      type: uint64\n      label: repeated\n      packed: true\n"
+        .to_string();
+    let (bytes, _, _) =
+        prototext_graph::build_scoring_graph::build_from_strings(&[yaml], false, false, |_, _| {})
+            .expect("graph");
+    let graph = prototext_graph::score::load::LoadedGraph::from_static_bytes(Box::leak(
+        bytes.into_boxed_slice(),
+    ))
+    .expect("load");
+    // Field 1 written expanded twice, against a packed declaration.
+    let payload = [(1u8 << 3), 1, (1u8 << 3), 2];
+    let b = inferred_breakdown(&payload, "P", graph.graph(), false).expect("P is a root");
+    assert_eq!((b.matches, b.packing), (2, 2));
+    assert_eq!(b.score(), 0, "each charge cancels its match");
+    assert_eq!(
+        Some(b.score()),
+        inferred_score(&payload, "P", graph.graph(), false),
+        "the decomposition must sum to the number the cue prints"
+    );
+}
+
 /// Spec 0280 test plan 5 / S1: the counts reported are the scorer's own,
 /// and their weighted sum is the number the cue shows.
 ///

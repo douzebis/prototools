@@ -47,6 +47,30 @@ def fd_is_required(field: FieldDescriptor) -> bool:
         return field.label == FieldDescriptor.LABEL_REQUIRED
 
 
+def fd_is_packed(field: FieldDescriptor) -> bool:
+    """Return True if field is *declared* packed (spec 0371 S1/S2).
+
+    A field is declared packed iff it is repeated, its type is packable (a
+    scalar numeric type, bool or enum), and its syntax says so: proto2 only
+    with `[packed = true]`, proto3 unless `[packed = false]` (whatever other
+    options the field carries), editions when its resolved
+    `features.repeated_field_encoding` is PACKED. `FieldDescriptor.is_packed`
+    already resolves all three, so this only narrows it to repeated
+    packable fields and supplies the fallback its siblings above use.
+
+    This is the declaration, which is what a *writer* follows. A reader
+    accepts both encodings (spec 0175); the scorer uses this to charge a
+    record whose encoding contradicts it.
+    """
+    from .globals import PACKABLE_TYPES
+    if not fd_is_repeated(field) or field.type not in PACKABLE_TYPES:
+        return False
+    try:
+        return bool(field.is_packed)  # type: ignore[attr-defined]
+    except AttributeError:
+        return field.has_options and field.GetOptions().packed
+
+
 class ReFieldDescriptor:
     def __init__(self, field: FieldDescriptor) -> None:
         assert isinstance(field, FieldDescriptor)

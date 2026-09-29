@@ -30,7 +30,9 @@ use std::time::Instant;
 fn work_of(scores: &[EntryScore]) -> u64 {
     scores
         .iter()
-        .map(|s| s.matches + s.unknowns + s.out_of_range + s.non_canonical + s.mismatches)
+        .map(|s| {
+            s.matches + s.unknowns + s.out_of_range + s.non_canonical + s.mismatches + s.packing
+        })
         .sum()
 }
 

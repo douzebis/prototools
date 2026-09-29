@@ -88,6 +88,12 @@ pub(in super::super) fn render_scalar(
                 // Write hex digits: 16 for double (u64), 8 for float (u32 stored as u64)
                 write_nan_hex(bits, out);
             }
+            // Spec 0371 S11: an expanded occurrence of a field declared
+            // packed. This path renders only expanded records — a packed
+            // one goes through `render_packed`.
+            if field_schema.is_some_and(FieldOrExt::declared_packed) {
+                aw.push(out, b"packing_mismatch");
+            }
         }
     }
     sink.newline();

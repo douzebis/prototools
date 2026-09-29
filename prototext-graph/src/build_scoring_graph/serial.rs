@@ -106,6 +106,11 @@ pub struct TransitionEntry {
     /// which was **6.07%** of a googleapis startup. It lives in padding
     /// `TransitionEntry` already had, so the table does not grow.
     pub child_wire_type: u8,
+    /// 1 when the field is *declared* packed, else 0 (spec 0371 S4). The
+    /// walk charges a record whose encoding contradicts it. Lives in the
+    /// padding before `child_state_id` — offsets 10-11 were free — so the
+    /// table does not grow.
+    pub declared_packed: u8,
     pub child_state_id: u32,
 }
 
@@ -163,7 +168,11 @@ const MAGIC: &[u8; 8] = b"PTSGRAPH";
 /// v5 file read as v6 would find `2` on every message node, so the walk would
 /// take the leaf branch for all of them and stop descending entirely — a
 /// plausible wrong answer of exactly the kind the check exists to prevent.
-pub const GRAPH_VERSION: u32 = 6;
+///
+/// 6 → 7: `TransitionEntry.declared_packed` (spec 0371 S4), in padding the
+/// struct already had. A v6 file read as v7 would find whatever byte the old
+/// padding held there, and charge a packing mismatch at random.
+pub const GRAPH_VERSION: u32 = 7;
 
 /// `NodeEntry::wire_type` for a message state (spec 0324 S2) — as opposed to
 /// a `bytes` leaf, which keeps the on-wire `2`. A group keeps `3`, which was
@@ -237,6 +246,9 @@ pub fn dump_compiled(graph: &CompiledGraph) -> String {
             _ => "unknown",
         };
         out.push_str(&format!("    label: {}\n", label));
+        if t.declared_packed != 0 {
+            out.push_str("    packed: true\n");
+        }
         out.push_str(&format!("    to: {}\n", t.child_state_id));
     }
 

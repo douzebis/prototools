@@ -208,7 +208,7 @@ fn packed_record_on_proto2_unpacked_field_renders_packed() {
     assert_eq!(
         body(&text),
         [
-            "lane: 1  #@ repeated int32 = 1; pack_size: 3",
+            "lane: 1  #@ repeated int32 = 1; pack_size: 3; packing_mismatch",
             "lane: 2  #@ repeated int32 = 1",
             "lane: 3  #@ repeated int32 = 1",
         ],
@@ -222,7 +222,7 @@ fn packed_record_on_proto3_packed_false_field_renders_packed() {
     assert!(!text.contains("TYPE_MISMATCH"), "{text}");
     assert_eq!(body(&text).len(), 3, "{text}");
     assert!(
-        body(&text)[0].ends_with("pack_size: 3"),
+        body(&text)[0].ends_with("pack_size: 3; packing_mismatch"),
         "the first element carries the record's pack_size: {text}"
     );
 }
@@ -323,12 +323,12 @@ fn packed_element_edge_cases_roundtrip_on_unpacked_fields() {
         (
             "bool 2",
             &[0x1a, 0x01, 0x02],
-            "b: true  #@ repeated bool = 3; pack_size: 1; bool_val: 2",
+            "b: true  #@ repeated bool = 3; pack_size: 1; packing_mismatch; bool_val: 2",
         ),
         (
             "bool ohb",
             &[0x1a, 0x02, 0x81, 0x00],
-            "b: true  #@ repeated bool = 3; pack_size: 1; ohb: 1",
+            "b: true  #@ repeated bool = 3; pack_size: 1; packing_mismatch; ohb: 1",
         ),
         (
             "int32 in the 32-bit gap",
@@ -338,14 +338,14 @@ fn packed_element_edge_cases_roundtrip_on_unpacked_fields() {
         (
             "int32 5-byte negative",
             &[0x0a, 0x05, 0xff, 0xff, 0xff, 0xff, 0x0f],
-            "lane: -1  #@ repeated int32 = 1; pack_size: 1; neg",
+            "lane: -1  #@ repeated int32 = 1; pack_size: 1; packing_mismatch; neg",
         ),
         (
             "int32 10-byte negative",
             &[
                 0x0a, 0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
             ],
-            "lane: -1  #@ repeated int32 = 1; pack_size: 1",
+            "lane: -1  #@ repeated int32 = 1; pack_size: 1; packing_mismatch",
         ),
         (
             "uint32 over 32 bits",
@@ -360,24 +360,24 @@ fn packed_element_edge_cases_roundtrip_on_unpacked_fields() {
         (
             "enum undeclared",
             &[0x2a, 0x01, 0x05],
-            "pack_size: 1; ENUM_UNKNOWN",
+            "pack_size: 1; packing_mismatch; ENUM_UNKNOWN",
         ),
         (
             "enum 5-byte negative",
             &[0x2a, 0x05, 0xff, 0xff, 0xff, 0xff, 0x0f],
-            "pack_size: 1; neg; ENUM_UNKNOWN",
+            "pack_size: 1; packing_mismatch; neg; ENUM_UNKNOWN",
         ),
         (
             "float NaN payload",
             &[0x3a, 0x04, 0x01, 0x00, 0xc0, 0x7f],
-            "f: nan  #@ repeated float = 7; pack_size: 1; nan_bits: 0x7fc00001",
+            "f: nan  #@ repeated float = 7; pack_size: 1; packing_mismatch; nan_bits: 0x7fc00001",
         ),
         (
             "int64 10-byte zero",
             &[
                 0x42, 0x0b, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00,
             ],
-            "l: 0  #@ repeated int64 = 8; pack_size: 1; ohb: 10",
+            "l: 0  #@ repeated int64 = 8; pack_size: 1; packing_mismatch; ohb: 10",
         ),
         (
             "int64 11-byte varint",

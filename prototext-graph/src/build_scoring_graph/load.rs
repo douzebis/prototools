@@ -46,6 +46,9 @@ struct YamlField {
     /// "optional" (default), "required", or "repeated"
     #[serde(default)]
     label: String,
+    /// Declared packed (spec 0371 S2/S4); absent means false.
+    #[serde(default)]
+    packed: bool,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -61,6 +64,10 @@ pub struct ScoringField {
     pub range: Option<(i32, i32)>,
     /// Field cardinality: optional (default), required, or repeated.
     pub label: FieldLabel,
+    /// The field is *declared* packed (spec 0371 S1). A reader accepts
+    /// either encoding (spec 0175); the scorer charges the one that
+    /// contradicts this.
+    pub packed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +294,7 @@ fn parse_fields(
             child: f.child,
             range,
             label,
+            packed: f.packed,
         });
     }
     // Ensure sorted by field number (spec says they already are, but be defensive).
@@ -325,6 +333,7 @@ impl PartialEq for ScoringField {
             && self.child == other.child
             && self.range == other.range
             && self.label == other.label
+            && self.packed == other.packed
     }
 }
 

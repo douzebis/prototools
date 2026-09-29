@@ -181,7 +181,8 @@ pub enum Command {
         no_annotations: bool,
 
         /// Add individual score dimensions (matched, unknown, out_of_range,
-        /// non_canonical, mismatches) to the ambiguous-type warning YAML.
+        /// non_canonical, mismatches, truncated, packing) to the
+        /// ambiguous-type warning YAML.
         /// Only effective when type inference is ambiguous.
         #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
@@ -189,6 +190,13 @@ pub enum Command {
         /// Suppress google.protobuf.Any expansion; render value as raw bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
+
+        /// Do not charge records whose packing contradicts the schema's
+        /// declaration (spec 0371). By default such a record scores net zero,
+        /// which is right when blobs and schemas come from the same build;
+        /// turn it off for a corpus whose writers ignore the declaration.
+        #[arg(long = "no-packing-penalty", help_heading = "Advanced options")]
+        no_packing_penalty: bool,
 
         /// Suppress inline expansion of MessageSet groups.
         /// Independent of --no-expand-any.
@@ -248,7 +256,8 @@ pub enum Command {
         assume_binary: bool,
 
         /// Add individual score dimensions (matched, unknown, out_of_range,
-        /// non_canonical, mismatches) alongside the consolidated score for
+        /// non_canonical, mismatches, truncated, packing) alongside the
+        /// consolidated score for
         /// each type.
         #[arg(long = "detailed-score", help_heading = "Advanced options")]
         detailed_score: bool,
@@ -256,6 +265,13 @@ pub enum Command {
         /// Suppress google.protobuf.Any expansion; score value as plain bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
+
+        /// Do not charge records whose packing contradicts the schema's
+        /// declaration (spec 0371). By default such a record scores net zero,
+        /// which is right when blobs and schemas come from the same build;
+        /// turn it off for a corpus whose writers ignore the declaration.
+        #[arg(long = "no-packing-penalty", help_heading = "Advanced options")]
+        no_packing_penalty: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.
@@ -288,6 +304,13 @@ pub enum Command {
         /// Suppress google.protobuf.Any expansion; score value as plain bytes.
         #[arg(long = "no-expand-any", help_heading = "Advanced options")]
         no_expand_any: bool,
+
+        /// Do not charge records whose packing contradicts the schema's
+        /// declaration (spec 0371). By default such a record scores net zero,
+        /// which is right when blobs and schemas come from the same build;
+        /// turn it off for a corpus whose writers ignore the declaration.
+        #[arg(long = "no-packing-penalty", help_heading = "Advanced options")]
+        no_packing_penalty: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

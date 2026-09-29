@@ -208,7 +208,7 @@ pub(crate) fn ranked_with<T>(
 ) -> (RankedCandidates, T) {
     let opts = ScoringOpts {
         end_undeclared: cut,
-        ..Default::default()
+        ..crate::override_pane::scoring_opts()
     };
     // Clamped here rather than only at the command line, so that every
     // path into the sweep is bounded by the machine whether or not its
@@ -677,7 +677,8 @@ impl Partition {
     pub(crate) fn new(graph: &ArchivedCompiledGraph, jobs: usize) -> Self {
         Partition {
             parts: partition_roots(graph, target_parts(effective_jobs(jobs))),
-            opts: ScoringOpts::default(),
+            // Spec 0371 S10: the packing penalty as the command line set it.
+            opts: crate::override_pane::scoring_opts(),
         }
     }
 
