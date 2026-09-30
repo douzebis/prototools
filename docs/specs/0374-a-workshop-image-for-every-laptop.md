@@ -274,7 +274,9 @@ rather than the plan.
   GreHack audience can install a container runtime. It says any OCI
   runtime works, recommends one per platform and links to its official
   install instructions rather than repeating them:
-  - **Linux:** Docker Engine (Apache-2.0), or Podman (Apache-2.0).
+  - **Linux:** Podman (Apache-2.0), rootless, run with `--user 0`; or
+    Docker Engine (Apache-2.0). Amended by spec 0375 S8: rootless
+    Podman keeps what the container writes owned by the participant.
   - **macOS:** Colima (MIT) with the `docker` CLI, or Podman.
   - Docker Desktop works too, for those who already have it; it is
     simply not what the guide recommends, since its licence is not open
