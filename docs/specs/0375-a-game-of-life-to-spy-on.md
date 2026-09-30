@@ -174,7 +174,10 @@ for the application.
     their own server, in their own container: the traffic stays on the
     container's loopback, where the spy captures it;
   - answers `Step` with the next generation under `rules`, and
-    `generation + 1`;
+    `generation + 1`. An absent `rules`, `birth` or `survival` means
+    Conway's (birth `[3, 3]`, survival `[2, 3]`), rather than an error:
+    a participant crafting requests by hand gets an answer, and the
+    default is itself something to discover;
   - rejects with `INVALID_ARGUMENT`: rows of different lengths, a grid
     over 512 × 512 cells, a range with `min > max` or `max > 8`, and an
     unknown enum value in a cell;
@@ -182,25 +185,42 @@ for the application.
     tonic's `max_connection_age`). The client reconnects on its own, and
     a spy started late has full traffic within 10 s (Background);
   - logs one line per request to stderr: time, peer, grid size,
-    generation, and the time spent.
+    generation, and the time spent;
+  - on Ctrl-C (SIGINT) or SIGTERM, stops accepting connections, finishes
+    the calls in flight and exits 0.
 
 ### The client
 
 - **S5.** `life-client [--server URL] [--birth MIN-MAX]
-  [--survival MIN-MAX] [--torus] [--pattern NAME]`, with ratatui and
-  crossterm as in protolens:
-  - the grid fills the terminal, one cell per character, and follows
-    resizes;
+  [--survival MIN-MAX] [--torus] [--pattern NAME] [--size WxH]
+  [--steps N]`, with ratatui and crossterm as in protolens:
+  - the grid fills the terminal, one cell per two columns (`██`), since
+    a character cell is about twice as tall as it is wide; a resize
+    keeps the top-left cells and pads or trims the rest;
+  - defaults: Conway's rules, bounded topology, 10 generations per
+    second (`+`/`-` within 1 to 60), 25 % live cells for a random fill;
+  - one call in flight at a time: the next request is sent when the
+    response to the previous one has arrived, so the traffic is one
+    request, one response, in order;
   - keys: `space` run/pause, `n` one step, `r` random fill, `c` clear,
-    `+`/`-` speed, `q` quit; a mouse click toggles a cell;
+    `+`/`-` speed, `q` or Ctrl-C quit; a mouse click toggles a cell. In
+    raw mode Ctrl-C arrives as a key, not a signal, so the client
+    handles it itself, and it restores the terminal on every exit path,
+    a panic included;
+  - when a call fails, the run pauses and the status line shows the
+    error; the next step retries, so a server started after the client
+    is picked up;
   - a status line shows the generation, the rules, the speed, the round
     trip time, and the server's last error;
   - `--pattern` starts from a named pattern (at least `glider`,
-    `r-pentomino`, `gosper-gun`).
+    `r-pentomino`, `gosper-gun`);
+  - `--steps N` runs N generations without the TUI, on a `--size` grid
+    (default 40x20), and prints the final generation number and live
+    cell count: the scriptable client the smoke test uses.
 
 ### The spy
 
-- **S6.** `life-spy [--port N] [--out DIR] [--proto-path DIR]`, a bash
+- **S6.** `life-spy [--port N] [--out DIR] [--proto-path DIR] [--stop]`, a bash
   script around `dumpcap` and `tshark`, run as root in the container
   with the application (Background):
 
@@ -212,12 +232,19 @@ for the application.
     runs, ready to copy: the spy is a worked example of driving
     Wireshark's tools on gRPC, not a black box, and participants adapt
     those commands in a terminal of their own;
+  - runs one pipeline, `dumpcap -w - | tee DIR/capture.pcapng |
+    tshark -l -i - …`, which decodes each message as it crosses the wire
+    (about 10 ms after it, measured with the stand-in pair) and saves
+    the capture at the same time;
   - captures loopback traffic on the port (default 50051) and prints
     one line per gRPC message: time, `→` request or `←` response, the
     method path when known, the length, and the file it wrote;
   - writes each message's bytes (`grpc.message_data`) to
-    `DIR/NNNNNN-request.pb` or `DIR/NNNNNN-response.pb`, and the whole
-    capture to `DIR/capture.pcapng` for Wireshark on the host; `DIR`
+    `DIR/NNNNNN-request.pb` or `DIR/NNNNNN-response.pb`, where `NNNNNN`
+    numbers the call, so a request and its response share it (the call
+    is its connection and HTTP/2 stream); a frame holding several
+    messages yields several files. The whole capture goes to
+    `DIR/capture.pcapng` for Wireshark on the host; `DIR`
     defaults to `/work/capture`, so files land on the laptop, and to
     `./capture` where there is no `/work` (S10). The spy runs as root,
     so it gives every file it writes to the user it works for: the owner
@@ -227,10 +254,18 @@ for the application.
   - `--proto-path DIR` adds tshark's protobuf search path, so the
     printed lines show field names — for the participant who has
     rebuilt the `.proto` from the binary (protoscan, then reproto);
-  - says so when a message was seen without its headers, instead of
-    dropping it silently;
+  - counts the messages it misses because their connection predates it
+    (HTTP/2 DATA frames that tshark could not attribute to gRPC), and
+    says so once, rather than dropping them silently: "N messages
+    missed: their connection predates the spy; the server renews
+    connections every 10 s". It does not decode those frames itself;
   - writes what it prints to `DIR/spy.log` as well, so a detached spy
-    can be followed from any terminal (S8).
+    can be followed from any terminal (S8);
+  - stops on Ctrl-C (in its terminal) or SIGTERM: it ends the pipeline,
+    so that `capture.pcapng` is complete, hands its files to the user,
+    removes its pid file and exits 0. It writes its pid to
+    `DIR/spy.pid`; `life-spy --stop` signals that pid, which is how a
+    spy started detached, with no terminal for Ctrl-C, is stopped (S8).
 
 ### The image
 
@@ -247,9 +282,12 @@ for the application.
   ```sh
   docker run -it --rm --name workshop --cap-add NET_RAW -e TERM -e COLORTERM \
       -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+                                           # the first terminal: the client
   docker exec -it workshop bash            # a second terminal: the server
   docker exec -it -u 0 workshop life-spy   # a third: the spy
   ```
+
+  Each stops with Ctrl-C in its own terminal.
 
   The login banner lists these three commands.
 
@@ -260,8 +298,9 @@ for the application.
   detached instead, and a pane follows its log:
 
   ```sh
-  docker exec -d -u 0 workshop life-spy   # from the laptop, once
-  tail -f /work/capture/spy.log           # in a tmux pane
+  docker exec -d -u 0 workshop life-spy          # from the laptop
+  tail -f /work/capture/spy.log                  # in a tmux pane
+  docker exec -u 0 workshop life-spy --stop      # from the laptop, to stop it
   ```
 
   Separate terminals remain the documented way; tmux is the
@@ -328,13 +367,18 @@ exercise. The embedded descriptor (S3) is the intended way in.
    `grehack/life/v1/life.proto`, and the recovered descriptor is equal
    to the one built from `life.proto`.
 2. A server unit test for each rule and topology: a blinker oscillates,
-   a block is stable, a glider on a torus returns to its start after
-   4 × width generations; each rejection case of S4 gets its error.
-3. In the image: `life-server &`, `life-spy --out /tmp/cap &`, then a
-   scripted client run of N steps. `/tmp/cap` holds N requests and N
-   responses, and `prototext decode --raw` opens each.
+   a block is stable, a glider on a square torus of side w returns to
+   its start after 4w generations; each rejection case of S4 gets its
+   error; a request without `rules` is answered under Conway's.
+3. In the image, as a new check in `grehack2026/smoke-test.sh`, so CI
+   runs it on both architectures: `life-server &`, the spy as root
+   (`--user 0`) with `--out /tmp/cap &`, then `life-client --steps N`.
+   `/tmp/cap` holds requests and responses numbered 1 to N in pairs,
+   `prototext decode --raw` opens each, and `life-spy --stop` leaves a
+   complete `capture.pcapng` that tshark reads without error.
 4. The late spy: start the spy after the client has run for 20 s; within
-   `--max-connection-age` it prints method paths and writes files.
+   `--max-connection-age` it prints method paths and writes files, and
+   it has reported the messages it missed before that.
 5. `--proto-path` with the `.proto` that reproto rebuilds from the
    protoscan output: tshark shows the field names.
 6. `grpcurl -plaintext localhost:50051 list` fails (no reflection).
