@@ -54,13 +54,13 @@ class SourceCodeInfoMixin:
         for location in file.source_code_info.location:
             if list(location.path) == path:
                 if location.leading_comments:
-                    for line in location.leading_comments.strip().split('\n'):
+                    for line in location.leading_comments.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                 for detached in location.leading_detached_comments:
-                    for line in detached.strip().split('\n'):
+                    for line in detached.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                 if location.trailing_comments:
-                    for line in location.trailing_comments.strip().split('\n'):
+                    for line in location.trailing_comments.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                 break
 

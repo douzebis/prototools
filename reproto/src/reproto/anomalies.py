@@ -245,4 +245,4 @@ def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: An
 
     prefix = f'{anomaly.severity}[{anomaly.tag}]:'
     body = anomaly.comment.format_map(_Ignore(kwargs))
-    return BlockLine(f'{prefix} {body}', depth, COMMENT)
+    return BlockLine(f' {prefix} {body}', depth, COMMENT)

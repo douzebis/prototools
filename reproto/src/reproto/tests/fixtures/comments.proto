@@ -1,0 +1,31 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// A file header, first line.
+//
+//no space after the slashes
+//   three spaces after, like a code sample
+
+/* A block comment,
+ * before the syntax line.
+ */
+
+syntax = "proto3";
+
+package comments;
+
+    // An indented comment, leading the message.
+    //no space here either
+message Commented {
+  int32 a = 1;
+}  // A trailing comment.
+
+// Detached from the message below.
+
+// Leading the message, above a blank comment line:
+//
+// and below it.
+message Other {
+  int32 b = 1;
+}

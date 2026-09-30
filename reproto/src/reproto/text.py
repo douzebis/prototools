@@ -109,8 +109,10 @@ class Block:
 
             if line.type == COMMENT:
                 if not ctx.redact_comments:
-                    # prepend '// ' (indented)
-                    out += " " * indent_spaces + "// " + line.text + '\n'
+                    # prepend '//' (indented): a comment line's text is
+                    # exactly what follows it, as protoc stores it (spec
+                    # 0376), so reproto's own comments bring their space.
+                    out += " " * indent_spaces + "//" + line.text + '\n'
 
             elif line.type == ORPHAN:
                 if not ctx.redact_orphans:

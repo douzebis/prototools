@@ -188,20 +188,20 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             if len(location.path) == 0 or (len(location.path) == 1 and location.path[0] == 12):
                 # Leading comments before the element
                 if location.leading_comments:
-                    for line in location.leading_comments.strip().split('\n'):
+                    for line in location.leading_comments.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                     out.append(BlockLine('', depth))
 
                 # Leading detached comments (separated by blank lines)
                 # These are typically file header comments
                 for detached in location.leading_detached_comments:
-                    for line in detached.strip().split('\n'):
+                    for line in detached.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                     out.append(BlockLine('', depth))
 
                 # Trailing comments after the element
                 if location.trailing_comments:
-                    for line in location.trailing_comments.strip().split('\n'):
+                    for line in location.trailing_comments.removesuffix('\n').split('\n'):
                         out.append(BlockLine(line, depth, COMMENT))
                     out.append(BlockLine('', depth))
 
@@ -305,7 +305,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             ctx.out_sci = None
 
         # --- File intro -------------------------------------------------------
-        out.append(BlockLine(self.name, depth, COMMENT))
+        out.append(BlockLine(f' {self.name}', depth, COMMENT))
         out.append(BlockLine('', depth))
         out.append_div_maybe(depth)
 
