@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# life — the GreHack 2026 workshop target: a game of life whose client
+# draws the grid and whose server computes each generation, over cleartext
+# gRPC (spec 0375).
+#
+# Deliberately NOT a member of the root workspace, like demo/bobapp (spec
+# 0241 S1): cargo unifies features across a workspace, and tonic, hyper and
+# tokio appear nowhere else in it.  Its own Cargo.lock.
+#
+#   cargo build --release --manifest-path grehack2026/life/Cargo.toml
+#
+# build.rs runs protoc (PROTOC, or protoc on PATH: the dev shell has it).
+
+[package]
+name        = "life"
+version     = "0.1.0"
+edition     = "2021"
+description = "Game of life over cleartext gRPC, for the GreHack 2026 workshop"
+license     = "MIT"
+publish     = false
+
+[dependencies]
+clap         = { version = "4", features = ["derive"] }
+# life-spy: kill(2), chown's user ids, getuid, localtime_r.
+libc         = "0.2"
+prost        = "0.14"
+prost-types  = "0.14"
+ratatui      = "0.30"
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tonic        = { version = "0.14", default-features = false, features = [
+    "channel",
+    "codegen",
+    "router",
+    "server",
+] }
+tonic-prost  = "0.14"
+
+[build-dependencies]
+prost             = "0.14"
+prost-types       = "0.14"
+tonic-prost-build = "0.14"
+
+[profile.release]
+codegen-units   = 1
+lto             = "thin"
+overflow-checks = true

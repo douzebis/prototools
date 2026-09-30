@@ -133,6 +133,50 @@ EOF
 check "editor path, default user" <<<"$editor_check"
 check "editor path, uid 4242" --user 4242:4242 <<<"$editor_check"
 
+# ── The game of life (spec 0375) ─────────────────────────────────────────────
+
+# Test plan 1: the schema is in the binaries, for protoscan to find.
+check "protoscan finds life.proto in the client and the server" <<'EOF'
+set -e
+for b in life-client life-server; do
+  found=$(protoscan "$(readlink -f "/bin/$b")")
+  [ "$found" = grehack/life/v1/life.proto ] || { echo "$b: $found"; exit 1; }
+done
+EOF
+
+# Test plan 3: server, spy and a scripted client in the image. As root, as
+# the spy must be; the image's own default user runs the rest in practice.
+check "server, spy and client: every call saved, in pairs" --user 0 <<'EOF'
+set -e
+life-server 2>/tmp/server.log &
+life-spy --out /tmp/cap >/tmp/spy.log 2>&1 &
+sleep 3
+life-client --steps 20 --size 20x10 --pattern glider
+life-spy --out /tmp/cap --stop
+grep -q "20 requests and 20 responses saved, 0 messages missed" /tmp/spy.log \
+  || { tail -5 /tmp/spy.log; exit 1; }
+for n in $(seq -f %06g 1 20); do
+  for d in request response; do
+    prototext decode --raw "/tmp/cap/$n-$d.pb" >/dev/null
+  done
+done
+tshark -r /tmp/cap/capture.pcapng >/dev/null 2>&1
+EOF
+
+# Test plan 8: nothing but the two binaries names the schema's package.
+check "only the binaries carry the schema" <<'EOF'
+set -e
+found=$(grep -rl grehack.life.v1 /nix/store | grep -v -e /bin/life-client -e /bin/life-server || true)
+[ -z "$found" ] || { printf '%s\n' "$found"; exit 1; }
+EOF
+
+# Spec 0375 S8 and S9: tmux, and buf without its plugins.
+check "tmux, and buf without protoc-gen-buf" <<'EOF'
+set -e
+tmux -V
+! ls /nix/store/*/bin/protoc-gen-buf-* >/dev/null 2>&1
+EOF
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)

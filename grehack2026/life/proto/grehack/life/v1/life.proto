@@ -1,0 +1,57 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// The wire of the GreHack 2026 game of life (spec 0375 S2).
+//
+// This file is not in the workshop image: participants recover the schema
+// from the FileDescriptorProto the binaries embed (spec 0375 G3).
+
+syntax = "proto3";
+
+package grehack.life.v1;
+
+enum CellState {
+  CELL_STATE_DEAD  = 0;
+  CELL_STATE_ALIVE = 1;
+}
+
+message Row {
+  repeated CellState cells = 1;  // packed (proto3)
+}
+
+message Grid {
+  repeated Row rows = 1;
+}
+
+// Inclusive bounds on the number of live neighbors.
+message Range {
+  uint32 min = 1;
+  uint32 max = 2;
+}
+
+enum Topology {
+  TOPOLOGY_BOUNDED = 0;  // outside the grid is dead
+  TOPOLOGY_TORUS   = 1;  // edges wrap
+}
+
+message Rules {
+  Range    birth    = 1;  // a dead cell becomes alive
+  Range    survival = 2;  // a live cell stays alive
+  Topology topology = 3;
+}
+
+message StepRequest {
+  Grid   grid       = 1;
+  Rules  rules      = 2;
+  uint64 generation = 3;  // the grid's generation, echoed + 1
+}
+
+message StepResponse {
+  Grid   grid       = 1;
+  uint64 generation = 2;
+}
+
+service Life {
+  rpc Step(StepRequest) returns (StepResponse);
+}

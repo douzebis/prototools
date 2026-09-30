@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0375 — a game of life to spy on
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-30
 App: grehack2026 (life-server, life-client, life-spy), nix
 Refs: docs/specs/0374-a-workshop-image-for-every-laptop.md (the image
       this ships in, and its size budget);
@@ -99,12 +100,13 @@ for the application.
 ### Layout
 
 - **S1.** The application lives in `grehack2026/life/`: one Cargo
-  package with two binaries, `life-server` and `life-client`, its own
+  package with three binaries, `life-server`, `life-client` and
+  `life-spy`, its own
   `Cargo.lock`, and an entry in the root manifest's
   `[workspace] exclude`, as `demo/bobapp` has (spec 0241): tonic, hyper
   and tokio must not enter the workspace graph or `depsCache`. The schema
-  is `grehack2026/life/proto/grehack/life/v1/life.proto`; the spy is
-  `grehack2026/life/life-spy`. Built by a Nix derivation exported as
+  is `grehack2026/life/proto/grehack/life/v1/life.proto`. Built by a
+  Nix derivation exported as
   `grehack2026.life`.
 
 ### The wire
@@ -220,9 +222,13 @@ for the application.
 
 ### The spy
 
-- **S6.** `life-spy [--port N] [--out DIR] [--proto-path DIR] [--stop]`, a bash
-  script around `dumpcap` and `tshark`, run as root in the container
-  with the application (Background):
+- **S6.** `life-spy [--port N] [--out DIR] [--proto-path DIR] [--stop]`,
+  a Rust program around `dumpcap` and `tshark`, run as root in the
+  container with the application (Background). tshark does the
+  dissection (HTTP/2, header decompression, reassembly, the gRPC
+  prefix); the spy spawns it and dumpcap, and does in process what a
+  shell would fork a program for — the tee, hex decoding, file writes
+  and ownership — so that it keeps up with the client at full speed:
 
   ```sh
   docker exec -it -u 0 workshop life-spy
@@ -232,10 +238,12 @@ for the application.
     runs, ready to copy: the spy is a worked example of driving
     Wireshark's tools on gRPC, not a black box, and participants adapt
     those commands in a terminal of their own;
-  - runs one pipeline, `dumpcap -w - | tee DIR/capture.pcapng |
-    tshark -l -i - …`, which decodes each message as it crosses the wire
-    (about 10 ms after it, measured with the stand-in pair) and saves
-    the capture at the same time;
+  - runs the equivalent of `dumpcap -w - | tee DIR/capture.pcapng |
+    tshark -l -r - …` — the tee in process — which decodes each message
+    as it crosses the wire (about 10 ms after it, measured with the
+    stand-in pair) and saves the capture at the same time; dumpcap and
+    tshark run in their own process group, so a Ctrl-C reaches the spy
+    alone, which then stops dumpcap and lets tshark drain;
   - captures loopback traffic on the port (default 50051) and prints
     one line per gRPC message: time, `→` request or `←` response, the
     method path when known, the length, and the file it wrote;
@@ -247,10 +255,12 @@ for the application.
     `DIR/capture.pcapng` for Wireshark on the host; `DIR`
     defaults to `/work/capture`, so files land on the laptop, and to
     `./capture` where there is no `/work` (S10). The spy runs as root,
-    so it gives every file it writes to the user it works for: the owner
-    of `/work` in the image (`stat -c %u:%g /work`; with Docker on
-    Linux, root-owned files would otherwise need `sudo` to delete on the
-    laptop), `$SUDO_UID:$SUDO_GID` under `sudo`;
+    so it gives every file and directory it creates, as it creates
+    them, to the user it works for: the owner of `/work` in the image,
+    `$SUDO_UID:$SUDO_GID` under `sudo`. With Docker on Linux, container
+    root is the laptop's root, and a root-owned `capture/` directory in
+    the participant's own directory could not be emptied or removed
+    without `sudo`;
   - `--proto-path DIR` adds tshark's protobuf search path, so the
     printed lines show field names — for the participant who has
     rebuilt the `.proto` from the binary (protoscan, then reproto);
@@ -261,9 +271,10 @@ for the application.
     connections every 10 s". It does not decode those frames itself;
   - writes what it prints to `DIR/spy.log` as well, so a detached spy
     can be followed from any terminal (S8);
-  - stops on Ctrl-C (in its terminal) or SIGTERM: it ends the pipeline,
-    so that `capture.pcapng` is complete, hands its files to the user,
-    removes its pid file and exits 0. It writes its pid to
+  - stops on Ctrl-C (in its terminal) or SIGTERM: it captures on for
+    one more second, since dumpcap drops the packets it received just
+    before a SIGTERM, then ends the pipeline, so that `capture.pcapng`
+    is complete, removes its pid file and exits 0. It writes its pid to
     `DIR/spy.pid`; `life-spy --stop` signals that pid, which is how a
     spy started detached, with no terminal for Ctrl-C, is stopped (S8).
 
@@ -277,25 +288,38 @@ for the application.
   run in the participant's own container, each in its own terminal.
   SETUP.md's run command gains `--name workshop`, so that further
   terminals reach the same container, and `--cap-add NET_RAW`, which
-  Docker grants anyway and rootless Podman needs for the spy:
+  Docker grants anyway and rootless Podman needs for the spy. On Linux,
+  SETUP.md recommends rootless Podman (spec 0374 S8 is amended to
+  match), run as container root:
 
   ```sh
-  docker run -it --rm --name workshop --cap-add NET_RAW -e TERM -e COLORTERM \
-      -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+  podman run -it --rm --name workshop --user 0 --cap-add NET_RAW \
+      -e TERM -e COLORTERM -v "$PWD":/work \
+      ghcr.io/douzebis/prototools-workshop:grehack2026
                                            # the first terminal: the client
-  docker exec -it workshop bash            # a second terminal: the server
-  docker exec -it -u 0 workshop life-spy   # a third: the spy
+  podman exec -it workshop bash            # a second terminal: the server
+  podman exec -it workshop life-spy        # a third: the spy
   ```
 
-  Each stops with Ctrl-C in its own terminal.
+  In rootless Podman, container root is the participant's own uid, so
+  `--user 0` makes everything written to `/work` theirs and grants no
+  privilege beyond theirs; the spy then needs no `-u 0`. The image's
+  default user fits Podman badly: its uid 1000 maps to a subordinate
+  uid, which cannot write to `/work`, and `--userns=keep-id`, which
+  fixes that, makes an uid-mapped copy of every layer (about 0.9 GiB for
+  this image; measured 2026-09-30 with Podman 5.8.7). With Docker the
+  same holds as before: `docker exec -it -u 0 workshop life-spy`, and on
+  Linux `--user "$(id -u):$(id -g)"` at `run`.
 
-  The login banner lists these three commands.
+  Each stops with Ctrl-C in its own terminal. The login banner lists
+  the three commands.
 
   The image also has tmux (built with `withSystemd = false`: 0.9 MiB
   compressed, against 2.5 MiB with systemd's libraries), for
-  participants who prefer one window. Its panes run as `hacker` and the
-  image has no `sudo`, so the spy cannot be started from a pane; it runs
-  detached instead, and a pane follows its log:
+  participants who prefer one window. Under Podman as above, its panes
+  run as root and the spy runs in one. Under Docker they run as
+  `hacker` and the image has no `sudo`, so the spy runs detached and a
+  pane follows its log:
 
   ```sh
   docker exec -d -u 0 workshop life-spy          # from the laptop
@@ -404,4 +428,65 @@ exercise. The embedded descriptor (S3) is the intended way in.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-09-30 on the x86-64 NixOS development VM (Docker 29.8.0,
+rootless Podman 5.8.7), release builds.
+
+**The image.** 293 MiB gzip-compressed, 1,060 MiB unpacked, 178 store
+paths: under spec 0374's 300 MiB with tshark, tmux and the game of life
+in it, the image's `buf` down to its one binary. S9's fallback (350 MiB)
+was not needed. `grehack2026/smoke-test.sh` passes all 13 checks,
+test plan items 1, 3, 7 and 8 among them.
+
+**Test plan.**
+
+1. Passes: protoscan finds `grehack/life/v1/life.proto` in both
+   binaries, byte for byte the descriptor build.rs writes. The client
+   first lacked it: it held the descriptor without reading it, and the
+   linker dropped it. It now names the method from it in its errors.
+2. Passes: 9 server tests (blinker, block, glider on an 8 × 8 torus,
+   bounded edge, a birth range, absent rules, and the rejections), 3
+   pattern tests, 11 spy tests, 1 descriptor test.
+3. Passes, in the image under Docker (a smoke-test check) and under
+   rootless Podman: every call saved, in pairs, each file decoded by
+   `prototext decode --raw`, `capture.pcapng` read by tshark.
+4. Passes: with connections renewed every 3 s and the spy started 1.5 s
+   into a 2,000-step run, it reported the missed messages once, then
+   saved every call of the renewed connections. The run exposed a client
+   bug: a call racing the renewal failed with `Unknown: transport
+   error`. The client now retries such a failure once — Step is a pure
+   computation — and the spy may then see the request twice.
+5. Pending: `--proto-path` with a reproto-rebuilt `.proto`.
+6. Pending: `grpcurl` is not in the image; the server registers no
+   reflection service, by construction.
+7. Passes (above).
+8. Passes: `grehack.life.v1` appears in the image only in the two
+   binaries.
+9. Passes: under `sudo` on the VM and in Docker, files are the user's
+   as written; under rootless Podman with `--user 0` they are already.
+10. Partly: rootless Podman on the VM, as SETUP.md now recommends,
+    passes. macOS and the tmux route by hand are pending, before the
+    workshop.
+11. Passes: on the VM, the spy under `sudo`, writing `./capture` files
+    owned by the user. `programs.wireshark` untried.
+
+**The spy is Rust, not bash (S6).** A bash version was written first and
+worked, but its costs all came from bash: `read` with a tab separator
+collapses empty fields; every helper forked (a subshell per line, `tee`,
+`basenc` and `chown` per message), which left it minutes behind a fast
+client; and stopping a pipeline cleanly took a FIFO and trap subtleties.
+The Rust spy does the tee, hex decoding, file writes and ownership in
+process, and keeps up: 1,000 unthrottled calls of 5 KB, and 2,000 of
+61 KB, left no backlog (`--stop` returned in 0.12 s). It still prints the
+commands, which is what participants adapt.
+
+**tshark.** `-r -` rather than `-i -`: the live mode starts a dumpcap of
+its own, spooling to a temporary file, and is a moving part the spy does
+not need. The stop grace (S6) came from a smoke-test failure: a burst of
+calls ending less than 0.3 s before the stop went unsaved, all of it,
+while dumpcap had captured it — dumpcap drops what it holds on SIGTERM.
+With one second's grace, 6 immediate stops out of 6 saved everything.
+
+**Podman (S8).** Rootless Podman with the image's default user cannot
+write to `/work`, and `--userns=keep-id` copies every layer (it filled
+this VM's disk); as container root, which is the participant, it just
+works. SETUP.md and spec 0374 S8 now recommend it on Linux.

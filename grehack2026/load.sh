@@ -7,8 +7,8 @@
 # load.sh — load the GreHack 2026 workshop image from this USB key, offline
 # (spec 0374 S8).
 #
-#   ./load.sh              uses docker, or podman when docker is absent
-#   RUNTIME=podman ./load.sh
+#   ./load.sh              uses podman, or docker when podman is absent
+#   RUNTIME=docker ./load.sh
 #
 # Picks the archive for this machine, checks it against SHA256SUMS, and
 # loads it as ghcr.io/douzebis/prototools-workshop:grehack2026.
@@ -25,8 +25,8 @@ archive=prototools-workshop-$arch.tar
 
 runtime=${RUNTIME:-}
 if [ -z "$runtime" ]; then
-  if command -v docker >/dev/null; then runtime=docker
-  elif command -v podman >/dev/null; then runtime=podman
+  if command -v podman >/dev/null; then runtime=podman
+  elif command -v docker >/dev/null; then runtime=docker
   else echo "load.sh: neither docker nor podman is installed (see SETUP.md)" >&2; exit 1
   fi
 fi
@@ -43,13 +43,20 @@ echo "Loading $archive with $runtime ..."
 "$runtime" load -i "$archive"
 
 echo
-echo "Done. Start the workshop environment with:"
-# Docker on Linux runs as root by default; --user makes files written to
-# /work the participant's. Rootless Podman and the macOS VMs map this already.
-if [ "$runtime" = docker ] && [ "$(uname -s)" = Linux ]; then
+echo "Done. Start the workshop environment with (SETUP.md, section 3):"
+# Rootless Podman: container root is the participant, so --user 0 makes
+# files written to /work theirs. Docker on Linux runs as the laptop's root,
+# hence --user there; Colima's VM maps ownership already.
+if [ "$runtime" = podman ]; then
   cat <<'EOF'
-  docker run -it --rm --user "$(id -u):$(id -g)" -e TERM -e COLORTERM -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+  podman run -it --rm --name workshop --user 0 --cap-add NET_RAW -e TERM -e COLORTERM -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+EOF
+elif [ "$(uname -s)" = Linux ]; then
+  cat <<'EOF'
+  docker run -it --rm --name workshop --cap-add NET_RAW --user "$(id -u):$(id -g)" -e TERM -e COLORTERM -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
 EOF
 else
-  echo "  $runtime run -it --rm -e TERM -e COLORTERM -v \"\$PWD\":/work ghcr.io/douzebis/prototools-workshop:grehack2026"
+  cat <<'EOF'
+  docker run -it --rm --name workshop --cap-add NET_RAW -e TERM -e COLORTERM -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+EOF
 fi

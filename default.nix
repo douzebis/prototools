@@ -132,6 +132,9 @@ let
         # to bobapp would change workspaceSrc's hash and rebuild the whole
         # Rust world for a demo that ci does not even compile from here.
         (pkgs.lib.fileset.maybeMissing ./demo/bobapp)
+        # grehack2026/life, the GreHack 2026 game of life, likewise (spec
+        # 0375 S1): its own Cargo project, built by its own derivation.
+        (pkgs.lib.fileset.maybeMissing ./grehack2026/life)
       ]);
   };
 
@@ -434,6 +437,8 @@ let
     # kept out of user-shell for that reason.
     inherit (python) googleapisDb googleapisPbs;
     inherit grpconfDemo;
+    # dev-shell only: life-server, life-client and life-spy (spec 0375 S10).
+    inherit grehackLife;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
@@ -518,9 +523,15 @@ let
     deny  = [ "-deps-deps" "winapi" "cargo-package" ];
   };
 
+  # The GreHack 2026 game of life and its spy (spec 0375): a separate Cargo
+  # project, like bobapp, and not in `ci`; the workshop image's workflow
+  # builds it, unit tests included, on both architectures.
+  grehackLife = import ./grehack2026/life/default.nix { inherit pkgs crane; };
+
   # The GreHack 2026 workshop image (spec 0374).
   grehack2026 = import ./nix/grehack2026.nix {
     inherit pkgs wktDb mkClosureCheck gitRevision;
+    life = grehackLife;
     inherit (rust) prototext protolensLean;
     inherit (python) reproto protoscan googleapisDb googleapisPbs;
   };

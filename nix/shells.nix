@@ -52,6 +52,7 @@
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
 , googleapisPbs     # googleapis per-file FDS blob; dev-shell only (PROTOTEXT_GOOGLEAPIS_PBS)
 , grpconfDemo       # grpconf-demo stage: bin/bobapp, logfile, capture, beats/
+, grehackLife       # GreHack 2026 life-server, life-client, life-spy (spec 0375)
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -180,7 +181,7 @@ in
       #   (spec 0375 S10). The store's dumpcap cannot capture; see the PATH
       #   note in _hook_env for the privileged one.
       wireshark-cli
-    ]) ++ [ buf grpconfDemo ];
+    ]) ++ [ buf grpconfDemo grehackLife ];
 
     shellHook = ''
       old_opts=$(set +o)

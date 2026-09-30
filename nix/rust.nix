@@ -318,7 +318,8 @@ let
   # (for `buf lsp serve`) onto PATH so they resolve regardless of the user's
   # own $PATH. A separate derivation from the compile (spec 0374 S2), so a
   # different Neovim costs a shell script, not a Rust build.
-  wrapProtolens = { neovim, name ? "protolens" }:
+  bufFull = buf;
+  wrapProtolens = { neovim, buf ? bufFull, name ? "protolens" }:
     pkgs.runCommand "${name}-${protolensUnwrapped.version}" {
       nativeBuildInputs = [ pkgs.makeWrapper ];
       meta              = protolensMeta;
@@ -346,7 +347,18 @@ let
     withRuby       = false;
     withPython3    = false;
   };
-  protolensLean = wrapProtolens { neovim = neovimLean; name = "protolens-lean"; };
+  # buf for the image (spec 0375 S9): its `buf` binary alone, copied rather
+  # than linked so the full package leaves the closure. protolens runs only
+  # `buf lsp serve`; the two protoc-gen-buf-* plugins are 72 MiB unpacked.
+  bufLean = pkgs.runCommand "buf-lean-${buf.version}" { } ''
+    install -Dm755 ${buf}/bin/buf $out/bin/buf
+  '';
+
+  protolensLean = wrapProtolens {
+    neovim = neovimLean;
+    buf    = bufLean;
+    name   = "protolens-lean";
+  };
 
   # ---------------------------------------------------------------------------
   # makePyo3Extension — shared helper for the three PyO3 extensions.

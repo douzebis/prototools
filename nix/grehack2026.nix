@@ -9,8 +9,10 @@
 # them under one reference (.github/workflows/workshop-image.yml).
 #
 # Attributes (exported from default.nix as `grehack2026.*`):
-#   runtime      — the tools, lean: prototext, protolens with a lean Neovim,
-#                  reproto, protoscan, and the WKT schema database
+#   runtime      — the tools, lean: prototext, protolens with a lean Neovim
+#                  and buf, reproto, protoscan, the WKT schema database, and
+#                  the game of life with its spy (spec 0375)
+#   life         — life-server, life-client, life-spy (spec 0375)
 #   image        — a streamLayeredImage script: `./result | docker load`
 #   closureCheck — fails when a denied store path enters the image
 #   publishTools — skopeo and crane, for the CI workflow
@@ -19,6 +21,7 @@
 , protolensLean
 , reproto
 , protoscan
+, life
 , wktDb
 , googleapisDb
 , googleapisPbs
@@ -33,7 +36,10 @@ let
   # members, but protolens wrapped with the lean Neovim.
   runtime = pkgs.symlinkJoin {
     name  = "prototools-runtime";
-    paths = [ prototext protolensLean reproto protoscan wktDb ];
+    # wireshark-cli on the participants' PATH too, not only on life-spy's:
+    # the spy prints its dumpcap and tshark commands to be run and adapted
+    # by hand (spec 0375 S6, S7).
+    paths = [ prototext protolensLean reproto protoscan wktDb life pkgs.wireshark-cli ];
   };
 
   uid = 1000;
@@ -62,8 +68,14 @@ let
 
       Tools:     prototext  protolens  reproto  protoscan
       Material:  /workshop   (try: protolens --type google.protobuf.FileDescriptorProto anomalies.pb)
-      Your files: mount a directory at /work, e.g.
-                 docker run -it --rm -v "$PWD":/work ghcr.io/douzebis/prototools-workshop:grehack2026
+      Your files: /work, when started with -v "$PWD":/work
+
+      The game of life, in three terminals (SETUP.md, section 4):
+        1  this one                             life-client
+        2  podman exec -it workshop bash        then: life-server
+        3  podman exec -it workshop life-spy    the spy; writes /work/capture
+      With Docker: docker exec, and -u 0 for the spy. Each stops with Ctrl-C.
+      tmux is here too, for one window of panes.
 
       Schema databases: $PROTOTEXT_DESCRIPTOR_SET (well-known types, the default)
                         $PROTOTEXT_GOOGLEAPIS_SET (googleapis; pass it with --descriptor-set)
@@ -71,6 +83,10 @@ let
     BANNER
     fi
   '';
+
+  # tmux for one window of panes (spec 0375 S8), without systemd's
+  # libraries, which it links by default: 0.9 MiB compressed against 2.5.
+  tmux = pkgs.tmux.override { withSystemd = false; };
 
   # What goes into the image's root (symlinked from the store). The
   # googleapis databases are not here: they are referenced from `config.Env`
@@ -83,6 +99,7 @@ let
     pkgs.gnugrep
     pkgs.less
     pkgs.ncurses
+    tmux
     pkgs.cacert
     nss
     profile
@@ -150,4 +167,4 @@ let
     paths = [ pkgs.skopeo pkgs.crane ];
   };
 
-in { inherit runtime image closureCheck publishTools; }
+in { inherit runtime life image closureCheck publishTools; }

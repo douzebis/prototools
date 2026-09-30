@@ -7,6 +7,9 @@
 /prototext-graph/target/
 /prototext-graph/Cargo.lock
 /demo/bobapp/target/
+/grehack2026/life/target/
+# life-spy's default output where there is no /work (spec 0375 S6).
+/grehack2026/life/capture/
 /release/
 /result
 /result-*
