@@ -34,6 +34,10 @@
     url    = "https://github.com/NixOS/nixpkgs/archive/31cd72fdba8fa052e437ce7e6879c4fe62def10f.tar.gz";
     sha256 = "107f6kp5kjxsh9aggnqfanlfn5mw24gq19alkdvld75vimv5r3jl";
   }) {}).buf
+# The commit an image is built from, for its org.opencontainers.image.revision
+# label (spec 0374 S5). CI passes `--argstr gitRevision "$GITHUB_SHA"`; a local
+# build leaves it out, and the image has no revision label.
+, gitRevision ? null
 }:
 
 let
@@ -489,6 +493,38 @@ let
     paths  = [ rust.prototext rust.protolens python.reproto python.protoscan wktDb ];
   };
 
+  # Fails when a store path whose name contains one of `deny` enters the
+  # closure of `roots` (spec 0374 S2). Names, not paths, so a leak is caught
+  # whatever its hash; the log lists every offender.
+  mkClosureCheck = { name, roots, deny }:
+    let info = pkgs.closureInfo { rootPaths = roots; };
+    in pkgs.runCommand name { } ''
+      found=0
+      for pattern in ${pkgs.lib.escapeShellArgs deny}; do
+        if grep -F -- "$pattern" ${info}/store-paths; then found=1; fi
+      done
+      if [ "$found" = 1 ]; then
+        echo "denied store paths in the closure (patterns: ${pkgs.lib.concatStringsSep " " deny})" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
+  # Spec 0374 S2: the regular bundle carries no build inputs. (wl-clipboard
+  # and perl are allowed here: they are the desktop clipboard feature.)
+  prototoolsClosureCheck = mkClosureCheck {
+    name  = "prototools-closure-check";
+    roots = [ prototools ];
+    deny  = [ "-deps-deps" "winapi" "cargo-package" ];
+  };
+
+  # The GreHack 2026 workshop image (spec 0374).
+  grehack2026 = import ./nix/grehack2026.nix {
+    inherit pkgs wktDb mkClosureCheck gitRevision;
+    inherit (rust) prototext protolensLean;
+    inherit (python) reproto protoscan googleapisDb googleapisPbs;
+  };
+
   # ---------------------------------------------------------------------------
   # CI targets
   #
@@ -506,6 +542,7 @@ let
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
     wktDb
+    prototoolsClosureCheck
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -519,6 +556,7 @@ let
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
     wktDb
+    prototoolsClosureCheck
   ];
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
@@ -556,6 +594,8 @@ in
   bobapp-extra-desc    = python.bobappExtraDesc;
   bobapp               = bobappDemo;
   grpconf-demo         = grpconfDemo;
+  inherit grehack2026;
+  prototools-closure-check = prototoolsClosureCheck;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
   wkt-db               = wktDb;

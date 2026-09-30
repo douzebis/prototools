@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0374 — a workshop image for every laptop
 
-Status: draft
+Status: implemented
+Implemented in: 2026-09-30
 App: grehack2026, nix, CI
 Refs: .github/workflows/nix.yml (the x86-64 and arm64 runners this
       builds on); default.nix `prototools` (the bundle the image
@@ -181,7 +182,8 @@ rather than the plan.
     - on the image, additionally `wl-clipboard`, `perl` and `ruby`,
       which are features on a desktop and dead weight in a container.
 - **S3. Base contents.** Besides the tools: `bashInteractive`,
-  `coreutils`, `less`, `ncurses` (for `reset`), `cacert`, and a login
+  `coreutils`, `gnugrep` (1 MiB, and what participants reach for first on
+  a decoded blob), `less`, `ncurses` (for `reset`), `cacert`, and a login
   shell. No package manager and no distro base image. Terminfo is not
   needed by protolens (crossterm writes ANSI directly), but `ncurses`'
   terminfo set is included so `less` and `reset` behave under any
@@ -365,6 +367,59 @@ image like any other runtime.
 
 ## Measured outcome
 
-Filled in at implementation: image size per architecture (compressed and
-uncompressed), closure size before and after S2, build time on each
-runner, and the S8 walkthrough results.
+Measured 2026-09-30, locally on x86-64 Linux (Docker 29.8.0).
+
+**Image (linux/amd64).** 239 MiB gzip-compressed (the stream piped
+through `gzip -6`), 859 MiB unpacked, 122 store paths in 99 layers.
+Well under the 300 MiB target. The largest paths: `googleapis-db`
+(176 MiB unpacked), reproto's `tree-sitter-language-pack` (159 MiB),
+`buf` (121 MiB, of which the two `protoc-gen-buf-*` plugins protolens
+does not use are 72 MiB), Python (114 MiB). A second glibc (2.42 besides
+2.40, 36 MiB) comes with `buf`, which is pinned to its own nixpkgs
+revision on purpose (default.nix). linux/arm64 is measured by the first
+CI run.
+
+**S2.** The regular `prototools` closure went from 1.7 GiB and 576 store
+paths (Background) to 873 MiB and 187 paths, with `wl-clipboard` kept
+and no `-deps-deps`, `winapi` or `cargo-package` path. There were two
+leaks, not one:
+protolens's `doInstallCargoArtifacts`, as expected, and the three pyo3
+extensions, whose `.so` embed the vendored sources' store paths as panic
+locations. crane strips those in a `postInstall` hook that the extensions'
+custom `installPhase` never ran; it now runs it (nix/rust.nix,
+`makePyo3Extension`). The image does not add a store path to what the
+tools need: the image's `protolens-unwrapped` is the regular bundle's.
+
+**Test plan.**
+
+1. Passes: `grehack2026/smoke-test.sh` passes all nine checks against
+   the local build, and fails four when `anomalies.pb` is removed.
+2. Pending: the first run of `.github/workflows/workshop-image.yml`.
+   Rehearsed locally instead: skopeo pushed the image to a local
+   registry (`distribution`), `crane index append --docker-empty-base`
+   made a manifest list whose entry has the platform `linux/amd64` read
+   from the config, and `docker pull` of the index tag ran the image.
+   actionlint and shellcheck are clean.
+3. Passes: with `perl` passed as `buf` (`--arg buf`), the image check
+   fails naming the perl path. The regular check failed on the real
+   leaks until they were fixed, and passes now; both are in `ci`.
+4. Passes (see S2 above).
+5. Pending: CI (arm64).
+6. Pending: manual, before the workshop.
+7. Passes: two streams of the same build have the same SHA-256; the
+   image's store path is unchanged across rebuilds.
+8. Passes: the smoke test runs the headless editor check as uid 4242.
+9. Half: on x86-64, `load.sh` checked and loaded the archive, and
+   rejected one with a byte appended. arm64 pending with the CI
+   archives.
+
+**Changes to the specification at implementation.** S3 adds `gnugrep`.
+S5's `revision` label comes from a `gitRevision` argument to
+default.nix, which CI passes; a local build has no revision label. S6's
+tools come from `grehack2026.publishTools` (skopeo 1.20.0, crane 0.20.6,
+from the repository's nixpkgs pin), and skopeo runs with
+`--insecure-policy`, since runners need not have a
+`/etc/containers/policy.json` and the source is always the archive just
+built. S7's round trip is encode → decode → encode: `anomalies.pb` is
+authored in prototext, so the check is that the two binaries are the
+same.

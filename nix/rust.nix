@@ -270,21 +270,13 @@ let
       --zsh  <(PROTOLENS_COMPLETE=zsh  $out/bin/protolens) \
       --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
 
-    # Generate and install man page (spec 0228 S11). Before wrapProgram,
-    # so the generator runs the real binary rather than the wrapper.
+    # Generate and install man page (spec 0228 S11), from the real binary.
     PROTOLENS_GEN_MAN=$out/share/man/man1 $out/bin/protolens
 
-    # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime
-    # dependency, not merely a dev-shell convenience — bundle a pinned
-    # Neovim and `buf` (for `buf lsp serve`) onto PATH so they resolve
-    # regardless of the user's own $PATH.
-    # spec 0145 G5: bundle a minimal Neovim config wiring `.proto`
-    # filetype/syntax and `buf lsp serve` navigation, loaded via `-u`.
+    # spec 0145 G5: a minimal Neovim config wiring `.proto` filetype/syntax
+    # and `buf lsp serve` navigation, loaded via `-u` by the wrapper below.
     install -Dm444 ${../protolens/nvim/init.lua} \
       "$out/share/protolens/nvim/init.lua"
-    wrapProgram $out/bin/protolens \
-      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.neovim buf ]} \
-      --set PROTOLENS_NVIM_CONFIG "$out/share/protolens/nvim/init.lua"
   '';
 
   protolensMeta = with pkgs.lib; {
@@ -296,13 +288,21 @@ let
     platforms   = platforms.unix;
   };
 
-  protolens = crane.buildPackage (protocArgs // {
+  # The compiled binary, its completions, man page and Neovim config — built
+  # once, and wrapped below as many ways as needed (spec 0374 S2/G7).
+  #
+  # doInstallCargoArtifacts = false: nothing consumes protolens's cargo cache
+  # (unlike prototextBare's, which prototext reuses), and installing it put
+  # `target.tar.zst` (and `.prev`, pointing at depsCache and so at the
+  # vendored crate registry, winapi crates included) into every install's
+  # closure: 292 MiB of build inputs (spec 0374 S2).
+  protolensUnwrapped = crane.buildPackage (protocArgs // {
     src                                = workspaceSrc;
-    pname                              = "protolens";
+    pname                              = "protolens-unwrapped";
     cargoArtifacts                     = depsCache;
-    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles pkgs.makeWrapper ];
+    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
     doCheck                            = false;
-    doInstallCargoArtifacts            = true;
+    doInstallCargoArtifacts            = false;
     postInstall                        = protolensPostInstall;
     meta                               = protolensMeta;
     buildPhaseCargoCommand             = "cargoWithProfile build ${bootstrapArgs}";
@@ -312,6 +312,41 @@ let
       cp target/release/protolens $out/bin/
     '';
   });
+
+  # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime dependency,
+  # not merely a dev-shell convenience — bundle a pinned Neovim and `buf`
+  # (for `buf lsp serve`) onto PATH so they resolve regardless of the user's
+  # own $PATH. A separate derivation from the compile (spec 0374 S2), so a
+  # different Neovim costs a shell script, not a Rust build.
+  wrapProtolens = { neovim, name ? "protolens" }:
+    pkgs.runCommand "${name}-${protolensUnwrapped.version}" {
+      nativeBuildInputs = [ pkgs.makeWrapper ];
+      meta              = protolensMeta;
+    } ''
+      mkdir -p $out/bin
+      ln -s ${protolensUnwrapped}/share $out/share
+      makeWrapper ${protolensUnwrapped}/bin/protolens $out/bin/protolens \
+        --prefix PATH : ${pkgs.lib.makeBinPath [ neovim buf ]} \
+        --set PROTOLENS_NVIM_CONFIG ${protolensUnwrapped}/share/protolens/nvim/init.lua
+    '';
+
+  # The default Neovim: its wrapper keeps the Wayland clipboard provider
+  # (wl-clipboard), which desktop users want.
+  protolens = wrapProtolens { neovim = pkgs.neovim; };
+
+  # A lean Neovim for the workshop image (spec 0374 S2): no clipboard (there
+  # is no desktop clipboard in a container; wl-clipboard also brings perl),
+  # and no Ruby or Python providers, which protolens's init.lua — pure Lua and
+  # Neovim's built-in LSP client — never uses. 98 MiB instead of 407 MiB, and
+  # no compilation: `wrapNeovimUnstable` only wraps the shared neovim-unwrapped.
+  # (`pkgs.neovim.override { waylandSupport = false; }` does not evaluate: the
+  # argument belongs to wrapNeovimUnstable, not to the `neovim` package.)
+  neovimLean = pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
+    waylandSupport = false;
+    withRuby       = false;
+    withPython3    = false;
+  };
+  protolensLean = wrapProtolens { neovim = neovimLean; name = "protolens-lean"; };
 
   # ---------------------------------------------------------------------------
   # makePyo3Extension — shared helper for the three PyO3 extensions.
@@ -385,6 +420,12 @@ let
           cp target/release/lib${libName}.${libExt} $out/artifacts/${libName}.so
           # Rename <pyiName>.pyi → <libName>.pyi to match Python import name.
           cp ${crateDirName}/${pyiName}.pyi $out/artifacts/${libName}.pyi
+
+          # Crane strips the vendored crate sources' store paths (embedded by
+          # rustc as panic locations) in a postInstall hook. Without it every
+          # closure holding this extension keeps the whole vendored registry,
+          # winapi crates included (spec 0374 S2).
+          runHook postInstall
         '';
       } // extraAttrs);
       pkg = pythonPkgs.buildPythonPackage {
@@ -460,6 +501,9 @@ in {
     prototextBare
     prototext
     protolens
+    protolensUnwrapped
+    protolensLean
+    neovimLean
     prototextCodec
     fdpScanLib
     prototextGraphLib;

@@ -1,0 +1,141 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+name: Workshop image
+
+# Spec 0374 S6: the GreHack 2026 workshop image. Each architecture is built
+# natively by Nix, smoke-tested and pushed as :<revision>-<arch>; then one
+# job joins them in an index, pushed as :<revision> and :grehack2026, and
+# assembles the USB-key bundle for offline loading.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["grehack2026-*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/douzebis/prototools-workshop
+
+jobs:
+  image:
+    name: Image (${{ matrix.arch }})
+    if: github.repository == 'douzebis/prototools'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
+
+      - name: Build the image and the publishing tools
+        run: |
+          nix-build -A grehack2026.image --argstr gitRevision "$GITHUB_SHA" -o stream-image
+          ./stream-image > image.tar
+          nix-build -A grehack2026.publishTools -o publish-tools
+          echo "$PWD/publish-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Smoke test
+        run: |
+          docker load -i image.tar
+          grehack2026/smoke-test.sh prototools-workshop:latest
+
+      # skopeo: the source is always the archive just built, which has no
+      # signature to check, so no trust policy is needed.
+      - name: Push ${{ env.IMAGE }}:<revision>-${{ matrix.arch }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          skopeo --insecure-policy copy \
+            --dest-creds "$GITHUB_ACTOR:$GHCR_TOKEN" \
+            docker-archive:image.tar \
+            "docker://$IMAGE:$GITHUB_SHA-${{ matrix.arch }}"
+
+      # The USB-key archive: tagged with the name SETUP.md runs.
+      - name: Write the USB-key archive
+        run: |
+          skopeo --insecure-policy copy \
+            docker-archive:image.tar \
+            "docker-archive:prototools-workshop-${{ matrix.arch }}.tar:$IMAGE:grehack2026"
+
+      - name: Upload the USB-key archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototools-workshop-${{ matrix.arch }}
+          path: prototools-workshop-${{ matrix.arch }}.tar
+          compression-level: 6
+
+  index:
+    name: Index and USB-key bundle
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
+
+      - name: Build the publishing tools
+        run: |
+          nix-build -A grehack2026.publishTools -o publish-tools
+          echo "$PWD/publish-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Push ${{ env.IMAGE }}:<revision> and :grehack2026
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          crane index append --docker-empty-base \
+            -m "$IMAGE:$GITHUB_SHA-amd64" \
+            -m "$IMAGE:$GITHUB_SHA-arm64" \
+            -t "$IMAGE:$GITHUB_SHA"
+          crane tag "$IMAGE:$GITHUB_SHA" grehack2026
+
+      - name: Download the archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prototools-workshop-*
+          path: archives/
+          merge-multiple: true
+
+      - name: Assemble the USB-key bundle
+        run: |
+          mkdir usb-key
+          mv archives/prototools-workshop-*.tar usb-key/
+          cp grehack2026/load.sh grehack2026/SETUP.md usb-key/
+          (cd usb-key && sha256sum prototools-workshop-*.tar > SHA256SUMS)
+          {
+            echo "### USB-key bundle"
+            echo
+            echo "Revision: $GITHUB_SHA"
+            echo
+            sed 's/^/    /' usb-key/SHA256SUMS
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the USB-key bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: usb-key
+          path: usb-key/
+          compression-level: 6
