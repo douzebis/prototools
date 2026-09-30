@@ -15,6 +15,7 @@
 /rust-toolchain.toml
 /.env
 /python.env
+/.dumpcap-wrapper/
 /pyrightconfig.json
 /ruff.toml
 /schema-db/data/

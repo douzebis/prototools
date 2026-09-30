@@ -176,6 +176,10 @@ in
       # which uses ctypes to access rl_add_funmap_entry and readline() directly
       # for proper multi-line buffer support.
       readline
+      # wireshark-cli — tshark and dumpcap, for the GreHack 2026 life spy
+      #   (spec 0375 S10). The store's dumpcap cannot capture; see the PATH
+      #   note in _hook_env for the privileged one.
+      wireshark-cli
     ]) ++ [ buf grpconfDemo ];
 
     shellHook = ''
@@ -234,6 +238,16 @@ in
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
+        # NixOS's `programs.wireshark.enable` installs a dumpcap with capture
+        # capabilities in /run/wrappers/bin; the unprivileged one this shell
+        # adds would shadow it, so put the wrapper back in front (spec 0375
+        # S10). Only dumpcap: /run/wrappers/bin also holds sudo and friends,
+        # whose position in PATH stays as it was.
+        if [ -x /run/wrappers/bin/dumpcap ]; then
+          mkdir -p "${repoRoot}/.dumpcap-wrapper"
+          ln -sf /run/wrappers/bin/dumpcap "${repoRoot}/.dumpcap-wrapper/dumpcap"
+          export PATH="${repoRoot}/.dumpcap-wrapper:$PATH"
+        fi
         # `devOnlyPyDeps` is appended rather than folded into
         # reprotoTestDeps: that list is also the dep set of reprotoTests,
         # googleapisTests and customTests, and nothing that runs under
