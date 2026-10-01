@@ -27,6 +27,16 @@ struct Args {
     /// this bounds how long a late spy waits.
     #[arg(long, default_value_t = 10)]
     max_connection_age: u64,
+
+    /// Print one line per request on stderr, and each request's raw tag bit
+    /// field on stdout.
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Percentage chance, 0 to 100, that a response with no number typed on
+    /// stdin carries a random one for the client to echo.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=100))]
+    self_echo_percentage: u8,
 }
 
 struct Service;
@@ -45,14 +55,17 @@ impl Life for Service {
         });
         match answer {
             Ok((next, cells)) => {
-                eprintln!(
-                    "{} {peer} {}x{} generation {} in {} µs",
-                    clock(),
-                    cells.first().map_or(0, Vec::len),
-                    cells.len(),
-                    request.generation,
-                    started.elapsed().as_micros()
-                );
+                // Per request, so only under --verbose (spec 0379 S7).
+                if tags::verbose() {
+                    eprintln!(
+                        "{} {peer} {}x{} generation {} in {} µs",
+                        clock(),
+                        cells.first().map_or(0, Vec::len),
+                        cells.len(),
+                        request.generation,
+                        started.elapsed().as_micros()
+                    );
+                }
                 Ok(Response::new(StepResponse {
                     grid: Some(engine::grid(&next)),
                     generation: request.generation + 1,
@@ -96,10 +109,14 @@ async fn shutdown() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     // The echo handshake (spec 0379): read each request's tags (the verdicts
-    // to stdout, the echo checked) and smuggle a fresh "hello client <N>" into
-    // every response. The client echoes it back in its next request.
+    // to stdout under --verbose, the echo checked) and smuggle the number the
+    // operator types on stdin, or else maybe a random one, into the next
+    // response as "hello client <N>". The client echoes it back in its next
+    // request.
+    tags::configure(args.verbose, args.self_echo_percentage);
     life::codec::set_decode_callback(tags::on_request);
     life::codec::set_encode_callback(tags::on_response);
+    tags::spawn_stdin_reader();
     eprintln!(
         "{} serving {} on {} (connections renewed every {} s)",
         clock(),

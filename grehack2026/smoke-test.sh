@@ -177,23 +177,56 @@ tmux -V
 ! ls /nix/store/*/bin/protoc-gen-buf-* >/dev/null 2>&1
 EOF
 
-# Spec 0379 test plan 3: the server smuggles "hello client <N>" into each
-# response's tags, the client echoes "hi server <N>" in the next request, and
-# the server checks it. The handshake rides spec 0377's tag channel both ways.
+# Spec 0379 test plan 3: the operator types N on the server's stdin; the
+# server smuggles "hello client <N>" into the next response's tags, the client
+# echoes "hi server <N>" in the next request, and the server checks it. The
+# handshake rides spec 0377's tag channel both ways.
 check "the tags carry an echo handshake (spec 0379)" <<'EOF'
 set -e
-life-server >/tmp/tags.bin 2>/tmp/tags.err &
+# The operator: one rejected line, then 42, then stdin held open a while.
+{ sleep 1; echo 300; echo 42; sleep 8; } |
+  life-server --verbose >/tmp/tags.bin 2>/tmp/tags.err &
 sleep 2
 life-client --steps 6 --size 20x20 --pattern glider >/dev/null
 sleep 0.5
 kill %1 2>/dev/null || true
-# The first request has nothing to echo (spec 0379 G4), so 6 requests give
-# 5 "echo ok" lines and no mismatch.
-ok=$(grep -c "echo ok" /tmp/tags.err || true)
-[ "$ok" -eq 5 ] || { echo "got $ok 'echo ok' lines, want 5"; tail -8 /tmp/tags.err; exit 1; }
-! grep -q "echo mismatch" /tmp/tags.err || { echo "a mismatch"; tail -8 /tmp/tags.err; exit 1; }
-# One raw bit-field line per request on stdout.
+# 42 is sent once (spec 0379 S2), so it is echoed once; 300 is rejected (S6).
+grep -q 'rejected "300"' /tmp/tags.err || { echo "300 not rejected"; tail -12 /tmp/tags.err; exit 1; }
+grep -q "N=42 queued" /tmp/tags.err || { echo "42 not queued"; tail -12 /tmp/tags.err; exit 1; }
+ok=$(grep -c "echo ok (42)" /tmp/tags.err || true)
+[ "$ok" -eq 1 ] || { echo "got $ok 'echo ok (42)' lines, want 1"; tail -12 /tmp/tags.err; exit 1; }
+! grep -q "echo mismatch" /tmp/tags.err || { echo "a mismatch"; tail -12 /tmp/tags.err; exit 1; }
+# Under --verbose (S7): one raw bit-field line per request on stdout, and
+# one generation line per request on stderr.
 [ "$(wc -l < /tmp/tags.bin)" -eq 6 ] || { echo "want 6 stdout lines"; exit 1; }
+[ "$(grep -c ' generation ' /tmp/tags.err)" -eq 6 ] || { echo "want 6 generation lines"; exit 1; }
+
+# stdin at end of file: the server keeps serving and smuggles nothing (S6).
+# Without --verbose (S7) it prints nothing per request: stdout stays empty.
+life-server --listen 127.0.0.1:50052 </dev/null >/tmp/eof.bin 2>/tmp/eof.err &
+sleep 2
+life-client --server http://127.0.0.1:50052 --steps 3 --size 20x20 >/dev/null
+sleep 0.5
+kill %2 2>/dev/null || true
+! grep -q "echo" /tmp/eof.err || { echo "an echo with no operator"; cat /tmp/eof.err; exit 1; }
+! grep -q " generation " /tmp/eof.err || { echo "a generation line without --verbose"; exit 1; }
+[ ! -s /tmp/eof.bin ] || { echo "stdout not empty without --verbose"; exit 1; }
+EOF
+
+# Spec 0379 test plan 8: at --self-echo-percentage 100 the server sends a
+# random N in every response; the client echoes each one.
+check "the server echoes on its own (spec 0379 S8)" <<'EOF'
+set -e
+! life-server --self-echo-percentage 101 </dev/null 2>/dev/null || { echo "101 accepted"; exit 1; }
+life-server --self-echo-percentage 100 </dev/null >/dev/null 2>/tmp/self.err &
+sleep 2
+life-client --steps 6 --size 20x20 --pattern glider >/dev/null
+sleep 0.5
+kill %1 2>/dev/null || true
+# The first request has nothing to echo (G4), so 6 requests give 5.
+ok=$(grep -c "echo ok" /tmp/self.err || true)
+[ "$ok" -eq 5 ] || { echo "got $ok 'echo ok' lines, want 5"; tail -8 /tmp/self.err; exit 1; }
+! grep -q "echo mismatch" /tmp/self.err || { echo "a mismatch"; tail -8 /tmp/self.err; exit 1; }
 EOF
 
 # ── The closure: no denied store path (S2), and the size ─────────────────────

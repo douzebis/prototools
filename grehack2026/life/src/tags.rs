@@ -262,30 +262,6 @@ fn parse_after(prefix: &str, message: &[u8]) -> Option<u8> {
         .ok()
 }
 
-/// A small pseudo-random `u8`, for the server's fresh N (spec 0379 S2). An
-/// xorshift over a clock-seeded state, like the client's grid fill (spec 0375
-/// S5): enough for the demo, and no dependency.
-pub fn random_u8() -> u8 {
-    use std::cell::Cell;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    thread_local! {
-        static STATE: Cell<u64> = Cell::new(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0x9e37_79b9, |d| d.as_nanos() as u64)
-                | 1,
-        );
-    }
-    STATE.with(|s| {
-        let mut x = s.get();
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        s.set(x);
-        (x >> 33) as u8
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,11 +492,5 @@ mod tests {
             parse_hi(&read_tags(&spoiled, REQUEST).recover_message()),
             Some(7)
         );
-    }
-
-    #[test]
-    fn random_u8_varies() {
-        let a: Vec<u8> = (0..8).map(|_| random_u8()).collect();
-        assert!(a.iter().any(|&x| x != a[0]), "not all identical: {a:?}");
     }
 }
