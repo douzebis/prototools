@@ -288,8 +288,22 @@ struct Ui {
     error: Option<String>,
 }
 
+/// The message the client smuggles in every request's tags (spec 0377 S6).
+const SMUGGLED: &[u8] = b"Hello server!";
+
+/// Rewrite a request's bytes so its field tags carry [`SMUGGLED`] (spec 0377
+/// S6, S7). Installed as the codec's encode callback.
+fn smuggle(request: &[u8]) -> Vec<u8> {
+    let bits = life::tags::BitField::frame_message(SMUGGLED);
+    life::tags::encode_tags(request, &bits)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    // Every request this client sends hides SMUGGLED in its tags (spec 0377
+    // S7); the server reads it back. Values are untouched, so the game is
+    // unchanged (G3).
+    life::codec::set_encode_callback(smuggle);
     let mut game = Game::new(&args)?;
     match args.steps {
         Some(n) => headless(&mut game, &args, n),

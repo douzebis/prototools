@@ -20,6 +20,10 @@ fn main() {
 
     tonic_prost_build::configure()
         .file_descriptor_set_path(&set_path)
+        // The service reads a request's tags before decoding it (spec 0377
+        // S2): the generated code builds this codec in place of the default
+        // ProstCodec, in both the client and the server.
+        .codec_path("crate::codec::TagReadingCodec")
         .compile_protos(&[PROTO], &["proto"])
         .unwrap_or_else(|e| panic!("compiling {PROTO}: {e}"));
 

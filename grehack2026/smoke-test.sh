@@ -177,6 +177,24 @@ tmux -V
 ! ls /nix/store/*/bin/protoc-gen-buf-* >/dev/null 2>&1
 EOF
 
+# Spec 0377 test plan 4: the client hides "Hello server!" in each request's
+# tags, and the server recovers it. The server reads the tags, writes the
+# raw bit field to stdout (one line per request), and logs the recovered
+# message to stderr.
+check "the client smuggles a message in the tags (spec 0377)" <<'EOF'
+set -e
+life-server >/tmp/tags.bin 2>/tmp/tags.err &
+sleep 2
+life-client --steps 3 --size 20x20 --pattern glider >/dev/null
+sleep 0.5
+kill %1 2>/dev/null || true
+# The server logged the recovered message for each request.
+got=$(grep -c "smuggled: Hello server!" /tmp/tags.err || true)
+[ "$got" -eq 3 ] || { echo "got $got 'smuggled' lines, want 3"; tail -5 /tmp/tags.err; exit 1; }
+# And one raw bit-field line per request on stdout, non-empty (tags set).
+[ "$(wc -l < /tmp/tags.bin)" -eq 3 ] || { echo "want 3 stdout lines"; exit 1; }
+EOF
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)

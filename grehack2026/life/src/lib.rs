@@ -6,7 +6,16 @@
 //! the embedded descriptor. The game logic is not here — it is the
 //! server's alone (spec 0375 N4).
 
+pub mod codec;
+pub mod tags;
+
 /// The generated messages and service of `grehack.life.v1`.
+///
+/// The service stubs use [`codec::TagReadingCodec`] (spec 0377 S2), whose
+/// decoder hands each message's raw bytes to the request callback before
+/// decoding. Only the server installs a callback (`set_request_callback`),
+/// so in the client — which installs none — the codec is a plain prost
+/// pass-through and this costs nothing.
 pub mod pb {
     tonic::include_proto!("grehack.life.v1");
 }

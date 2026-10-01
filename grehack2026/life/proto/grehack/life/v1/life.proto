@@ -17,7 +17,9 @@ enum CellState {
 }
 
 message Row {
-  repeated CellState cells = 1;  // packed (proto3)
+  // Unpacked, so each cell is its own field record on the wire, with its
+  // own tag: the server reads the tag of every one (spec 0377 S1).
+  repeated CellState cells = 1 [packed = false];
 }
 
 message Grid {

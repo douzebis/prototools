@@ -27,13 +27,22 @@
 { pkgs, crane }:
 
 let
-  root = ./.;
+  # The source is rooted at the repository, not at life/, so life-server's
+  # path dependency on prototext-core (spec 0377 S2) is reachable — the
+  # workspace-not-at-source-root technique bobapp uses (spec 0241, its
+  # default.nix). postUnpack enters life/ and sets sourceRoot=".", so cargo
+  # resolves "../../prototext-core" and "../../prototext-core"'s own
+  # "../workspace-hack" naturally.
+  repoRoot = ../..;
 
   src = pkgs.lib.fileset.toSource {
-    inherit root;
+    root    = repoRoot;
     fileset = pkgs.lib.fileset.unions [
-      (crane.fileset.commonCargoSources root)
-      ./proto
+      (crane.fileset.commonCargoSources (repoRoot + /grehack2026/life))
+      (repoRoot + /grehack2026/life/proto)
+      # Path dependencies of life, and their own path dependencies.
+      (crane.fileset.commonCargoSources (repoRoot + /prototext-core))
+      (crane.fileset.commonCargoSources (repoRoot + /workspace-hack))
     ];
   };
 
@@ -45,6 +54,13 @@ let
     # prost-build runs protoc; PROTOC names it rather than relying on PATH.
     nativeBuildInputs = [ pkgs.protobuf pkgs.makeWrapper ];
     PROTOC = "${pkgs.protobuf}/bin/protoc";
+
+    cargoLock  = ./Cargo.lock;
+    cargoToml  = ./Cargo.toml;
+    postUnpack = ''
+      cd $sourceRoot/grehack2026/life
+      sourceRoot="."
+    '';
   };
 
   depsCache = crane.buildDepsOnly commonArgs;
