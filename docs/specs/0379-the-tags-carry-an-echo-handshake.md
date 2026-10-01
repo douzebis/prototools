@@ -9,6 +9,9 @@ SPDX-License-Identifier: MIT
 Status: implemented
 Implemented in: 2026-10-01
 App: grehack2026 (life-server, life-client)
+Amended by: docs/specs/0382-the-client-factors-the-servers-number.md
+        (the payload becomes "factor <N>" / "factors ..."; S2's stdin
+        reader, S7 and S8 stay)
 Refs: docs/specs/0377-the-server-reads-the-tags-as-sent.md (the tag
       channel this makes bidirectional: the BitField, the terminator
       framing, read_tags/encode_tags, and the codec's two callbacks);

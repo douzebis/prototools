@@ -35,8 +35,9 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Percentage chance, 0 to 100, that a response with no number typed on
-    /// stdin carries a random one for the client to echo.
+    /// Percentage chance, 0 to 100, that a response carries a random number
+    /// for the client to factor, when none was typed on stdin and none is
+    /// awaiting its factors.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=100))]
     self_echo_percentage: u8,
 }
@@ -110,11 +111,12 @@ async fn shutdown() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // The echo handshake (spec 0379): read each request's tags (the verdicts
-    // to stdout under --verbose, the echo checked) and smuggle the number the
-    // operator types on stdin, or else maybe a random one, into the next
-    // response as "hello client <N>". The client echoes it back in its next
-    // request.
+    // The factoring exchange (spec 0382): send the number the operator types
+    // on stdin, or else maybe a random one, in the next response's tags as
+    // "factor <N>"; the client factors it in the background and sends the
+    // factors back in a later request's tags, which are checked and printed
+    // on stdout. Under --verbose, each request's raw bit field goes to stdout
+    // too.
     tags::configure(args.verbose, args.self_echo_percentage);
     life::codec::set_decode_callback(tags::on_request);
     life::codec::set_encode_callback(tags::on_response);

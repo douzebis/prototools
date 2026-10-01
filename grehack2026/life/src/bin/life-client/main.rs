@@ -6,6 +6,7 @@
 //! generation is computed by `life-server` (spec 0375 S5, N4).
 
 mod command;
+mod factoring;
 mod patterns;
 mod renewal;
 
@@ -244,15 +245,11 @@ impl Game {
                 // close fails without the server having seen it. Step is a
                 // pure computation, so one immediate retry, on the new
                 // connection, is safe.
-                // The retry carries the same echo as the failed attempt (spec
-                // 0381 S5): the encode callback emptied TO_ECHO, and a failed
-                // attempt had no response, so nothing newer is in the slot.
-                let echo = TO_ECHO.load(std::sync::atomic::Ordering::Relaxed);
+                // The retry carries the same reply as the failed attempt
+                // (spec 0381 S5, 0382 S5): the outbox keeps it until a step
+                // succeeds.
                 match self.client.step(request.clone()).await {
-                    Err(s) if renewal::is_renewal_race(&s) => {
-                        TO_ECHO.store(echo, std::sync::atomic::Ordering::Relaxed);
-                        self.client.step(request).await
-                    }
+                    Err(s) if renewal::is_renewal_race(&s) => self.client.step(request).await,
                     result => result,
                 }
             })
@@ -265,6 +262,7 @@ impl Game {
                 }
             })?
             .into_inner();
+        FACTORING.settle();
         let rtt = started.elapsed();
         self.cells = response
             .grid
@@ -325,40 +323,32 @@ struct Ui {
     log: std::fs::File,
 }
 
-/// The number the client owes the server as an echo (spec 0379): the N read
-/// from the last response's tags, or `None` with nothing to echo. Set by the
-/// decode callback (a response arrived), taken by the encode callback (the
-/// next request goes out). One slot suffices: the client calls one at a time
-/// (spec 0375 S5), so at most one echo is ever pending.
-static TO_ECHO: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(NONE);
-const NONE: u16 = 0x100; // 256: out of a u8's range, so it means "no echo"
+/// The factoring exchange's state (spec 0382 S5), shared by the two codec
+/// callbacks.
+static FACTORING: factoring::Factoring = factoring::Factoring::new();
 
-/// Decode callback: read the `"hello client <N>"` a response smuggled in its
-/// tags, and remember N to echo next (spec 0379 S3).
+/// Decode callback: read the `"factor <N>"` a response carries in its tags,
+/// and start factoring N in the background (spec 0382 S5).
 fn on_response(response: &[u8]) {
     let bits = life::tags::read_tags(response, life::tags::RESPONSE);
-    if let Some(n) = life::tags::parse_hello(&bits.recover_message()) {
-        TO_ECHO.store(u16::from(n), std::sync::atomic::Ordering::Relaxed);
+    if let Some(n) = life::tags::parse_factor_request(&bits.recover_message()) {
+        FACTORING.start(n);
     }
 }
 
-/// Encode callback: hide `"hi server <N>"` in the request's tags, echoing the
-/// N from the last response; with nothing to echo, smuggle nothing (spec 0379
-/// S3, G4). Clears the slot, so an N is echoed at most once.
+/// Encode callback: hide the finished `"factors …"` reply in the request's
+/// tags; with none finished, smuggle nothing (spec 0382 S5, 0379 G4).
 fn on_request(request: &[u8]) -> Vec<u8> {
-    let message = match TO_ECHO.swap(NONE, std::sync::atomic::Ordering::Relaxed) {
-        NONE => Vec::new(),
-        n => life::tags::hi_server(n as u8).into_bytes(),
-    };
-    let bits = life::tags::BitField::frame_message(&message);
+    let bits = life::tags::BitField::frame_message(&FACTORING.message());
     life::tags::encode_tags(request, &bits, life::tags::REQUEST)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // The echo handshake (spec 0379): read the server's "hello client <N>"
-    // off each response's tags, and echo "hi server <N>" in the next request.
-    // Field values are untouched, so the game is unchanged (0377 G3).
+    // The factoring exchange (spec 0382): read the server's "factor <N>" off
+    // a response's tags, factor N in the background, and send "factors …"
+    // back in a request's tags. Field values are untouched, so the game is
+    // unchanged (0377 G3).
     life::codec::set_encode_callback(on_request);
     life::codec::set_decode_callback(on_response);
     let mut game = Game::new(&args)?;
@@ -609,40 +599,4 @@ fn draw(frame: &mut Frame, game: &Game, ui: &Ui) {
             ..area
         },
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use prost::Message;
-    use std::sync::atomic::Ordering;
-
-    fn echo_in(request: &[u8]) -> Option<u8> {
-        let bits = life::tags::read_tags(request, life::tags::REQUEST);
-        life::tags::parse_hi(&bits.recover_message())
-    }
-
-    #[test]
-    fn a_retry_restores_the_echo() {
-        // 20x20: enough tags for "hi server 7" and its terminator (89 bits).
-        let request = StepRequest {
-            grid: Some(Grid {
-                rows: vec![Row { cells: vec![1; 20] }; 20],
-            }),
-            rules: None,
-            generation: 4,
-        }
-        .encode_to_vec();
-
-        // The sequence of Game::step around a retry (spec 0381 S5).
-        TO_ECHO.store(7, Ordering::Relaxed);
-        let echo = TO_ECHO.load(Ordering::Relaxed);
-        let first = on_request(&request);
-        assert_eq!(TO_ECHO.load(Ordering::Relaxed), NONE, "the slot is emptied");
-        TO_ECHO.store(echo, Ordering::Relaxed);
-        let retry = on_request(&request);
-
-        assert_eq!(echo_in(&first), Some(7));
-        assert_eq!(echo_in(&retry), Some(7));
-    }
 }

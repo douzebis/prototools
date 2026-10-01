@@ -230,36 +230,65 @@ fn has_tag_ohb(annotation: &str) -> bool {
         .any(|m| m.trim().starts_with("tag_ohb"))
 }
 
-// ── The echo handshake (spec 0379) ──────────────────────────────────────────
+// ── The factoring exchange (spec 0382) ───────────────────────────────────────
 
-/// The server's half: `"hello client <N>"`, N the fresh number it sends.
-pub fn hello_client(n: u8) -> String {
-    format!("hello client {n}")
+/// The server's half: `"factor <N>"`, N the number to factor (spec 0382 S1).
+pub fn factor_request(n: u128) -> String {
+    format!("factor {n}")
 }
 
-/// The client's half: `"hi server <N>"`, N echoed back.
-pub fn hi_server(n: u8) -> String {
-    format!("hi server {n}")
+/// The client's half: `"factors <f>*<f>*…"`, each `<f>` a prime `p` or
+/// `p^e` (e ≥ 2), primes ascending, no spaces (spec 0382 S1).
+pub fn factors_reply(factors: &[(u128, u32)]) -> String {
+    format!("factors {}", render_factors(factors, "*"))
 }
 
-/// The number a `"hello client <N>"` message carries, or `None` for anything
-/// else (spec 0379 S5): a different prefix, a missing or out-of-range number,
-/// a truncated message. Total, so a garbled exchange yields nothing.
-pub fn parse_hello(message: &[u8]) -> Option<u8> {
-    parse_after("hello client ", message)
+/// The factors as `2^3<sep>3^2<sep>5`: the reply uses `*`, the server's
+/// display ` * ` (spec 0382 S4).
+pub fn render_factors(factors: &[(u128, u32)], sep: &str) -> String {
+    factors
+        .iter()
+        .map(|&(p, e)| {
+            if e == 1 {
+                p.to_string()
+            } else {
+                format!("{p}^{e}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
-/// The number a `"hi server <N>"` message carries, or `None` (spec 0379 S5).
-pub fn parse_hi(message: &[u8]) -> Option<u8> {
-    parse_after("hi server ", message)
+/// The number a `"factor <N>"` message carries, or `None` for anything else
+/// (spec 0382 S1). Strict and total, so a garbled exchange yields nothing.
+pub fn parse_factor_request(message: &[u8]) -> Option<u128> {
+    canonical(std::str::from_utf8(message).ok()?.strip_prefix("factor ")?)
 }
 
-fn parse_after(prefix: &str, message: &[u8]) -> Option<u8> {
-    std::str::from_utf8(message)
+/// The factors a `"factors …"` message carries, in the order sent, or `None`
+/// for anything malformed (spec 0382 S1). Whether they are prime, ascending
+/// and multiply to the awaited N is the server's check (S4), not the parse's.
+pub fn parse_factors_reply(message: &[u8]) -> Option<Vec<(u128, u32)>> {
+    let list = std::str::from_utf8(message)
         .ok()?
-        .strip_prefix(prefix)?
-        .parse::<u8>()
-        .ok()
+        .strip_prefix("factors ")?;
+    list.split('*')
+        .map(|f| match f.split_once('^') {
+            None => Some((canonical(f)?, 1)),
+            Some((p, e)) => {
+                let e = u32::try_from(canonical(e)?).ok()?;
+                (e >= 2).then_some((canonical(p)?, e))
+            }
+        })
+        .collect()
+}
+
+/// A canonical decimal: ASCII digits, no leading zero (but `0` itself), no
+/// sign, at most `u128::MAX`.
+fn canonical(s: &str) -> Option<u128> {
+    let ok =
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
+    ok.then(|| s.parse().ok()).flatten()
 }
 
 #[cfg(test)]
@@ -437,34 +466,58 @@ mod tests {
         assert!(!has_tag_ohb("group; GroupOp = 30; etag_ohb: 1"));
     }
 
-    // ── The echo handshake (spec 0379) ──────────────────────────────────────
+    // ── The factoring exchange (spec 0382) ────────────────────────────────────
 
     #[test]
-    fn hello_and_hi_format_and_parse_round_trip() {
-        for n in [0u8, 1, 42, 255] {
-            assert_eq!(parse_hello(hello_client(n).as_bytes()), Some(n));
-            assert_eq!(parse_hi(hi_server(n).as_bytes()), Some(n));
+    fn the_messages_format_and_parse_round_trip() {
+        for n in [2u128, 360, u128::MAX] {
+            assert_eq!(parse_factor_request(factor_request(n).as_bytes()), Some(n));
         }
+        let f = vec![(2, 3), (3, 2), (5, 1)];
+        assert_eq!(factors_reply(&f), "factors 2^3*3^2*5");
+        assert_eq!(parse_factors_reply(factors_reply(&f).as_bytes()), Some(f));
+        let big = vec![((1u128 << 127) - 1, 1)];
+        assert_eq!(
+            parse_factors_reply(factors_reply(&big).as_bytes()),
+            Some(big)
+        );
+        assert_eq!(render_factors(&[(2, 3), (5, 1)], " * "), "2^3 * 5");
     }
 
     #[test]
     fn parsing_is_strict_and_the_directions_do_not_cross() {
-        // A "hello client" is not a "hi server" and vice versa.
-        assert_eq!(parse_hi(b"hello client 7"), None);
-        assert_eq!(parse_hello(b"hi server 7"), None);
-        // Out of range, malformed, empty, non-UTF-8.
-        assert_eq!(parse_hello(b"hello client 256"), None);
-        assert_eq!(parse_hello(b"hello client "), None);
-        assert_eq!(parse_hello(b"hello client x"), None);
-        assert_eq!(parse_hello(b""), None);
-        assert_eq!(parse_hello(&[0xff, 0xfe]), None);
+        for bad in [
+            "factor 007",
+            "factor +5",
+            "factor -1",
+            "factor ",
+            "factor 340282366920938463463374607431768211456", // u128::MAX + 1
+            "factors 2",
+            "",
+        ] {
+            assert_eq!(parse_factor_request(bad.as_bytes()), None, "{bad:?}");
+        }
+        assert_eq!(parse_factor_request(&[0xff, 0xfe]), None);
+        for bad in [
+            "factors ",
+            "factors 2^1",
+            "factors 2^",
+            "factors 2**3",
+            "factors 02",
+            "factors 2^03",
+            "factors 2 * 3",
+            "factors 2^99999999999",
+            "factor 6",
+        ] {
+            assert_eq!(parse_factors_reply(bad.as_bytes()), None, "{bad:?}");
+        }
     }
 
     #[test]
-    fn a_handshake_rides_the_tags_both_ways() {
-        // The server's half, in a response's tags.
-        // "hello client 7" is 112 bits + terminator; a 20x20 grid has ~420
-        // field records, plenty (spec 0379 N4).
+    fn the_exchange_rides_the_tags_both_ways() {
+        // The server's half, in a response's tags. "factor" and 39 digits
+        // are 368 bits and a terminator; a 20x20 grid has ~420 field
+        // records (spec 0382 N2).
         let response = crate::pb::StepResponse {
             grid: Some(crate::pb::Grid {
                 rows: vec![crate::pb::Row { cells: vec![1; 20] }; 20],
@@ -472,11 +525,11 @@ mod tests {
             generation: 2,
         }
         .encode_to_vec();
-        let hello = BitField::frame_message(hello_client(7).as_bytes());
-        let spoiled = encode_tags(&response, &hello, RESPONSE);
+        let request = BitField::frame_message(factor_request(u128::MAX).as_bytes());
+        let spoiled = encode_tags(&response, &request, RESPONSE);
         assert_eq!(
-            parse_hello(&read_tags(&spoiled, RESPONSE).recover_message()),
-            Some(7)
+            parse_factor_request(&read_tags(&spoiled, RESPONSE).recover_message()),
+            Some(u128::MAX)
         );
         // Value-preserving: the response still decodes the same (spec 0377 G3).
         assert_eq!(
@@ -485,12 +538,12 @@ mod tests {
         );
 
         // The client's half, in a request's tags.
-        let request = a_roomy_request();
-        let hi = BitField::frame_message(hi_server(7).as_bytes());
-        let spoiled = encode_tags(&request, &hi, REQUEST);
+        let f = vec![(2, 3), (3, 2), (5, 1)];
+        let reply = BitField::frame_message(factors_reply(&f).as_bytes());
+        let spoiled = encode_tags(&a_roomy_request(), &reply, REQUEST);
         assert_eq!(
-            parse_hi(&read_tags(&spoiled, REQUEST).recover_message()),
-            Some(7)
+            parse_factors_reply(&read_tags(&spoiled, REQUEST).recover_message()),
+            Some(f)
         );
     }
 }

@@ -7,6 +7,7 @@
 //! server's alone (spec 0375 N4).
 
 pub mod codec;
+pub mod factor;
 pub mod tags;
 
 /// The generated messages and service of `grehack.life.v1`.
