@@ -12,10 +12,9 @@ pub mod tags;
 /// The generated messages and service of `grehack.life.v1`.
 ///
 /// The service stubs use [`codec::TagReadingCodec`] (spec 0377 S2), whose
-/// decoder hands each message's raw bytes to the request callback before
-/// decoding. Only the server installs a callback (`set_request_callback`),
-/// so in the client — which installs none — the codec is a plain prost
-/// pass-through and this costs nothing.
+/// decoder and encoder hand each message's raw bytes to the callbacks the
+/// server and client install for the tag channel (spec 0379). A side that
+/// installs neither gets a plain prost pass-through.
 pub mod pb {
     tonic::include_proto!("grehack.life.v1");
 }

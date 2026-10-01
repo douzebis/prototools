@@ -12,10 +12,15 @@
 //! lines carry `tag_ohb` (S3). A terminator `1` bit frames a message inside
 //! the bit field (S3a).
 
-use prototext_core::{parse_schema, render_as_bytes, render_as_text, ParsedSchema, RenderOpts};
+use prototext_core::{
+    parse_schema, render_as_bytes, render_as_text, MessageDescriptor, ParsedSchema, RenderOpts,
+};
 
-/// The request message: what the render decodes against.
-const ROOT: &str = "grehack.life.v1.StepRequest";
+/// The two message roots the tag channel reads and writes: requests, from the
+/// server's decode and the client's encode; responses, the other way round
+/// (spec 0379 S1).
+pub const REQUEST: &str = "grehack.life.v1.StepRequest";
+pub const RESPONSE: &str = "grehack.life.v1.StepResponse";
 
 /// A boolean per field record, packed into bytes (spec 0377 S4).
 ///
@@ -100,21 +105,32 @@ impl BitField {
     }
 }
 
-/// The life schema, built once from the embedded descriptor (a lone
-/// `FileDescriptorProto`, which a `FileDescriptorSet` wraps for
-/// `parse_schema`).
-pub fn schema() -> &'static ParsedSchema {
+/// The life schema for a root message (`REQUEST` or `RESPONSE`), built once
+/// from the embedded descriptor (a lone `FileDescriptorProto`, which a
+/// `FileDescriptorSet` wraps for `parse_schema`) and cached per root.
+fn schema(root: &str) -> &'static ParsedSchema {
     use prost::Message;
     use prost_types::{FileDescriptorProto, FileDescriptorSet};
-    use std::sync::OnceLock;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
 
-    static SCHEMA: OnceLock<ParsedSchema> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        let file = FileDescriptorProto::decode(crate::DESCRIPTOR)
-            .expect("the embedded descriptor is written by build.rs");
-        let set = FileDescriptorSet { file: vec![file] }.encode_to_vec();
-        parse_schema(&set, ROOT).expect("the life schema holds StepRequest")
-    })
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static ParsedSchema>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(s) = cache.lock().unwrap().get(root) {
+        return s;
+    }
+    let file = FileDescriptorProto::decode(crate::DESCRIPTOR)
+        .expect("the embedded descriptor is written by build.rs");
+    let set = FileDescriptorSet { file: vec![file] }.encode_to_vec();
+    let parsed: &'static ParsedSchema = Box::leak(Box::new(
+        parse_schema(&set, root).expect("the life schema holds the root"),
+    ));
+    cache.lock().unwrap().insert(root.to_string(), parsed);
+    parsed
+}
+
+fn root_descriptor(root: &str) -> Option<MessageDescriptor> {
+    schema(root).root_descriptor()
 }
 
 fn opts() -> RenderOpts {
@@ -128,11 +144,11 @@ fn opts() -> RenderOpts {
     }
 }
 
-/// One bit per field record in `request`, in render order: 1 when the field's
-/// tag was non-canonical (spec 0377 S3). `request` is the raw request bytes.
-pub fn read_tags(request: &[u8]) -> BitField {
-    let text = render_as_text(request, schema().root_descriptor().as_ref(), opts())
-        .expect("a received request renders");
+/// One bit per field record in `message` (a `root` message), in render order:
+/// 1 when the field's tag was non-canonical (spec 0377 S3).
+pub fn read_tags(message: &[u8], root: &str) -> BitField {
+    let text = render_as_text(message, root_descriptor(root).as_ref(), opts())
+        .expect("a received message renders");
     let text = String::from_utf8(text).expect("prototext renders UTF-8");
 
     let mut bits = BitField::new();
@@ -144,12 +160,12 @@ pub fn read_tags(request: &[u8]) -> BitField {
     bits
 }
 
-/// `request` re-encoded so field record *i*'s tag is non-canonical when
-/// `bits.bit(i)` is set (spec 0377 S6). Bits past the field-record count are
-/// dropped (N5). Returns the modified wire bytes.
-pub fn encode_tags(request: &[u8], bits: &BitField) -> Vec<u8> {
-    let text = render_as_text(request, schema().root_descriptor().as_ref(), opts())
-        .expect("the request renders");
+/// `message` (a `root` message) re-encoded so field record *i*'s tag is
+/// non-canonical when `bits.bit(i)` is set (spec 0377 S6). Bits past the
+/// field-record count are dropped (N5). Returns the modified wire bytes.
+pub fn encode_tags(message: &[u8], bits: &BitField, root: &str) -> Vec<u8> {
+    let text = render_as_text(message, root_descriptor(root).as_ref(), opts())
+        .expect("the message renders");
     let text = String::from_utf8(text).expect("prototext renders UTF-8");
 
     let mut field = 0usize;
@@ -214,6 +230,62 @@ fn has_tag_ohb(annotation: &str) -> bool {
         .any(|m| m.trim().starts_with("tag_ohb"))
 }
 
+// ── The echo handshake (spec 0379) ──────────────────────────────────────────
+
+/// The server's half: `"hello client <N>"`, N the fresh number it sends.
+pub fn hello_client(n: u8) -> String {
+    format!("hello client {n}")
+}
+
+/// The client's half: `"hi server <N>"`, N echoed back.
+pub fn hi_server(n: u8) -> String {
+    format!("hi server {n}")
+}
+
+/// The number a `"hello client <N>"` message carries, or `None` for anything
+/// else (spec 0379 S5): a different prefix, a missing or out-of-range number,
+/// a truncated message. Total, so a garbled exchange yields nothing.
+pub fn parse_hello(message: &[u8]) -> Option<u8> {
+    parse_after("hello client ", message)
+}
+
+/// The number a `"hi server <N>"` message carries, or `None` (spec 0379 S5).
+pub fn parse_hi(message: &[u8]) -> Option<u8> {
+    parse_after("hi server ", message)
+}
+
+fn parse_after(prefix: &str, message: &[u8]) -> Option<u8> {
+    std::str::from_utf8(message)
+        .ok()?
+        .strip_prefix(prefix)?
+        .parse::<u8>()
+        .ok()
+}
+
+/// A small pseudo-random `u8`, for the server's fresh N (spec 0379 S2). An
+/// xorshift over a clock-seeded state, like the client's grid fill (spec 0375
+/// S5): enough for the demo, and no dependency.
+pub fn random_u8() -> u8 {
+    use std::cell::Cell;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0x9e37_79b9, |d| d.as_nanos() as u64)
+                | 1,
+        );
+    }
+    STATE.with(|s| {
+        let mut x = s.get();
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        s.set(x);
+        (x >> 33) as u8
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +307,7 @@ mod tests {
     }
 
     fn rendered_fields(bytes: &[u8]) -> usize {
-        let text = render_as_text(bytes, schema().root_descriptor().as_ref(), opts()).unwrap();
+        let text = render_as_text(bytes, root_descriptor(REQUEST).as_ref(), opts()).unwrap();
         String::from_utf8(text)
             .unwrap()
             .lines()
@@ -299,7 +371,7 @@ mod tests {
     #[test]
     fn reading_a_canonical_request_is_all_zero() {
         let bytes = a_request();
-        let bits = read_tags(&bytes);
+        let bits = read_tags(&bytes, REQUEST);
         assert_eq!(bits.len(), 12);
         assert_eq!(bits.len(), rendered_fields(&bytes));
         assert!(bits.as_bytes().iter().all(|&b| b == 0));
@@ -308,14 +380,11 @@ mod tests {
     /// A request with a 5×5 grid: about 36 field records, enough tags to
     /// carry a short message with its terminator.
     fn a_roomy_request() -> Vec<u8> {
+        // A 20x20 grid: ~420 field records, enough tags for a short message
+        // and its terminator (spec 0379 N4).
         crate::pb::StepRequest {
             grid: Some(crate::pb::Grid {
-                rows: vec![
-                    crate::pb::Row {
-                        cells: vec![1, 0, 1, 0, 1]
-                    };
-                    5
-                ],
+                rows: vec![crate::pb::Row { cells: vec![1; 20] }; 20],
             }),
             rules: Some(crate::pb::Rules {
                 birth: Some(crate::pb::Range { min: 3, max: 3 }),
@@ -336,7 +405,7 @@ mod tests {
             framed.len() <= rendered_fields(&request),
             "message must fit"
         );
-        let spoiled = encode_tags(&request, &framed);
+        let spoiled = encode_tags(&request, &framed, REQUEST);
 
         // Value-preserving: the spoiled bytes decode to the same StepRequest.
         assert_eq!(
@@ -344,7 +413,7 @@ mod tests {
             crate::pb::StepRequest::decode(&request[..]).unwrap()
         );
         // And the server's read recovers the message.
-        assert_eq!(read_tags(&spoiled).recover_message(), message);
+        assert_eq!(read_tags(&spoiled, REQUEST).recover_message(), message);
     }
 
     #[test]
@@ -357,8 +426,11 @@ mod tests {
         let mut spoiled = bytes.clone();
         spoiled.splice(at..at + 1, [0x98, 0x00]);
         // generation is the last of 12 records: bit 11.
-        assert_eq!(read_tags(&bytes).as_bytes(), &[0x00, 0x00]);
-        assert_eq!(read_tags(&spoiled).as_bytes(), &[0x00, 0b0001_0000]);
+        assert_eq!(read_tags(&bytes, REQUEST).as_bytes(), &[0x00, 0x00]);
+        assert_eq!(
+            read_tags(&spoiled, REQUEST).as_bytes(),
+            &[0x00, 0b0001_0000]
+        );
     }
 
     #[test]
@@ -371,8 +443,8 @@ mod tests {
         }
         // encode_tags drops the excess; every one of the n field records
         // gets tag_ohb, so the read-back has exactly n bits, all set.
-        let spoiled = encode_tags(&request, &too_long);
-        let read = read_tags(&spoiled);
+        let spoiled = encode_tags(&request, &too_long, REQUEST);
+        let read = read_tags(&spoiled, REQUEST);
         assert_eq!(read.len(), n);
         assert!((0..n).all(|i| read.bit(i)));
     }
@@ -387,5 +459,68 @@ mod tests {
         assert!(has_tag_ohb("group; GroupOp = 30; tag_ohb: 1"));
         assert!(!has_tag_ohb("repeated int32 = 1; val_ohb: 3"));
         assert!(!has_tag_ohb("group; GroupOp = 30; etag_ohb: 1"));
+    }
+
+    // ── The echo handshake (spec 0379) ──────────────────────────────────────
+
+    #[test]
+    fn hello_and_hi_format_and_parse_round_trip() {
+        for n in [0u8, 1, 42, 255] {
+            assert_eq!(parse_hello(hello_client(n).as_bytes()), Some(n));
+            assert_eq!(parse_hi(hi_server(n).as_bytes()), Some(n));
+        }
+    }
+
+    #[test]
+    fn parsing_is_strict_and_the_directions_do_not_cross() {
+        // A "hello client" is not a "hi server" and vice versa.
+        assert_eq!(parse_hi(b"hello client 7"), None);
+        assert_eq!(parse_hello(b"hi server 7"), None);
+        // Out of range, malformed, empty, non-UTF-8.
+        assert_eq!(parse_hello(b"hello client 256"), None);
+        assert_eq!(parse_hello(b"hello client "), None);
+        assert_eq!(parse_hello(b"hello client x"), None);
+        assert_eq!(parse_hello(b""), None);
+        assert_eq!(parse_hello(&[0xff, 0xfe]), None);
+    }
+
+    #[test]
+    fn a_handshake_rides_the_tags_both_ways() {
+        // The server's half, in a response's tags.
+        // "hello client 7" is 112 bits + terminator; a 20x20 grid has ~420
+        // field records, plenty (spec 0379 N4).
+        let response = crate::pb::StepResponse {
+            grid: Some(crate::pb::Grid {
+                rows: vec![crate::pb::Row { cells: vec![1; 20] }; 20],
+            }),
+            generation: 2,
+        }
+        .encode_to_vec();
+        let hello = BitField::frame_message(hello_client(7).as_bytes());
+        let spoiled = encode_tags(&response, &hello, RESPONSE);
+        assert_eq!(
+            parse_hello(&read_tags(&spoiled, RESPONSE).recover_message()),
+            Some(7)
+        );
+        // Value-preserving: the response still decodes the same (spec 0377 G3).
+        assert_eq!(
+            crate::pb::StepResponse::decode(&spoiled[..]).unwrap(),
+            crate::pb::StepResponse::decode(&response[..]).unwrap()
+        );
+
+        // The client's half, in a request's tags.
+        let request = a_roomy_request();
+        let hi = BitField::frame_message(hi_server(7).as_bytes());
+        let spoiled = encode_tags(&request, &hi, REQUEST);
+        assert_eq!(
+            parse_hi(&read_tags(&spoiled, REQUEST).recover_message()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn random_u8_varies() {
+        let a: Vec<u8> = (0..8).map(|_| random_u8()).collect();
+        assert!(a.iter().any(|&x| x != a[0]), "not all identical: {a:?}");
     }
 }

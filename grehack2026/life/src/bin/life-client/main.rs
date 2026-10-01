@@ -288,22 +288,42 @@ struct Ui {
     error: Option<String>,
 }
 
-/// The message the client smuggles in every request's tags (spec 0377 S6).
-const SMUGGLED: &[u8] = b"Hello server!";
+/// The number the client owes the server as an echo (spec 0379): the N read
+/// from the last response's tags, or `None` with nothing to echo. Set by the
+/// decode callback (a response arrived), taken by the encode callback (the
+/// next request goes out). One slot suffices: the client calls one at a time
+/// (spec 0375 S5), so at most one echo is ever pending.
+static TO_ECHO: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(NONE);
+const NONE: u16 = 0x100; // 256: out of a u8's range, so it means "no echo"
 
-/// Rewrite a request's bytes so its field tags carry [`SMUGGLED`] (spec 0377
-/// S6, S7). Installed as the codec's encode callback.
-fn smuggle(request: &[u8]) -> Vec<u8> {
-    let bits = life::tags::BitField::frame_message(SMUGGLED);
-    life::tags::encode_tags(request, &bits)
+/// Decode callback: read the `"hello client <N>"` a response smuggled in its
+/// tags, and remember N to echo next (spec 0379 S3).
+fn on_response(response: &[u8]) {
+    let bits = life::tags::read_tags(response, life::tags::RESPONSE);
+    if let Some(n) = life::tags::parse_hello(&bits.recover_message()) {
+        TO_ECHO.store(u16::from(n), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Encode callback: hide `"hi server <N>"` in the request's tags, echoing the
+/// N from the last response; with nothing to echo, smuggle nothing (spec 0379
+/// S3, G4). Clears the slot, so an N is echoed at most once.
+fn on_request(request: &[u8]) -> Vec<u8> {
+    let message = match TO_ECHO.swap(NONE, std::sync::atomic::Ordering::Relaxed) {
+        NONE => Vec::new(),
+        n => life::tags::hi_server(n as u8).into_bytes(),
+    };
+    let bits = life::tags::BitField::frame_message(&message);
+    life::tags::encode_tags(request, &bits, life::tags::REQUEST)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // Every request this client sends hides SMUGGLED in its tags (spec 0377
-    // S7); the server reads it back. Values are untouched, so the game is
-    // unchanged (G3).
-    life::codec::set_encode_callback(smuggle);
+    // The echo handshake (spec 0379): read the server's "hello client <N>"
+    // off each response's tags, and echo "hi server <N>" in the next request.
+    // Field values are untouched, so the game is unchanged (0377 G3).
+    life::codec::set_encode_callback(on_request);
+    life::codec::set_decode_callback(on_response);
     let mut game = Game::new(&args)?;
     match args.steps {
         Some(n) => headless(&mut game, &args, n),

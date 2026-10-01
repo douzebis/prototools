@@ -95,11 +95,11 @@ async fn shutdown() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // Before anything else with a request, the codec hands its raw bytes to
-    // this, which reads each field's tag and writes the verdicts to stdout
-    // (spec 0377). Installed here, so the client — same code, no callback —
-    // never runs it.
-    life::codec::set_request_callback(tags::report);
+    // The echo handshake (spec 0379): read each request's tags (the verdicts
+    // to stdout, the echo checked) and smuggle a fresh "hello client <N>" into
+    // every response. The client echoes it back in its next request.
+    life::codec::set_decode_callback(tags::on_request);
+    life::codec::set_encode_callback(tags::on_response);
     eprintln!(
         "{} serving {} on {} (connections renewed every {} s)",
         clock(),

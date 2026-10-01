@@ -6,16 +6,17 @@
 //! where a message is raw bytes (spec 0377) — the last place before the wire:
 //!
 //! - its **decoder** hands each message's raw bytes to a decode callback
-//!   before decoding (`set_request_callback`): the server reads the tags;
+//!   before decoding (`set_decode_callback`): the decoding side reads the tags;
 //! - its **encoder** rewrites each message's bytes through an encode callback
-//!   before emitting them (`set_encode_callback`): the client hides a bit
-//!   field in the tags.
+//!   before emitting them (`set_encode_callback`): the encoding side hides a
+//!   bit field in the tags.
 //!
 //! `build.rs` points the generated service at this codec (`codec_path`), so
-//! it wraps the client and the server alike. The behavior is scoped by which
-//! callback each installs: the server installs only the decode one, the
-//! client only the encode one, and with no callback the codec is a plain
-//! prost pass-through.
+//! it wraps the client and the server alike. For the echo handshake (spec
+//! 0379) both sides install both callbacks — the server reads requests and
+//! writes responses, the client the reverse. A side that installs neither
+//! gets a plain prost pass-through. Each process has its own callbacks, so
+//! the shared statics below do not cross between client and server.
 
 use bytes::{Buf, BufMut};
 use prost::Message;
@@ -36,9 +37,10 @@ type EncodeCallback = fn(&[u8]) -> Vec<u8>;
 /// emits prost bytes unchanged.
 static ENCODE_CALLBACK: std::sync::OnceLock<EncodeCallback> = std::sync::OnceLock::new();
 
-/// Declare the callback the codec hands each decoded message's raw bytes to
-/// (spec 0377 S2). The server calls this once, at startup.
-pub fn set_request_callback(callback: fn(&[u8])) {
+/// Declare the callback the codec hands each decoded message's raw bytes to.
+/// Whichever side decodes installs it: the server to read a request's tags
+/// (spec 0377 S2), the client to read a response's (spec 0379 S3).
+pub fn set_decode_callback(callback: fn(&[u8])) {
     let _ = DECODE_CALLBACK.set(callback);
 }
 
