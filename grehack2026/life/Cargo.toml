@@ -27,6 +27,12 @@ clap         = { version = "4", features = ["derive"] }
 # life-spy: kill(2), chown's user ids, getuid, localtime_r.
 libc         = "0.2"
 bytes        = "1"
+# life-client reads the HTTP/2 error behind a failed step, to tell a
+# connection renewal from a real fault (spec 0381 S1). It is downcast out of
+# hyper's error chain, so it must stay the same h2 as hyper's (0.4): a
+# different semver would be a different type, and the downcast would fail
+# silently.
+h2           = "0.4"
 prost        = "0.14"
 prost-types  = "0.14"
 # life-server reads each request's tags through the prototext render (spec

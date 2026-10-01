@@ -7,6 +7,7 @@
 
 mod command;
 mod patterns;
+mod renewal;
 
 use clap::Parser;
 use command::{Mode, Pending, PromptAction, PromptKey};
@@ -227,14 +228,25 @@ impl Game {
                 // level without the server having seen it. Step is a pure
                 // computation, so one immediate retry, on the new connection,
                 // is safe.
+                // The retry carries the same echo as the failed attempt (spec
+                // 0381 S5): the encode callback emptied TO_ECHO, and a failed
+                // attempt had no response, so nothing newer is in the slot.
+                let echo = TO_ECHO.load(std::sync::atomic::Ordering::Relaxed);
                 match self.client.step(request.clone()).await {
-                    Err(s) if is_transport(&s) => self.client.step(request).await,
+                    Err(s) if renewal::is_renewal_race(&s) => {
+                        TO_ECHO.store(echo, std::sync::atomic::Ordering::Relaxed);
+                        self.client.step(request).await
+                    }
                     result => result,
                 }
             })
-            .map_err(|s| match s.message() {
-                "" => format!("calling {}: {:?}", self.method, s.code()),
-                m => format!("calling {}: {:?}: {m}", self.method, s.code()),
+            .map_err(|s| {
+                // The HTTP/2 condition behind the failure (spec 0381 S2).
+                let note = renewal::h2_note(&s).map_or(String::new(), |n| format!(" {n}"));
+                match s.message() {
+                    "" => format!("calling {}: {:?}{note}", self.method, s.code()),
+                    m => format!("calling {}: {:?}: {m}{note}", self.method, s.code()),
+                }
             })?
             .into_inner();
         let rtt = started.elapsed();
@@ -273,17 +285,6 @@ impl Game {
             r(&self.rules.birth),
             r(&self.rules.survival)
         )
-    }
-}
-
-/// A failure of the connection rather than of the call: the server never
-/// answered it.
-fn is_transport(status: &tonic::Status) -> bool {
-    use tonic::Code;
-    match status.code() {
-        Code::Unavailable => true,
-        Code::Unknown => status.message().contains("transport error"),
-        _ => false,
     }
 }
 
@@ -584,4 +585,40 @@ fn draw(frame: &mut Frame, game: &Game, ui: &Ui) {
             ..area
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+    use std::sync::atomic::Ordering;
+
+    fn echo_in(request: &[u8]) -> Option<u8> {
+        let bits = life::tags::read_tags(request, life::tags::REQUEST);
+        life::tags::parse_hi(&bits.recover_message())
+    }
+
+    #[test]
+    fn a_retry_restores_the_echo() {
+        // 20x20: enough tags for "hi server 7" and its terminator (89 bits).
+        let request = StepRequest {
+            grid: Some(Grid {
+                rows: vec![Row { cells: vec![1; 20] }; 20],
+            }),
+            rules: None,
+            generation: 4,
+        }
+        .encode_to_vec();
+
+        // The sequence of Game::step around a retry (spec 0381 S5).
+        TO_ECHO.store(7, Ordering::Relaxed);
+        let echo = TO_ECHO.load(Ordering::Relaxed);
+        let first = on_request(&request);
+        assert_eq!(TO_ECHO.load(Ordering::Relaxed), NONE, "the slot is emptied");
+        TO_ECHO.store(echo, Ordering::Relaxed);
+        let retry = on_request(&request);
+
+        assert_eq!(echo_in(&first), Some(7));
+        assert_eq!(echo_in(&retry), Some(7));
+    }
 }
