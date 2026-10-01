@@ -5,9 +5,11 @@
 //! `life-client`: draws the grid and takes the user's input; every
 //! generation is computed by `life-server` (spec 0375 S5, N4).
 
+mod command;
 mod patterns;
 
 use clap::Parser;
+use command::{Mode, Pending, PromptAction, PromptKey};
 use life::pb::{
     life_client::LifeClient, CellState, Grid, Range, Row, Rules, StepRequest, Topology,
 };
@@ -57,6 +59,11 @@ struct Args {
     /// generation number and live cell count.
     #[arg(long)]
     steps: Option<u64>,
+
+    /// Where the `s`-key command runner writes each command's output
+    /// (spec 0380): a file, since the TUI owns stdout and stderr.
+    #[arg(long, default_value = "/tmp/life-client-commands.log")]
+    command_log: String,
 }
 
 fn parse_range(s: &str) -> Result<Range, String> {
@@ -286,6 +293,11 @@ struct Ui {
     speed: u32,
     rtt: Option<Duration>,
     error: Option<String>,
+    /// The `s`-key command runner (spec 0380): the keyboard mode, the
+    /// pending child, and the log file its output goes to.
+    mode: Mode,
+    pending: Pending,
+    log: std::fs::File,
 }
 
 /// The number the client owes the server as an echo (spec 0379): the N read
@@ -375,11 +387,19 @@ fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = grid_size(terminal.size()?.into());
     game.reset(width, height, args.pattern.as_deref());
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&args.command_log)
+        .map_err(|e| format!("opening {}: {e}", args.command_log))?;
     let mut ui = Ui {
         running: false,
         speed: SPEED,
         rtt: None,
         error: None,
+        mode: Mode::Game,
+        pending: Pending::idle(),
+        log,
     };
     let mut next_tick = Instant::now();
     loop {
@@ -397,7 +417,10 @@ fn run(
                         return Ok(());
                     }
                 }
-                Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                Event::Mouse(m)
+                    if matches!(ui.mode, Mode::Game)
+                        && m.kind == MouseEventKind::Down(MouseButton::Left) =>
+                {
                     game.toggle(usize::from(m.column / 2), usize::from(m.row));
                 }
                 Event::Resize(w, h) => {
@@ -406,6 +429,11 @@ fn run(
                 }
                 _ => {}
             }
+        }
+
+        // A finished command logs its output and frees `s` (spec 0380 S4).
+        if let Some(result) = ui.pending.poll() {
+            command::log_result(&mut ui.log, &result);
         }
 
         if ui.running && Instant::now() >= next_tick {
@@ -435,9 +463,34 @@ fn call(game: &mut Game, ui: &mut Ui) {
 /// Returns false to quit. In raw mode Ctrl-C arrives here as a key, not as
 /// a signal.
 fn on_key(key: KeyEvent, game: &mut Game, ui: &mut Ui) -> bool {
+    // Ctrl-C quits from either mode: it is the only signal path in raw mode
+    // (spec 0375), so it must not be captured as prompt input (spec 0380 S2).
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    match &mut ui.mode {
+        Mode::Prompt { line } => {
+            let pkey = match key.code {
+                KeyCode::Char(c) => PromptKey::Char(c),
+                KeyCode::Backspace => PromptKey::Backspace,
+                KeyCode::Enter => PromptKey::Enter,
+                KeyCode::Esc => PromptKey::Escape,
+                _ => PromptKey::Ignore,
+            };
+            match command::on_prompt_key(line, pkey) {
+                PromptAction::Edit => {}
+                PromptAction::Cancel | PromptAction::SubmitEmpty => ui.mode = Mode::Game,
+                PromptAction::Submit(cmd) => {
+                    ui.pending.start(cmd);
+                    ui.mode = Mode::Game;
+                }
+            }
+            return true;
+        }
+        Mode::Game => {}
+    }
     match key.code {
         KeyCode::Char('q') => return false,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
         KeyCode::Char(' ') => ui.running = !ui.running,
         KeyCode::Char('n') => {
             ui.running = false;
@@ -448,6 +501,13 @@ fn on_key(key: KeyEvent, game: &mut Game, ui: &mut Ui) -> bool {
             game.reset(w, h, None);
         }
         KeyCode::Char('c') => game.clear(),
+        // `s`: open the command prompt, unless one is already running (S5).
+        KeyCode::Char('s') if !ui.pending.is_running() => {
+            ui.running = false;
+            ui.mode = Mode::Prompt {
+                line: String::new(),
+            };
+        }
         KeyCode::Char('+') => ui.speed = (ui.speed + 1).min(SPEED_MAX),
         KeyCode::Char('-') => ui.speed = ui.speed.saturating_sub(1).max(SPEED_MIN),
         _ => {}
@@ -477,6 +537,20 @@ fn draw(frame: &mut Frame, game: &Game, ui: &Ui) {
         grid,
     );
 
+    // In Prompt mode the status row is the command line (spec 0380 S7).
+    if let Mode::Prompt { line } = &ui.mode {
+        frame.render_widget(
+            Paragraph::new(format!(" cmd> {line}"))
+                .style(Style::default().fg(Color::Black).bg(Color::Cyan)),
+            Rect {
+                y: area.bottom().saturating_sub(1),
+                height: 1,
+                ..area
+            },
+        );
+        return;
+    }
+
     let state = if ui.running { "running" } else { "paused" };
     let rtt = ui.rtt.map_or_else(
         || "-".to_string(),
@@ -493,8 +567,12 @@ fn draw(frame: &mut Frame, game: &Game, ui: &Ui) {
             status.push_str(&format!("  error: {e}"));
             Style::default().fg(Color::Black).bg(Color::Red)
         }
+        None if ui.pending.is_running() => {
+            status.push_str("  │ running command …  q quit");
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        }
         None => {
-            status.push_str("  │ space run  n step  r random  c clear  +/- speed  q quit");
+            status.push_str("  │ space run  n step  r random  c clear  s cmd  +/- speed  q quit");
             Style::default().fg(Color::Black).bg(Color::Gray)
         }
     };
