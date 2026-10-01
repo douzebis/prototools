@@ -6,14 +6,14 @@ SPDX-License-Identifier: MIT
 
 # 0381 — a step survives the connection renewal
 
-Status: implemented in part — S1, S2, S4 and S5 are done; a second
-        failure measured afterwards (hyper "canceled", see Measured
-        outcome) is open, and test plan item 4 waits on it
-Implemented in: 2026-10-01 (S1, S2, S4, S5)
-App: grehack2026 (life-client)
+Status: implemented
+Implemented in: 2026-10-01
+App: grehack2026 (life-client, life-server, life-spy)
 Refs: docs/specs/0375-a-game-of-life-to-spy-on.md (S4: the server renews
-      each connection after `--max-connection-age`, for the spy; S5: the
-      client's one-call-at-a-time loop and its headless `--steps` mode);
+      each connection after `--max-connection-age`, for the spy, which
+      S8 here makes opt-in; S5: the client's one-call-at-a-time loop and
+      its headless `--steps` mode; the spy's "missed" message, which S9
+      rewords);
       docs/specs/0378-the-life-server-stops-panicking-on-connection-age.md
       (the server-side renewal bug, fixed; this is a client-side one);
       docs/specs/0379-the-tags-carry-an-echo-handshake.md (S3: the client's
@@ -63,6 +63,11 @@ of spec 0378):
   (`is_go_away()`, `is_reset()`), and whether the server sent it
   (`is_remote()`).
 
+The renewal exists for one reason (spec 0375, Background): HTTP/2
+compresses headers against a table built since the connection opened
+(HPACK), so a capture started mid-connection cannot recognize the gRPC
+traffic. A late spy needs fresh connections to get a grip on it.
+
 A second defect sits in the existing retry. The client's encode callback
 empties `TO_ECHO` when it builds a request (spec 0379 S3), so the retried
 request carries no echo. Each retry that happens today silently drops one
@@ -70,24 +75,33 @@ request carries no echo. Each retry that happens today silently drops one
 
 ## Goals
 
-- **G1.** A step that fails because it raced a connection renewal is
-  retried, and the game keeps running. A client left at 10 gen/s against
-  `--max-connection-age 1` no longer stops with this error.
+- **G1.** A step that fails because it raced a server-side connection
+  renewal with a GOAWAY is retried, and the game keeps running. Under S8
+  this is the safety net for a server run with `--max-connection-age`;
+  G5 removes the race from normal play.
 - **G2.** Any other HTTP/2 failure is not retried and still stops the game
   with an error, as it does today.
 - **G3.** When a step fails, its error says which HTTP/2 condition caused
   it, so the next unexplained failure can be diagnosed from the status
   line alone.
 - **G4.** A retried step carries the same echo as the attempt it replaces.
+- **G5.** In normal play no step races a renewal at all: the client
+  renews its own connection, between two steps, every 5 s (S7), and the
+  server no longer closes connections unless asked to (S8). Retries
+  (S4) become a safety net, not part of normal play.
+- **G6.** A spy started late gets a grip on the client's traffic within
+  about 5 s, down from 10 s, so a participant waits less (S7, S9).
 
 ## Non-goals
 
 - **N1. More than one retry, or a backoff.** The retry goes out on a new
   connection. Losing the race twice in a row means something else is
   wrong, and that should be shown, not hidden by further attempts.
-- **N2. Changing the server.** The renewal is needed for the spy (spec
-  0375 S4), and nothing on the server side closes the window (see
-  Alternatives). The fix is client-side only.
+- **N2. Server-side renewal by default, even as a fallback.** It was
+  never a health check: a killed server shows as a failed call, and a
+  hung one as the client's 5 s call timeout, with or without renewal. A
+  default fallback would only bring the race back for clients that do
+  not renew themselves. It stays available as an opt-in (S8).
 - **N3. A response lost after the server handled its request.** If the
   server handled the first attempt and only its response was lost, the
   retry is still correct for the game: Step is a pure computation. But the
@@ -101,6 +115,10 @@ request carries no echo. Each retry that happens today silently drops one
   one, bobapp (`demo/bobapp`, spec 0241), makes a single call. It does
   not run a long call loop against a renewing server. (`life-spy`
   captures traffic and makes no gRPC calls.)
+- **N5. Retrying hyper's "canceled".** The second failure measured
+  (Measured outcome) is a symptom of the same race. S7 and S8 remove the
+  race instead of retrying each symptom. If the measurement after S7
+  and S8 still shows it, this spec is revised.
 
 ## Specification
 
@@ -178,7 +196,73 @@ request carries no echo. Each retry that happens today silently drops one
 - **S6. Still one retry (N1).** If the retry also fails, its error is the
   one shown, with S2's note.
 
+- **S7. The client renews its own connection (G5, G6).** `life-client`
+  gains `--renew-every SECS`, default 5; 0 means never. Before sending a
+  step, `Game::step` checks how long ago its channel was created. When
+  that is SECS or more, it builds a new channel with the same endpoint
+  settings (`connect_lazy`) and drops the old one, which closes the old
+  connection. The decision is a small pure function,
+  `needs_renewal(created, now, period) -> bool`, so it can be tested.
+
+  - **No race.** The client makes one call at a time (spec 0375 S5), so
+    between two steps nothing is in flight, and a connection closed
+    there cannot cut off a request.
+  - **The client is always early.** The age counts from the channel's
+    creation, before the connection exists; a server, if it renews at
+    all (S8), counts from accepting the connection. A connection is
+    never older on the server's clock than on the client's.
+  - **A paused game** sends nothing, so its connection just ages; the
+    first step after a pause renews it before sending.
+  - **The spy's delay.** A connection is replaced at the first step
+    after SECS, so a late spy waits at most SECS plus one step interval:
+    5.1 s at 10 gen/s. 5 s is chosen for the participant's sake: waiting
+    10 s for the spy to catch up felt long. The cost, one TCP connection
+    and HTTP/2 handshake every 5 s on loopback, is measured at
+    implementation.
+  - Headless mode (`--steps`) renews the same way: it goes through the
+    same `Game::step`.
+
+- **S8. Server-side renewal becomes opt-in.** `life-server`'s
+  `--max-connection-age SECS` has no default: unset, the server never
+  closes a connection, and its startup line drops the
+  `(connections renewed every N s)` part. Set, it behaves as before.
+  It is for a long-lived client other than `life-client`, which a late
+  spy would otherwise never see whole. Whoever sets it must keep it
+  above the client's `--renew-every`, or the race returns: S4 retries
+  its GOAWAY form, and the "canceled" form (N5) would show. This amends
+  spec 0375 S4. The tonic patch of spec 0378 stays while the flag
+  exists.
+
+- **S9. The spy's message names the client's renewal.** `life-spy`'s
+  note on missed messages says the server renews connections every
+  10 s (`--max-connection-age`). It now says `life-client` renews its
+  connection every 5 s (`--renew-every`), and that the spy sees the next
+  one whole.
+
 ## Alternatives considered
+
+### Retry hyper's "canceled" too
+
+It is cheap, and safe for the game, since Step is a pure computation.
+Rejected as the fix (N5): it treats one symptom of the race and leaves
+the others. The 5 s timeout seen once would remain, and a retry after a
+lost response risks an `echo mismatch` (N3). Removing the race (S7, S8)
+removes all of them, and in normal play there are no retries, so the spy
+also stops seeing a request twice, which spec 0375's measured outcome
+noted after a retry.
+
+### Client renewal, with a server fallback at 60 s
+
+A server fallback well above the client's period would never collide
+with `life-client`. Rejected as a default (N2): it is not a health
+check, so it protects against nothing, and for every other client it
+brings the race back. Opt-in (S8) keeps it for whoever needs it.
+
+### A renewal period of 9 or 10 s
+
+9 s would have kept spec 0375's promise of "within 10 s" at any speed
+down to 1 gen/s. 5 s is chosen instead (G6) because the wait is what a
+participant feels.
 
 ### Match on the status code or message text
 
@@ -229,19 +313,26 @@ and is next to `TO_ECHO` (S5). The fix belongs there.
 3. `a_retry_restores_the_echo`: with `TO_ECHO` holding 7, run the S5
    sequence (read, encode a request, put the value back, encode again)
    and check that both requests carry `hi server 7`.
-4. In the image (a `grehack2026/smoke-test.sh` check):
-   `life-server --max-connection-age 1`, then a headless
-   `life-client --steps K --size 106x61` (the reported size) against it,
-   which must exit successfully. K is chosen at implementation so that the run crosses
-   at least 60 renewals and the client before this fix fails it in 5 runs
-   out of 5. Headless mode steps back to back and exits on the first
-   error (spec 0375 S5), so its exit status is the whole check. K and the
-   failure rate before the fix are recorded in the measured outcome. If
-   no K makes the unfixed client fail reliably within a minute, the check
-   is still added, since it guards against regressions, and the measured
-   outcome says it does not reproduce the failure.
-5. A manual run reproducing the report: the TUI on a 106×61 grid at
-   10 gen/s against `--max-connection-age 1` reaches generation 15000
+4. In the image (a `grehack2026/smoke-test.sh` check): `life-server`
+   with its defaults (no renewal), then a headless
+   `life-client --renew-every 1 --size 106x61` (the reported size)
+   against it, stepping back to back under `timeout 65`, about 65
+   renewals. Headless mode exits on the first error (spec 0375 S5), so
+   timeout's exit code 124, meaning the client was still stepping, is
+   the pass. A time bound rather than a fixed step count keeps the check
+   independent of how fast the machine steps. For comparison, recorded
+   in the measured outcome but not part of the check: without client
+   renewal, against `--max-connection-age 1`, the client fails.
+5. `needs_renewal` (S7): false before the period, true at and after it,
+   always false with period 0.
+6. A late spy (S7, S9), in the image if the spy check can be extended,
+   else by hand: start a long headless client run with the defaults,
+   start `life-spy` 2 s later. The spy reports the missed messages once,
+   with S9's wording, then saves every call from the next connection,
+   which starts within about 5 s.
+7. A manual run reproducing the report: the TUI on a 106×61 grid at
+   10 gen/s, server and client with their defaults, reaches generation
+   15000
    (more than twice where both reported runs failed) without stopping.
    With the server's `--self-echo-percentage 100`, the server logs one
    `echo ok` for each step except the first, and no `echo mismatch`. The
@@ -273,7 +364,31 @@ GOAWAY failure had hidden them by always striking first. At the default
 cleanly. At the rate measured at 1 s, the cancellation would still
 appear at 10 s, after roughly 25 to 190 renewals.
 
-Per S3, work stopped there. Test plan item 4 is not added yet: any step
-count that makes the unfixed client fail reliably also hits the open
-cancellation. Tests: 55 crate tests pass (items 1–3 among them), clippy
+Per S3, work stopped there, and S7 to S9 were added to remove the race
+rather than retry each of its forms (N5).
+
+**With S7 to S9.** The default server (no renewal) and the client at
+`--renew-every 1`, headless on 106×61, 5 runs of 20,000 steps, with the
+server at `--verbose --self-echo-percentage 100`: all 5 runs completed,
+100,000 steps over 1,229 connections (distinct client ports in the
+server's log, about one renewal per second as asked), with no failure
+of any kind: no GOAWAY, no "canceled", no timeout. The handshake was
+clean: 99,995 `echo ok`, one per step but the first of each run, and no
+mismatch. The `Timeout expired` seen once before was therefore a form of
+the same race, as suspected. Renewing costs nothing visible: the runs
+stepped at about 78 steps/s, faster than the 45 steps/s of the runs
+against the renewing server. N5 stays: no retry of "canceled" is
+needed.
+
+**The image.** The smoke test passes with all 17 checks green, including
+the two new ones: the client stepping 65 s at `--renew-every 1` against
+the default server (test plan 4), and a late spy (test plan 6). In the
+latter, the spy started 1 s after the client, printed S9's note, and
+saved its first call 4.0 s later, at the client's first renewal 5 s
+into the run; the run saved 11,145 calls in pairs and counted 11,080
+messages missed from the connection it did not see open. Test plan 7,
+the TUI run by hand to generation 15000, was not done here.
+
+Tests: 56 crate tests pass (items 1–3 and 5 among them), clippy clean,
+`cargo fmt` clean. Tests: 55 crate tests pass (items 1–3 among them), clippy
 clean.

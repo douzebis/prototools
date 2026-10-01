@@ -65,6 +65,13 @@ struct Args {
     /// (spec 0380): a file, since the TUI owns stdout and stderr.
     #[arg(long, default_value = "/tmp/life-client-commands.log")]
     command_log: String,
+
+    /// Open a new connection to the server, between two steps, once the
+    /// current one is this many seconds old (0: never). A spy started late
+    /// cannot read a connection it did not see open, so this bounds how
+    /// long it waits.
+    #[arg(long, default_value_t = 5)]
+    renew_every: u64,
 }
 
 fn parse_range(s: &str) -> Result<Range, String> {
@@ -96,7 +103,12 @@ const DENSITY: f64 = 0.25;
 /// server that moves it on.
 struct Game {
     runtime: Runtime,
+    endpoint: Endpoint,
     client: LifeClient<Channel>,
+    /// When `client`'s channel was created, and how often to renew it
+    /// (spec 0381 S7).
+    connected: Instant,
+    renew_every: Duration,
     rules: Rules,
     cells: Vec<Vec<bool>>,
     generation: u64,
@@ -110,19 +122,16 @@ struct Game {
 impl Game {
     fn new(args: &Args) -> Result<Self, Box<dyn std::error::Error>> {
         let runtime = Runtime::new()?;
-        // Lazy: a server started after the client is picked up at the next
-        // step, and after the server renews the connection the channel
-        // simply reconnects.
-        let channel = {
-            let _guard = runtime.enter();
-            Endpoint::from_shared(args.server.clone())?
-                .connect_timeout(Duration::from_secs(1))
-                .timeout(Duration::from_secs(5))
-                .connect_lazy()
-        };
+        let endpoint = Endpoint::from_shared(args.server.clone())?
+            .connect_timeout(Duration::from_secs(1))
+            .timeout(Duration::from_secs(5));
+        let client = connect(&runtime, &endpoint);
         Ok(Game {
             runtime,
-            client: LifeClient::new(channel),
+            endpoint,
+            client,
+            connected: Instant::now(),
+            renew_every: Duration::from_secs(args.renew_every),
             rules: Rules {
                 birth: Some(args.birth),
                 survival: Some(args.survival),
@@ -219,15 +228,22 @@ impl Game {
             rules: Some(self.rules),
             generation: self.generation,
         };
+        // Renew the connection here, between two steps, where no call is in
+        // flight, so the close cannot race one (spec 0381 S7). Dropping the
+        // old client closes its connection.
+        if renewal::needs_renewal(self.connected, Instant::now(), self.renew_every) {
+            self.client = connect(&self.runtime, &self.endpoint);
+            self.connected = Instant::now();
+        }
         let started = Instant::now();
         let response = self
             .runtime
             .block_on(async {
-                // The server renews each connection every few seconds (spec
-                // 0375 S4); a call racing that renewal fails at the transport
-                // level without the server having seen it. Step is a pure
-                // computation, so one immediate retry, on the new connection,
-                // is safe.
+                // A server run with --max-connection-age closes connections
+                // on its own clock (spec 0381 S8), and a call racing that
+                // close fails without the server having seen it. Step is a
+                // pure computation, so one immediate retry, on the new
+                // connection, is safe.
                 // The retry carries the same echo as the failed attempt (spec
                 // 0381 S5): the encode callback emptied TO_ECHO, and a failed
                 // attempt had no response, so nothing newer is in the slot.
@@ -286,6 +302,14 @@ impl Game {
             r(&self.rules.survival)
         )
     }
+}
+
+/// A client on a new channel to `endpoint`. Lazy: a server started after
+/// the client is picked up at the next step, and a channel whose connection
+/// broke reconnects on its own.
+fn connect(runtime: &Runtime, endpoint: &Endpoint) -> LifeClient<Channel> {
+    let _guard = runtime.enter();
+    LifeClient::new(endpoint.connect_lazy())
 }
 
 /// What the status line shows besides the game itself.

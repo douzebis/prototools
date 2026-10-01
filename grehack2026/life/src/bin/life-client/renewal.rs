@@ -2,12 +2,22 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Telling a step that raced the server's connection renewal from a real
-//! fault (spec 0381). tonic reports most HTTP/2 failures as `Internal: h2
-//! protocol error: http2 error`, whatever the cause; the `h2::Error` in the
-//! status's source chain says what actually happened.
+//! The client's connection renewal (spec 0381). It renews its own
+//! connection between steps, so in normal play no call races a close
+//! (`needs_renewal`). A server run with `--max-connection-age` closes
+//! connections on its own clock, which a call can race; tonic reports most
+//! HTTP/2 failures as `Internal: h2 protocol error: http2 error`, whatever
+//! the cause, and the `h2::Error` in the status's source chain tells such a
+//! race from a real fault.
 
 use std::error::Error;
+use std::time::{Duration, Instant};
+
+/// Whether a connection created at `created` is due for renewal at `now`
+/// (spec 0381 S7): it is `period` old or more. A zero period never renews.
+pub fn needs_renewal(created: Instant, now: Instant, period: Duration) -> bool {
+    !period.is_zero() && now.saturating_duration_since(created) >= period
+}
 
 /// The HTTP/2 error behind a status, if any (spec 0381 S1): the first error
 /// in the status's source chain that is an `h2::Error`.
@@ -76,6 +86,21 @@ mod tests {
 
     fn bare_reason(reason: h2::Reason) -> tonic::Status {
         tonic::Status::from_error(Box::new(h2::Error::from(reason)))
+    }
+
+    #[test]
+    fn renewal_is_due_at_the_period() {
+        let t = Instant::now();
+        let five = Duration::from_secs(5);
+        assert!(!needs_renewal(t, t, five));
+        assert!(!needs_renewal(t, t + Duration::from_millis(4999), five));
+        assert!(needs_renewal(t, t + five, five));
+        assert!(needs_renewal(t, t + Duration::from_secs(60), five));
+        assert!(!needs_renewal(
+            t,
+            t + Duration::from_secs(60),
+            Duration::ZERO
+        ));
     }
 
     #[test]

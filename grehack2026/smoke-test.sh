@@ -229,6 +229,42 @@ ok=$(grep -c "echo ok" /tmp/self.err || true)
 ! grep -q "echo mismatch" /tmp/self.err || { echo "a mismatch"; tail -8 /tmp/self.err; exit 1; }
 EOF
 
+# Spec 0381 test plan 4: life-client renews its own connection between two
+# steps, so no step races a close. The server keeps connections open (S8);
+# the client renews every second, for about 65 renewals.
+check "the client renews its connection (spec 0381)" <<'EOF'
+set -e
+life-server </dev/null >/dev/null 2>/tmp/renew.err &
+sleep 2
+rc=0
+timeout 65 life-client --renew-every 1 --steps 100000000 --size 106x61 \
+  >/tmp/renew.out 2>&1 || rc=$?
+kill %1 2>/dev/null || true
+# 124 is timeout's: the client was still stepping, with no error, at 65 s.
+[ "$rc" -eq 124 ] || { echo "the client exited $rc"; cat /tmp/renew.out; exit 1; }
+EOF
+
+# Spec 0381 test plan 6: a spy started after the client misses the traffic
+# of the connection it did not see open, says so, then reads the next one
+# whole, which the client opens within 5 s (S7, S9).
+check "a late spy catches up (spec 0381)" --user 0 <<'EOF'
+set -e
+life-server </dev/null >/dev/null 2>&1 &
+timeout 14 life-client --steps 100000000 --size 20x10 >/dev/null 2>&1 &
+sleep 1
+life-spy --out /tmp/late >/tmp/late.log 2>&1 &
+sleep 11
+life-spy --out /tmp/late --stop
+grep -q "life-client renews its connection every" /tmp/late.log \
+  || { echo "no missed-messages note"; tail -5 /tmp/late.log; exit 1; }
+summary=$(grep "stopped:" /tmp/late.log)
+# The image has no sed: bash's own regex reads the two counts.
+[[ $summary =~ stopped:\ ([0-9]+)\ requests.*saved,\ ([0-9]+)\ messages\ missed ]] \
+  || { echo "no summary: $summary"; exit 1; }
+[ "${BASH_REMATCH[1]}" -gt 0 ] && [ "${BASH_REMATCH[2]}" -gt 0 ] \
+  || { echo "want calls saved and some missed: $summary"; exit 1; }
+EOF
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)

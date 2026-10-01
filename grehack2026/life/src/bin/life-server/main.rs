@@ -23,10 +23,12 @@ struct Args {
     listen: SocketAddr,
 
     /// Close each connection after this many seconds; clients reconnect on
-    /// their own. A capture started mid-connection cannot decode gRPC, so
-    /// this bounds how long a late spy waits.
-    #[arg(long, default_value_t = 10)]
-    max_connection_age: u64,
+    /// their own. Off by default: life-client renews its own connection
+    /// (--renew-every), between two calls, where a close cannot race one.
+    /// For a long-lived client that does not, which a late spy would never
+    /// see whole; keep it above that client's renewal period.
+    #[arg(long)]
+    max_connection_age: Option<u64>,
 
     /// Print one line per request on stderr, and each request's raw tag bit
     /// field on stdout.
@@ -117,15 +119,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     life::codec::set_decode_callback(tags::on_request);
     life::codec::set_encode_callback(tags::on_response);
     tags::spawn_stdin_reader();
+    let renewal = args.max_connection_age.map_or(String::new(), |s| {
+        format!(" (connections renewed every {s} s)")
+    });
     eprintln!(
-        "{} serving {} on {} (connections renewed every {} s)",
+        "{} serving {} on {}{renewal}",
         clock(),
         life::step_path(),
         args.listen,
-        args.max_connection_age
     );
-    Server::builder()
-        .max_connection_age(Duration::from_secs(args.max_connection_age))
+    // Server-side renewal is opt-in (spec 0381 S8): unset, connections stay
+    // open until the client closes them.
+    let mut server = Server::builder();
+    if let Some(secs) = args.max_connection_age {
+        server = server.max_connection_age(Duration::from_secs(secs));
+    }
+    server
         .add_service(LifeServer::new(Service))
         .serve_with_shutdown(args.listen, shutdown())
         .await?;

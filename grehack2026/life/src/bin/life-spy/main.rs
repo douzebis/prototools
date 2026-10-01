@@ -554,8 +554,8 @@ fn read(
         };
         if fed.first_missed {
             say("life-spy: missing messages: their connection predates the spy, so tshark");
-            say("          cannot tell they are gRPC; the server renews connections every");
-            say("          10 s (--max-connection-age), and the spy sees the next one whole");
+            say("          cannot tell they are gRPC; life-client renews its connection every");
+            say("          5 s (--renew-every), and the spy sees the next one whole");
         }
         for m in fed.messages {
             let file = m.file_name();
