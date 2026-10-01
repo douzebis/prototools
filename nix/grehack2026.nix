@@ -39,7 +39,12 @@ let
     # wireshark-cli on the participants' PATH too, not only on life-spy's:
     # the spy prints its dumpcap and tshark commands to be run and adapted
     # by hand (spec 0375 S6, S7).
-    paths = [ prototext protolensLean reproto protoscan wktDb life pkgs.wireshark-cli ];
+    #
+    # fortune on the participants' PATH too: life-client runs it for the
+    # number 42 (spec 0383), and carries its own wrapped copy, but putting
+    # it here lets a participant run `fortune` by hand and see what the
+    # client sends.
+    paths = [ prototext protolensLean reproto protoscan wktDb life pkgs.wireshark-cli pkgs.fortune ];
   };
 
   uid = 1000;

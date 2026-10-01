@@ -71,6 +71,15 @@ in crane.buildPackage (commonArgs // {
   postInstall = ''
     wrapProgram $out/bin/life-spy \
       --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wireshark-cli ]}
+    # life-client runs `fortune` for the number 42 (spec 0383), through the
+    # spec 0380 command runner's `sh -c fortune`. Wrap both `bash` (for `sh`)
+    # and `fortune` onto the client's PATH, like wireshark-cli on life-spy's,
+    # so the fortune launch is fully controlled and resolves the same in the
+    # workshop image and on any Nix machine, without depending on the login
+    # shell's PATH. This bash is prepended to the whole process PATH, so the
+    # `s`-key shell runner (spec 0380) sees it too — accepted (spec 0383 S4).
+    wrapProgram $out/bin/life-client \
+      --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.fortune ]}
   '';
 
   meta = {

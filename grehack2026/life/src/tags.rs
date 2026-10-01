@@ -232,9 +232,10 @@ fn has_tag_ohb(annotation: &str) -> bool {
 
 // ── The factoring exchange (spec 0382) ───────────────────────────────────────
 
-/// The server's half: `"factor <N>"`, N the number to factor (spec 0382 S1).
-pub fn factor_request(n: u128) -> String {
-    format!("factor {n}")
+/// The server's half: `"factor <N>"`, N the number to factor as canonical
+/// decimal digits, which the server keeps as text (spec 0382 S1, S2).
+pub fn factor_request(digits: &[u8]) -> Vec<u8> {
+    [b"factor ".as_slice(), digits].concat()
 }
 
 /// The client's half: `"factors <f>*<f>*…"`, each `<f>` a prime `p` or
@@ -281,6 +282,32 @@ pub fn parse_factors_reply(message: &[u8]) -> Option<Vec<(u128, u32)>> {
             }
         })
         .collect()
+}
+
+/// The client's half for the special number 42 (spec 0383): `"fortune <text>"`,
+/// where `<text>` is the fortune the client ran. Newlines are kept, so the
+/// server displays the fortune on several lines; the other control bytes
+/// (tabs, a stray carriage return) become spaces, and the ends are trimmed.
+/// The server prints it rather than checking a factorization.
+pub fn fortune_reply(text: &[u8]) -> Vec<u8> {
+    let kept: Vec<u8> = text
+        .iter()
+        .map(|&b| {
+            if b != b'\n' && b.is_ascii_control() {
+                b' '
+            } else {
+                b
+            }
+        })
+        .collect();
+    [b"fortune ".as_slice(), kept.trim_ascii()].concat()
+}
+
+/// The fortune a `"fortune <text>"` message carries, or `None` for anything
+/// else (spec 0383). The text is returned as sent, newlines and all. An
+/// empty text is accepted: `"fortune "` yields an empty slice.
+pub fn parse_fortune_reply(message: &[u8]) -> Option<&[u8]> {
+    message.strip_prefix(b"fortune ")
 }
 
 /// A canonical decimal: ASCII digits, no leading zero (but `0` itself), no
@@ -471,7 +498,8 @@ mod tests {
     #[test]
     fn the_messages_format_and_parse_round_trip() {
         for n in [2u128, 360, u128::MAX] {
-            assert_eq!(parse_factor_request(factor_request(n).as_bytes()), Some(n));
+            let message = factor_request(n.to_string().as_bytes());
+            assert_eq!(parse_factor_request(&message), Some(n));
         }
         let f = vec![(2, 3), (3, 2), (5, 1)];
         assert_eq!(factors_reply(&f), "factors 2^3*3^2*5");
@@ -525,7 +553,7 @@ mod tests {
             generation: 2,
         }
         .encode_to_vec();
-        let request = BitField::frame_message(factor_request(u128::MAX).as_bytes());
+        let request = BitField::frame_message(&factor_request(u128::MAX.to_string().as_bytes()));
         let spoiled = encode_tags(&response, &request, RESPONSE);
         assert_eq!(
             parse_factor_request(&read_tags(&spoiled, RESPONSE).recover_message()),
@@ -544,6 +572,36 @@ mod tests {
         assert_eq!(
             parse_factors_reply(&read_tags(&spoiled, REQUEST).recover_message()),
             Some(f)
+        );
+    }
+
+    #[test]
+    fn a_fortune_reply_keeps_newlines_and_round_trips() {
+        // Newlines are kept; a tab (and any other control byte) becomes a
+        // space; the ends are trimmed.
+        let message = fortune_reply(b"  a quip\nwith two lines\t-- and a tab  ");
+        assert_eq!(message, b"fortune a quip\nwith two lines -- and a tab");
+        assert_eq!(
+            parse_fortune_reply(&message),
+            Some(b"a quip\nwith two lines -- and a tab".as_slice())
+        );
+        // A fortune of only whitespace trims to the empty text.
+        assert_eq!(fortune_reply(b"\n  \n"), b"fortune ");
+        assert_eq!(parse_fortune_reply(b"fortune "), Some(b"".as_slice()));
+        // Not a fortune reply.
+        assert_eq!(parse_fortune_reply(b"factors 2*3"), None);
+        assert_eq!(parse_fortune_reply(b""), None);
+        // A fortune reply is not a factors reply.
+        assert_eq!(parse_factors_reply(&fortune_reply(b"hi there")), None);
+    }
+
+    #[test]
+    fn a_fortune_rides_the_request_tags() {
+        let message = BitField::frame_message(&fortune_reply(b"be excellent"));
+        let spoiled = encode_tags(&a_roomy_request(), &message, REQUEST);
+        assert_eq!(
+            parse_fortune_reply(&read_tags(&spoiled, REQUEST).recover_message()),
+            Some(b"be excellent".as_slice())
         );
     }
 }

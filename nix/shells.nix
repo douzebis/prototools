@@ -181,6 +181,11 @@ in
       #   (spec 0375 S10). The store's dumpcap cannot capture; see the PATH
       #   note in _hook_env for the privileged one.
       wireshark-cli
+      # fortune — life-client runs it for the number 42 (spec 0383). The
+      #   client binary carries its own wrapped `fortune` (grehack2026/life/
+      #   default.nix), so this is for running `fortune` by hand in the shell,
+      #   and so `target/release/life-client` finds one when run unwrapped.
+      fortune
     ]) ++ [ buf grpconfDemo grehackLife ];
 
     shellHook = ''

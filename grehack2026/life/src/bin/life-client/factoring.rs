@@ -6,13 +6,18 @@
 //! `"factor <N>"` starts a worker thread that factors N while the game keeps
 //! stepping; the worker leaves its `"factors …"` reply in an outbox, which
 //! the next request carries. A newer N abandons the older one.
+//!
+//! The number 42 is a special case (spec 0383): instead of factoring, the
+//! worker runs the `fortune` program and sends its output back as
+//! `"fortune <text>"`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// A finished reply, and whether a request has carried it yet.
+/// A finished reply (the framed message bytes), and whether a request has
+/// carried it yet.
 struct Outbox {
-    reply: String,
+    reply: Vec<u8>,
     sent: bool,
 }
 
@@ -33,8 +38,9 @@ impl Factoring {
         }
     }
 
-    /// Abandon the job in progress and any reply not yet settled, and
-    /// factor `n` on a thread of its own.
+    /// Abandon the job in progress and any reply not yet settled, and work
+    /// on `n` on a thread of its own: factor it, or — for 42 (spec 0383) —
+    /// run `fortune`.
     pub fn start(&'static self, n: u128) -> std::thread::JoinHandle<()> {
         let job = {
             let mut outbox = self.outbox.lock().unwrap();
@@ -43,16 +49,14 @@ impl Factoring {
         };
         std::thread::spawn(move || {
             let current = || self.job.load(Ordering::Relaxed) == job;
-            if let Some(factors) = life::factor::factorize(n, &current) {
-                // Checked under the lock `start` takes, so a reply to an
-                // abandoned N cannot slip in after the newer N cleared it.
-                let mut outbox = self.outbox.lock().unwrap();
-                if current() {
-                    *outbox = Some(Outbox {
-                        reply: life::tags::factors_reply(&factors),
-                        sent: false,
-                    });
-                }
+            let Some(reply) = work(n, &current) else {
+                return;
+            };
+            // Checked under the lock `start` takes, so a reply to an
+            // abandoned N cannot slip in after the newer N cleared it.
+            let mut outbox = self.outbox.lock().unwrap();
+            if current() {
+                *outbox = Some(Outbox { reply, sent: false });
             }
         })
     }
@@ -64,7 +68,7 @@ impl Factoring {
         match self.outbox.lock().unwrap().as_mut() {
             Some(outbox) => {
                 outbox.sent = true;
-                outbox.reply.clone().into_bytes()
+                outbox.reply.clone()
             }
             None => Vec::new(),
         }
@@ -77,6 +81,37 @@ impl Factoring {
         if outbox.as_ref().is_some_and(|o| o.sent) {
             *outbox = None;
         }
+    }
+}
+
+/// The reply message for `n`, or `None` once `keep_going` says to stop
+/// (spec 0382 S5). For 42, the fortune of the day (spec 0383); otherwise the
+/// prime factorization. The fortune is run even when the job is abandoned
+/// mid-run — `fortune` is quick and `run_command` does not poll — but the
+/// caller drops the reply if the job is no longer current.
+fn work(n: u128, keep_going: &dyn Fn() -> bool) -> Option<Vec<u8>> {
+    if n == FORTUNE_N {
+        return Some(life::tags::fortune_reply(&run_fortune()));
+    }
+    let factors = life::factor::factorize(n, keep_going)?;
+    Some(life::tags::factors_reply(&factors).into_bytes())
+}
+
+/// The number that runs `fortune` rather than being factored (spec 0383).
+const FORTUNE_N: u128 = 42;
+
+/// Run `fortune` and return its stdout (spec 0383). `fortune` is on the
+/// client's PATH, wrapped into the binary by Nix, so this does not depend on
+/// the shell. On a non-zero exit or a spawn failure, the stderr or the error
+/// stands in, so the server always has something to show.
+fn run_fortune() -> Vec<u8> {
+    let result = crate::command::run_command("fortune".to_string());
+    if result.status == "exit 0" && !result.stdout.is_empty() {
+        result.stdout
+    } else if !result.stderr.is_empty() {
+        result.stderr
+    } else {
+        format!("fortune: {}", result.status).into_bytes()
     }
 }
 
@@ -107,6 +142,22 @@ mod tests {
         f.start(97).join().unwrap(); // a worker finishes during the step
         f.settle();
         assert_eq!(f.message(), b"factors 97");
+    }
+
+    #[test]
+    fn forty_two_runs_fortune_not_a_factorization() {
+        let f = fresh();
+        f.start(42).join().unwrap();
+        let message = f.message();
+        // Always a "fortune ..." reply, factored or not: with fortune on
+        // PATH it is its output, otherwise the error stands in, but never the
+        // factorization 2*3*7.
+        assert!(
+            life::tags::parse_fortune_reply(&message).is_some(),
+            "want a fortune reply, got {:?}",
+            String::from_utf8_lossy(&message)
+        );
+        assert!(!message.windows(5).any(|w| w == b"2*3*7"));
     }
 
     #[test]

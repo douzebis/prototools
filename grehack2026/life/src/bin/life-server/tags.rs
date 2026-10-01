@@ -14,27 +14,36 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 
+/// A number, as its canonical decimal digits: ASCII, no leading zero. The
+/// server keeps N as text from the operator's line to the stdout line, and
+/// turns it into a number only to check the factors (spec 0382 S2), so a
+/// wider N needs no change here.
+type Digits = Vec<u8>;
+
+/// The largest N the server accepts, as digits: the client factors a
+/// `u128` (spec 0382 N1). The one place the server knows that bound.
+const MAX_N: &[u8] = b"340282366920938463463374607431768211455";
+
 /// A one-number slot shared between callbacks and the stdin reader. The
 /// callbacks are capture-less `fn` pointers (spec 0379 S1), so the state
-/// lives in statics of this type; a `Mutex`, as there is no stable
-/// `AtomicU128` (spec 0382 S3).
-struct Slot(Mutex<Option<u128>>);
+/// lives in statics of this type, behind a `Mutex` (spec 0382 S3).
+struct Slot(Mutex<Option<Digits>>);
 
 impl Slot {
     const fn new() -> Self {
         Slot(Mutex::new(None))
     }
 
-    fn store(&self, n: u128) {
+    fn store(&self, n: Digits) {
         *self.0.lock().unwrap() = Some(n);
     }
 
-    fn get(&self) -> Option<u128> {
-        *self.0.lock().unwrap()
+    fn is_empty(&self) -> bool {
+        self.0.lock().unwrap().is_none()
     }
 
     /// Empty the slot, returning what it held.
-    fn take(&self) -> Option<u128> {
+    fn take(&self) -> Option<Digits> {
         self.0.lock().unwrap().take()
     }
 }
@@ -100,15 +109,15 @@ fn fires(draw: u64, percentage: u8) -> bool {
 
 /// The spontaneous N for this response, if the roll fires (spec 0379 S8): a
 /// random `u64`, at least 2 (spec 0382 S3).
-fn self_echo() -> Option<u128> {
+fn self_echo() -> Option<Digits> {
     if !fires(random_u64(), SELF_ECHO_PERCENTAGE.load(Ordering::Relaxed)) {
         return None;
     }
-    let n = u128::from(random_u64().max(2));
+    let n = random_u64().max(2);
     if verbose() {
         eprintln!("  N={n} sent spontaneously");
     }
-    Some(n)
+    Some(n.to_string().into_bytes())
 }
 
 /// Decode callback (spec 0377 S2): read a request's tags, write the raw bit
@@ -126,26 +135,98 @@ pub fn on_request(request: &[u8]) {
         let _ = out.flush();
     }
 
-    // The factors (spec 0382 S4): check them against the N we await.
+    // The reply (spec 0382 S4, 0383): a "factors …" or a "fortune …" message
+    // checked against the N we await, with the N taken so it is checked once.
     let message = bits.recover_message();
-    if let Some(factors) = life::tags::parse_factors_reply(&message) {
-        let shown = String::from_utf8_lossy(&message);
-        match AWAITED.take() {
-            None => eprintln!("  got {shown:?}, but nothing was awaited"),
-            Some(n) if factors_are_right(n, &factors) => {
+    if is_reply(&message) {
+        let report = report_reply(AWAITED.take().as_deref(), &message);
+        report.emit();
+    }
+}
+
+/// What a reply asks the server to emit: a line on stdout (a correct answer,
+/// spec 0382 S4, 0383) or a note on stderr. Pulled out of `on_request` so the
+/// decision is testable without the statics or the real stdout.
+#[derive(Debug, PartialEq, Eq)]
+enum Report {
+    /// Stdout, N's digits then the answer: `"<N> = 2 * 3"` or `"42: <text>"`.
+    Stdout(Vec<u8>),
+    /// Stderr, a note about a reply that did not check out.
+    Stderr(String),
+}
+
+impl Report {
+    fn emit(&self) {
+        match self {
+            Report::Stdout(line) => {
                 let mut out = std::io::stdout().lock();
-                let display = life::tags::render_factors(&factors, " * ");
-                let _ = writeln!(out, "{n} = {display}");
+                let _ = out.write_all(line);
+                let _ = out.write_all(b"\n");
                 let _ = out.flush();
             }
-            Some(n) => eprintln!("  factors wrong for {n}: got {shown:?}"),
+            Report::Stderr(note) => eprintln!("{note}"),
         }
     }
 }
 
+/// Whether a recovered message is a reply this server acts on (spec 0382,
+/// 0383): a "factors …" or a "fortune …" message.
+fn is_reply(message: &[u8]) -> bool {
+    life::tags::parse_fortune_reply(message).is_some()
+        || life::tags::parse_factors_reply(message).is_some()
+}
+
+/// The report for a reply `message` against the awaited N (`None` when
+/// nothing is awaited). A "fortune …" is accepted only when 42 is awaited
+/// (spec 0383); a "factors …" is checked as the factorization of N (spec
+/// 0382 S4). Anything that does not check out is a stderr note.
+fn report_reply(awaited: Option<&[u8]>, message: &[u8]) -> Report {
+    let shown = String::from_utf8_lossy(message);
+    let Some(n) = awaited else {
+        return Report::Stderr(format!("  got {shown:?}, but nothing was awaited"));
+    };
+    if let Some(text) = life::tags::parse_fortune_reply(message) {
+        if n == FORTUNE_N {
+            let mut line = FORTUNE_N.to_vec();
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(text);
+            return Report::Stdout(line);
+        }
+        return Report::Stderr(format!(
+            "  fortune for {}, but it was not awaited",
+            String::from_utf8_lossy(n)
+        ));
+    }
+    // A "factors …" message (is_reply guaranteed one of the two).
+    let factors = life::tags::parse_factors_reply(message).unwrap_or_default();
+    if factors_are_right(n, &factors) {
+        let mut line = n.to_vec();
+        line.extend_from_slice(b" = ");
+        line.extend_from_slice(life::tags::render_factors(&factors, " * ").as_bytes());
+        Report::Stdout(line)
+    } else {
+        Report::Stderr(format!(
+            "  factors wrong for {}: got {shown:?}",
+            String::from_utf8_lossy(n)
+        ))
+    }
+}
+
+/// The awaited number that the client answers with a fortune, not a
+/// factorization (spec 0383), as its digits.
+const FORTUNE_N: &[u8] = b"42";
+
 /// Whether `factors` is the prime factorization of `n` (spec 0382 S4):
-/// primes, strictly ascending, multiplying to `n` without overflow.
-fn factors_are_right(n: u128, factors: &[(u128, u32)]) -> bool {
+/// primes, strictly ascending, multiplying to `n` without overflow. The one
+/// place the server turns N's digits into a number: the check needs the
+/// arithmetic, which the client's `u128` bounds anyway.
+fn factors_are_right(n: &[u8], factors: &[(u128, u32)]) -> bool {
+    let Some(n) = std::str::from_utf8(n)
+        .ok()
+        .and_then(|n| n.parse::<u128>().ok())
+    else {
+        return false;
+    };
     let ascending = factors.windows(2).all(|w| w[0].0 < w[1].0);
     let primes = factors.iter().all(|&(p, _)| life::factor::is_prime(p));
     let product = factors
@@ -169,30 +250,36 @@ pub fn on_response(response: &[u8]) -> Vec<u8> {
 fn response_message(
     pending: &Slot,
     awaited: &Slot,
-    roll: impl FnOnce() -> Option<u128>,
+    roll: impl FnOnce() -> Option<Digits>,
 ) -> life::tags::BitField {
     let n = pending
         .take()
-        .or_else(|| awaited.get().is_none().then(roll).flatten());
+        .or_else(|| awaited.is_empty().then(roll).flatten());
     match n {
         Some(n) => {
+            let bits = life::tags::BitField::frame_message(&life::tags::factor_request(&n));
             awaited.store(n);
-            life::tags::BitField::frame_message(life::tags::factor_request(n).as_bytes())
+            bits
         }
         None => life::tags::BitField::new(),
     }
 }
 
-/// The operator's number on a stdin line (spec 0382 S2): ASCII digits,
-/// value 2..=`u128::MAX`, leading zeros and surrounding whitespace ignored.
-/// Anything else — a sign, a non-digit, 0 or 1, a larger value, the empty
-/// line — is `None`.
-fn parse_operator_n(line: &str) -> Option<u128> {
-    let digits = line.trim();
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+/// The operator's number on a stdin line (spec 0382 S2), as canonical
+/// digits: ASCII digits, value 2..=`MAX_N`, leading zeros and surrounding
+/// whitespace dropped. Anything else — a sign, a non-digit, 0 or 1, a
+/// larger value, the empty line — is `None`. Checked on the text, without
+/// converting it to a number.
+fn parse_operator_n(line: &str) -> Option<Digits> {
+    let line = line.trim();
+    if line.is_empty() || !line.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    digits.parse::<u128>().ok().filter(|&n| n >= 2)
+    let digits = line.trim_start_matches('0').as_bytes();
+    // Canonical digits compare as numbers: by length, then digit by digit.
+    let at_most_max = (digits.len(), digits) <= (MAX_N.len(), MAX_N);
+    let at_least_2 = digits.len() > 1 || digits > b"1".as_slice();
+    (at_most_max && at_least_2).then(|| digits.to_vec())
 }
 
 /// Act on one stdin line (spec 0379 S6, 0382 S2): store an accepted N into `pending`.
@@ -204,13 +291,17 @@ fn on_operator_line(line: &str, pending: &Slot) -> Option<String> {
     }
     Some(match parse_operator_n(line) {
         Some(n) => {
+            let note = format!(
+                "  N={} queued for the next response",
+                String::from_utf8_lossy(&n)
+            );
             pending.store(n);
-            format!("  N={n} queued for the next response")
+            note
         }
         None => format!(
             "  rejected {:?}: want an integer 2..={}",
             line.trim(),
-            u128::MAX
+            String::from_utf8_lossy(MAX_N)
         ),
     })
 }
@@ -240,8 +331,21 @@ pub fn spawn_stdin_reader() {
 mod tests {
     use super::*;
 
-    fn sent(bits: &life::tags::BitField) -> Option<u128> {
-        life::tags::parse_factor_request(&bits.recover_message())
+    /// What `slot` holds, left in place.
+    fn held(slot: &Slot) -> Option<Digits> {
+        slot.0.lock().unwrap().clone()
+    }
+
+    /// `n`'s canonical digits.
+    fn d(n: u128) -> Digits {
+        n.to_string().into_bytes()
+    }
+
+    /// The digits a response's `"factor <N>"` carries.
+    fn sent(bits: &life::tags::BitField) -> Option<Digits> {
+        bits.recover_message()
+            .strip_prefix(b"factor ")
+            .map(<[u8]>::to_vec)
     }
 
     #[test]
@@ -253,8 +357,9 @@ mod tests {
             (" 42 ", 42),
             ("9\r", 9),
             (max.as_str(), u128::MAX),
+            ("00340282366920938463463374607431768211455", u128::MAX),
         ] {
-            assert_eq!(parse_operator_n(line), Some(n), "{line:?}");
+            assert_eq!(parse_operator_n(line), Some(d(n)), "{line:?}");
         }
     }
 
@@ -263,8 +368,12 @@ mod tests {
         for line in [
             "",
             "0",
+            "000",
             "1",
+            "001",
             "340282366920938463463374607431768211456", // u128::MAX + 1
+            "999999999999999999999999999999999999999", // 39 digits, too large
+            "1000000000000000000000000000000000000000", // 40 digits
             "-1",
             "+5",
             "4 2",
@@ -283,9 +392,9 @@ mod tests {
         assert!(on_operator_line("abc", &pending)
             .unwrap()
             .contains("rejected"));
-        assert_eq!(pending.get(), None);
+        assert_eq!(held(&pending), None);
         assert!(on_operator_line("42", &pending).unwrap().contains("queued"));
-        assert_eq!(pending.get(), Some(42));
+        assert_eq!(held(&pending), Some(d(42)));
     }
 
     #[test]
@@ -297,47 +406,47 @@ mod tests {
             response_message(&pending, &awaited, || None),
             life::tags::BitField::new()
         );
-        assert_eq!(awaited.get(), None);
+        assert_eq!(held(&awaited), None);
 
         // One entry: the next response carries it, the one after nothing,
         // and it stays awaited for the factors still to come.
-        pending.store(360);
+        pending.store(d(360));
         assert_eq!(
             sent(&response_message(&pending, &awaited, || None)),
-            Some(360)
+            Some(d(360))
         );
         assert_eq!(
             response_message(&pending, &awaited, || None),
             life::tags::BitField::new()
         );
-        assert_eq!(awaited.get(), Some(360));
+        assert_eq!(held(&awaited), Some(d(360)));
 
         // Two entries before a response: only the latter is sent, and it
         // replaces the awaited one (spec 0382 G4).
-        pending.store(1000);
-        pending.store(1001);
+        pending.store(d(1000));
+        pending.store(d(1001));
         assert_eq!(
             sent(&response_message(&pending, &awaited, || None)),
-            Some(1001)
+            Some(d(1001))
         );
-        assert_eq!(awaited.get(), Some(1001));
+        assert_eq!(held(&awaited), Some(d(1001)));
     }
 
     #[test]
     fn the_operator_wins_over_the_roll() {
         let (pending, awaited) = (Slot::new(), Slot::new());
-        pending.store(5);
+        pending.store(d(5));
         let bits = response_message(&pending, &awaited, || panic!("rolled"));
-        assert_eq!(sent(&bits), Some(5));
-        assert_eq!(awaited.get(), Some(5));
+        assert_eq!(sent(&bits), Some(d(5)));
+        assert_eq!(held(&awaited), Some(d(5)));
     }
 
     #[test]
     fn a_roll_is_sent_like_an_operator_number_but_only_when_idle() {
         let (pending, awaited) = (Slot::new(), Slot::new());
-        let bits = response_message(&pending, &awaited, || Some(200));
-        assert_eq!(sent(&bits), Some(200));
-        assert_eq!(awaited.get(), Some(200));
+        let bits = response_message(&pending, &awaited, || Some(d(200)));
+        assert_eq!(sent(&bits), Some(d(200)));
+        assert_eq!(held(&awaited), Some(d(200)));
         // 200 is awaited: no roll until it is answered (spec 0382 S3).
         let bits = response_message(&pending, &awaited, || panic!("rolled"));
         assert_eq!(bits, life::tags::BitField::new());
@@ -345,21 +454,76 @@ mod tests {
 
     #[test]
     fn the_factors_are_checked() {
-        assert!(factors_are_right(360, &[(2, 3), (3, 2), (5, 1)]));
-        assert!(factors_are_right(97, &[(97, 1)]));
+        assert!(factors_are_right(&d(360), &[(2, 3), (3, 2), (5, 1)]));
+        assert!(factors_are_right(&d(97), &[(97, 1)]));
         let m127 = (1u128 << 127) - 1;
-        assert!(factors_are_right(m127, &[(m127, 1)]));
+        assert!(factors_are_right(&d(m127), &[(m127, 1)]));
         assert!(
-            !factors_are_right(360, &[(2, 3), (3, 2), (7, 1)]),
+            !factors_are_right(&d(360), &[(2, 3), (3, 2), (7, 1)]),
             "product"
         );
         assert!(
-            !factors_are_right(360, &[(4, 1), (2, 1), (3, 2), (5, 1)]),
+            !factors_are_right(&d(360), &[(4, 1), (2, 1), (3, 2), (5, 1)]),
             "order"
         );
-        assert!(!factors_are_right(360, &[(5, 1), (2, 3), (3, 2)]), "order");
-        assert!(!factors_are_right(36, &[(4, 1), (9, 1)]), "composite");
-        assert!(!factors_are_right(5, &[(2, 128)]), "overflow");
+        assert!(
+            !factors_are_right(&d(360), &[(5, 1), (2, 3), (3, 2)]),
+            "order"
+        );
+        assert!(!factors_are_right(&d(36), &[(4, 1), (9, 1)]), "composite");
+        assert!(!factors_are_right(&d(5), &[(2, 128)]), "overflow");
+    }
+
+    #[test]
+    fn a_fortune_reply_prints_only_for_42() {
+        let reply = life::tags::fortune_reply(b"be excellent");
+        // 42 awaited: the fortune is printed as "42: <text>".
+        assert_eq!(
+            report_reply(Some(b"42"), &reply),
+            Report::Stdout(b"42: be excellent".to_vec())
+        );
+        // Another N awaited: a fortune is not expected, so a note.
+        assert!(matches!(
+            report_reply(Some(b"360"), &reply),
+            Report::Stderr(note) if note.contains("not awaited")
+        ));
+        // Nothing awaited.
+        assert!(matches!(
+            report_reply(None, &reply),
+            Report::Stderr(note) if note.contains("nothing was awaited")
+        ));
+        // A multi-line fortune keeps its newlines in the printed block.
+        let multi = life::tags::fortune_reply(b"line one\nline two");
+        assert_eq!(
+            report_reply(Some(b"42"), &multi),
+            Report::Stdout(b"42: line one\nline two".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_factors_reply_still_checks_against_n() {
+        let reply = life::tags::factors_reply(&[(2, 3), (3, 2), (5, 1)]);
+        assert_eq!(
+            report_reply(Some(b"360"), reply.as_bytes()),
+            Report::Stdout(b"360 = 2^3 * 3^2 * 5".to_vec())
+        );
+        assert!(matches!(
+            report_reply(Some(b"361"), reply.as_bytes()),
+            Report::Stderr(note) if note.contains("wrong for 361")
+        ));
+        // A factors reply is not accepted as a fortune, even when 42 awaits.
+        assert!(matches!(
+            report_reply(Some(b"42"), life::tags::factors_reply(&[(2, 1), (3, 1), (7, 1)]).as_bytes()),
+            Report::Stdout(line) if line == b"42 = 2 * 3 * 7"
+        ));
+    }
+
+    #[test]
+    fn only_replies_are_acted_on() {
+        assert!(is_reply(&life::tags::fortune_reply(b"hi")));
+        assert!(is_reply(life::tags::factors_reply(&[(2, 1)]).as_bytes()));
+        assert!(!is_reply(b""));
+        assert!(!is_reply(b"factor 42"));
     }
 
     #[test]

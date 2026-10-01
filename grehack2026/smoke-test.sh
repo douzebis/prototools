@@ -216,6 +216,25 @@ kill %2 2>/dev/null || true
 [ ! -s /tmp/eof.out ] || { echo "stdout not empty without --verbose"; exit 1; }
 EOF
 
+# Spec 0383 test plan 4: the operator types 42; the client runs `fortune`
+# instead of factoring and sends the quote back, which the server prints as
+# "42: <text>". `fortune` is on the image's PATH (life-client carries its own).
+check "the number 42 runs fortune (spec 0383)" <<'EOF'
+set -e
+command -v fortune >/dev/null || { echo "fortune not on PATH"; exit 1; }
+{ sleep 1; echo 42; sleep 8; } | life-server >/tmp/forty.out 2>/tmp/forty.err &
+sleep 2
+# A roomy grid (spec 0383 N1): a whole fortune fits the tags, where a 20x20
+# grid would truncate it past the "fortune " prefix.
+life-client --steps 12 --size 80x40 >/dev/null
+sleep 0.5
+kill %1 2>/dev/null || true
+grep -q "N=42 queued" /tmp/forty.err || { echo "42 not queued"; tail -8 /tmp/forty.err; exit 1; }
+grep -q "^42: " /tmp/forty.out || { echo "no fortune line"; cat /tmp/forty.out; tail -8 /tmp/forty.err; exit 1; }
+! grep -q "^42 = " /tmp/forty.out || { echo "42 was factored"; exit 1; }
+! grep -q "wrong\|not awaited" /tmp/forty.err || { echo "a bad reply"; tail -8 /tmp/forty.err; exit 1; }
+EOF
+
 # Spec 0382 S3: at --self-echo-percentage 100 the server sends a random u64
 # whenever no number awaits its factors; the client factors each one.
 check "the server sends numbers on its own (spec 0382)" <<'EOF'

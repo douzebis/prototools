@@ -78,18 +78,24 @@ it.
 
 - **S2. The operator's line.** After trimming, a line is accepted when it
   is one or more ASCII digits whose value is 2..=`u128::MAX` (leading
-  zeros allowed, as in 0379). Accepted lines go into `PENDING` and are
-  noted on stderr (`N=<N> queued for the next response`). An empty line
+  zeros allowed, as in 0379). The server keeps *N* as text, its canonical
+  decimal digits (a `Vec<u8>`, leading zeros dropped), from this line to
+  the stdout line (S4). The range is checked on the digits too: by
+  length, then digit by digit against `MAX_N`, the one constant on the
+  server that holds the client's `u128` bound. So a client that factors
+  wider numbers needs only that constant changed on the server. Accepted
+  lines go into `PENDING` and are noted on stderr
+  (`N=<N> queued for the next response`). An empty line
   is ignored. Anything else is rejected on stderr:
   `rejected "<line>": want an integer 2..=340282366920938463463374607431768211455`.
   0 and 1 are rejected because they have no prime factorization.
 
-- **S3. The server sends, and awaits.** `PENDING` and `AWAITED` hold an
-  `Option<u128>` each, behind a `Mutex`, because there is no stable
-  `AtomicU128`. The encode callback chooses the response's message:
+- **S3. The server sends, and awaits.** `PENDING` and `AWAITED` each hold
+  an `Option` of the digits, behind a `Mutex`. The encode callback chooses the response's message:
   1. a pending operator *N* is taken and sent;
   2. otherwise, if nothing is awaited, a roll at `--self-echo-percentage`
-     may send a random `u64` (≥ 2; logged under `--verbose` as before);
+     may send a random `u64` (≥ 2, as digits; logged under `--verbose`
+     as before);
   3. otherwise, the empty message.
 
   A sent *N* becomes `AWAITED`, replacing any older one (G4). The rule
@@ -99,7 +105,9 @@ it.
 - **S4. The server checks the reply.** When the decode callback reads a
   `factors …` message, it takes `AWAITED` and checks the reply: the
   factors are strictly ascending, every factor is prime (S6's test), and
-  their product equals the awaited *N* (with overflow checked).
+  their product equals the awaited *N* (with overflow checked). This is
+  the one place the server turns *N*'s digits into a number (`u128`),
+  because the check needs arithmetic.
   - **Correct:** one line on stdout,
     `<N> = 2^3 * 3^2 * 5` (` * ` between factors, `^` only when
     *e* ≥ 2), flushed.
