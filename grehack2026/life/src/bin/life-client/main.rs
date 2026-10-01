@@ -331,9 +331,8 @@ static FACTORING: factoring::Factoring = factoring::Factoring::new();
 /// and start factoring N in the background (spec 0382 S5).
 fn on_response(response: &[u8]) {
     let bits = life::tags::read_tags(response, life::tags::RESPONSE);
-    if let Some(n) = life::tags::parse_factor_request(&bits.recover_message()) {
-        FACTORING.start(n);
-    }
+    let n = bits.recover_message();
+    FACTORING.start(n);
 }
 
 /// Encode callback: hide the finished `"factors …"` reply in the request's

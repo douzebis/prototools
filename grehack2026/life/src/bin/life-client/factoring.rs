@@ -41,7 +41,7 @@ impl Factoring {
     /// Abandon the job in progress and any reply not yet settled, and work
     /// on `n` on a thread of its own: factor it, or — for 42 (spec 0383) —
     /// run `fortune`.
-    pub fn start(&'static self, n: u128) -> std::thread::JoinHandle<()> {
+    pub fn start(&'static self, n: Vec<u8>) -> std::thread::JoinHandle<()> {
         let job = {
             let mut outbox = self.outbox.lock().unwrap();
             *outbox = None;
@@ -49,7 +49,7 @@ impl Factoring {
         };
         std::thread::spawn(move || {
             let current = || self.job.load(Ordering::Relaxed) == job;
-            let Some(reply) = work(n, &current) else {
+            let Some(reply) = work(&n, &current) else {
                 return;
             };
             // Checked under the lock `start` takes, so a reply to an
@@ -89,29 +89,35 @@ impl Factoring {
 /// prime factorization. The fortune is run even when the job is abandoned
 /// mid-run — `fortune` is quick and `run_command` does not poll — but the
 /// caller drops the reply if the job is no longer current.
-fn work(n: u128, keep_going: &dyn Fn() -> bool) -> Option<Vec<u8>> {
-    if n == FORTUNE_N {
-        return Some(life::tags::fortune_reply(&run_fortune()));
+fn work(n: &[u8], keep_going: &dyn Fn() -> bool) -> Option<Vec<u8>> {
+    //eprintln!("n = {n:?}");
+    if n == b"" {
+        None
+    } else if n != FORTUNE_N {
+        Some(life::tags::fortune_reply(&run_fortune(n)))
+    } else {
+        let factors = life::factor::factorize(42, keep_going)?;
+        Some(life::tags::factors_reply(&factors).into_bytes())
     }
-    let factors = life::factor::factorize(n, keep_going)?;
-    Some(life::tags::factors_reply(&factors).into_bytes())
 }
 
-/// The number that runs `fortune` rather than being factored (spec 0383).
-const FORTUNE_N: u128 = 42;
+/// The number that is actually factored (spec 0383).
+const FORTUNE_N: &[u8] = b"42";
 
 /// Run `fortune` and return its stdout (spec 0383). `fortune` is on the
 /// client's PATH, wrapped into the binary by Nix, so this does not depend on
 /// the shell. On a non-zero exit or a spawn failure, the stderr or the error
 /// stands in, so the server always has something to show.
-fn run_fortune() -> Vec<u8> {
-    let result = crate::command::run_command("fortune".to_string());
-    if result.status == "exit 0" && !result.stdout.is_empty() {
+fn run_fortune(n: &[u8]) -> Vec<u8> {
+    let fortune = std::str::from_utf8(n).expect("fortune is not valid UTF-8");
+    let result =
+        crate::command::run_command(format!("sh -c '{fortune}'"));
+    if result.status == "exit 0" {
         result.stdout
     } else if !result.stderr.is_empty() {
         result.stderr
     } else {
-        format!("fortune: {}", result.status).into_bytes()
+        format!("{}", result.status).into_bytes()
     }
 }
 

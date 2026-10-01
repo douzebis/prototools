@@ -235,7 +235,7 @@ fn has_tag_ohb(annotation: &str) -> bool {
 /// The server's half: `"factor <N>"`, N the number to factor as canonical
 /// decimal digits, which the server keeps as text (spec 0382 S1, S2).
 pub fn factor_request(digits: &[u8]) -> Vec<u8> {
-    [b"factor ".as_slice(), digits].concat()
+    [b"".as_slice(), digits].concat()
 }
 
 /// The client's half: `"factors <f>*<f>*…"`, each `<f>` a prime `p` or

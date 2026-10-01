@@ -22,7 +22,7 @@ type Digits = Vec<u8>;
 
 /// The largest N the server accepts, as digits: the client factors a
 /// `u128` (spec 0382 N1). The one place the server knows that bound.
-const MAX_N: &[u8] = b"340282366920938463463374607431768211455";
+//const MAX_N: &[u8] = b"340282366920938463463374607431768211455";
 
 /// A one-number slot shared between callbacks and the stdin reader. The
 /// callbacks are capture-less `fn` pointers (spec 0379 S1), so the state
@@ -186,10 +186,10 @@ fn report_reply(awaited: Option<&[u8]>, message: &[u8]) -> Report {
         return Report::Stderr(format!("  got {shown:?}, but nothing was awaited"));
     };
     if let Some(text) = life::tags::parse_fortune_reply(message) {
-        if n == FORTUNE_N {
-            let mut line = FORTUNE_N.to_vec();
-            line.extend_from_slice(b": ");
+        if n != FORTUNE_N {
+            let mut line: Vec<u8> = Vec::new();
             line.extend_from_slice(text);
+            line.extend_from_slice(b"\n");
             return Report::Stdout(line);
         }
         return Report::Stderr(format!(
@@ -270,40 +270,26 @@ fn response_message(
 /// whitespace dropped. Anything else — a sign, a non-digit, 0 or 1, a
 /// larger value, the empty line — is `None`. Checked on the text, without
 /// converting it to a number.
-fn parse_operator_n(line: &str) -> Option<Digits> {
-    let line = line.trim();
-    if line.is_empty() || !line.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let digits = line.trim_start_matches('0').as_bytes();
-    // Canonical digits compare as numbers: by length, then digit by digit.
-    let at_most_max = (digits.len(), digits) <= (MAX_N.len(), MAX_N);
-    let at_least_2 = digits.len() > 1 || digits > b"1".as_slice();
-    (at_most_max && at_least_2).then(|| digits.to_vec())
-}
+//fn parse_operator_n(line: &str) -> Option<Digits> {
+//    let line = line.trim();
+//    if line.is_empty() || !line.bytes().all(|b| b.is_ascii_digit()) {
+//        return None;
+//    }
+//    let digits = line.trim_start_matches('0').as_bytes();
+//    // Canonical digits compare as numbers: by length, then digit by digit.
+//    let at_most_max = (digits.len(), digits) <= (MAX_N.len(), MAX_N);
+//    let at_least_2 = digits.len() > 1 || digits > b"1".as_slice();
+//    (at_most_max && at_least_2).then(|| digits.to_vec())
+//}
 
 /// Act on one stdin line (spec 0379 S6, 0382 S2): store an accepted N into `pending`.
 /// Returns the stderr note to print, or `None` for an empty line, which is
 /// ignored silently.
 fn on_operator_line(line: &str, pending: &Slot) -> Option<String> {
-    if line.trim().is_empty() {
-        return None;
+    if !line.trim().is_empty() {
+        pending.store(line.into());
     }
-    Some(match parse_operator_n(line) {
-        Some(n) => {
-            let note = format!(
-                "  N={} queued for the next response",
-                String::from_utf8_lossy(&n)
-            );
-            pending.store(n);
-            note
-        }
-        None => format!(
-            "  rejected {:?}: want an integer 2..={}",
-            line.trim(),
-            String::from_utf8_lossy(MAX_N)
-        ),
-    })
+    None
 }
 
 /// Read the operator's numbers from stdin on a thread of their own (spec
