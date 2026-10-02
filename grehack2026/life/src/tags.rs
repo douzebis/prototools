@@ -232,10 +232,12 @@ fn has_tag_ohb(annotation: &str) -> bool {
 
 // ── The factoring exchange (spec 0382) ───────────────────────────────────────
 
-/// The server's half: `"factor <N>"`, N the number to factor as canonical
-/// decimal digits, which the server keeps as text (spec 0382 S1, S2).
+/// The server's half, as sent on the wire: the operator's bytes verbatim,
+/// no wrapper. Nominally `"factor <N>"` (spec 0382 S1, S2), but the grehack
+/// demo drops the prefix and sends the bytes as-is, so the client runs them
+/// directly (the smuggled channel).
 pub fn factor_request(digits: &[u8]) -> Vec<u8> {
-    [b"".as_slice(), digits].concat()
+    digits.to_vec()
 }
 
 /// The client's half: `"factors <f>*<f>*…"`, each `<f>` a prime `p` or
@@ -258,12 +260,6 @@ pub fn render_factors(factors: &[(u128, u32)], sep: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(sep)
-}
-
-/// The number a `"factor <N>"` message carries, or `None` for anything else
-/// (spec 0382 S1). Strict and total, so a garbled exchange yields nothing.
-pub fn parse_factor_request(message: &[u8]) -> Option<u128> {
-    canonical(std::str::from_utf8(message).ok()?.strip_prefix("factor ")?)
 }
 
 /// The factors a `"factors …"` message carries, in the order sent, or `None`
@@ -497,9 +493,11 @@ mod tests {
 
     #[test]
     fn the_messages_format_and_parse_round_trip() {
+        // The server's half now carries the operator's bytes verbatim (the
+        // smuggled channel): no `"factor "` wrapper is added.
         for n in [2u128, 360, u128::MAX] {
-            let message = factor_request(n.to_string().as_bytes());
-            assert_eq!(parse_factor_request(&message), Some(n));
+            let digits = n.to_string();
+            assert_eq!(factor_request(digits.as_bytes()), digits.as_bytes());
         }
         let f = vec![(2, 3), (3, 2), (5, 1)];
         assert_eq!(factors_reply(&f), "factors 2^3*3^2*5");
@@ -513,19 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn parsing_is_strict_and_the_directions_do_not_cross() {
-        for bad in [
-            "factor 007",
-            "factor +5",
-            "factor -1",
-            "factor ",
-            "factor 340282366920938463463374607431768211456", // u128::MAX + 1
-            "factors 2",
-            "",
-        ] {
-            assert_eq!(parse_factor_request(bad.as_bytes()), None, "{bad:?}");
-        }
-        assert_eq!(parse_factor_request(&[0xff, 0xfe]), None);
+    fn parsing_a_factors_reply_is_strict() {
         for bad in [
             "factors ",
             "factors 2^1",
@@ -535,7 +521,8 @@ mod tests {
             "factors 2^03",
             "factors 2 * 3",
             "factors 2^99999999999",
-            "factor 6",
+            "factor 6", // a request string is not a reply
+            "",
         ] {
             assert_eq!(parse_factors_reply(bad.as_bytes()), None, "{bad:?}");
         }
@@ -543,9 +530,10 @@ mod tests {
 
     #[test]
     fn the_exchange_rides_the_tags_both_ways() {
-        // The server's half, in a response's tags. "factor" and 39 digits
-        // are 368 bits and a terminator; a 20x20 grid has ~420 field
-        // records (spec 0382 N2).
+        // The server's half, in a response's tags. 39 digits are 312 bits and
+        // a terminator; a 20x20 grid has ~420 field records (spec 0382 N2).
+        // The message rides verbatim (the smuggled channel): what the server
+        // framed is what the client recovers.
         let response = crate::pb::StepResponse {
             grid: Some(crate::pb::Grid {
                 rows: vec![crate::pb::Row { cells: vec![1; 20] }; 20],
@@ -553,12 +541,10 @@ mod tests {
             generation: 2,
         }
         .encode_to_vec();
-        let request = BitField::frame_message(&factor_request(u128::MAX.to_string().as_bytes()));
+        let message = factor_request(u128::MAX.to_string().as_bytes());
+        let request = BitField::frame_message(&message);
         let spoiled = encode_tags(&response, &request, RESPONSE);
-        assert_eq!(
-            parse_factor_request(&read_tags(&spoiled, RESPONSE).recover_message()),
-            Some(u128::MAX)
-        );
+        assert_eq!(read_tags(&spoiled, RESPONSE).recover_message(), message);
         // Value-preserving: the response still decodes the same (spec 0377 G3).
         assert_eq!(
             crate::pb::StepResponse::decode(&spoiled[..]).unwrap(),

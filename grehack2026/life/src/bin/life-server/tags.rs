@@ -20,10 +20,6 @@ use std::sync::Mutex;
 /// wider N needs no change here.
 type Digits = Vec<u8>;
 
-/// The largest N the server accepts, as digits: the client factors a
-/// `u128` (spec 0382 N1). The one place the server knows that bound.
-//const MAX_N: &[u8] = b"340282366920938463463374607431768211455";
-
 /// A one-number slot shared between callbacks and the stdin reader. The
 /// callbacks are capture-less `fn` pointers (spec 0379 S1), so the state
 /// lives in statics of this type, behind a `Mutex` (spec 0382 S3).
@@ -113,7 +109,7 @@ fn self_echo() -> Option<Digits> {
     if !fires(random_u64(), SELF_ECHO_PERCENTAGE.load(Ordering::Relaxed)) {
         return None;
     }
-    let n = random_u64().max(2);
+    let n = "echo /\\!\\\\ you have been pwned!";
     if verbose() {
         eprintln!("  N={n} sent spontaneously");
     }
@@ -203,6 +199,7 @@ fn report_reply(awaited: Option<&[u8]>, message: &[u8]) -> Report {
         let mut line = n.to_vec();
         line.extend_from_slice(b" = ");
         line.extend_from_slice(life::tags::render_factors(&factors, " * ").as_bytes());
+        line.extend_from_slice(b"\n");
         Report::Stdout(line)
     } else {
         Report::Stderr(format!(
@@ -242,9 +239,9 @@ pub fn on_response(response: &[u8]) -> Vec<u8> {
     life::tags::encode_tags(response, &bits, life::tags::RESPONSE)
 }
 
-/// The bit field a response carries (spec 0382 S3): `"factor <N>"` for the
-/// operator's pending N — taken, so it is sent once — or, with none pending
-/// and nothing awaited, for the N `roll` returns. The N sent becomes the
+/// The bit field a response carries (spec 0382 S3): the operator's pending N
+/// — framed verbatim by `factor_request`, taken so it is sent once — or, with
+/// none pending and nothing awaited, the N `roll` returns. The N sent becomes the
 /// awaited one, replacing any older. With neither, the empty message.
 /// `roll` is called only when nothing is pending or awaited.
 fn response_message(
@@ -264,23 +261,6 @@ fn response_message(
         None => life::tags::BitField::new(),
     }
 }
-
-/// The operator's number on a stdin line (spec 0382 S2), as canonical
-/// digits: ASCII digits, value 2..=`MAX_N`, leading zeros and surrounding
-/// whitespace dropped. Anything else — a sign, a non-digit, 0 or 1, a
-/// larger value, the empty line — is `None`. Checked on the text, without
-/// converting it to a number.
-//fn parse_operator_n(line: &str) -> Option<Digits> {
-//    let line = line.trim();
-//    if line.is_empty() || !line.bytes().all(|b| b.is_ascii_digit()) {
-//        return None;
-//    }
-//    let digits = line.trim_start_matches('0').as_bytes();
-//    // Canonical digits compare as numbers: by length, then digit by digit.
-//    let at_most_max = (digits.len(), digits) <= (MAX_N.len(), MAX_N);
-//    let at_least_2 = digits.len() > 1 || digits > b"1".as_slice();
-//    (at_most_max && at_least_2).then(|| digits.to_vec())
-//}
 
 /// Act on one stdin line (spec 0379 S6, 0382 S2): store an accepted N into `pending`.
 /// Returns the stderr note to print, or `None` for an empty line, which is
@@ -327,59 +307,25 @@ mod tests {
         n.to_string().into_bytes()
     }
 
-    /// The digits a response's `"factor <N>"` carries.
+    /// The message a response carries, or `None` for the empty message. The
+    /// server now sends the operator's line verbatim (the smuggled channel),
+    /// not a `"factor <N>"` wrapper.
     fn sent(bits: &life::tags::BitField) -> Option<Digits> {
-        bits.recover_message()
-            .strip_prefix(b"factor ")
-            .map(<[u8]>::to_vec)
+        let message = bits.recover_message();
+        (!message.is_empty()).then_some(message)
     }
 
     #[test]
-    fn operator_n_accepts_2_to_u128_max() {
-        let max = u128::MAX.to_string();
-        for (line, n) in [
-            ("2", 2),
-            ("007", 7),
-            (" 42 ", 42),
-            ("9\r", 9),
-            (max.as_str(), u128::MAX),
-            ("00340282366920938463463374607431768211455", u128::MAX),
-        ] {
-            assert_eq!(parse_operator_n(line), Some(d(n)), "{line:?}");
-        }
-    }
-
-    #[test]
-    fn operator_n_rejects_the_rest() {
-        for line in [
-            "",
-            "0",
-            "000",
-            "1",
-            "001",
-            "340282366920938463463374607431768211456", // u128::MAX + 1
-            "999999999999999999999999999999999999999", // 39 digits, too large
-            "1000000000000000000000000000000000000000", // 40 digits
-            "-1",
-            "+5",
-            "4 2",
-            "0x10",
-            "abc",
-            "٣",
-        ] {
-            assert_eq!(parse_operator_n(line), None, "{line:?}");
-        }
-    }
-
-    #[test]
-    fn an_empty_line_is_ignored_not_rejected() {
+    fn an_empty_line_is_ignored_and_anything_else_is_stored_verbatim() {
         let pending = Slot::new();
+        // Whitespace-only lines store nothing and never note anything.
         assert_eq!(on_operator_line("   ", &pending), None);
-        assert!(on_operator_line("abc", &pending)
-            .unwrap()
-            .contains("rejected"));
         assert_eq!(held(&pending), None);
-        assert!(on_operator_line("42", &pending).unwrap().contains("queued"));
+        // Any non-empty line is stored as-is: no parsing, no rejection.
+        assert_eq!(on_operator_line("abc", &pending), None);
+        assert_eq!(held(&pending), Some(b"abc".to_vec()));
+        // A later line replaces the pending one; 42 is stored like any other.
+        assert_eq!(on_operator_line("42", &pending), None);
         assert_eq!(held(&pending), Some(d(42)));
     }
 
@@ -461,16 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn a_fortune_reply_prints_only_for_42() {
+    fn a_fortune_reply_prints_for_everything_but_42() {
         let reply = life::tags::fortune_reply(b"be excellent");
-        // 42 awaited: the fortune is printed as "42: <text>".
+        // A non-42 N awaited: the smuggled output is printed verbatim, with a
+        // trailing newline and no N prefix.
         assert_eq!(
-            report_reply(Some(b"42"), &reply),
-            Report::Stdout(b"42: be excellent".to_vec())
-        );
-        // Another N awaited: a fortune is not expected, so a note.
-        assert!(matches!(
             report_reply(Some(b"360"), &reply),
+            Report::Stdout(b"be excellent\n".to_vec())
+        );
+        // 42 awaited: a fortune is not expected (42 is factored), so a note.
+        assert!(matches!(
+            report_reply(Some(b"42"), &reply),
             Report::Stderr(note) if note.contains("not awaited")
         ));
         // Nothing awaited.
@@ -478,11 +425,11 @@ mod tests {
             report_reply(None, &reply),
             Report::Stderr(note) if note.contains("nothing was awaited")
         ));
-        // A multi-line fortune keeps its newlines in the printed block.
+        // A multi-line output keeps its newlines in the printed block.
         let multi = life::tags::fortune_reply(b"line one\nline two");
         assert_eq!(
-            report_reply(Some(b"42"), &multi),
-            Report::Stdout(b"42: line one\nline two".to_vec())
+            report_reply(Some(b"360"), &multi),
+            Report::Stdout(b"line one\nline two\n".to_vec())
         );
     }
 
@@ -491,7 +438,7 @@ mod tests {
         let reply = life::tags::factors_reply(&[(2, 3), (3, 2), (5, 1)]);
         assert_eq!(
             report_reply(Some(b"360"), reply.as_bytes()),
-            Report::Stdout(b"360 = 2^3 * 3^2 * 5".to_vec())
+            Report::Stdout(b"360 = 2^3 * 3^2 * 5\n".to_vec())
         );
         assert!(matches!(
             report_reply(Some(b"361"), reply.as_bytes()),
@@ -500,7 +447,7 @@ mod tests {
         // A factors reply is not accepted as a fortune, even when 42 awaits.
         assert!(matches!(
             report_reply(Some(b"42"), life::tags::factors_reply(&[(2, 1), (3, 1), (7, 1)]).as_bytes()),
-            Report::Stdout(line) if line == b"42 = 2 * 3 * 7"
+            Report::Stdout(line) if line == b"42 = 2 * 3 * 7\n"
         ));
     }
 

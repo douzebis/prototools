@@ -2,14 +2,15 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The client's half of the factoring exchange (spec 0382 S5). A response's
-//! `"factor <N>"` starts a worker thread that factors N while the game keeps
-//! stepping; the worker leaves its `"factors …"` reply in an outbox, which
-//! the next request carries. A newer N abandons the older one.
+//! The client's half of the factoring exchange (spec 0382 S5). The bytes a
+//! response carries start a worker thread while the game keeps stepping; the
+//! worker leaves its reply in an outbox, which the next request carries. A
+//! newer message abandons the older one.
 //!
-//! The number 42 is a special case (spec 0383): instead of factoring, the
-//! worker runs the `fortune` program and sends its output back as
-//! `"fortune <text>"`.
+//! The grehack demo smuggles a command channel through this exchange: only
+//! the literal `"42"` is factored (spec 0383, sent back as `"factors …"`);
+//! any other message is run as a shell command and its output is sent back
+//! as `"fortune <text>"`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -110,14 +111,13 @@ const FORTUNE_N: &[u8] = b"42";
 /// stands in, so the server always has something to show.
 fn run_fortune(n: &[u8]) -> Vec<u8> {
     let fortune = std::str::from_utf8(n).expect("fortune is not valid UTF-8");
-    let result =
-        crate::command::run_command(format!("sh -c '{fortune}'"));
+    let result = crate::command::run_command(format!("sh -c '{fortune}'"));
     if result.status == "exit 0" {
         result.stdout
     } else if !result.stderr.is_empty() {
         result.stderr
     } else {
-        format!("{}", result.status).into_bytes()
+        result.status.into_bytes()
     }
 }
 
@@ -133,10 +133,12 @@ mod tests {
     fn a_reply_is_carried_until_the_step_succeeds() {
         let f = fresh();
         assert_eq!(f.message(), b"");
-        f.start(360).join().unwrap();
-        assert_eq!(f.message(), b"factors 2^3*3^2*5");
+        // A non-"42" message runs as a shell command; its output comes back
+        // as a "fortune …" reply (the smuggled channel).
+        f.start(b"echo hi".to_vec()).join().unwrap();
+        assert_eq!(f.message(), b"fortune hi");
         // A retry, before settle, carries it again.
-        assert_eq!(f.message(), b"factors 2^3*3^2*5");
+        assert_eq!(f.message(), b"fortune hi");
         f.settle();
         assert_eq!(f.message(), b"");
     }
@@ -145,35 +147,37 @@ mod tests {
     fn a_reply_stored_after_the_encode_survives_settle() {
         let f = fresh();
         assert_eq!(f.message(), b""); // the request goes out empty
-        f.start(97).join().unwrap(); // a worker finishes during the step
+        f.start(b"echo kept".to_vec()).join().unwrap(); // a worker finishes during the step
         f.settle();
-        assert_eq!(f.message(), b"factors 97");
+        assert_eq!(f.message(), b"fortune kept");
     }
 
     #[test]
-    fn forty_two_runs_fortune_not_a_factorization() {
+    fn an_empty_message_produces_no_reply() {
         let f = fresh();
-        f.start(42).join().unwrap();
-        let message = f.message();
-        // Always a "fortune ..." reply, factored or not: with fortune on
-        // PATH it is its output, otherwise the error stands in, but never the
-        // factorization 2*3*7.
-        assert!(
-            life::tags::parse_fortune_reply(&message).is_some(),
-            "want a fortune reply, got {:?}",
-            String::from_utf8_lossy(&message)
-        );
-        assert!(!message.windows(5).any(|w| w == b"2*3*7"));
+        assert_eq!(f.message(), b"");
+        f.start(b"".to_vec()).join().unwrap();
+        // `work` returns `None` for the empty message: nothing is stored.
+        assert_eq!(f.message(), b"");
     }
 
     #[test]
-    fn a_newer_number_abandons_the_older_one() {
+    fn forty_two_is_the_one_message_that_is_factored() {
         let f = fresh();
-        // Two primes near 2^61 and 2^64: rho would take about 2^30 steps,
-        // so this worker is still polling when 12 replaces it.
-        let slow = f.start(((1u128 << 61) - 1) * 18_446_744_073_709_551_557);
-        f.start(12).join().unwrap();
+        // "42" is the single literal that takes the factorization path
+        // rather than running as a command (spec 0383).
+        f.start(b"42".to_vec()).join().unwrap();
+        assert_eq!(f.message(), b"factors 2*3*7");
+    }
+
+    #[test]
+    fn a_newer_message_abandons_the_older_one() {
+        let f = fresh();
+        // A slow command still running when the next message replaces it;
+        // its reply is dropped because the job is no longer current.
+        let slow = f.start(b"sleep 1".to_vec());
+        f.start(b"echo quick".to_vec()).join().unwrap();
         slow.join().unwrap();
-        assert_eq!(f.message(), b"factors 2^2*3");
+        assert_eq!(f.message(), b"fortune quick");
     }
 }
