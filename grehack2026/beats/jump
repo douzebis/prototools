@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Reminder-only beat for demo step 2b: jump to definition with `v`.
+#
+# This beat never drives protolens — it only paces the presenter and shows
+# short reminders in the script pane. The presenter navigates by hand.
+# Advance each step with space or Enter.
+#
+# Invocation (from grehack2026.sh):
+#   protolens --descriptor-set life.desc capture/000050-response.pb \
+#       --script beats/jump
+
+title: From a byte to its declaration
+
+steps:
+  - text: |
+      Move the cursor onto a field whose type is a named message or enum
+      (not a bare scalar).
+
+      👋 Select such a field.
+
+  - text: |
+      Press `v`.
+
+      protolens hands off to Neovim, opened at that type's declaration in
+      the reconstructed .proto source — the SourceCodeInfo reproto
+      synthesized, resolved against the proto/ stub beside life.desc.
+
+      👋 Press `v`, look at the declaration, then come back.
+
+  - text: |
+      That is the point: schema recovery is not just a flat type list. We
+      go from a byte on the wire to the exact line of reconstructed source
+      that defines it, and back.
+
+      👋 Press Enter to quit protolens.

@@ -1,0 +1,33 @@
+# Reset the demo workspace: remove everything a previous run generated.
+# capture/ is Alice's tap output; life.desc and life/ are what reproto
+# rebuilds; server.log is Eve's truncated log. All are repopulated by the
+# demo script itself. Sourced by teleprompt at startup unless --no-init.
+
+_init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rm -rf "${_init_dir}/capture" \
+       "${_init_dir}/life.desc" "${_init_dir}/life" \
+       "${_init_dir}/server.log"
+unset _init_dir
+
+header "Dissecting protobuf"
+
+echo "
+            [1;94mGreHack 2026
+
+
+            Dissecting protobuf:
+            Schema recovery, covert channels, and what your decoder
+            quietly throws away
+
+
+            A live demo of prototools
+            https://github.com/ThalesGroup/prototools
+
+
+            Frederic Ruget
+            Senior Cloud Architect, S3NS
+            fred@s3ns.io
+[0m
+
+
+"

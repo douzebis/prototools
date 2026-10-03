@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Reminder-only beat for demo step 3: the truncated log, no root type.
+#
+# This beat never drives protolens — it only paces the presenter and shows
+# short reminders in the script pane. The presenter runs the overrides and
+# heat cues by hand. Advance each step with space or Enter.
+#
+# Invocation (from grehack2026.sh):
+#   protolens --descriptor-set life.desc server.log \
+#       --script beats/logfile
+
+title: A blob with no schema
+
+steps:
+  - text: |
+      server.log, opened against life.desc only.
+
+      protolens opens it, but no known root type matches — instead of a
+      type name you get a generic `message`. And the tail is flagged
+      TRUNCATED: that is exactly why protoc --decode_raw choked.
+
+      👋 Fold the message (`1`) so the top-level entries fit on screen.
+
+  - text: |
+      Enable the heat cues — press `i`.
+
+      Every substructure gets a cue showing how well the corpus can type
+      it. The brighter the cue, the more confident the match. protolens
+      still recognizes the Request and Response shapes from their fields.
+
+      👋 Press `i`, then hover over the bright cues.
+
+  - text: |
+      Pin the recognized types with an override (the override pane, or the
+      prefilled command protolens proposes on a cue). Request and Response
+      are shaped differently enough — a varint where the other has a
+      length-delimited field — that the scoring does not confuse them.
+
+      👋 Commit the proposed overrides for the Request / Response leaves.
+
+  - text: |
+      That is the realistic case: a truncated blob, no matching root type,
+      and we still reconstruct the record — type by type — from the field
+      shapes the corpus does know.
+
+      👋 Press Enter to quit protolens.

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Reminder-only beat for demo step 1b: protolens on a clean capture.
+#
+# This beat never drives protolens — it only paces the presenter and shows
+# short reminders in the script pane. The presenter navigates by hand
+# (arrows / mouse / z / w / v). Advance each step with space or Enter.
+#
+# Invocation (from grehack2026.sh):
+#   protolens --descriptor-set life.desc capture/000050-response.pb \
+#       --script beats/capture
+
+title: Reading one message with protolens
+
+steps:
+  - text: |
+      The capture, opened against life.desc.
+
+      protolens renders it as textproto, enriched with annotations
+      (press `a` to hide / show them), and it inferred the type.
+
+      👋 Reminders — try these by hand:
+      - arrow keys / mouse to move
+      - `z` or the triangles to fold / unfold a message
+      - hover over the root type for its full name and score
+
+  - text: |
+      Press `w` on a field to drop to wire level: the raw bytes, the
+      tag, the wire type, the varint groups.
+
+      👋 Press `w` on a scalar field, then `w` again to close it.
+
+  - text: |
+      That is the whole loop: a type recovered from the binary, a message
+      read in the clear, and the wire underneath one keystroke away.
+
+      👋 Press Enter to quit protolens when you are done.
