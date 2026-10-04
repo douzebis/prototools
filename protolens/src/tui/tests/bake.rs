@@ -1516,9 +1516,11 @@ fn a_refused_expansion_refuses_the_export() {
     // `expand_auto_fold` re-renders a node under the target its own
     // provenance records — so naming a type that is not in the pool is
     // enough to make the expansion fail the way a real one would.
-    let bogus = app
-        .provenance
-        .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
+    let bogus = app.provenance.intern(&(
+        Some(Some("no.such.Type".to_string())),
+        "items".to_string(),
+        None,
+    ));
     app.tree_mut()[stop].rendered_as = bogus;
     app.set_cursor(stop);
 
@@ -1542,9 +1544,11 @@ fn bake_subtree_attempts_each_node_once() {
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
     let stop = items[2];
-    let bogus = app
-        .provenance
-        .intern(&(Some(Some("no.such.Type".to_string())), "items".to_string()));
+    let bogus = app.provenance.intern(&(
+        Some(Some("no.such.Type".to_string())),
+        "items".to_string(),
+        None,
+    ));
     app.tree_mut()[stop].rendered_as = bogus;
 
     let others: Vec<usize> = app.auto_folded.iter().filter(|&i| i != stop).collect();

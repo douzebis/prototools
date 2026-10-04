@@ -136,7 +136,7 @@ fn parse_cardinality(s: &str) -> Result<prost_reflect::Cardinality, String> {
 }
 
 /// Format a `Cardinality` as the `--cardinality` token string.
-fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
+pub(super) fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
     match c {
         prost_reflect::Cardinality::Optional => "optional",
         prost_reflect::Cardinality::Repeated => "repeated",
@@ -235,6 +235,9 @@ impl App {
         // pane). An entry whose origin currently matches nothing still
         // gets a line — it just falls back for the schema-derived name.
         let from_manage = entry.is_some();
+        // Spec 0390 S7: an entry's explicit cardinality, which the line
+        // must carry so that `o`-then-`Enter` keeps it.
+        let stored_cardinality = entry.as_ref().and_then(|e| e.cardinality);
         let (origin, r#type, entry_name) = match entry {
             Some(entry) => (entry.origin, entry.r#type, entry.name),
             None => {
@@ -304,8 +307,15 @@ impl App {
         // The management pane pre-fills a stored entry; adding --cardinality
         // there would silently change entries that were stored without
         // one, breaking the o-then-Enter no-op invariant (spec 0236 S6).
+        //
+        // Spec 0390 S7: except an explicit one. `:override` stores the
+        // absence of `--cardinality` as `None`, so leaving an explicit
+        // value off the line would make `o`-then-`Enter` clear it.
         if !from_manage {
             let card = self.field_cardinality(node);
+            buf.push_str(" --cardinality ");
+            buf.push_str(cardinality_str(card));
+        } else if let Some(card) = stored_cardinality {
             buf.push_str(" --cardinality ");
             buf.push_str(cardinality_str(card));
         }

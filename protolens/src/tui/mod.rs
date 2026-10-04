@@ -2571,12 +2571,15 @@ impl App {
         // virtual encompassing message — mirrors `field_name_for`'s
         // no-parent case), and can't yet carry a §G4 name override at this
         // point (the collection was just seeded, nothing has been
-        // renamed). Interned before the node is reached, since the table
+        // renamed), nor an explicit cardinality (spec 0390), for the same
+        // reason. Interned before the node is reached, since the table
         // and the arena are two disjoint borrows of `app`.
         if cursor < app.tree.len() {
-            let root_provenance = app
-                .provenance
-                .intern(&(root_override_type.clone().map(Some), "1".to_string()));
+            let root_provenance = app.provenance.intern(&(
+                root_override_type.clone().map(Some),
+                "1".to_string(),
+                None,
+            ));
             app.tree_mut()[cursor].rendered_as = root_provenance;
         }
         // Spec 0120: Any/MessageSet auto-expansion is computed by

@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: MIT
 
+use prost_reflect::Cardinality;
+
 use super::key_dispatch::{ctrl_or_alt, GChord};
+use super::override_cmd::cardinality_str;
 use super::render::{tint_matches, RowCells};
 use super::*;
 
@@ -239,10 +242,53 @@ impl App {
         let e = &self.overrides.entries()[idx];
         let marker = if e.active { '●' } else { '○' };
         let type_label = self.manage_entry_type_label(idx);
+        // Spec 0390 S5: an explicit cardinality shows; `None` (as the
+        // schema declares it) shows nothing.
+        let cardinality = e
+            .cardinality
+            .map(|c| format!(" [{}]", cardinality_str(c)))
+            .unwrap_or_default();
         match &e.name {
-            Some(name) => format!("  {marker} {type_label} as \"{name}\""),
-            None => format!("  {marker} {type_label}"),
+            Some(name) => format!("  {marker} {type_label} as \"{name}\"{cardinality}"),
+            None => format!("  {marker} {type_label}{cardinality}"),
         }
+    }
+
+    /// `r`/`R` (spec 0390 S1–S4): step the highlighted entry's
+    /// cardinality forward (optional → repeated → required → optional)
+    /// or backward, from the one in effect — its explicit cardinality,
+    /// else the one its subject node's field is declared with.
+    ///
+    /// A result equal to the declared one is stored as `None`, as
+    /// `:override` does (spec 0348 S5/S6), so three presses come back to
+    /// where they started. Refused, with a message, for an entry that
+    /// matches nothing here (its subject would otherwise fall back to the
+    /// cursor, which has nothing to do with it) and for the document root,
+    /// whose header shows no cardinality whatever the entry says.
+    pub(super) fn rotate_cardinality_at_highlight(&mut self, reverse: bool) {
+        let Some(entry) = self.overrides.entries().get(self.manage_highlight) else {
+            return;
+        };
+        let (origin, stored) = (entry.origin.clone(), entry.cardinality);
+        let Some(&subject) = self.manage_affected_nodes(&origin).first() else {
+            self.message =
+                "override matches nothing here: no field to take a cardinality from".to_string();
+            return;
+        };
+        if self.parent(subject).is_none() {
+            self.message = "the root is not a field: it has no cardinality".to_string();
+            return;
+        }
+        let declared = self.field_cardinality(subject);
+        let next = step_cardinality(stored.unwrap_or(declared), reverse);
+        let explicit = (next != declared).then_some(next);
+        self.overrides
+            .rotate_cardinality(self.manage_highlight, explicit);
+        self.message = match explicit {
+            Some(c) => format!("cardinality: {}", cardinality_str(c)),
+            None => format!("cardinality: {} (as declared)", cardinality_str(declared)),
+        };
+        self.render_overrides(self.first_node);
     }
 
     /// Search corpus for management-pane entry `idx` (spec 0117 §3's
@@ -620,13 +666,13 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('s') => {
-                let buf = format!("save-overrides {}", self.default_save_overrides_path());
-                self.open_command_line(CommandLineKind::Command, buf);
-            }
-            KeyCode::Char('r') => {
-                self.open_command_line(CommandLineKind::Command, "restore-overrides ".to_string());
-            }
+            // Spec 0390 S1/S6: `r`/`R` rotate the entry's cardinality
+            // forward/backward, as `z`/`Z` rotate its origin. They took
+            // over from the `:restore-overrides` pre-fill, and `s`'s
+            // `:save-overrides` pre-fill went with it: in this pane both
+            // are typed commands. The main view keeps both shortcuts.
+            KeyCode::Char('r') => self.rotate_cardinality_at_highlight(false),
+            KeyCode::Char('R') => self.rotate_cardinality_at_highlight(true),
             _ => {}
         }
     }
@@ -930,5 +976,17 @@ impl App {
             }
         }
         frame.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// One step of spec 0390's cycle, optional → repeated → required →
+/// optional — the order spec 0348 G4's Tab rotation uses — or one step
+/// back.
+fn step_cardinality(c: Cardinality, reverse: bool) -> Cardinality {
+    use Cardinality::{Optional, Repeated, Required};
+    match (c, reverse) {
+        (Optional, false) | (Required, true) => Repeated,
+        (Repeated, false) | (Optional, true) => Required,
+        (Required, false) | (Repeated, true) => Optional,
     }
 }

@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+use prost_reflect::Cardinality;
+
 use super::super::*;
 use super::support::*;
 
@@ -1694,4 +1696,279 @@ fn esc_closes_the_manage_pane_from_main_pane_focus() {
 
     assert!(!app.manage_open);
     assert!(!app.manage_focus);
+}
+
+/// An active `:override` on `inner` (declared `optional`), the manage pane
+/// open and focused on its entry — spec 0390's starting point.
+fn inner_override_in_manage_pane(extra: &str) -> (App, usize, usize) {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    app.run_command(&format!(
+        "override {} --as test.Inner{extra}",
+        app.positional_path(inner_idx)
+    ));
+    app.toggle_manage_pane();
+    assert!(app.manage_open && app.manage_focus);
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.as_deref() == Some("test.Inner"))
+        .expect("the override must have created an active entry");
+    app.manage_highlight = entry_idx;
+    (app, inner_idx, entry_idx)
+}
+
+fn press(app: &mut App, c: char) {
+    app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+}
+
+/// Spec 0390 test plan 1: on a field declared `optional`, `r` steps
+/// repeated → required → back to `None` (as declared), and each step
+/// re-renders the field's header.
+#[test]
+fn r_rotates_forward_and_normalizes() {
+    let (mut app, inner_idx, entry_idx) = inner_override_in_manage_pane("");
+    assert_eq!(app.overrides.entries()[entry_idx].cardinality, None);
+    let header = |app: &App| app.document_lines()[app.absolute_start(inner_idx)].clone();
+
+    press(&mut app, 'r');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Repeated)
+    );
+    assert_eq!(app.message, "cardinality: repeated");
+    assert!(
+        header(&app).contains("#@ repeated Inner"),
+        "{}",
+        header(&app)
+    );
+
+    press(&mut app, 'r');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Required)
+    );
+    assert!(
+        header(&app).contains("#@ required Inner"),
+        "{}",
+        header(&app)
+    );
+
+    press(&mut app, 'r');
+    assert_eq!(app.overrides.entries()[entry_idx].cardinality, None);
+    assert_eq!(app.message, "cardinality: optional (as declared)");
+    assert!(header(&app).contains("#@ Inner"), "{}", header(&app));
+}
+
+/// Spec 0390 test plan 2: `R` goes the other way.
+#[test]
+fn capital_r_rotates_backward() {
+    let (mut app, _, entry_idx) = inner_override_in_manage_pane("");
+    press(&mut app, 'R');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Required)
+    );
+    press(&mut app, 'R');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Repeated)
+    );
+    press(&mut app, 'R');
+    assert_eq!(app.overrides.entries()[entry_idx].cardinality, None);
+}
+
+/// Spec 0390 test plan 3: the rotation starts from the declared
+/// cardinality — `repeated` here — so the first `r` lands on `required`.
+#[test]
+fn r_starts_from_the_declared_cardinality() {
+    let (mut app, items) = repeated_message_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    let origin = OverrideOrigin::Path {
+        path: app.positional_path(items[0]),
+    };
+    app.overrides.activate(origin.clone(), None);
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("the entry just activated");
+    app.manage_highlight = entry_idx;
+
+    press(&mut app, 'r');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Required)
+    );
+    press(&mut app, 'R');
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        None,
+        "back to repeated, which is what the field declares"
+    );
+}
+
+/// Spec 0390 test plan 4: an entry edited by hand is manual, as with
+/// `rotate_origin`.
+#[test]
+fn r_clears_auto() {
+    let mut app = message_set_fixture();
+    app.manage_focus = true;
+    app.manage_open = true;
+    let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
+        .expect("Item group must be spliced to the synthetic MessageSetItem type");
+    let item_path = app.positional_path(item_idx);
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+        .expect("tier-1 entry must exist");
+    assert!(app.overrides.entries()[entry_idx].auto);
+    app.manage_highlight = entry_idx;
+
+    press(&mut app, 'r');
+    let entry = app
+        .overrides
+        .entries()
+        .iter()
+        .find(|e| matches!(&e.origin, OverrideOrigin::Path { path } if *path == item_path))
+        .expect("still there");
+    assert!(!entry.auto, "a rotated entry is manual");
+    assert!(entry.cardinality.is_some());
+}
+
+/// Spec 0390 test plan 5a: an entry whose origin matches nothing here is
+/// left alone, with a message.
+#[test]
+fn r_refuses_an_entry_that_matches_nothing() {
+    let (mut app, _, _) = inner_override_in_manage_pane("");
+    let origin = OverrideOrigin::Path {
+        path: "/9/9/9".to_string(),
+    };
+    app.overrides
+        .activate(origin.clone(), Some("test.Inner".to_string()));
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.origin == origin)
+        .expect("the entry just activated");
+    app.manage_highlight = entry_idx;
+
+    press(&mut app, 'r');
+    assert_eq!(app.overrides.entries()[entry_idx].cardinality, None);
+    assert!(
+        app.message.contains("matches nothing here"),
+        "{}",
+        app.message
+    );
+}
+
+/// Spec 0390 test plan 5b: the document root shows no cardinality, so
+/// `r` refuses it.
+#[test]
+fn r_refuses_the_root() {
+    let (mut app, _, _) = type_as_fixture();
+    app.cursor = app.first_node;
+    app.run_command(&format!(
+        "override {} --as test.Outer",
+        app.positional_path(app.cursor)
+    ));
+    app.toggle_manage_pane();
+    let entry_idx = app
+        .overrides
+        .entries()
+        .iter()
+        .position(|e| e.active && e.r#type.as_deref() == Some("test.Outer"))
+        .expect("override on root must have created an active entry");
+    app.manage_highlight = entry_idx;
+
+    press(&mut app, 'r');
+    assert_eq!(app.overrides.entries()[entry_idx].cardinality, None);
+    assert!(app.message.contains("root"), "{}", app.message);
+}
+
+/// Spec 0390 test plan 6: in the pane, `s` and `r` no longer pre-fill
+/// `:save-overrides`/`:restore-overrides`; the main view still does.
+#[test]
+fn s_and_r_no_longer_prefill_save_and_restore_in_the_pane() {
+    let (mut app, _, _) = inner_override_in_manage_pane("");
+    press(&mut app, 's');
+    assert!(app.command_buffer.is_none(), "s does nothing in the pane");
+    press(&mut app, 'r');
+    assert!(app.command_buffer.is_none(), "r rotates, it opens no line");
+
+    let (mut app, _, _) = type_as_fixture();
+    press(&mut app, 's');
+    assert!(app
+        .command_buffer
+        .as_deref()
+        .is_some_and(|b| b.starts_with("save-overrides ")));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    press(&mut app, 'r');
+    assert_eq!(app.command_buffer.as_deref(), Some("restore-overrides "));
+}
+
+/// Spec 0390 test plan 7 (G5): `o` then Enter keeps an explicit
+/// cardinality. Before S7, the pre-filled line had no `--cardinality`,
+/// and Enter stored `None`.
+#[test]
+fn o_then_enter_keeps_an_explicit_cardinality() {
+    let (mut app, _, entry_idx) = inner_override_in_manage_pane(" --cardinality repeated");
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Repeated)
+    );
+    press(&mut app, 'o');
+    assert!(app
+        .command_buffer
+        .as_deref()
+        .is_some_and(|b| b.contains("--cardinality repeated")));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.command_buffer.is_none(), "Enter must run the command");
+    assert_eq!(
+        app.overrides.entries()[entry_idx].cardinality,
+        Some(Cardinality::Repeated)
+    );
+}
+
+/// Spec 0390 test plan 8: the row shows an explicit cardinality, and
+/// nothing for `None`.
+#[test]
+fn the_row_shows_an_explicit_cardinality() {
+    let (mut app, _, entry_idx) = inner_override_in_manage_pane("");
+    assert!(!app.manage_type_line(entry_idx).contains('['));
+    press(&mut app, 'r');
+    assert!(
+        app.manage_type_line(entry_idx).ends_with(" [repeated]"),
+        "{}",
+        app.manage_type_line(entry_idx)
+    );
+}
+
+/// Spec 0390, the provenance fix: changing only an entry's cardinality
+/// through `:override` re-renders the node too. Before cardinality was
+/// part of the provenance, the node's `(type, field name)` was unchanged,
+/// so nothing was re-spliced and the header kept the old cardinality.
+#[test]
+fn a_cardinality_only_override_rerenders_the_node() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    let path = app.positional_path(inner_idx);
+    app.cursor = inner_idx;
+    app.run_command(&format!("override {path} --as test.Inner"));
+    let header = |app: &App| app.document_lines()[app.absolute_start(inner_idx)].clone();
+    assert!(header(&app).contains("#@ Inner"), "{}", header(&app));
+
+    app.run_command(&format!(
+        "override {path} --as test.Inner --cardinality repeated"
+    ));
+    assert!(
+        header(&app).contains("#@ repeated Inner"),
+        "{}",
+        header(&app)
+    );
 }

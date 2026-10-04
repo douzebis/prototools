@@ -531,6 +531,17 @@ impl OverrideCollection {
         }
     }
 
+    /// Sets the entry at `idx`'s cardinality by hand (spec 0390 S4): the
+    /// management pane's `r`/`R`. Like `set_cardinality`, plus, like
+    /// `rotate_origin`, an entry edited by hand becomes manual. Neither
+    /// field is part of the sort key, so the entry keeps its index.
+    pub fn rotate_cardinality(&mut self, idx: usize, cardinality: Option<Cardinality>) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            entry.cardinality = cardinality;
+            entry.auto = false;
+        }
+    }
+
     /// Toggles the entry at `idx` (an index into `entries()`) between
     /// active/inactive (spec 0117 §3's `a` key). Activating deactivates
     /// every other entry sharing its origin. A no-op sort — `active`

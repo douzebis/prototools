@@ -13,13 +13,15 @@
 //! a commit holds at its peak. So the value is stored once here and the
 //! node holds a 4-byte [`ProvenanceId`] into this table.
 //!
-//! The *pair* is interned rather than its two halves separately: the type
-//! half needs three values that are not a type name — no override,
+//! The whole tuple is interned rather than its parts separately: the type
+//! part needs three values that are not a type name — no override,
 //! explicit raw, and never rendered — and `FqdnId` has no third sentinel
-//! to spare, while the set of distinct pairs is bounded by the overrides
+//! to spare, while the set of distinct tuples is bounded by the overrides
 //! in play rather than by nodes.
 
 use std::collections::HashMap;
+
+use prost_reflect::Cardinality;
 
 /// What one node's rendering came from: which override produced the text
 /// currently on screen, and under what field name it was rendered.
@@ -34,9 +36,12 @@ use std::collections::HashMap;
 ///   detects a *demotion*.
 /// - `(Some(Some(t)), name)` — rendered as type `t`.
 ///
-/// The field name is the second half because a rename (spec 0119 G4)
-/// changes the rendered text without changing the type.
-pub type Provenance = (Option<Option<String>>, String);
+/// The field name is the second part because a rename (spec 0119 G4)
+/// changes the rendered text without changing the type. The third is the
+/// active entry's explicit cardinality (`None`: as the schema declares
+/// it), for the same reason: rotating it (spec 0390) changes the rendered
+/// annotation, `#@ repeated T = n`, and nothing else.
+pub type Provenance = (Option<Option<String>>, String, Option<Cardinality>);
 
 /// An index into a [`ProvenanceTable`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,7 +135,7 @@ mod tests {
     use super::*;
 
     fn p(target: Option<Option<&str>>, name: &str) -> Provenance {
-        (target.map(|t| t.map(str::to_owned)), name.to_owned())
+        (target.map(|t| t.map(str::to_owned)), name.to_owned(), None)
     }
 
     #[test]

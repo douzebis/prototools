@@ -469,7 +469,7 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
     assert_eq!(
         app.provenance
             .get(app.tree[tail].rendered_as)
-            .map(|(target, _)| target.clone()),
+            .map(|(target, _, _)| target.clone()),
         Some(Some(Some("test.Outer".to_string()))),
         "the walk must have reached {tail_path} and applied its entry — \
          if it did not, the forward counter disagrees with \

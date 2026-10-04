@@ -46,9 +46,11 @@ node holds a 4-byte `ProvenanceId` and the value itself lives once in
 four states it distinguishes are unchanged (`protolens/src/provenance.rs`
 enumerates them).
 
-The pair is interned **whole**, not by its two halves: the type half
-needs three distinct not-a-type-name values — no override, explicit raw,
-and never rendered — which a shared `FqdnId` cannot express.
+The provenance is a tuple — type, field name, and the active entry's
+explicit cardinality (spec 0390) — and is interned **whole**, not by its
+parts: the type part needs three distinct not-a-type-name values — no
+override, explicit raw, and never rendered — which a shared `FqdnId`
+cannot express.
 
 `ProvenanceTable` reserves exactly one sentinel, `NOT_RENDERED`, because
 its only caller interns and can therefore only hold a real id. Add a

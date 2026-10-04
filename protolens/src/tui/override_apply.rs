@@ -96,15 +96,21 @@ impl App {
     /// Returns whether `idx` was actually re-spliced — `false` when it
     /// already matched `rendered_as`, or when `splice_override` refused.
     pub(super) fn resettle_node(&mut self, idx: usize, path: &str) -> bool {
-        let target = self
+        let entry = self
             .resolve_active_override_entry_index_by_path(idx, path)
-            .map(|i| self.overrides.entries()[i].r#type.clone());
+            .map(|i| &self.overrides.entries()[i]);
+        let target = entry.map(|e| e.r#type.clone());
+        // Spec 0390: part of the provenance, so that a cardinality-only
+        // change (`r` in the management pane) re-splices the node.
+        let cardinality = entry.and_then(|e| e.cardinality);
         let field_name = self.field_name_for_by_path(idx, path);
         // Spec 0213: intern first, so the comparison below is one `u32`
         // against the node's own. A provenance whose splice then fails is
         // left in the table — bounded by the number of failed splices,
         // and cheaper than a second lookup on every visit.
-        let current = self.provenance.intern(&(target.clone(), field_name));
+        let current = self
+            .provenance
+            .intern(&(target.clone(), field_name, cardinality));
         if current != self.tree[idx].rendered_as {
             let effective = match &target {
                 Some(explicit) => explicit.clone(),
@@ -996,7 +1002,7 @@ impl App {
             "only a node whose body was never rendered needs expanding"
         );
         let explicit = match self.provenance.get(self.tree[idx].rendered_as) {
-            Some((Some(t), _)) => Some(t.clone()),
+            Some((Some(t), _, _)) => Some(t.clone()),
             _ => None,
         };
         let effective = match explicit {
