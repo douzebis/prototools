@@ -1,15 +1,33 @@
 # Reset the demo workspace: remove everything a previous run generated.
 # capture/ is Alice's tap output; life.desc and life/ are what reproto
-# rebuilds; server.log is Eve's truncated log. All are repopulated by the
-# demo script itself. Sourced by teleprompt at startup unless --no-init.
+# rebuilds; eve/server.log is Eve's truncated log. All are repopulated by
+# the demo script itself. Sourced by teleprompt at startup unless --no-init.
+#
+# The crate lived in life/ before spec 0388 moved it to game/: in a checkout
+# that old, life/ is source, not reproto output, so nothing is removed.
 
 _init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-rm -rf "${_init_dir}/capture" \
-       "${_init_dir}/life.desc" "${_init_dir}/life" \
-       "${_init_dir}/server.log"
-unset _init_dir
+if [ -e "${_init_dir}/life/Cargo.toml" ]; then
+  echo "grehack2026.init: ${_init_dir}/life holds the crate, not reproto's" \
+       "output; nothing removed (spec 0388 S3)" >&2
+else
+  rm -rf "${_init_dir}/capture" \
+         "${_init_dir}/life.desc" "${_init_dir}/life" \
+         "${_init_dir}/eve/server.log"
+fi
 
-header "Dissecting protobuf"
+# Alice's copy of the client binary, for protoscan and reproto (spec 0388
+# S3). On a Nix PATH, life-client is a wrapper script; the binary, with its
+# embedded descriptors, is the .life-client-wrapped beside it.
+_client="$(readlink -f "$(command -v life-client)")"
+_wrapped="$(dirname "${_client}")/.life-client-wrapped"
+[ -e "${_wrapped}" ] && _client="${_wrapped}"
+rm -f "${_init_dir}/life-client"
+cp "${_client}" "${_init_dir}/life-client"
+chmod u+w "${_init_dir}/life-client"
+unset _init_dir _client _wrapped
+
+header "prototools"
 
 echo "
             [1;94mGreHack 2026

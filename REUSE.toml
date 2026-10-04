@@ -31,3 +31,13 @@ path = [
 SPDX-FileCopyrightText = "Porter Matteo Haet"
 SPDX-License-Identifier = "ISC"
 
+
+# Empty placeholders that keep the GreHack 2026 demo's per-character working
+# directories in git (spec 0388 S2).
+[[annotations]]
+path = [
+  "grehack2026/eve/.gitkeep",
+  "grehack2026/bob/.gitkeep",
+]
+SPDX-FileCopyrightText = "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)"
+SPDX-License-Identifier = "MIT"

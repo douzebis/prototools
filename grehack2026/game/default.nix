@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-# grehack2026/life/default.nix — life-server, life-client and life-spy
+# grehack2026/game/default.nix — life-server, life-client and life-tap
 # (spec 0375).
 #
 # A standalone Cargo project with its own Cargo.lock, excluded from the root
@@ -10,10 +10,11 @@
 # (spec 0241 S1): tonic, hyper and tokio must not enter the workspace graph.
 #
 # build.rs runs protoc on proto/grehack/life/v1/life.proto; the binaries
-# embed its FileDescriptorProto for protoscan to find (spec 0375 S3). The
+# embed its FileDescriptorProto for protoscan to find (spec 0375 S3), and
+# descriptor.proto's beside it for reproto (spec 0388 S13). The
 # unit tests run as part of the build (crane's cargo test).
 #
-# life-spy runs dumpcap and tshark, so it is wrapped with wireshark-cli on
+# life-tap runs dumpcap and tshark, so it is wrapped with wireshark-cli on
 # its PATH and runs the same in the workshop image and on any Nix machine
 # (spec 0375 S10). It still needs the capture privilege: root, or NixOS's
 # programs.wireshark.
@@ -22,7 +23,7 @@
 #   pkgs   — the same nixpkgs pin as the root default.nix
 #   crane  — the same crane as the root default.nix
 #
-# Output: $out/bin/{life-server,life-client,life-spy}
+# Output: $out/bin/{life-server,life-client,life-tap}
 
 { pkgs, crane }:
 
@@ -38,8 +39,8 @@ let
   src = pkgs.lib.fileset.toSource {
     root    = repoRoot;
     fileset = pkgs.lib.fileset.unions [
-      (crane.fileset.commonCargoSources (repoRoot + /grehack2026/life))
-      (repoRoot + /grehack2026/life/proto)
+      (crane.fileset.commonCargoSources (repoRoot + /grehack2026/game))
+      (repoRoot + /grehack2026/game/proto)
       # Path dependencies of life, and their own path dependencies.
       (crane.fileset.commonCargoSources (repoRoot + /prototext-core))
       (crane.fileset.commonCargoSources (repoRoot + /workspace-hack))
@@ -58,7 +59,7 @@ let
     cargoLock  = ./Cargo.lock;
     cargoToml  = ./Cargo.toml;
     postUnpack = ''
-      cd $sourceRoot/grehack2026/life
+      cd $sourceRoot/grehack2026/game
       sourceRoot="."
     '';
   };
@@ -69,21 +70,23 @@ in crane.buildPackage (commonArgs // {
   cargoArtifacts = depsCache;
 
   postInstall = ''
-    wrapProgram $out/bin/life-spy \
+    wrapProgram $out/bin/life-tap \
       --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wireshark-cli ]}
-    # life-client runs `fortune` for the number 42 (spec 0383), through the
-    # spec 0380 command runner's `sh -c fortune`. Wrap both `bash` (for `sh`)
-    # and `fortune` onto the client's PATH, like wireshark-cli on life-spy's,
-    # so the fortune launch is fully controlled and resolves the same in the
-    # workshop image and on any Nix machine, without depending on the login
-    # shell's PATH. This bash is prepended to the whole process PATH, so the
-    # `s`-key shell runner (spec 0380) sees it too — accepted (spec 0383 S4).
+    # life-client runs every command it receives through the covert channel
+    # (specs 0384, 0385), and every command Bob types after `s` (spec 0380),
+    # as `sh -c <command>`. Wrap `bash` (for `sh`) onto the client's PATH,
+    # like wireshark-cli on life-tap's, so a command resolves the same in the
+    # workshop image and on any Nix machine, whatever the login shell's PATH.
+    # `fortune` rides along as a harmless command to send through the
+    # channel; nothing runs it on its own since spec 0385 dropped the number
+    # 42 special case. The wrapper makes $out/bin/life-client a script: the
+    # binary, with its embedded descriptors, is .life-client-wrapped.
     wrapProgram $out/bin/life-client \
       --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.fortune ]}
   '';
 
   meta = {
-    description = "Game of life over cleartext gRPC, and a spy on its traffic (GreHack 2026)";
+    description = "Game of life over cleartext gRPC, and a tap on its traffic (GreHack 2026)";
     license     = pkgs.lib.licenses.mit;
     mainProgram = "life-client";
   };

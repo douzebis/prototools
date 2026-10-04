@@ -9,7 +9,7 @@
 # (arrows / mouse / z / w / v). Advance each step with space or Enter.
 #
 # Invocation (from grehack2026.sh):
-#   protolens --descriptor-set life.desc capture/000050-response.pb \
+#   protolens --descriptor-set life.desc capture/000001-response.pb \
 #       --script beats/capture
 
 title: Reading one message with protolens
@@ -33,7 +33,19 @@ steps:
       👋 Press `w` on a scalar field, then `w` again to close it.
 
   - text: |
-      That is the whole loop: a type recovered from the binary, a message
-      read in the clear, and the wire underneath one keystroke away.
+      Now move onto a field whose type is a named message or enum (not a
+      bare scalar), and press `v`.
 
-      👋 Press Enter to quit protolens when you are done.
+      protolens hands off to Neovim, opened at that type's declaration in
+      the reconstructed .proto source — the SourceCodeInfo reproto
+      synthesized, resolved against the proto/ stub beside life.desc.
+
+      👋 Press `v`, look at the declaration, then come back.
+
+  - text: |
+      That is the whole loop: a type recovered from the binary, a message
+      read in the clear, the wire underneath one keystroke away — and from
+      a byte on the wire to the line of reconstructed source that defines
+      it, and back.
+
+      👋 Type `:q` to quit protolens when you are done.

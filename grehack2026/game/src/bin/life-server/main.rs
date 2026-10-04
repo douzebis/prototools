@@ -27,7 +27,7 @@ struct Args {
     /// Close each connection after this many seconds; clients reconnect on
     /// their own. Off by default: life-client renews its own connection
     /// (--renew-every), between two calls, where a close cannot race one.
-    /// For a long-lived client that does not, which a late spy would never
+    /// For a long-lived client that does not, which a late tap would never
     /// see whole; keep it above that client's renewal period.
     #[arg(long)]
     max_connection_age: Option<u64>,
@@ -45,14 +45,19 @@ struct Args {
 
     /// Write a protobuf traffic log to this path (spec 0386). The log is
     /// `repeated Request`/`repeated Response`; it is kept truncated on disk by
-    /// construction, so a Ctrl-C leaves a partial protobuf. Off by default.
-    #[arg(long)]
-    log_file: Option<String>,
+    /// construction, so a Ctrl-C leaves a partial protobuf. On by default, in
+    /// the working directory (spec 0388 S14).
+    #[arg(long, default_value = "server.log")]
+    log_file: String,
+
+    /// Write no traffic log.
+    #[arg(long, conflicts_with = "log_file")]
+    no_log: bool,
 }
 
-/// The traffic log, when `--log-file` is set (spec 0386). Behind a `Mutex`
-/// because the `step` handler runs on several tokio workers; `None` means no
-/// `--log-file`, so nothing is logged (spec 0386 N2).
+/// The traffic log (spec 0386), unless `--no-log`. Behind a `Mutex` because the
+/// `step` handler runs on several tokio workers; `None` means `--no-log`, so
+/// nothing is logged.
 static LOG: Mutex<Option<log::Log>> = Mutex::new(None);
 
 struct Service;
@@ -98,8 +103,8 @@ impl Life for Service {
     }
 }
 
-/// Append one step's `Request` and `Response` entries to the traffic log, when
-/// `--log-file` is set (spec 0386 S2). The leaf shapes are spec 0387: each
+/// Append one step's `Request` and `Response` entries to the traffic log,
+/// unless `--no-log` (spec 0386 S2). The leaf shapes are spec 0387: each
 /// wraps its game message at field 1 and carries the distinguishing fields that
 /// let the scorer tell a `Request` from a `Response`. `command` is what the
 /// server smuggled this step; `output` is the command output a request brought
@@ -107,7 +112,7 @@ impl Life for Service {
 fn log_step(request: &StepRequest, response: &StepResponse, elapsed: Duration) {
     let mut log = LOG.lock().unwrap();
     let Some(log) = log.as_mut() else {
-        return; // no --log-file: nothing is logged (spec 0386 N2).
+        return; // --no-log: nothing is logged.
     };
     let request_entry = life::pb::log::Request {
         step: Some(request.clone()),
@@ -164,7 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tags::spawn_stdin_reader();
     // The traffic log (spec 0386 S1): open it now; a failure to open is fatal,
     // like a bad --listen.
-    if let Some(path) = &args.log_file {
+    if !args.no_log {
+        let path = &args.log_file;
         let opened = log::Log::create(path)
             .map_err(|e| format!("could not open the log file {path:?}: {e}"))?;
         *LOG.lock().unwrap() = Some(opened);

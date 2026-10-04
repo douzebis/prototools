@@ -9,7 +9,7 @@
 # heat cues by hand. Advance each step with space or Enter.
 #
 # Invocation (from grehack2026.sh):
-#   protolens --descriptor-set life.desc server.log \
+#   protolens --descriptor-set life.desc eve/server.log \
 #       --script beats/logfile
 
 title: A blob with no schema
@@ -46,4 +46,4 @@ steps:
       and we still reconstruct the record — type by type — from the field
       shapes the corpus does know.
 
-      👋 Press Enter to quit protolens.
+      👋 Type `:q` to quit protolens.

@@ -35,13 +35,21 @@ pub mod pb {
 /// blob is the only way to the schema.
 pub static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/life.fdp"));
 
+/// The serialized `FileDescriptorProto` of the well-known
+/// `google/protobuf/descriptor.proto`, embedded beside [`DESCRIPTOR`] so that
+/// `reproto -I` on a binary finds it in its input set and needs no
+/// `--use-variant descriptor` (spec 0388 S13).
+pub static DESCRIPTOR_PROTO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.fdp"));
+
 /// The fully qualified name of the one method, read from [`DESCRIPTOR`]:
 /// `/grehack.life.v1.Life/Step`.
 ///
 /// Reading the descriptor at startup, rather than only holding it, is what
-/// guarantees the linker keeps it.
+/// guarantees the linker keeps it. [`DESCRIPTOR_PROTO`] is never read, so it
+/// goes through `black_box`, which the linker cannot see through either.
 pub fn step_path() -> String {
     use prost::Message;
+    std::hint::black_box(DESCRIPTOR_PROTO);
     let file = prost_types::FileDescriptorProto::decode(DESCRIPTOR)
         .expect("the embedded descriptor is written by build.rs");
     let service = &file.service[0];

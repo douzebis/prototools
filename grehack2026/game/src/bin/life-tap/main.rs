@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! `life-spy`: watch the game of life's gRPC traffic, and keep every
+//! `life-tap`: watch the game of life's gRPC traffic, and keep every
 //! message as a `.pb` file prototools opens directly (spec 0375 S6).
 //!
 //! A wrapper around Wireshark's command-line tools. dumpcap captures the
-//! loopback traffic on the port; the spy keeps it as a pcapng and feeds it
+//! loopback traffic on the port; the tap keeps it as a pcapng and feeds it
 //! to tshark, which decodes gRPC as it arrives — the equivalent of
-//! `dumpcap -w - | tee capture.pcapng | tshark -r - …`, which the spy
+//! `dumpcap -w - | tee capture.pcapng | tshark -r - …`, which the tap
 //! prints when it starts, to be copied and adapted.
 
 mod tracker;
@@ -27,9 +27,9 @@ use tracker::Tracker;
 
 const CAPTURE_HELP: &str = "\
 Capturing needs root:
-  in the workshop container   podman exec -it workshop life-spy
-                              docker exec -it -u 0 workshop life-spy
-  on a Linux machine          sudo \"$(command -v life-spy)\"
+  in the workshop container   podman exec -it workshop life-tap
+                              docker exec -it -u 0 workshop life-tap
+  on a Linux machine          sudo \"$(command -v life-tap)\"
   on NixOS, without sudo      programs.wireshark.enable = true, and your
                               user in the wireshark group";
 
@@ -40,7 +40,7 @@ Capturing needs root:
         loopback interface, prints one line per message, and writes each message to \
         DIR/NNNNNN-request.pb or DIR/NNNNNN-response.pb (a request and its response \
         share NNNNNN), the whole capture to DIR/capture.pcapng, and what it prints \
-        to DIR/spy.log.",
+        to DIR/tap.log.",
     after_help = CAPTURE_HELP
 )]
 struct Args {
@@ -58,7 +58,7 @@ struct Args {
     #[arg(long)]
     proto_path: Option<PathBuf>,
 
-    /// Stop the spy writing to the output directory (one started detached).
+    /// Stop the tap writing to the output directory (one started detached).
     #[arg(long)]
     stop: bool,
 }
@@ -73,12 +73,12 @@ fn main() -> ExitCode {
     let result = if args.stop {
         stop(&out)
     } else {
-        spy(&args, &out)
+        tap(&args, &out)
     };
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("life-spy: {e}");
+            eprintln!("life-tap: {e}");
             ExitCode::FAILURE
         }
     }
@@ -91,7 +91,7 @@ fn absolute(path: &Path) -> PathBuf {
 }
 
 fn pid_file(out: &Path) -> PathBuf {
-    out.join("spy.pid")
+    out.join("tap.pid")
 }
 
 fn alive(pid: i32) -> bool {
@@ -108,20 +108,20 @@ fn signal(pid: u32, sig: i32) {
 
 // ── --stop ───────────────────────────────────────────────────────────────────
 
-/// Stop the spy writing to `out`, and return once it has finished — its
-/// files complete. A spy behind on a burst of traffic writes its backlog
+/// Stop the tap writing to `out`, and return once it has finished — its
+/// files complete. A tap behind on a burst of traffic writes its backlog
 /// first.
 fn stop(out: &Path) -> Result<ExitCode, String> {
     let pid_file = pid_file(out);
     let pid: i32 = fs::read_to_string(&pid_file)
-        .map_err(|_| format!("no spy is writing to {} (no spy.pid there)", out.display()))?
+        .map_err(|_| format!("no tap is writing to {} (no tap.pid there)", out.display()))?
         .trim()
         .parse()
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
-    // SAFETY: kill(2) with a pid read from the spy's own pid file.
+    // SAFETY: kill(2) with a pid read from the tap's own pid file.
     if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
         return Err(format!(
-            "spy {pid} is not running (stale {}?)",
+            "tap {pid} is not running (stale {}?)",
             pid_file.display()
         ));
     }
@@ -130,16 +130,16 @@ fn stop(out: &Path) -> Result<ExitCode, String> {
     while pid_file.exists() {
         if !alive(pid) {
             return Err(format!(
-                "spy {pid} died without removing {}",
+                "tap {pid} died without removing {}",
                 pid_file.display()
             ));
         }
         if !told && started.elapsed() > Duration::from_secs(2) {
-            println!("life-spy: waiting for spy {pid} to write its last messages");
+            println!("life-tap: waiting for tap {pid} to write its last messages");
             told = true;
         }
         if started.elapsed() > Duration::from_secs(120) {
-            return Err(format!("spy {pid} did not stop within 120 s"));
+            return Err(format!("tap {pid} did not stop within 120 s"));
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -148,8 +148,8 @@ fn stop(out: &Path) -> Result<ExitCode, String> {
 
 // ── Who the files are for, and how to capture ────────────────────────────────
 
-/// The user the spy works for, who gets every file it writes: the one who
-/// ran sudo, or the owner of the workshop's /work; otherwise the spy's own.
+/// The user the tap works for, who gets every file it writes: the one who
+/// ran sudo, or the owner of the workshop's /work; otherwise the tap's own.
 fn owner() -> (u32, u32) {
     let env = |name| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
     if let Some(uid) = env("SUDO_UID") {
@@ -185,8 +185,8 @@ fn dumpcap() -> Result<String, String> {
     ))
 }
 
-/// Give a file or directory the spy created to the user it works for. A
-/// failure is not the spy's business (a macOS bind mount may refuse it).
+/// Give a file or directory the tap created to the user it works for. A
+/// failure is not the tap's business (a macOS bind mount may refuse it).
 fn give(path: &Path, (uid, gid): (u32, u32)) {
     let _ = chown(path, Some(uid), Some(gid));
 }
@@ -211,7 +211,7 @@ fn next_call(out: &Path) -> u64 {
 
 // ── Output ───────────────────────────────────────────────────────────────────
 
-/// What the spy prints goes to the terminal and to `spy.log`.
+/// What the tap prints goes to the terminal and to `tap.log`.
 struct Log {
     file: File,
 }
@@ -261,9 +261,9 @@ fn clock(epoch: f64) -> String {
     )
 }
 
-// ── The spy ──────────────────────────────────────────────────────────────────
+// ── The tap ──────────────────────────────────────────────────────────────────
 
-fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
+fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
     let owner = owner();
     let dumpcap = dumpcap()?;
 
@@ -274,7 +274,7 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
     {
         if alive(pid) {
             return Err(format!(
-                "a spy is already writing to {} (pid {pid}); life-spy --stop stops it",
+                "a tap is already writing to {} (pid {pid}); life-tap --stop stops it",
                 out.display()
             ));
         }
@@ -285,7 +285,7 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
     }
 
     let pcap_path = out.join("capture.pcapng");
-    let log_path = out.join("spy.log");
+    let log_path = out.join("tap.log");
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -352,11 +352,11 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
     }
 
     say(&format!(
-        "life-spy: capturing gRPC on port {} into {}",
+        "life-tap: capturing gRPC on port {} into {}",
         args.port,
         out.display()
     ));
-    say("life-spy: the commands, to adapt in a root terminal of your own:");
+    say("life-tap: the commands, to adapt in a root terminal of your own:");
     say(&format!("  {} \\", words(&dumpcap, &dumpcap_args)));
     say(&format!(
         "    | tee {} \\",
@@ -369,7 +369,7 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
     give(&pcap_path, owner);
 
     // Both in a process group of their own: a Ctrl-C in the terminal
-    // reaches the spy alone, which stops dumpcap and lets tshark drain.
+    // reaches the tap alone, which stops dumpcap and lets tshark drain.
     let mut tshark = Command::new("tshark")
         .args(&tshark_args)
         .process_group(0)
@@ -438,12 +438,12 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
 
     if let Err(e) = tee_result {
         say(&format!(
-            "life-spy: passing the capture on to tshark failed: {e}"
+            "life-tap: passing the capture on to tshark failed: {e}"
         ));
     }
     if !tshark_status.as_ref().is_ok_and(|s| s.success()) {
         say(&format!(
-            "life-spy: tshark failed ({}):",
+            "life-tap: tshark failed ({}):",
             tshark_status.map_or_else(|e| e.to_string(), |s| s.to_string())
         ));
         say(tshark_err.join().unwrap_or_default().trim_end());
@@ -456,12 +456,12 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
         }
         Run::Failed => {
             let err = dumpcap_err.join().unwrap_or_default();
-            say("life-spy: dumpcap could not capture:");
+            say("life-tap: dumpcap could not capture:");
             say(err.trim_end());
             let lower = err.to_lowercase();
             if lower.contains("permission") || lower.contains("not permitted") {
-                say("life-spy: in a container without NET_RAW (rootless Podman's default), start");
-                say("          it with --cap-add NET_RAW; elsewhere, run the spy as root");
+                say("life-tap: in a container without NET_RAW (rootless Podman's default), start");
+                say("          it with --cap-add NET_RAW; elsewhere, run the tap as root");
             }
             Ok(ExitCode::FAILURE)
         }
@@ -473,8 +473,8 @@ fn spy(args: &Args, out: &Path) -> Result<ExitCode, String> {
 fn starting(program: &str, e: &io::Error) -> String {
     if e.kind() == io::ErrorKind::NotFound {
         format!(
-            "{program} is not on PATH: run the spy from the repository's dev shell \
-             (nix-shell dev-shell.nix), or use the Nix-built life-spy \
+            "{program} is not on PATH: run the tap from the repository's dev shell \
+             (nix-shell dev-shell.nix), or use the Nix-built life-tap \
              (nix-build -A grehack2026.life), which carries it"
         )
     } else {
@@ -482,7 +482,7 @@ fn starting(program: &str, e: &io::Error) -> String {
     }
 }
 
-/// How long the spy keeps capturing after being asked to stop.
+/// How long the tap keeps capturing after being asked to stop.
 const STOP_GRACE: Duration = Duration::from_secs(1);
 
 enum Run {
@@ -548,20 +548,20 @@ fn read(
         let fed = match tracker.feed(&line) {
             Ok(fed) => fed,
             Err(e) => {
-                say(&format!("life-spy: skipping a line tshark printed: {e}"));
+                say(&format!("life-tap: skipping a line tshark printed: {e}"));
                 continue;
             }
         };
         if fed.first_missed {
-            say("life-spy: missing messages: their connection predates the spy, so tshark");
+            say("life-tap: missing messages: their connection predates the tap, so tshark");
             say("          cannot tell they are gRPC; life-client renews its connection every");
-            say("          5 s (--renew-every), and the spy sees the next one whole");
+            say("          2 s (--renew-every), and the tap sees the next one whole");
         }
         for m in fed.messages {
             let file = m.file_name();
             let path = out.join(&file);
             if let Err(e) = fs::write(&path, &m.bytes) {
-                say(&format!("life-spy: writing {}: {e}", path.display()));
+                say(&format!("life-tap: writing {}: {e}", path.display()));
                 continue;
             }
             give(&path, owner);
@@ -576,7 +576,7 @@ fn read(
         }
     }
     format!(
-        "life-spy: stopped: {} requests and {} responses saved, {} messages missed",
+        "life-tap: stopped: {} requests and {} responses saved, {} messages missed",
         tracker.requests,
         tracker.responses,
         tracker.missed()
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn numbering_continues_after_existing_files() {
-        let dir = std::env::temp_dir().join(format!("life-spy-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("life-tap-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(next_call(&dir), 1);
         for name in [

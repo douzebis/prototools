@@ -68,10 +68,12 @@ struct Args {
     command_log: String,
 
     /// Open a new connection to the server, between two steps, once the
-    /// current one is this many seconds old (0: never). A spy started late
+    /// current one is this many seconds old (0: never). A tap started late
     /// cannot read a connection it did not see open, so this bounds how
-    /// long it waits.
-    #[arg(long, default_value_t = 5)]
+    /// long it waits; and a game paused this long opens a new connection on
+    /// its next step, which a tap started during the pause sees whole (spec
+    /// 0388 S6).
+    #[arg(long, default_value_t = 2)]
     renew_every: u64,
 }
 

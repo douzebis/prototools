@@ -7,9 +7,15 @@
 /prototext-graph/target/
 /prototext-graph/Cargo.lock
 /demo/bobapp/target/
-/grehack2026/life/target/
-# life-spy's default output where there is no /work (spec 0375 S6).
-/grehack2026/life/capture/
+/grehack2026/game/target/
+# life-tap's default output where there is no /work (spec 0375 S6).
+/grehack2026/game/capture/
+# What the GreHack 2026 demo generates when run from grehack2026/ (spec 0388 S2).
+/grehack2026/capture/
+/grehack2026/life.desc
+/grehack2026/life/
+/grehack2026/eve/server.log
+/grehack2026/life-client
 /release/
 /result
 /result-*

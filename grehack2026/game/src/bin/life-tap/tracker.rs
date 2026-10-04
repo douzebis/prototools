@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! What the spy makes of tshark's lines (spec 0375 S6): which are gRPC
+//! What the tap makes of tshark's lines (spec 0375 S6): which are gRPC
 //! messages, which call each belongs to, and which messages it missed.
 //! Pure, so it is tested on its own; `main.rs` does the input and output.
 
 use std::collections::{HashMap, HashSet};
 
-/// The fields the spy asks tshark for, in order. tshark prints every
+/// The fields the tap asks tshark for, in order. tshark prints every
 /// occurrence of a field joined by commas (its default), and the fields
 /// separated by `|`, which no value of these fields contains.
 pub const FIELDS: &[&str] = &[
@@ -30,7 +30,7 @@ pub const SEPARATOR: char = '|';
 /// marks a connection seen from its start; a request's headers, for the
 /// method path; and HTTP/2 DATA that tshark could not attribute to gRPC —
 /// on a connection seen from its start only a part of a larger message,
-/// and otherwise a message the spy missed.
+/// and otherwise a message the tap missed.
 pub const FILTER: &str =
     "grpc.message_data || http2.magic || http2.headers.path || (http2.type == 0 && !grpc)";
 
@@ -56,11 +56,11 @@ impl Dir {
     }
 }
 
-/// One gRPC message, as the spy saves and reports it.
+/// One gRPC message, as the tap saves and reports it.
 #[derive(Debug, PartialEq)]
 pub struct Message {
     /// The call's number, shared by its request and its response; 0 for a
-    /// response whose request the spy did not see.
+    /// response whose request the tap did not see.
     pub call: u64,
     pub dir: Dir,
     /// Seconds since the epoch, as tshark gives it.
@@ -82,11 +82,11 @@ impl Message {
 #[derive(Debug, Default, PartialEq)]
 pub struct Fed {
     pub messages: Vec<Message>,
-    /// The first message missed: the spy says why, once.
+    /// The first message missed: the tap says why, once.
     pub first_missed: bool,
 }
 
-/// The spy's bookkeeping across tshark's lines.
+/// The tap's bookkeeping across tshark's lines.
 pub struct Tracker {
     port: u16,
     next: u64,
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_older_than_the_spy_is_missed_once_per_message() {
+    fn a_connection_older_than_the_tap_is_missed_once_per_message() {
         let mut t = Tracker::new(PORT, 1);
         // Two frames of one request, then its response.
         let first = t.feed(&line(7, PORT, "5", "", "", "")).unwrap();

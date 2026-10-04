@@ -9,7 +9,7 @@
 # presenter navigates by hand. Advance each step with space or Enter.
 #
 # Invocation (from grehack2026.sh):
-#   protolens --descriptor-set life.desc capture/000100-request.pb \
+#   protolens --descriptor-set life.desc capture/000002-request.pb \
 #       --script beats/smuggle
 
 title: Finding the smuggled bits
@@ -59,13 +59,15 @@ steps:
   - text: |
       Worked example — the request side:
 
-        01100101 01111000 01110000 01100101 01110010 ...
-           e        x        p        e        r        → experiment
+        01100101 01111000 01110000 ... 01101110 01110100 00001010
+           e        x        p     ...    n        t       \n    → experiment
 
       and the response side:
 
         01110111 01101000 01101111 01100001 01101101 01101001
            w        h        o        a        m        i      → whoami
+
+      The reply is whoami's output exactly, trailing newline included.
 
       👋 Press space to step.
 
@@ -73,4 +75,4 @@ steps:
       End to end: Eve asked `whoami`, Bob's machine answered `experiment`.
       The server drives a channel hidden inside ordinary Life messages.
 
-      👋 Press Enter to quit protolens.
+      👋 Type `:q` to quit protolens.

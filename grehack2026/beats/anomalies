@@ -1,0 +1,416 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Guided walk through grehack2026/anomalies.pb — every encoding anomaly
+# prototext-core can report, ordered from most to least interesting for a
+# security audience. A copy of grpconf2026/anomalies.script, beside a copy
+# of its blob, so that the GreHack 2026 demo stands alone (spec 0388 S12).
+#
+# Invocation (from grehack2026.sh; the dev-shell's PROTOTEXT_DESCRIPTOR_SET
+# supplies the well-known types):
+#   protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
+#       --script beats/anomalies
+
+title: Protobuf encoding anomalies
+
+steps:
+  - text: |
+      This document contains one example of every encoding anomaly
+      prototext can detect.
+
+      👋 Press space to step through.
+
+    fold: ["/ 1"]
+
+  # ── 1. Shadowed scalar ────────────────────────────────────────────────────
+
+  - text: |
+      1. Shadowed scalar.
+
+      The schema declares `name` singular — it should appear at most once.
+      The wire carries it twice.
+
+      Standard decoders apply last-write-wins: the first value is silently
+      overwritten and never reaches the application.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/1 Z"]
+    node: /1/2/2
+    select_line: true
+
+  # ── 2. OverHanging Bytes (ohb) ────────────────────────────────────────────
+
+  - text: |
+      2. OverHanging Bytes — legal but non-canonical.
+
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
+
+      Example a: A TAG varint padded to 3 bytes (1 would suffice).
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/2 Z"]
+    node: /2/2/1
+    select_line: true
+    wire_lines:
+      from: /2/2/1
+      to: /2/2/2
+
+  - text: |
+      2. OverHanging Bytes — legal but non-canonical.
+
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
+
+      Example b: A LENGTH PREFIX padded to 4 bytes.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/3 Z"]
+    node: /3/2/1
+    select_line: true
+    wire_lines:
+      from: /3/2/1
+      to: /3/2/2
+
+  - text: |
+      2. OverHanging Bytes — legal but non-canonical.
+
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
+
+      Example c: a VALUE varint padded to 5 bytes.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/4 Z"]
+    node: /4/2/1/2
+    select_line: true
+    wire_line: /4/2/1/2
+
+  # ── 3. Unknown enum / unknown fields ─────────────────────────────────────
+
+  - text: |
+      3. A newer producer, an older schema.
+
+      The bytes are valid. But the schema in hand has no name for them.
+
+      Example a: An enum value the schema has no name for.
+      The wire carries 99; Press `v` for the enum definition.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/5 Z"]
+    node: /5/2/1/2
+    select_line: true
+
+  - text: |
+      3. A newer producer, an older schema.
+
+      Example b: Fields the schema does not declare at all.
+
+      Each is rendered by its wire type — varint, fixed64, fixed32,
+      bytes — which is all the tag bytes themselves can tell us.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/6 Z"]
+    node: /6/2
+    select_node: true
+
+  # ── 4. Truncated message ──────────────────────────────────────────────────
+
+  - text: |
+      4. A truncated message.
+
+      The length prefix promises more bytes than the buffer contains.
+      protoc --decode fails entirely on this input.
+
+      prototext decodes as far as possible, annotates the boundary
+      with TRUNCATED_MESSAGE / TRUNCATED_BYTES, and continues.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/7 Z"]
+    node: /7/2/1
+    select_node: true
+
+  # ── 5. Schema / wire disagreement ────────────────────────────────────────
+
+  - text: |
+      5. The blob and the descriptor set disagree.
+
+      Example a: schema says string, wire says varint.
+      The wire type is the ground truth; prototext marks TYPE_MISMATCH.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/8 Z"]
+    node: /8/2/1
+    select_line: true
+    wire_line: /8/2/1
+
+  - text: |
+      5. The blob and the descriptor set disagree.
+
+      Example b: declared a string, but the payload is not valid UTF-8.
+
+      Press `v` to check the proto source.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/9 Z"]
+    node: /9/2/1
+    select_line: true
+    wire_line: /9/2/1
+
+  - text: |
+      5. The blob and the descriptor set disagree.
+
+      Example c: declared packed int32, but the payload does not decode.
+      The last byte promises continuation that never comes.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/10 Z"]
+    node: /10/2/1/1
+    select_line: true
+    wire_line: /10/2/1/1
+
+  # ── 6. Non-canonical values ───────────────────────────────────────────────
+
+  - text: |
+      6. Non-canonical values.
+
+      Example a: non-canonical negative integer.
+      -1 written in five bytes instead of ten.
+      The spec requires a 10-byte sign-extended varint for negative
+      int32. Some producers truncate it. The value is identical;
+      a re-encode would write the longer form.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/11 Z"]
+    node: /11/2/1/2
+    select_line: true
+    wire_line: /11/2/1/2
+
+  - text: |
+      6. Non-canonical values.
+
+      Example a: non-canonical negative integer.
+      
+      The canonical way is like so:
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/11 Z"]
+    node: /11/2/1/2
+    select_line: true
+    wire_line: /11/2/2/2
+
+  - text: |
+      6. Non-canonical values.
+
+      Example b: non-canonical NaN.
+      IEEE 754 has 2^52 distinct NaN patterns. A re-encode silently
+      picks the canonical one. prototext preserves the original bits.
+
+      👋 Press space to step
+      
+    fold: ["/ 1", "/12 Z"]
+    node: /12/2/1/2
+    select_line: true
+    wire_line: /12/2/1/2
+
+  - text: |
+      6. Non-canonical values.
+
+      Example b: non-canonical NaN.
+
+      The canonical way is like so:
+
+      👋 Press space to step
+      
+    fold: ["/ 1", "/12 Z"]
+    node: /12/2/2/2
+    select_line: true
+    wire_line: /12/2/2/2
+
+  # ── 7. Packed run ─────────────────────────────────────────────────────────
+
+  - text: |
+      7. A packed repeated field with per-element anomalies.
+
+      Three text lines share one wire record (one tag, one length
+      prefix). The middle element is padded (ohb); the last is a
+      truncated -1 (neg).
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/13 Z"]
+    node: /13/2/1/1
+    select_node: true
+    wire_node: /13/2/1/1
+
+  # ── 8. Malformed bytes ────────────────────────────────────────────────────
+
+  - text: |
+      8. Malformed wire bytes.
+
+      From here on the bytes are unreadable, not merely unusual.
+      Each stops the scan of its enclosing region; the parent resumes
+      at the next tag.
+
+      Example a: a varint with no terminating byte.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/14 Z"]
+    node: /14/2/1
+    select_line: true
+    wire_line: /14/2/1
+
+  - text: |
+      8. Malformed wire bytes.
+
+      Example b: a length prefix that is itself an unterminated varint.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/15 Z"]
+    node: /15/2/1
+    select_line: true
+    wire_line: /15/2/1
+
+  - text: |
+      8. Malformed wire bytes.
+
+      Example c: a 64-bit field with only 3 bytes behind it.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/16 Z"]
+    node: /16/2/1
+    select_line: true
+    wire_line: /16/2/1
+
+  - text: |
+      8. Malformed wire bytes.
+
+      Example d: a 32-bit field with only 2 bytes behind it.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/17 Z"]
+    node: /17/2/1
+    select_line: true
+    wire_line: /17/2/1
+
+  - text: |
+      8. Malformed wire bytes.
+
+      Example e: wire type 6 — no such wire type exists.
+      The three type bits in the tag are wrong; nothing after them
+      can be located.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/18 Z"]
+    node: /18/2/1
+    select_line: true
+    wire_line: /18/2/1
+
+  - text: |
+      8. Malformed wire bytes.
+
+      Example f: field number 0 — out of range.
+      Field numbers start at 1; the wire type is fine.
+
+      👋 Press space to step
+    fold: ["/ 1", "/19 Z"]
+    node: /19/2/1
+    select_line: true
+    wire_line: /19/2/1
+
+  # ── 9. Groups ─────────────────────────────────────────────────────────────
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      A group is opened by a START_GROUP tag and closed by an END_GROUP
+      tag with the same field number, no length prefix.
+
+      Example a: padded closing tag (etag_ohb), then the same group
+      closed canonically.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/20 Z"]
+    node: /20/2/1
+    select_node: true
+    wire_node: /20/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      Example b: opened as field 100, closed as field 101 — END_MISMATCH.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/21 Z"]
+    node: /21/2/1
+    select_node: true
+    wire_node: /21/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      Example c: closed with field number 2^29 — out of range.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/22 Z"]
+    node: /22/2/1
+    select_node: true
+    wire_node: /22/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      Example d: a group that is never closed — OPEN_GROUP.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/23 Z"]
+    node: /23/2/1
+    select_node: true
+    wire_node: /23/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      Example e: an END_GROUP tag that closes nothing — INVALID_GROUP_END.
+
+      That is the complete vocabulary.
+
+      👋 Press space to step.
+
+    fold: ["/ 1", "/24 Z"]
+    node: /24/2/1
+    select_line: true
+    wire_line: /24/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      👋 Press Enter to quit.
+
+    fold: ["/ 1", "/24 Z"]
+    node: /24/2/1
+    select_line: true
+    wire_line: /24/2/1
+    command: quit

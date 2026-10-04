@@ -52,7 +52,7 @@
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
 , googleapisPbs     # googleapis per-file FDS blob; dev-shell only (PROTOTEXT_GOOGLEAPIS_PBS)
 , grpconfDemo       # grpconf-demo stage: bin/bobapp, logfile, capture, beats/
-, grehackLife       # GreHack 2026 life-server, life-client, life-spy (spec 0375)
+, grehackLife       # GreHack 2026 life-server, life-client, life-tap (spec 0375)
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -177,14 +177,15 @@ in
       # which uses ctypes to access rl_add_funmap_entry and readline() directly
       # for proper multi-line buffer support.
       readline
-      # wireshark-cli — tshark and dumpcap, for the GreHack 2026 life spy
+      # wireshark-cli — tshark and dumpcap, for the GreHack 2026 life tap
       #   (spec 0375 S10). The store's dumpcap cannot capture; see the PATH
       #   note in _hook_env for the privileged one.
       wireshark-cli
-      # fortune — life-client runs it for the number 42 (spec 0383). The
-      #   client binary carries its own wrapped `fortune` (grehack2026/life/
-      #   default.nix), so this is for running `fortune` by hand in the shell,
-      #   and so `target/release/life-client` finds one when run unwrapped.
+      # fortune — a harmless command to send through the GreHack 2026
+      #   covert channel. The Nix-built client carries its own wrapped
+      #   `fortune` (grehack2026/game/default.nix), so this is for running
+      #   `fortune` by hand in the shell, and so `target/release/life-client`
+      #   finds one when run unwrapped.
       fortune
     ]) ++ [ buf grpconfDemo grehackLife ];
 

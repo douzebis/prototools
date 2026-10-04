@@ -16,6 +16,11 @@
 //! holds more than one file, so the life FDP is selected by name rather than
 //! by being the only entry. The client never pulls in the generated `log`
 //! module (spec 0386 G3), so it does not link the log types either.
+//!
+//! `descriptor.proto`'s FDP is written too, for the binaries to embed beside
+//! life's (spec 0388 S13): `reproto` wants `descriptor.proto` in its input
+//! set, so with it in the client, `reproto -I life-client` needs no
+//! `--use-variant descriptor`. It comes from protoc's own include directory.
 
 use prost::Message;
 use prost_types::FileDescriptorSet;
@@ -23,6 +28,7 @@ use std::{env, fs, path::PathBuf};
 
 const LIFE_PROTO: &str = "proto/grehack/life/v1/life.proto";
 const LOG_PROTO: &str = "proto/grehack/life/v1/log.proto";
+const DESCRIPTOR_PROTO: &str = "google/protobuf/descriptor.proto";
 
 fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
@@ -34,7 +40,7 @@ fn main() {
         // S2): the generated code builds this codec in place of the default
         // ProstCodec, in both the client and the server.
         .codec_path("crate::codec::TagReadingCodec")
-        .compile_protos(&[LIFE_PROTO, LOG_PROTO], &["proto"])
+        .compile_protos(&[LIFE_PROTO, LOG_PROTO, DESCRIPTOR_PROTO], &["proto"])
         .unwrap_or_else(|e| panic!("compiling the protos: {e}"));
 
     // Embed ONLY life.proto's FDP (spec 0386 S4, G4). The set compiled above
@@ -49,6 +55,14 @@ fn main() {
         .find(|f| f.name() == "grehack/life/v1/life.proto")
         .expect("life.proto is in the compiled descriptor set");
     fs::write(out.join("life.fdp"), life.encode_to_vec()).expect("writing life.fdp");
+
+    let descriptor = set
+        .file
+        .iter()
+        .find(|f| f.name() == DESCRIPTOR_PROTO)
+        .expect("descriptor.proto is in the compiled descriptor set");
+    fs::write(out.join("descriptor.fdp"), descriptor.encode_to_vec())
+        .expect("writing descriptor.fdp");
 
     println!("cargo::rerun-if-changed={LIFE_PROTO}");
     println!("cargo::rerun-if-changed={LOG_PROTO}");

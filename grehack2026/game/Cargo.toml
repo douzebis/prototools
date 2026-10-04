@@ -10,7 +10,7 @@
 # 0241 S1): cargo unifies features across a workspace, and tonic, hyper and
 # tokio appear nowhere else in it.  Its own Cargo.lock.
 #
-#   cargo build --release --manifest-path grehack2026/life/Cargo.toml
+#   cargo build --release --manifest-path grehack2026/game/Cargo.toml
 #
 # build.rs runs protoc (PROTOC, or protoc on PATH: the dev shell has it).
 
@@ -24,7 +24,7 @@ publish     = false
 
 [dependencies]
 clap         = { version = "4", features = ["derive"] }
-# life-spy: kill(2), chown's user ids, getuid, localtime_r.
+# life-tap: kill(2), chown's user ids, getuid, localtime_r.
 libc         = "0.2"
 bytes        = "1"
 # life-client reads the HTTP/2 error behind a failed step, to tell a

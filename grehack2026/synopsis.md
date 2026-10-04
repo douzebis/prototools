@@ -6,238 +6,102 @@ SPDX-License-Identifier: MIT
 
 # GreHack 2026 — demo synopsis
 
-Status: draft
+Running order for the live demo that follows the talk: what happens on screen, in which window, and the point each step makes. The teleprompt deck `grehack2026.sh` is the source of truth; this file follows it section by section. If the two disagree, the deck wins and this file is out of date.
 
-Running order for the live demo that follows the talk. Each step is what the presenter does on screen and the point it makes. Commands are the real invocations; a few depend on changes not yet made, flagged inline as **CHANGE-REQ-n** and collected at the end.
+The demo app is the crate in `game/`: a Game of Life client and server talking cleartext gRPC (`life-client`, `life-server`), plus a network tap (`life-tap`). The tools under the lens are `protoscan`, `reproto`, `prototext` and `protolens`.
 
-The demo app is `grehack2026/life`: a Game of Life client and server talking cleartext gRPC, with a network tap (`life-spy`). The tools under the lens are `prototext`, `protoscan`, `reproto`, and `protolens`.
+## Setup
 
-Paths below assume the capture directory is `capture/` and the reconstructed schema database is `life.desc` (with its `life/` stub beside it). Adjust to the workshop layout as needed.
+Three windows, all opened beforehand and already inside the repository's dev-shell (`nix-shell dev-shell.nix`), which puts the three `life-*` binaries and the prototools on the PATH:
 
-## Terminal layout
+| Window | Directory | Runs |
+|---|---|---|
+| Eve 👩 | `grehack2026/eve/` | `life-server`; its stdout shows what Eve's covert channel brings back |
+| Bob 🙂 | `grehack2026/bob/` | `life-client`, the Game of Life TUI |
+| Alice 🕵️ | `grehack2026/` | `teleprompt grehack2026.sh`, the control tower |
 
-The demo drives four terminals:
+The shell prompt names each window's directory, which tells the audience whose window is whose.
 
-1. **Eve's server** 👩 — `life-server` runs here; the audience watches its stdout/stderr (later, what it quietly reveals, and the log file it writes).
-2. **Bob's client** 🙂 — `life-client` runs here; the Game of Life TUI.
-3. **Spy** — `life-spy` runs here, capturing the gRPC frames to `capture/`. This is Alice's tap.
-4. **Alice's teleprompt (control tower)** 🕵️ — a `teleprompt`-driven window where most of the analysis commands are pre-provisioned. It paces the demo, shows section headers, and whenever something must be done in terminal 1, 2, or 3 it displays the hint for that action. All `prototext` / `protoscan` / `reproto` / `protolens` commands below run here unless a step says otherwise.
+The deck runs in Alice's window. The `#` lines are on-screen narration: teleprompt shows them in blue, and the audience reads them. Real commands run as written. Lines starting with 👉 say what to do in another window, with the exact keys or command. `header "…"` draws section banners, `view` / `view_textproto` page a file or a decoded protobuf, and `protolens --script beats/<name>` loads a reminder pane for the presenter. Those reminder panes do not drive protolens; the presenter quits it with `:q`.
 
-The teleprompt window follows the `grpconf2026/` conventions (see `grpconf2026/grpconf2026-20min.sh`): the pre-provisioned script is a bash script that `teleprompt` steps through; real commands run as written. The `#`-comment lines are **on-screen narration** — teleprompt displays them in blue, in the same window, so they are part of what the audience sees, not off-screen speaker notes. They are `\`-continued into blocks whose trailing `\` lands at display column 80. `teleprompt` supplies the built-in helpers used below — `header "…"` for section banners, and `view` / `view_textproto` for paging a file or a decoded protobuf. `protolens` steps can be scripted through `beats/<name>` files loaded with `--script`. As in the grpconf talk, downloaded inputs live under one directory and reconstructed artifacts under another, the latter wiped and repopulated by the demo's `.init`; name them to taste for the workshop (e.g. `capture/` for the spy's output, `life/` for the reproto stub).
+`grehack2026.init` runs when teleprompt starts:
+- It wipes what earlier runs generated: `capture/`, `life.desc`, `life/` and `eve/server.log`.
+- It copies the client binary to `grehack2026/life-client`, which is "the client binary Alice has". On a Nix PATH, `life-client` is a wrapper script, and the copy is the real binary behind it.
 
----
+The tap runs in Alice's window, in the foreground, as `sudo env PATH="$PATH" life-tap`. `sudo` asks for the password on stage. The tap prints one line per message, saves each message as `capture/NNNNNN-request.pb` / `-response.pb`, and stops on Ctrl-C. While it runs the deck waits, so the 👉 hints for the other windows come right before it.
 
-## 0. Intro
+Every capture starts the same way. Bob pauses the game (Space), the deck runs `rm -rf capture` and starts the tap, and Bob then plays single steps with `n`. A capture therefore always starts at `000001`, and the deck can name its files in advance. The two-second wait before the first `n` makes sure the client opens a new connection, which the tap sees from the start (`life-client --renew-every`, 2 s by default).
 
-- The subject is **dissecting protobuf** — the serialization format behind gRPC and the bulk of message/data-structure exchange in GCP-style infrastructure. It is everywhere, and on the wire it is opaque.
-- Goal of the demo: take an unknown protobuf stream and, with no cooperation from the endpoints, work out its structure, read it, and then notice what it is *not* telling us.
+## Why prototools
 
-### Cast
+- At S3NS we operate a Trusted Partner Cloud. Google ships us software update packages, and we audit each one before it reaches production.
+- Inside them, protobuf is everywhere: it is how Google's infrastructure serializes configuration, RPCs, logs and stored data. On the wire it is opaque.
+- So we built prototools, to dissect protobufs even when nobody hands us the schema. The demo is a made-up investigation; the tools and their features are real.
 
-- **Bob** 🙂 — the player. He runs the Game of Life client and thinks he is just playing.
-- **Eve** 👩 — the server administrator. Her server plays Life with Bob's client. (Keep an eye on her.)
-- **Alice** 🕵️ — the investigator. She has a network capture and the client binary, nothing else, and uses prototools to reconstruct what is really going on.
+## 0. The cast
 
-### The setup
+- **Bob** 🙂 plays the Game of Life, and **Eve** 👩 runs the server that computes each generation. In their windows, Eve starts `life-server` and Bob starts `life-client`. A diagram shows the two exchanging `StepRequest` / `StepResponse` over cleartext gRPC.
+- **Alice** 🕵️ taps the wire between them. She has the capture and the client binary, nothing else. A second diagram adds her window, where `life-tap` feeds `capture/*.pb` to prototools.
+- Goal: take an unknown protobuf stream and, with no help from either endpoint, work out its structure, read it, then notice what it is not telling us.
 
-Bob's client and Eve's server exchange Life steps over cleartext gRPC. Alice sits on the wire with a tap and reconstructs the traffic — she never touches either endpoint:
+## 1. On the wire
 
-```
-        ┌─────────────┐   StepRequest  / StepResponse   ┌─────────────┐
-        │   Bob 🙂    │ ───────────────────────────────▶ │   Eve 👩    │
-        │  life-client│ ◀─────────────────────────────── │  life-server│
-        └─────────────┘         cleartext gRPC           └─────────────┘
-                 │                                               
-                 │  frames mirrored to the tap                  
-                 ▼                                               
-          ┌─────────────┐        capture/*.pb        ┌──────────────┐
-          │  life-spy    │ ─────────────────────────▶ │  Alice 🕵️    │
-          │ (the tap)    │                            │  prototools  │
-          └─────────────┘                             └──────────────┘
-```
+- Capture: Bob pauses, the tap starts, Bob presses `n` three times, Ctrl-C stops the tap, and Bob resumes the game.
+- `hexdump -v -C capture/000001-request.pb`: opaque. Protobuf is self-describing only up to field numbers and wire types; reading values needs a schema, that is, a descriptor set and a root type.
+- `protoscan life-client`: the client carries its own schema. protoscan lists the embedded `FileDescriptorProto`s: the game's `grehack/life/v1/life.proto`, and the well-known `google/protobuf/descriptor.proto`. `--proto_out DIR` would extract them.
+- `reproto -I life-client --schema-db-out life.desc` turns those descriptors into a schema database. reproto needs `descriptor.proto` in its input set, and the client carries it, so no `--use-variant` is needed.
 
-So far, so ordinary: a game and someone watching the wire. Whether there is anything more to it is exactly what Alice is about to find out (step 2).
+## 1b. Schema DB
 
-## 1. Normal situation — reading the wire
+- `ls -lhd life.desc life/*`:
+  - `life.desc` is the descriptor set, the reusable schema DB;
+  - `life/hopcroft.rkyv` is the type-inference scoring graph;
+  - `life/proto/` holds the decompiled `.proto` sources;
+  - `life/index.rkyv` is the fast-access index.
+- `view life/proto/grehack/life/v1/life.proto`: a faithful `.proto` rebuilt from binary descriptors, with no access to the source. Everything reproto needed came from the binary.
+- `prototext --descriptor-set life.desc list-schemas capture/000001-response.pb` infers the capture's type by scoring it against the DB.
+- `protoc --decode=grehack.life.v1.StepRequest` on `000001-request.pb` works, but it is spartan.
+- `protolens --descriptor-set life.desc capture/000001-response.pb --script beats/capture` gives the better view: annotations, the inferred type, and the wire level one keystroke (`w`) away. On a field whose type is a named message or enum, `v` opens Neovim at that type's declaration in the reconstructed `.proto`. This works because of the `SourceCodeInfo` reproto synthesized, and the `life/proto/` stub beside `life.desc`. Schema recovery is not just a list of types: we go from a byte on the wire to the line of source that defines it, and back.
 
-- Eve's server (terminal 1) and Bob's client (terminal 2) are both running. On screen it is an ordinary Game of Life: the grid steps, nothing looks amiss.
-- Alice wants to see what actually goes over the wire.
-- Launch the network tap (terminal 3):
+## 2. Eve is spying
 
-  ```sh
-  life-spy            # captures the gRPC frames into capture/
-  ```
+- Claim: Eve's server is exfiltrating from Bob's client, and the server drives the channel. A whole command rides in one response, and the whole answer comes back in a later request; neither changes the decoded grid.
+- Capture:
+  1. Bob pauses, and the tap starts.
+  2. In her window, Eve types `whoami`. The server sends it once, in the next response.
+  3. Bob presses `n`: `000001-response.pb` carries `whoami`, and the client runs it.
+  4. Bob presses `n` again: `000002-request.pb` carries the output, which then shows up in Eve's window.
+  5. Ctrl-C stops the tap, and Bob resumes the game.
+- `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a decode that follows the schema shows nothing.
+- `protolens … capture/000002-request.pb --script beats/smuggle` flags the fields that do not sit the way the schema expects. At wire level (`w`), a VARINT is base-128, in little-endian 7-bit groups, and the high bit of each byte means "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, with the value unchanged.
+- Read across the fields, the bits group into bytes, and the bytes are ASCII. The request gives `experiment` followed by a newline: the reply is the command's output exactly, newline included. The response gives `whoami`. The deck and the beat show the bit table.
 
-- Look at one captured request as raw bytes (terminal 4):
+## 3. No schema
 
-  ```sh
-  hexdump -v -C capture/000050-request.pb
-  ```
+- Eve's server has been writing `eve/server.log` since she started it (`life-server` logs to `server.log` by default; `--no-log` turns that off). The deck does not say what the file is: the audience finds out.
+- `ls -lh eve/server.log`, then `protoc --decode_raw < eve/server.log`: protoc gives up on the whole file.
+- `protolens --descriptor-set life.desc eve/server.log --script beats/logfile` opens it, but no known root type matches, and the tail is flagged as truncated. That is the reveal: a protobuf after all, Eve's traffic log, cut off mid-field (by construction, spec 0386). Its type is not in the client, and the server does not embed its descriptor.
+- The heat cues still recognize the `Request` and `Response` substructures from their field shapes, and overrides pin those types to rebuild the record, truncated tail and all. The two types are shaped differently enough that the scoring does not confuse them.
 
-  → quite opaque. Protobuf is self-describing only up to field numbers and wire types; to read values we need the **schema** — a descriptor set and a root **type**.
-- Where would a schema come from? The client binary carries its own. Scan for embedded `FileDescriptorProto` blobs:
+## 4. Anomalies
 
-  ```sh
-  protoscan life-client            # lists the FDPs discovered in the binary
-  ```
+- `protolens --type google.protobuf.FileDescriptorSet anomalies.pb --script beats/anomalies` walks through one example of every encoding anomaly prototext reports, from bytes every parser accepts to bytes none can read.
+- `anomalies.pb` and `beats/anomalies` are copies of `grpconf2026/anomalies.pb` and `grpconf2026/anomalies.script`, kept here so the demo stands alone. The root type is `FileDescriptorSet`. The dev-shell's `PROTOTEXT_DESCRIPTOR_SET` supplies the well-known types.
 
-  → with no option, `protoscan` just lists the embedded `FileDescriptorProto`s it finds (here `grehack/life/v1/life.proto`); `--proto_out DIR` would extract them to disk. So there are FDPs in the client.
-- Extract them and build a schema database:
+## 5. Takeaways
 
-  ```sh
-  reproto --use-variant descriptor -I life-client --schema-db-out life.desc
-  ```
+1. Descriptors are usually hiding in the binary itself: protoscan finds them, and reproto gives the `.proto` back.
+2. A corpus can type a message it has never seen, piece by piece, because that message is built from messages it does know. That is what protolens's heat cues are for.
+3. What your decoder normalizes away is evidence: a shadowed value, a spurious continuation bit, a truncated tail. prototools surfaces it, all the way back to the original bytes.
 
-  (`-I`/`--desc-root` reads the binary as a blob of embedded descriptors; `--schema-db-out` writes the reusable DB and its `life/` proto stub.)
+Then a pointer to <https://github.com/ThalesGroup/prototools>.
 
-## 1b. What reproto produced — schema recovery
+## Specs behind the demo
 
-- Look at what `reproto` wrote beside `life.desc`. It does not just repack the descriptors, it **extracts, indexes, and decompiles** them — as the grpconf talk puts it. List the artifacts:
-
-  ```sh
-  ls -lhd life.desc life/*
-  # life.desc:          the extracted descriptor set (the reusable schema DB)
-  # life/hopcroft.rkyv: the type-inference scoring graph
-  # life/proto/:        all decompiled .proto source files
-  # life/index.rkyv:    the fast-access index
-  ```
-
-- Browse one decompiled `.proto` to show it reads like hand-written source:
-
-  ```sh
-  view life/proto/grehack/life/v1/life.proto
-  ```
-
-- Point out reproto's capabilities on screen:
-  - a faithful `.proto` rebuilt from binary `FileDescriptorProto`s — messages, enums, fields, nesting, packages — with no access to the original source;
-  - `--use-variant descriptor` substitutes the toolchain's own copy of the well-known `descriptor.proto` for whatever the binary embedded, so the imports resolve cleanly;
-  - the `hopcroft.rkyv` scoring graph is what lets `prototext`/`protolens` **infer** a blob's type against this DB (steps below);
-  - synthesized `SourceCodeInfo` (on by default for `--schema-db-out`), which is what later lets `protolens` jump straight to a type's declaration (see step 2b);
-  - the output doubles as a reusable **schema database** (`life.desc`) that every other tool here consumes.
-
-- Find the type of a capture by scoring it against the DB:
-
-  ```sh
-  prototext --descriptor-set life.desc list-schemas capture/000050-response.pb
-  ```
-
-- Decode it. First the baseline tool, to show it works but is spartan:
-
-  ```sh
-  protoc --descriptor_set_in=life.desc \
-         --decode=grehack.life.v1.StepRequest < capture/000050-request.pb \
-    | view_textproto
-  ```
-
-- Then the better view — more convenient, and it shows more (wire-level detail, scoring, navigation):
-
-  ```sh
-  protolens --descriptor-set life.desc capture/000050-response.pb
-  ```
-
-## 2. Smuggled traffic — Eve is spying
-
-- Claim: Eve's server is not an innocent Life server — it is exfiltrating from Bob's client. Demonstrate the capability: Eve types a command on her server, and the answer surfaces on her terminal (terminal 1) a few Life steps later, having been run on Bob's machine.
-
-  ```sh
-  whoami            # Eve smuggles this to Bob; Bob's answer `experiment` comes back
-  ```
-
-- The reveal: Eve 😈 is not just running a game server — she hides a second conversation inside the ordinary-looking Life messages, and it runs the *opposite* way to what you would expect — the server drives it:
-
-  ```
-     Eve 😈  ──  "whoami"  (hidden in the response tags)   ──▶  Bob 🙂
-     Eve 😈  ◀──  "experiment"  (hidden in the request tags) ──  Bob 🙂
-              every Life message carries one smuggled fragment,
-              steganographically, without changing the decoded grid
-  ```
-
-- Alice takes a fresh capture and looks at it with `protoc` → nothing surfaces: the smuggled payload is value-preserving, so a schema-faithful decode shows a perfectly ordinary message.
-- She looks again with `protolens` → **anomalies** show up: the rendering flags fields that do not sit the way the schema expects.
-- Zoom into an anomaly with `w` (wire level):
-  - explain what a **VARINT** is (base-128, little-endian groups, high bit = continuation);
-  - explain the **spurious continuation bit** — the trick that hides a bit per field without changing the decoded value.
-  - **CHANGE-REQ-1** — explaining the channel is hard because tags are hybrid (field number + wire type packed together). It would read far more simply if the smuggled bits rode **plain VARINT fields** rather than tags.
-- Alice reads the anomaly pattern across fields, reconstructs the hidden bits into bytes, and maps the bytes to ASCII. The smuggled text is lowercase ASCII, so this short table is enough on screen to turn bytes into letters:
-
-  ```
-  char  hex  dec  binary        char  hex  dec  binary        char  hex  dec  binary
-   a    61    97  01100001       j    6a   106  01101010       s    73   115  01110011
-   b    62    98  01100010       k    6b   107  01101011       t    74   116  01110100
-   c    63    99  01100011       l    6c   108  01101100       u    75   117  01110101
-   d    64   100  01100100       m    6d   109  01101101       v    76   118  01110110
-   e    65   101  01100101       n    6e   110  01101110       w    77   119  01110111
-   f    66   102  01100110       o    6f   111  01101111       x    78   120  01111000
-   g    67   103  01100111       p    70   112  01110000       y    79   121  01111001
-   h    68   104  01101000       q    71   113  01110001       z    7a   122  01111010
-   i    69   105  01101001       r    72   114  01110010
-  ```
-
-  Worked example — the request-side fragment decodes byte by byte to `experiment`:
-
-  ```
-  01100101 01111000 01110000 01100101 01110010 01101001 01101101 01100101 01101110 01110100
-     e        x        p        e        r        i        m        e        n        t
-  ```
-
-  and the response-side fragment to `whoami`:
-
-  ```
-  01110111 01101000 01101111 01100001 01101101 01101001
-     w        h        o        a        m        i
-  ```
-
-  The covert channel is now legible end to end: Eve asked `whoami`, Bob's machine answered `experiment`.
-  - **CHANGE-REQ-2** — the response-side smuggled message is currently prefixed with `fortune ` (and `42` is a factorize special case). Both are demo noise: drop the `fortune ` prefix and remove the `42`/factorize special case so the reconstructed bytes are exactly the payload.
-- Conclusion of the step: we understand the mechanism and can read both directions.
-
-## 2b. Jump to the definition — `v` in protolens
-
-- Still inside `protolens`, move the cursor onto a field whose type is a named message or enum, and press **`v`**.
-- `protolens` hands off to Neovim opened at that type's **declaration** in the reconstructed `.proto` source — made possible by the `SourceCodeInfo` reproto synthesized (step 1b) and the `proto/` stub it resolves against (`--proto-root`, or the `<stub>/proto/` beside `--descriptor-set`).
-- The point: schema recovery is not just a flat type list — we can navigate from a byte on the wire to the exact line of (reconstructed) source that defines it, and back.
-
-## 3. When we do not have a complete descriptor database
-
-- **CHANGE-REQ-3** — give the server a `--log-file` option. The log is itself a protobuf: a message with `repeated Request` and `repeated Response` fields. Write it in chunks that always **stop mid-field** (a deliberately truncated protobuf), and arrange that:
-  - the client does **not** have the descriptor for the log type, and
-  - the server is compiled **without** embedding its FDPs,
-  so the audience is in the realistic position of having a blob and no schema for it.
-- See that the server (terminal 1) produces a log file → what is it?
-- `protoc --decode_raw` chokes on it:
-
-  ```sh
-  protoc --decode_raw < server.log        # fails: the file is truncated
-  ```
-
-- `protolens` with only the client-derived DB opens it, but no known type matches:
-
-  ```sh
-  protolens --descriptor-set life.desc server.log
-  ```
-
-- Show the **heat cues** feature → `protolens` still recognizes the `Request` and `Response` substructures from their field shapes, and the **override** feature lets us pin those types and reconstruct the record even with a truncated tail and no matching root type.
-  - **CHANGE-REQ-4** — make `Request` and `Response` different enough that the scoring does not confuse the two.
-
-## 4. Bonus — the anomaly taxonomy
-
-- Show, quickly, the full taxonomy of anomalies `protolens` can surface:
-
-  ```sh
-  protolens --type google.protobuf.FileDescriptorSet \
-            ../../grpconf2026/anomalies.pb
-  ```
-
-## 5. Conclusion
-
-- Recap the arc: opaque bytes → schema recovered from the binary → read the wire → spot and reconstruct the covert channel → cope with no schema at all via heat cues and overrides.
-- Point to the tools on GitHub: the **ThalesGroup** prototools repository.
-
----
-
-## Pending changes to the demo (CHANGE-REQ)
-
-- **CHANGE-REQ-1** — smuggle through plain VARINT fields instead of tags, so the wire-level explanation is simpler.
-- **CHANGE-REQ-2** — drop the `fortune ` prefix on the response-side smuggled message and remove the `42`/factorize special case.
-- **CHANGE-REQ-3** — add `life-server --log-file`: a protobuf log of `repeated Request`/`repeated Response`, written in chunks that stop mid-field; the log type's descriptor is absent from the client and the server is built without embedding its FDPs.
-- **CHANGE-REQ-4** — make `Request` and `Response` distinct enough that `protolens` scoring does not confuse them.
+- `docs/specs/0375-a-game-of-life-to-spy-on.md`: the client, the server, and the tap (then called `life-spy`).
+- `docs/specs/0381-a-step-survives-the-connection-renewal.md`: connection renewal, and why a tap started late misses traffic.
+- `docs/specs/0384-smuggle-through-plain-varint-fields.md`: the covert channel rides plain VARINT values.
+- `docs/specs/0385-the-smuggled-payload-is-exactly-the-bytes.md`: the command and its output, exactly, with no prefix or special number.
+- `docs/specs/0386-the-server-writes-a-truncated-protobuf-log.md`: the server's traffic log (on by default since spec 0388 S14).
+- `docs/specs/0387-a-request-and-a-response-score-apart.md`: `Request` and `Response` score apart.
+- `docs/specs/0388-the-demo-runs-from-grehack2026.md`: this layout, the tap's rename, and the fixed captures.

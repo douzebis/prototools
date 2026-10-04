@@ -135,26 +135,36 @@ check "editor path, uid 4242" --user 4242:4242 <<<"$editor_check"
 
 # ── The game of life (spec 0375) ─────────────────────────────────────────────
 
-# Test plan 1: the schema is in the binaries, for protoscan to find.
-check "protoscan finds life.proto in the client and the server" <<'EOF'
+# Test plan 1: the schema is in the binaries, for protoscan to find: life.proto,
+# and descriptor.proto beside it for reproto (spec 0388 S13). The client is a
+# wrapProgram script (grehack2026/game/default.nix); its binary is the
+# .life-client-wrapped beside it.
+check "protoscan finds life.proto and descriptor.proto in the client and the server" <<'EOF'
 set -e
 for b in life-client life-server; do
-  found=$(protoscan "$(readlink -f "/bin/$b")")
-  [ "$found" = grehack/life/v1/life.proto ] || { echo "$b: $found"; exit 1; }
+  bin=$(readlink -f "/bin/$b")
+  wrapped="$(dirname "$bin")/.$b-wrapped"
+  [ -e "$wrapped" ] && bin=$wrapped
+  found=$(protoscan "$bin")
+  want="grehack/life/v1/life.proto
+google/protobuf/descriptor.proto"
+  [ "$found" = "$want" ] || { echo "$b: $found"; exit 1; }
 done
 EOF
 
-# Test plan 3: server, spy and a scripted client in the image. As root, as
-# the spy must be; the image's own default user runs the rest in practice.
-check "server, spy and client: every call saved, in pairs" --user 0 <<'EOF'
+# Test plan 3: server, tap and a scripted client in the image. As root and
+# with NET_RAW, as the tap must be (SETUP.md runs the container with
+# --cap-add NET_RAW: rootless Podman does not grant it by default, Docker
+# does); the image's own default user runs the rest in practice.
+check "server, tap and client: every call saved, in pairs" --user 0 --cap-add NET_RAW <<'EOF'
 set -e
 life-server 2>/tmp/server.log &
-life-spy --out /tmp/cap >/tmp/spy.log 2>&1 &
+life-tap --out /tmp/cap >/tmp/tap.log 2>&1 &
 sleep 3
 life-client --steps 20 --size 20x10 --pattern glider
-life-spy --out /tmp/cap --stop
-grep -q "20 requests and 20 responses saved, 0 messages missed" /tmp/spy.log \
-  || { tail -5 /tmp/spy.log; exit 1; }
+life-tap --out /tmp/cap --stop
+grep -q "20 requests and 20 responses saved, 0 messages missed" /tmp/tap.log \
+  || { tail -5 /tmp/tap.log; exit 1; }
 for n in $(seq -f %06g 1 20); do
   for d in request response; do
     prototext decode --raw "/tmp/cap/$n-$d.pb" >/dev/null
@@ -166,7 +176,8 @@ EOF
 # Test plan 8: nothing but the two binaries names the schema's package.
 check "only the binaries carry the schema" <<'EOF'
 set -e
-found=$(grep -rl grehack.life.v1 /nix/store | grep -v -e /bin/life-client -e /bin/life-server || true)
+found=$(grep -rl grehack.life.v1 /nix/store \
+  | grep -v -e /bin/life-client -e /bin/.life-client-wrapped -e /bin/life-server || true)
 [ -z "$found" ] || { printf '%s\n' "$found"; exit 1; }
 EOF
 
@@ -226,7 +237,7 @@ EOF
 # Spec 0386 (demo step 3): --log-file writes a protobuf traffic log that is
 # truncated on disk by construction, so a Ctrl-C always leaves a partial blob
 # that `protoc --decode_raw` cannot parse. The log type is absent from the
-# embedded descriptor (G4): protoscan surfaces only life.proto.
+# embedded descriptors (G4): protoscan surfaces life.proto, not log.proto.
 check "the server writes a truncated protobuf log (spec 0386)" --user 0 <<'EOF'
 set -e
 life-server --log-file /tmp/server.log </dev/null >/dev/null 2>/tmp/log.err &
@@ -263,17 +274,19 @@ kill %1 2>/dev/null || true
 [ "$rc" -eq 124 ] || { echo "the client exited $rc"; cat /tmp/renew.out; exit 1; }
 EOF
 
-# Spec 0381 test plan 6: a spy started after the client misses the traffic
+# Spec 0381 test plan 6: a tap started after the client misses the traffic
 # of the connection it did not see open, says so, then reads the next one
-# whole, which the client opens within 5 s (S7, S9).
-check "a late spy catches up (spec 0381)" --user 0 <<'EOF'
+# whole, which the client opens within 5 s (S7, S9). The period is pinned
+# rather than the default (2 s, spec 0388 S6), so the tap, started 1 s in,
+# surely misses some of the first connection.
+check "a late tap catches up (spec 0381)" --user 0 --cap-add NET_RAW <<'EOF'
 set -e
 life-server </dev/null >/dev/null 2>&1 &
-timeout 14 life-client --steps 100000000 --size 20x10 >/dev/null 2>&1 &
+timeout 14 life-client --renew-every 5 --steps 100000000 --size 20x10 >/dev/null 2>&1 &
 sleep 1
-life-spy --out /tmp/late >/tmp/late.log 2>&1 &
+life-tap --out /tmp/late >/tmp/late.log 2>&1 &
 sleep 11
-life-spy --out /tmp/late --stop
+life-tap --out /tmp/late --stop
 grep -q "life-client renews its connection every" /tmp/late.log \
   || { echo "no missed-messages note"; tail -5 /tmp/late.log; exit 1; }
 summary=$(grep "stopped:" /tmp/late.log)

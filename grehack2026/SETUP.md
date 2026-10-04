@@ -80,7 +80,7 @@ and with Docker **on Linux**, add `--user "$(id -u):$(id -g)"`, so that the
 files you write to `/work` are yours.
 
 `--name workshop` lets more terminals join the same container (section 4);
-`--cap-add NET_RAW` lets the spy capture traffic.
+`--cap-add NET_RAW` lets the tap capture traffic.
 
 You land in `/workshop`, which holds the workshop material. Your directory
 is at `/work`. Anything written elsewhere disappears when you leave the
@@ -88,7 +88,7 @@ container.
 
 ## 4. The game of life, in three terminals
 
-Client, server and spy each run in their own terminal, all in the same
+Client, server and tap each run in their own terminal, all in the same
 container. The first terminal is the one `run` gave you; open two more on
 your laptop:
 
@@ -96,20 +96,21 @@ your laptop:
 |---|---|---|
 | 1 | `life-client` | `life-client` |
 | 2 | `podman exec -it workshop bash`, then `life-server` | `docker exec -it workshop bash`, then `life-server` |
-| 3 | `podman exec -it workshop life-spy` | `docker exec -it -u 0 workshop life-spy` |
+| 3 | `podman exec -it workshop life-tap` | `docker exec -it -u 0 workshop life-tap` |
 
-Each stops with Ctrl-C. The spy prints the `dumpcap` and `tshark` commands
+Each stops with Ctrl-C. The server also writes a traffic log, `server.log`, in
+the directory it runs in (`--no-log` turns it off). The tap prints the `dumpcap` and `tshark` commands
 it runs, a line per message, and writes each message to `/work/capture` as
 a `.pb` file.
 
 **One window instead:** `tmux` is in the image. With Podman, run all three
-in panes. With Docker, panes cannot become root, so start the spy from the
+in panes. With Docker, panes cannot become root, so start the tap from the
 laptop and follow it in a pane:
 
 ```sh
-docker exec -d -u 0 workshop life-spy          # on the laptop
-tail -f /work/capture/spy.log                  # in a tmux pane
-docker exec -u 0 workshop life-spy --stop      # on the laptop, to stop it
+docker exec -d -u 0 workshop life-tap          # on the laptop
+tail -f /work/capture/tap.log                  # in a tmux pane
+docker exec -u 0 workshop life-tap --stop      # on the laptop, to stop it
 ```
 
 ## If it does not start
@@ -120,7 +121,7 @@ docker exec -u 0 workshop life-spy --stop      # on the laptop, to stop it
   to `docker pull` and `docker run` (from the USB key:
   `docker load -i prototools-workshop-amd64.tar`, then the same `docker run`).
   It is slower, but works.
-- **The spy says it cannot capture:** the container was started without
+- **The tap says it cannot capture:** the container was started without
   `--cap-add NET_RAW`; start it again with it.
 - **"permission denied" on the Docker socket (Linux):** see
   <https://docs.docker.com/engine/install/linux-postinstall/>, or use
