@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0391 — every log entry is a Capture
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-04
 App: grehack2026 (life-server, teleprompt deck, beats)
 Refs: docs/specs/0386-the-server-writes-a-truncated-protobuf-log.md (the
       log, its append-only framing and its always-truncated tail, all
@@ -176,4 +177,23 @@ when someone finally decodes it, and the demo's payloads are text. A
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-04 on the development machine.
+
+- Test plan 1–3: the server's 21 unit tests pass, including the three
+  log tests named above. Clippy and `cargo fmt --check` are clean.
+- Test plan 4: `smoke-test.sh` passes all 18 checks under rootless
+  Podman and under Docker 29.8, on an image built from this tree.
+- Test plan 5, release binaries, a 20×20 grid, `whoami` typed on the
+  server's stdin, 25 steps: `protoc --decode_raw` fails on the log;
+  `whoami` is in capture 2 (the response of step 1) and `experiment` in
+  capture 17 (a request capture), each once; and those two captures
+  are the only ones with non-canonical varints inside, 28 and 42. The
+  42 matches the `non_canonical: 42` prototext reported for the
+  captured request that carried `experiment`.
+- On an 8×6 grid, the reply came back as `experi`, in the log and on
+  the server's stdout alike. That is the covert channel's own capacity
+  limit (spec 0384 S4), not the log's.
+- The same run showed the reply is `experiment`, with no trailing
+  newline: the client trims the output's ends. Spec 0388 S9, the deck's
+  bit table and `beats/smuggle` had claimed an eleventh newline byte;
+  all three are corrected.

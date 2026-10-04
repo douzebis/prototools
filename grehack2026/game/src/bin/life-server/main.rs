@@ -43,9 +43,9 @@ struct Args {
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=100))]
     self_echo_percentage: u8,
 
-    /// Write a protobuf traffic log to this path (spec 0386). The log is
-    /// `repeated Request`/`repeated Response`; it is kept truncated on disk by
-    /// construction, so a Ctrl-C leaves a partial protobuf. On by default, in
+    /// Write a protobuf traffic log to this path (spec 0386). The log is a
+    /// `repeated Capture`, one per message (spec 0391); it is kept truncated on
+    /// disk by construction, so a Ctrl-C leaves a partial protobuf. On by default, in
     /// the working directory (spec 0388 S14).
     #[arg(long, default_value = "server.log")]
     log_file: String,
@@ -59,6 +59,25 @@ struct Args {
 /// `step` handler runs on several tokio workers; `None` means `--no-log`, so
 /// nothing is logged.
 static LOG: Mutex<Option<log::Log>> = Mutex::new(None);
+
+/// The latest request's bytes as received, kept by `decode_and_keep` for the
+/// log, which records the wire, not a re-encoding (spec 0391 S2b).
+static REQUEST_WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// What the log needs of the step whose response is about to be encoded
+/// (spec 0391 S2a): the request's wire bytes and generation, the response's
+/// generation, and the command output the request brought back. The handler
+/// leaves it here, and `encode_and_log` logs it once `tags::on_response` has
+/// picked the command the response smuggles and produced its wire bytes:
+/// tonic encodes a response only after the handler has returned. One slot
+/// suffices because the client has one call in flight at a time.
+struct PendingStep {
+    request_wire: Vec<u8>,
+    request_generation: u64,
+    response_generation: u64,
+    output: Vec<u8>,
+}
+static PENDING_STEP: Mutex<Option<PendingStep>> = Mutex::new(None);
 
 struct Service;
 
@@ -92,7 +111,7 @@ impl Life for Service {
                     grid: Some(engine::grid(&next)),
                     generation: request.generation + 1,
                 };
-                log_step(&request, &response, elapsed);
+                log_step(&request, &response);
                 Ok(Response::new(response))
             }
             Err(engine::Invalid(why)) => {
@@ -103,30 +122,50 @@ impl Life for Service {
     }
 }
 
-/// Append one step's `Request` and `Response` entries to the traffic log,
-/// unless `--no-log` (spec 0386 S2). The leaf shapes are spec 0387: each
-/// wraps its game message at field 1 and carries the distinguishing fields that
-/// let the scorer tell a `Request` from a `Response`. `command` is what the
-/// server smuggled this step; `output` is the command output a request brought
-/// back — both read from the channel's state (spec 0385).
-fn log_step(request: &StepRequest, response: &StepResponse, elapsed: Duration) {
-    let mut log = LOG.lock().unwrap();
-    let Some(log) = log.as_mut() else {
+/// Leave one step for `encode_and_log` to log, unless `--no-log` (spec 0391
+/// S2a). The request's wire bytes and `tags::last_output` are read now: both
+/// were set when this step's request was decoded.
+fn log_step(request: &StepRequest, response: &StepResponse) {
+    if LOG.lock().unwrap().is_none() {
         return; // --no-log: nothing is logged.
-    };
-    let request_entry = life::pb::log::Request {
-        step: Some(request.clone()),
-        command: String::from_utf8_lossy(&tags::last_command()).into_owned(),
-        generation: request.generation,
-    };
-    let response_entry = life::pb::log::Response {
-        step: Some(response.clone()),
-        latency_us: elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
-        output: tags::last_output(),
-    };
-    if let Err(e) = log.record(&request_entry, &response_entry) {
-        eprintln!("{} log write failed: {e}", clock());
     }
+    *PENDING_STEP.lock().unwrap() = Some(PendingStep {
+        request_wire: REQUEST_WIRE.lock().unwrap().clone(),
+        request_generation: request.generation,
+        response_generation: response.generation,
+        output: tags::last_output(),
+    });
+}
+
+/// The decode callback (spec 0377 S2, 0391 S2b): read the request's values
+/// (`tags::on_request`), and keep its bytes as received for the log.
+fn decode_and_keep(request: &[u8]) {
+    tags::on_request(request);
+    *REQUEST_WIRE.lock().unwrap() = request.to_vec();
+}
+
+/// The encode callback (spec 0385, 0391 S2a): smuggle this response's command
+/// (`tags::on_response`), then log the step it answers, now that the command
+/// it carries and the response's wire bytes are known — two captures, the
+/// request's then the response's, each embedding its message's wire bytes.
+fn encode_and_log(response: &[u8]) -> Vec<u8> {
+    let encoded = tags::on_response(response);
+    if let Some(step) = PENDING_STEP.lock().unwrap().take() {
+        let (request_capture, response_capture) = log::captures_for_step(
+            &step.request_wire,
+            step.request_generation,
+            &encoded,
+            step.response_generation,
+            &tags::last_command(),
+            &step.output,
+        );
+        if let Some(log) = LOG.lock().unwrap().as_mut() {
+            if let Err(e) = log.record(&request_capture, &response_capture) {
+                eprintln!("{} log write failed: {e}", clock());
+            }
+        }
+    }
+    encoded
 }
 
 /// UTC time of day, `HH:MM:SS.mmm`.
@@ -164,8 +203,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // output back in a later request's values, which is printed on stdout.
     // Under --verbose, each request's raw bit field goes to stdout too.
     tags::configure(args.verbose, args.self_echo_percentage);
-    life::codec::set_decode_callback(tags::on_request);
-    life::codec::set_encode_callback(tags::on_response);
+    life::codec::set_decode_callback(decode_and_keep);
+    life::codec::set_encode_callback(encode_and_log);
     tags::spawn_stdin_reader();
     // The traffic log (spec 0386 S1): open it now; a failure to open is fatal,
     // like a bad --listen.

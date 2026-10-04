@@ -162,11 +162,14 @@ the story Eve is the spy and the tap is Alice's tool for catching her.
   reply could slip to request 3; stepping by hand leaves it plenty of
   time. A whole command or reply fits in one message (spec 0384 S4).
 
-- **S9. The reply includes the trailing newline.** The server strips
-  the newline from what Eve types, so the command is exactly `whoami`.
-  The reply is the command's stdout exactly (spec 0385), which for
-  `whoami` is `experiment` plus a newline (`00001010`). The bit table in
-  the deck and in `beats/smuggle` shows that eleventh byte.
+- **S9. Neither payload carries a newline.** The server strips the
+  newline from what Eve types, so the command is exactly `whoami`. The
+  client trims the ends of the command's output before sending it back
+  (`life::tags::command_output`), so the reply is exactly `experiment`,
+  10 bytes. The bit tables in the deck and in `beats/smuggle` show 10.
+  (Corrected 2026-10-04, spec 0391: an earlier version of this item said
+  the reply kept `whoami`'s trailing newline. A logged run showed the
+  reply as `"experiment"`.)
 
 ### The rename
 

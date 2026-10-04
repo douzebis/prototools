@@ -53,20 +53,20 @@ static PENDING: Slot = Slot::new();
 /// value, for the single client of the demo (spec 0382 N4).
 static AWAITED: Slot = Slot::new();
 
-/// The command the server most recently smuggled, and the output it most
-/// recently recovered — kept for the traffic log (spec 0386/0387 fills the
-/// `Request.command` and `Response.output` fields from these). Not part of the
+/// The command the latest response smuggled, and the output the latest
+/// request brought back — each empty when that message hid nothing. Kept for
+/// the traffic log's `Capture.contraband` (spec 0391 S2). Not part of the
 /// channel protocol; purely what the log reads.
 static LAST_COMMAND: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static LAST_OUTPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-/// The command most recently smuggled to the client (spec 0387 `Request.command`).
+/// The command the latest response smuggled, or empty (spec 0391 S2).
 pub fn last_command() -> Vec<u8> {
     LAST_COMMAND.lock().unwrap().clone()
 }
 
-/// The command output most recently recovered from a request (spec 0387
-/// `Response.output`).
+/// The command output the latest request brought back, or empty (spec 0391
+/// S2).
 pub fn last_output() -> Vec<u8> {
     LAST_OUTPUT.lock().unwrap().clone()
 }
@@ -155,8 +155,10 @@ pub fn on_request(request: &[u8]) {
     // nothing to send. The awaited command is taken so a reply is reported
     // once.
     let message = bits.recover_message();
+    // Spec 0391 S2: every request resets it, so a request that hid nothing
+    // logs no contraband rather than the last reply again.
+    *LAST_OUTPUT.lock().unwrap() = life::tags::parse_command_output(&message).to_vec();
     if !message.is_empty() {
-        *LAST_OUTPUT.lock().unwrap() = life::tags::parse_command_output(&message).to_vec();
         let report = report_reply(AWAITED.take().is_some(), &message);
         report.emit();
     }

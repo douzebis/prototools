@@ -59,15 +59,13 @@ steps:
   - text: |
       Worked example — the request side:
 
-        01100101 01111000 01110000 ... 01101110 01110100 00001010
-           e        x        p     ...    n        t       \n    → experiment
+        01100101 01111000 01110000 ... 01101110 01110100
+           e        x        p     ...    n        t      → experiment
 
       and the response side:
 
         01110111 01101000 01101111 01100001 01101101 01101001
            w        h        o        a        m        i      → whoami
-
-      The reply is whoami's output exactly, trailing newline included.
 
       👋 Press space to step.
 

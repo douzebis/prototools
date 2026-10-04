@@ -2,14 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The `--log-file` traffic log (spec 0386): a protobuf of the requests and
-//! responses the server saw, appended entry by entry, and kept **truncated on
-//! disk by construction** so a Ctrl-C always leaves a partial protobuf.
+//! The `--log-file` traffic log (spec 0386): a protobuf of the messages the
+//! server saw, appended entry by entry, and kept **truncated on disk by
+//! construction** so a Ctrl-C always leaves a partial protobuf.
 //!
-//! The log message is `LogFile { repeated Request request = 1; repeated
-//! Response response = 2; }` (spec 0386 S2). Each step appends two entries — a
-//! `Request`, then a `Response` — each framed as `tag || length-prefix ||
-//! body`. Concatenated, the entries are a valid encoding of the growing
+//! The log message is `LogFile { repeated Capture capture = 42; }` (spec
+//! 0391). Each step appends two captures — the request's, then the
+//! response's — each framed as `tag || length-prefix || body`. Concatenated, the entries are a valid encoding of the growing
 //! `LogFile`; the server never re-encodes the whole message, it only appends
 //! (spec 0386 S3).
 //!
@@ -17,18 +16,15 @@
 //! complete tag + length prefix whose body is still **incomplete** — a
 //! truncated protobuf, guaranteed, so `protoc --decode_raw` always chokes.
 //! Each step flushes the previous step's held-back tail, then this step's
-//! `Request` in full and the `Response`'s tag + length + all but its last body
-//! byte, and holds that last byte in `carry`. On Ctrl-C the process dies with
+//! request capture in full and the response capture's tag + length + all but
+//! its last body byte, and holds that last byte in `carry`. On Ctrl-C the process dies with
 //! `carry` unwritten: dropping it *is* the truncation (no signal handler, no
 //! flush-on-exit).
 
-use life::pb::log::{Request, Response};
-use prost::Message;
 use std::io::Write;
 
-/// The LogFile field numbers (spec 0386 S2).
-const REQUEST_FIELD: u64 = 1;
-const RESPONSE_FIELD: u64 = 2;
+/// `LogFile.capture`'s field number (spec 0391 S1): a two-byte tag.
+const CAPTURE_FIELD: u64 = 42;
 /// Protobuf wire type 2 (length-delimited): a `repeated` message field.
 const WIRE_LEN: u64 = 2;
 
@@ -52,22 +48,21 @@ impl Log {
         })
     }
 
-    /// Append a `Request` and a `Response` entry for one step, keeping the
-    /// on-disk file truncated (spec 0386 S3). `request` is the `Request`
-    /// leaf, `response` the `Response` leaf (shaped by spec 0387); the field
-    /// numbers wrap them into the `LogFile`.
+    /// Append one step's two encoded captures (spec 0391 S2), keeping the
+    /// on-disk file truncated (spec 0386 S3). Both are framed at
+    /// `LogFile.capture`.
     ///
     /// The flush order each step: the previous step's held-back byte, then this
-    /// step's full `Request` entry, then the `Response` entry minus its last
+    /// step's full request capture, then the response capture minus its last
     /// body byte, which becomes the new `carry`.
-    pub fn record(&mut self, request: &Request, response: &Response) -> std::io::Result<()> {
-        let request_entry = framed_entry(REQUEST_FIELD, &request.encode_to_vec());
-        let response_entry = framed_entry(RESPONSE_FIELD, &response.encode_to_vec());
+    pub fn record(&mut self, request: &[u8], response: &[u8]) -> std::io::Result<()> {
+        let request_entry = framed_entry(CAPTURE_FIELD, request);
+        let response_entry = framed_entry(CAPTURE_FIELD, response);
 
-        // Write the previous carry, the whole Request entry, and the Response
-        // entry up to (but not including) its final body byte. The Response
-        // body is always at least one byte (its wrapped StepResponse is several
-        // bytes, spec 0387), so there is always a byte to hold back.
+        // Write the previous carry, the whole request capture, and the response
+        // capture up to (but not including) its final body byte. The response
+        // capture's body is always at least one byte (it wraps a StepResponse,
+        // spec 0391 S3), so there is always a byte to hold back.
         let (head, last) = response_entry.split_at(response_entry.len() - 1);
         let mut to_flush = std::mem::take(&mut self.carry);
         to_flush.extend_from_slice(&request_entry);
@@ -77,6 +72,56 @@ impl Log {
         self.carry = last.to_vec();
         Ok(())
     }
+}
+
+/// `Capture`'s field numbers (spec 0391 S1).
+const CAPTURE_REQUEST: u64 = 1;
+const CAPTURE_RESPONSE: u64 = 2;
+const CAPTURE_GENERATION: u64 = 3;
+const CAPTURE_CONTRABAND: u64 = 666;
+/// Protobuf wire type 0: a varint.
+const WIRE_VARINT: u64 = 0;
+
+/// One step's two captures, encoded (spec 0391 S2, S2b): the request's, then
+/// the response's. Each carries its own message, that message's generation,
+/// and what that message hid, if anything — the command `output` the request
+/// brought back, the `command` the response smuggled; empty means nothing was
+/// hidden, so `contraband` stays absent.
+///
+/// The messages are the bytes that crossed the wire, `request_wire` as
+/// received and `response_wire` as sent, embedded verbatim as the body of
+/// `Capture.request`/`Capture.response`. Re-encoding a decoded message would
+/// write it canonically and erase the covert channel's non-canonical
+/// varints; the log keeps them (S2b). Fields are written in field-number
+/// order, as an encoder of `Capture` would. The output is bytes and
+/// `contraband` a protobuf `string`, hence the lossy UTF-8 conversion.
+pub fn captures_for_step(
+    request_wire: &[u8],
+    request_generation: u64,
+    response_wire: &[u8],
+    response_generation: u64,
+    command: &[u8],
+    output: &[u8],
+) -> (Vec<u8>, Vec<u8>) {
+    let capture = |field: u64, wire: &[u8], generation: u64, hidden: &[u8]| {
+        let mut out = framed_entry(field, wire);
+        put_varint(&mut out, (CAPTURE_GENERATION << 3) | WIRE_VARINT);
+        put_varint(&mut out, generation);
+        if !hidden.is_empty() {
+            let text = String::from_utf8_lossy(hidden);
+            out.extend_from_slice(&framed_entry(CAPTURE_CONTRABAND, text.as_bytes()));
+        }
+        out
+    };
+    (
+        capture(CAPTURE_REQUEST, request_wire, request_generation, output),
+        capture(
+            CAPTURE_RESPONSE,
+            response_wire,
+            response_generation,
+            command,
+        ),
+    )
 }
 
 /// A length-delimited field entry: `tag || length-prefix || body`, where the
@@ -105,38 +150,54 @@ fn put_varint(out: &mut Vec<u8>, mut value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use life::pb::log::Capture;
+    use prost::Message;
 
-    /// A `Response` whose body is several bytes (a wrapped StepResponse plus
-    /// the distinguishing fields), the smallest realistic entry.
-    fn a_response() -> Response {
-        Response {
-            step: Some(life::pb::StepResponse {
-                grid: Some(life::pb::Grid {
-                    rows: vec![life::pb::Row {
-                        cells: vec![life::pb::CellState::Alive as i32],
-                    }],
-                }),
-                generation: 1,
+    fn a_request() -> life::pb::StepRequest {
+        life::pb::StepRequest {
+            grid: Some(life::pb::Grid {
+                rows: vec![life::pb::Row {
+                    cells: vec![life::pb::CellState::Alive as i32],
+                }],
             }),
-            latency_us: 42,
-            output: b"hi".to_vec(),
+            rules: None,
+            generation: 1,
         }
     }
 
-    fn a_request() -> Request {
-        Request {
-            step: Some(life::pb::StepRequest {
-                grid: Some(life::pb::Grid {
-                    rows: vec![life::pb::Row {
-                        cells: vec![life::pb::CellState::Alive as i32],
-                    }],
-                }),
-                rules: None,
-                generation: 1,
+    fn a_response() -> life::pb::StepResponse {
+        life::pb::StepResponse {
+            grid: Some(life::pb::Grid {
+                rows: vec![life::pb::Row {
+                    cells: vec![life::pb::CellState::Alive as i32],
+                }],
             }),
-            command: "whoami".to_string(),
-            generation: 1,
+            generation: 2,
         }
+    }
+
+    /// A step on which the server smuggled `whoami` and the request brought
+    /// back an earlier command's output, with canonical wire bytes.
+    fn a_step() -> (Vec<u8>, Vec<u8>) {
+        captures_for_step(
+            &a_request().encode_to_vec(),
+            1,
+            &a_response().encode_to_vec(),
+            2,
+            b"whoami",
+            b"experiment",
+        )
+    }
+
+    /// `a_request()`'s bytes with its `generation` (field 3, value 1) written
+    /// in two bytes, `0x81 0x00`, instead of one: legal, but not canonical,
+    /// like the covert channel's varints (spec 0384).
+    fn a_non_canonical_request_wire() -> Vec<u8> {
+        let canonical = a_request().encode_to_vec();
+        assert!(canonical.ends_with(&[0x18, 0x01]), "generation is last");
+        let mut wire = canonical[..canonical.len() - 1].to_vec();
+        wire.extend_from_slice(&[0x81, 0x00]);
+        wire
     }
 
     /// The bytes on disk after `steps` record calls (the carry stays off disk).
@@ -146,55 +207,57 @@ mod tests {
         let path = path.to_str().unwrap();
         let mut log = Log::create(path).unwrap();
         for _ in 0..steps {
-            log.record(&a_request(), &a_response()).unwrap();
+            let (request, response) = a_step();
+            log.record(&request, &response).unwrap();
         }
         let bytes = std::fs::read(path).unwrap();
         std::fs::remove_file(path).ok();
         bytes
     }
 
-    /// The (field number, wire type) pairs present in `bytes`, in order.
-    fn shape(bytes: &[u8]) -> Vec<(u64, u64)> {
-        let mut pairs = Vec::new();
-        let mut i = 0;
-        while i < bytes.len() {
-            let (tag, used) = read_varint(&bytes[i..]);
-            i += used;
-            let (field, wire) = (tag >> 3, tag & 0x7);
-            pairs.push((field, wire));
-            match wire {
-                0 => i += read_varint(&bytes[i..]).1, // varint
-                2 => {
-                    let (len, u) = read_varint(&bytes[i..]); // length-delimited
-                    i += u + len as usize;
-                }
-                5 => i += 4, // i32
-                1 => i += 8, // i64
-                _ => break,
-            }
-        }
-        pairs
+    /// Spec 0391 test plan 2 (S2): a request capture, then a response
+    /// capture; each decodes as a `Capture` holding its own message and
+    /// generation, and `contraband` holds only what that message hid.
+    #[test]
+    fn a_step_logs_a_request_capture_then_a_response_capture() {
+        let (request, response) = a_step();
+        let request = Capture::decode(&request[..]).unwrap();
+        let response = Capture::decode(&response[..]).unwrap();
+        assert_eq!(request.request, Some(a_request()));
+        assert_eq!(request.response, None);
+        assert_eq!(request.generation, Some(1));
+        assert_eq!(request.contraband.as_deref(), Some("experiment"));
+        assert_eq!(response.request, None);
+        assert_eq!(response.response, Some(a_response()));
+        assert_eq!(response.generation, Some(2));
+        assert_eq!(response.contraband.as_deref(), Some("whoami"));
+
+        // Nothing hidden: no contraband field at all, not an empty one.
+        let wire = a_request().encode_to_vec();
+        let (request, _) = captures_for_step(&wire, 1, &wire, 1, b"", b"");
+        assert_eq!(Capture::decode(&request[..]).unwrap().contraband, None);
+        // The output is bytes; a non-UTF-8 one is kept, lossily.
+        let (request, _) = captures_for_step(&wire, 1, &wire, 1, b"", b"\xff");
+        let request = Capture::decode(&request[..]).unwrap();
+        assert_eq!(request.contraband.as_deref(), Some("\u{fffd}"));
     }
 
-    /// Spec 0387 test plan 1 / G1: Request and Response have unequal
-    /// (field number, wire type) multisets — they differ at fields 2 and 3 —
-    /// so the scorer can tell them apart. The shared pair is only (1, LEN).
+    /// Spec 0391 test plan 2b (S2b): the message is embedded as the bytes
+    /// that crossed the wire. A non-canonical varint survives in the log,
+    /// where re-encoding the decoded message would have written it
+    /// canonically; and the capture still decodes under the schema.
     #[test]
-    fn request_and_response_have_different_field_shapes() {
-        // Populate every field so each is present on the wire.
-        let request = a_request();
-        let response = a_response();
-        let mut rq = shape(&request.encode_to_vec());
-        let mut rs = shape(&response.encode_to_vec());
-        rq.sort_unstable();
-        rs.sort_unstable();
-        // WIRE_LEN = 2 (length-delimited), 0 = varint.
-        assert_eq!(rq, vec![(1, 2), (2, 2), (3, 0)], "Request shape");
-        assert_eq!(rs, vec![(1, 2), (2, 0), (3, 2)], "Response shape");
-        assert_ne!(rq, rs, "the two shapes must differ (spec 0387 G1)");
-        // They share only (1, LEN); fields 2 and 3 each swap varint for LEN.
-        let shared: Vec<_> = rq.iter().filter(|p| rs.contains(p)).collect();
-        assert_eq!(shared, vec![&(1, 2)], "only field 1 is shared");
+    fn a_capture_keeps_the_wire_bytes_verbatim() {
+        let wire = a_non_canonical_request_wire();
+        assert_ne!(wire, a_request().encode_to_vec());
+        let (request, _) = captures_for_step(&wire, 1, b"", 2, b"", b"");
+        // tag (1<<3)|2 = 0x0a, one-byte length, then the body verbatim.
+        assert_eq!(request[0], 0x0a);
+        assert_eq!(usize::from(request[1]), wire.len());
+        assert_eq!(&request[2..2 + wire.len()], &wire[..]);
+        let decoded = Capture::decode(&request[..]).unwrap();
+        assert_eq!(decoded.request, Some(a_request()));
+        assert_eq!(decoded.generation, Some(1));
     }
 
     #[test]
@@ -209,17 +272,15 @@ mod tests {
 
     #[test]
     fn the_entry_is_tag_length_body() {
-        let entry = framed_entry(REQUEST_FIELD, b"abc");
-        // tag = (1<<3)|2 = 0x0a, length = 3, then the body.
-        assert_eq!(entry, [0x0a, 0x03, b'a', b'b', b'c']);
-        let entry = framed_entry(RESPONSE_FIELD, b"xy");
-        assert_eq!(entry, [0x12, 0x02, b'x', b'y']); // tag = (2<<3)|2 = 0x12
+        let entry = framed_entry(CAPTURE_FIELD, b"abc");
+        // tag = (42<<3)|2 = 338, a two-byte varint (0xd2 0x02); length = 3.
+        assert_eq!(entry, [0xd2, 0x02, 0x03, b'a', b'b', b'c']);
     }
 
     /// Spec 0386 G2/S3, test plan 2: after any number of steps, the on-disk
     /// bytes always end with a length prefix promising more body than follows,
     /// so `--decode_raw` would fail. The invariant check is structural: the
-    /// last Response entry on disk is short by exactly the held-back byte.
+    /// last response capture on disk is short by exactly the held-back byte.
     #[test]
     fn the_on_disk_file_is_always_a_truncated_protobuf() {
         for steps in [1usize, 2, 3, 10] {
@@ -233,7 +294,7 @@ mod tests {
                 "steps={steps}: the last body byte is held back"
             );
             assert_eq!(bytes, &full[..full.len() - 1], "steps={steps}");
-            // And the truncation falls inside the final Response's body: the
+            // And the truncation falls inside the final response capture: the
             // last entry's declared length exceeds the body bytes that follow.
             assert!(
                 last_entry_body_is_short(&bytes),
@@ -247,8 +308,9 @@ mod tests {
     fn full_stream(steps: usize) -> Vec<u8> {
         let mut out = Vec::new();
         for _ in 0..steps {
-            out.extend_from_slice(&framed_entry(REQUEST_FIELD, &a_request().encode_to_vec()));
-            out.extend_from_slice(&framed_entry(RESPONSE_FIELD, &a_response().encode_to_vec()));
+            let (request, response) = a_step();
+            out.extend_from_slice(&framed_entry(CAPTURE_FIELD, &request));
+            out.extend_from_slice(&framed_entry(CAPTURE_FIELD, &response));
         }
         out
     }
@@ -261,8 +323,8 @@ mod tests {
             if i >= bytes.len() {
                 return false; // ended cleanly on an entry boundary
             }
-            // tag (one byte for fields 1/2), then a length varint.
-            i += 1;
+            // tag (two bytes for field 42), then a length varint.
+            i += read_varint(&bytes[i..]).1;
             let (len, used) = read_varint(&bytes[i..]);
             i += used;
             let body_end = i + len as usize;

@@ -214,8 +214,8 @@ protolens --descriptor-set life.desc capture/000002-request.pb \
 # bytes, and the bytes map to lowercase ASCII:                                 \
 
 # \
-#   01100101 01111000 01110000 ... 01101110 01110100 00001010                  \
-#      e        x        p     ...    n        t        \n  → experiment       \
+#   01100101 01111000 01110000 ... 01101110 01110100                           \
+#      e        x        p     ...    n        t      → experiment             \
 #   01110111 01101000 01101111 01100001 01101101 01101001                      \
 #      w        h        o        a        m        i      → whoami            \
 
@@ -244,10 +244,13 @@ protolens --descriptor-set life.desc eve/server.log \
 # \
 # A protobuf after all: Eve's traffic log, cut off mid-field. protoc           \
 # rejects the whole file for its truncated tail; protolens reads up to it      \
-# and flags it. The log's own type is nowhere in the client, yet the heat      \
-# cues recognize the Request and Response substructures from their field       \
-# shapes, and overrides pin those types to rebuild the record — truncated      \
-# tail, no root type and all.                                                  \
+# and flags it. The log's own type is nowhere in the client, yet every         \
+# entry has the same shape: the heat cues recognize the game's StepRequest     \
+# and StepResponse inside, and overrides pin them.                             \
+
+# \
+# One field in each entry is in no schema we hold: 666, a string. Where it     \
+# is set, it reads "whoami" or "experiment". Eve logs her own contraband.      \
 
 
 clear && header "4. Anomalies"

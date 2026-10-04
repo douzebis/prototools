@@ -74,14 +74,15 @@ Every capture starts the same way. Bob pauses the game (Space), the deck runs `r
   5. Ctrl-C stops the tap, and Bob resumes the game.
 - `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a decode that follows the schema shows nothing.
 - `protolens … capture/000002-request.pb --script beats/smuggle` flags the fields that do not sit the way the schema expects. At wire level (`w`), a VARINT is base-128, in little-endian 7-bit groups, and the high bit of each byte means "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, with the value unchanged.
-- Read across the fields, the bits group into bytes, and the bytes are ASCII. The request gives `experiment` followed by a newline: the reply is the command's output exactly, newline included. The response gives `whoami`. The deck and the beat show the bit table.
+- Read across the fields, the bits group into bytes, and the bytes are ASCII. The request gives `experiment` (the client trims the output's ends, so no newline), and the response gives `whoami`. The deck and the beat show the bit table.
 
 ## 3. No schema
 
 - Eve's server has been writing `eve/server.log` since she started it (`life-server` logs to `server.log` by default; `--no-log` turns that off). The deck does not say what the file is: the audience finds out.
 - `ls -lh eve/server.log`, then `protoc --decode_raw < eve/server.log`: protoc gives up on the whole file.
 - `protolens --descriptor-set life.desc eve/server.log --script beats/logfile` opens it, but no known root type matches, and the tail is flagged as truncated. That is the reveal: a protobuf after all, Eve's traffic log, cut off mid-field (by construction, spec 0386). Its type is not in the client, and the server does not embed its descriptor.
-- The heat cues still recognize the `Request` and `Response` substructures from their field shapes, and overrides pin those types to rebuild the record, truncated tail and all. The two types are shaped differently enough that the scoring does not confuse them.
+- Every entry is the same field (42) and has the same shape: a `Capture` (spec 0391), one per message the server saw. Its type is in no schema we hold, but the heat cues recognize the game's own `StepRequest` or `StepResponse` inside each entry, and overrides pin those types to rebuild the record, truncated tail and all.
+- One field of each entry, 666, is a string no schema we hold declares. Where it is set, it reads `whoami` (in the entry of the response that smuggled it) or `experiment` (in the entry of the request that brought it back): Eve's log records her own contraband.
 
 ## 4. Anomalies
 
@@ -103,5 +104,6 @@ Then a pointer to <https://github.com/ThalesGroup/prototools>.
 - `docs/specs/0384-smuggle-through-plain-varint-fields.md`: the covert channel rides plain VARINT values.
 - `docs/specs/0385-the-smuggled-payload-is-exactly-the-bytes.md`: the command and its output, exactly, with no prefix or special number.
 - `docs/specs/0386-the-server-writes-a-truncated-protobuf-log.md`: the server's traffic log (on by default since spec 0388 S14).
-- `docs/specs/0387-a-request-and-a-response-score-apart.md`: `Request` and `Response` score apart.
+- `docs/specs/0387-a-request-and-a-response-score-apart.md`: the log's two old entry types, replaced by spec 0391.
 - `docs/specs/0388-the-demo-runs-from-grehack2026.md`: this layout, the tap's rename, and the fixed captures.
+- `docs/specs/0391-every-log-entry-is-a-capture.md`: one log entry type, `Capture`, with the contraband field.
