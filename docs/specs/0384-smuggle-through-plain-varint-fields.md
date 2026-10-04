@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0384 — smuggle through plain VARINT fields
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-03
 App: grehack2026 (life-server, life-client), prototext-core
 Refs: docs/specs/0377-the-server-reads-the-tags-as-sent.md (the covert
       channel this replaces: the BitField, the terminator framing,
@@ -79,11 +80,36 @@ explanation is one idea, not three.
 ## Specification
 
 - **S1. The in-scope record is a VARINT field.** `in_scope` (0377 S3)
-  gains a wire-type test: a field record is in scope only when its
-  annotation says the wire type is VARINT. The field-tag and
-  packed-continuation rules are unchanged; a VARINT record is never a
-  packed continuation in a life message (`cells` is unpacked, 0377 S1).
-  The walk order stays depth-first render order.
+  gains a wire-type test: a field record is in scope only when it is a
+  VARINT on the wire. The field-tag and packed-continuation rules are
+  unchanged; a VARINT record is never a packed continuation in a life
+  message (`cells` is unpacked, 0377 S1). The walk order stays
+  depth-first render order.
+
+  **How the test reads the wire type.** The annotation does *not* print a
+  literal `VARINT` token for a *known* schema field: a known field renders
+  as its field declaration (`generation: 5  #@ uint64 = 3`), where the
+  wire type is implied by the schema type word, not spelled out. (The
+  literal `wire_type` token — `varint`, `bytes`, … — appears only on
+  *unknown*/raw-wire/type-mismatch lines, which a life message does not
+  produce.) So the test maps the rendered type word to its wire type: the
+  VARINT scalar type words — `int32`, `int64`, `uint32`, `uint64`,
+  `sint32`, `sint64`, `bool`, and an enum (rendered as its enum type
+  name, e.g. `CellState`) — are in scope; the length-delimited words
+  (`string`, `bytes`, a nested message name like `Grid`/`Row`/`Rules`/
+  `Range`) and the fixed-width words (`fixed32`/`sfixed32`/`float`,
+  `fixed64`/`sfixed64`/`double`) are out. In a life message the in-scope
+  set is exactly `cells` (the `CellState` enum), `generation` (`uint64`),
+  and the `Range` scalars `min`/`max` (`uint32`); the message headers
+  (`Grid`, `Row`, `Rules`, `Range`) are length-delimited and out.
+  (`Topology`, an enum, would be in scope if a `Rules` carried a
+  non-default `topology`, but the demo's rules leave it at the default, so
+  it does not render as a field record.) Confirm at implementation that
+  the enum case is caught — a `CellState` line renders with the enum type
+  name, not a `uint*` word, so the test must treat a known enum field as
+  VARINT (it is, on the wire). An over-narrow test that matched only the
+  `uint*`/`int*`/`bool` words would drop every `cells` bit, which is most
+  of the carrier.
 
 - **S2. The bit is `val_ohb`, not `tag_ohb`.** `read_tags` reads
   `val_ohb` off each in-scope line instead of `tag_ohb`; `encode_tags`
@@ -153,4 +179,26 @@ to a schema-faithful decoder.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-03.
+
+- `life::tags` now carries the channel on VARINT field **values**:
+  `read_values`/`encode_values` read and write `val_ohb` (the value
+  analogue of `tag_ohb`); `has_tag_ohb` became `has_val_ohb`. The tag
+  carrier (`read_tags`/`encode_tags`) is gone (N2).
+- `in_scope` gained `is_varint_field`, which maps the rendered schema type
+  word to its wire type: VARINT scalars (`int32`…`bool`) and enums (named
+  types rendered with a `(value)` suffix, e.g. `CellState(1)`) are in
+  scope; message headers (a bare named type, no `(value)`), `string`,
+  `bytes`, and the fixed-width scalars are out. Confirmed against the real
+  render: a 1×2 request has 7 in-scope records (two `cells`, four `Range`
+  scalars, `generation`) — the `Grid`/`Row`/`Rules` headers are out.
+- `val_ohb` round-trips through `render_as_bytes` as N3 required (verified:
+  it is parsed in `encode_annotation.rs` and written by `write_varint_ohb`
+  in `fields.rs`), so no annotation gap needed fixing.
+- End to end: the server smuggles `whoami`, the client runs it, the output
+  rides back, and the server prints `experiment` — exactly the payload.
+- A pre-existing latent bug surfaced and was fixed (see [[0385]] measured
+  outcome): the client's `start` abandoned the in-flight worker on the
+  empty command the server sends every idle step, wiping the one reply
+  before a request could carry it. `start` now treats an empty command as
+  a no-op.

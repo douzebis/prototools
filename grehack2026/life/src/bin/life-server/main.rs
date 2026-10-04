@@ -6,12 +6,14 @@
 //! over cleartext gRPC (spec 0375 S4).
 
 mod engine;
+mod log;
 mod tags;
 
 use clap::Parser;
 use life::pb::life_server::{Life, LifeServer};
 use life::pb::{StepRequest, StepResponse};
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -35,12 +37,23 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Percentage chance, 0 to 100, that a response carries a random number
-    /// for the client to factor, when none was typed on stdin and none is
-    /// awaiting its factors.
+    /// Percentage chance, 0 to 100, that a response smuggles a command for
+    /// the client to run, when none was typed on stdin and none is awaiting
+    /// its output.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=100))]
     self_echo_percentage: u8,
+
+    /// Write a protobuf traffic log to this path (spec 0386). The log is
+    /// `repeated Request`/`repeated Response`; it is kept truncated on disk by
+    /// construction, so a Ctrl-C leaves a partial protobuf. Off by default.
+    #[arg(long)]
+    log_file: Option<String>,
 }
+
+/// The traffic log, when `--log-file` is set (spec 0386). Behind a `Mutex`
+/// because the `step` handler runs on several tokio workers; `None` means no
+/// `--log-file`, so nothing is logged (spec 0386 N2).
+static LOG: Mutex<Option<log::Log>> = Mutex::new(None);
 
 struct Service;
 
@@ -58,6 +71,7 @@ impl Life for Service {
         });
         match answer {
             Ok((next, cells)) => {
+                let elapsed = started.elapsed();
                 // Per request, so only under --verbose (spec 0379 S7).
                 if tags::verbose() {
                     eprintln!(
@@ -66,19 +80,47 @@ impl Life for Service {
                         cells.first().map_or(0, Vec::len),
                         cells.len(),
                         request.generation,
-                        started.elapsed().as_micros()
+                        elapsed.as_micros()
                     );
                 }
-                Ok(Response::new(StepResponse {
+                let response = StepResponse {
                     grid: Some(engine::grid(&next)),
                     generation: request.generation + 1,
-                }))
+                };
+                log_step(&request, &response, elapsed);
+                Ok(Response::new(response))
             }
             Err(engine::Invalid(why)) => {
                 eprintln!("{} {peer} refused: {why}", clock());
                 Err(Status::invalid_argument(why))
             }
         }
+    }
+}
+
+/// Append one step's `Request` and `Response` entries to the traffic log, when
+/// `--log-file` is set (spec 0386 S2). The leaf shapes are spec 0387: each
+/// wraps its game message at field 1 and carries the distinguishing fields that
+/// let the scorer tell a `Request` from a `Response`. `command` is what the
+/// server smuggled this step; `output` is the command output a request brought
+/// back — both read from the channel's state (spec 0385).
+fn log_step(request: &StepRequest, response: &StepResponse, elapsed: Duration) {
+    let mut log = LOG.lock().unwrap();
+    let Some(log) = log.as_mut() else {
+        return; // no --log-file: nothing is logged (spec 0386 N2).
+    };
+    let request_entry = life::pb::log::Request {
+        step: Some(request.clone()),
+        command: String::from_utf8_lossy(&tags::last_command()).into_owned(),
+        generation: request.generation,
+    };
+    let response_entry = life::pb::log::Response {
+        step: Some(response.clone()),
+        latency_us: elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
+        output: tags::last_output(),
+    };
+    if let Err(e) = log.record(&request_entry, &response_entry) {
+        eprintln!("{} log write failed: {e}", clock());
     }
 }
 
@@ -111,16 +153,23 @@ async fn shutdown() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // The factoring exchange (spec 0382): send the number the operator types
-    // on stdin, or else maybe a random one, in the next response's tags as
-    // "factor <N>"; the client factors it in the background and sends the
-    // factors back in a later request's tags, which are checked and printed
-    // on stdout. Under --verbose, each request's raw bit field goes to stdout
-    // too.
+    // The smuggled command channel (specs 0384, 0385): send the command the
+    // operator types on stdin, or else maybe a spontaneous one, in the next
+    // response's values; the client runs it in the background and sends its
+    // output back in a later request's values, which is printed on stdout.
+    // Under --verbose, each request's raw bit field goes to stdout too.
     tags::configure(args.verbose, args.self_echo_percentage);
     life::codec::set_decode_callback(tags::on_request);
     life::codec::set_encode_callback(tags::on_response);
     tags::spawn_stdin_reader();
+    // The traffic log (spec 0386 S1): open it now; a failure to open is fatal,
+    // like a bad --listen.
+    if let Some(path) = &args.log_file {
+        let opened = log::Log::create(path)
+            .map_err(|e| format!("could not open the log file {path:?}: {e}"))?;
+        *LOG.lock().unwrap() = Some(opened);
+        eprintln!("{} logging traffic to {path}", clock());
+    }
     let renewal = args.max_connection_age.map_or(String::new(), |s| {
         format!(" (connections renewed every {s} s)")
     });

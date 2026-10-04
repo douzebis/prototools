@@ -2,21 +2,27 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The tag channel of spec 0377: the client hides a bit field in a request's
-//! field tags (canonical or not), and the server reads it back.
+//! The value channel of spec 0384 (replacing the tag channel of spec 0377):
+//! the client hides a bit field in a request's VARINT field *values*
+//! (canonical, or padded with one redundant continuation byte), and the
+//! server reads it back.
 //!
 //! Both sides go through the prototext text render, so the library is the one
-//! source of truth for which rendered lines are field records (S3) and how a
-//! tag's canonicity shows (`tag_ohb`). The client appends `; tag_ohb: 1` to
-//! the lines a set bit selects and re-encodes (S6); the server reads which
-//! lines carry `tag_ohb` (S3). A terminator `1` bit frames a message inside
-//! the bit field (S3a).
+//! source of truth for which rendered lines are in-scope field records (0384
+//! S1) and how a value's non-canonicity shows (`val_ohb`). The client appends
+//! `; val_ohb: 1` to the lines a set bit selects and re-encodes (0384 S2); the
+//! server reads which lines carry `val_ohb`. A terminator `1` bit frames a
+//! message inside the bit field (0377 S3a).
+//!
+//! Only VARINT field records carry a bit (0384 S1): in a life message those
+//! are `cells` (a `CellState` enum), `generation`, and the `Range` scalars.
+//! The length-delimited headers (`Grid`/`Row`/`Rules`) are skipped.
 
 use prototext_core::{
     parse_schema, render_as_bytes, render_as_text, MessageDescriptor, ParsedSchema, RenderOpts,
 };
 
-/// The two message roots the tag channel reads and writes: requests, from the
+/// The two message roots the value channel reads and writes: requests, from the
 /// server's decode and the client's encode; responses, the other way round
 /// (spec 0379 S1).
 pub const REQUEST: &str = "grehack.life.v1.StepRequest";
@@ -144,9 +150,9 @@ fn opts() -> RenderOpts {
     }
 }
 
-/// One bit per field record in `message` (a `root` message), in render order:
-/// 1 when the field's tag was non-canonical (spec 0377 S3).
-pub fn read_tags(message: &[u8], root: &str) -> BitField {
+/// One bit per in-scope VARINT field record in `message` (a `root` message),
+/// in render order: 1 when the field's value was non-canonical (spec 0384 S2).
+pub fn read_values(message: &[u8], root: &str) -> BitField {
     let text = render_as_text(message, root_descriptor(root).as_ref(), opts())
         .expect("a received message renders");
     let text = String::from_utf8(text).expect("prototext renders UTF-8");
@@ -154,16 +160,17 @@ pub fn read_tags(message: &[u8], root: &str) -> BitField {
     let mut bits = BitField::new();
     for line in text.lines() {
         if let Some(annotation) = in_scope(line) {
-            bits.push(has_tag_ohb(annotation));
+            bits.push(has_val_ohb(annotation));
         }
     }
     bits
 }
 
-/// `message` (a `root` message) re-encoded so field record *i*'s tag is
-/// non-canonical when `bits.bit(i)` is set (spec 0377 S6). Bits past the
-/// field-record count are dropped (N5). Returns the modified wire bytes.
-pub fn encode_tags(message: &[u8], bits: &BitField, root: &str) -> Vec<u8> {
+/// `message` (a `root` message) re-encoded so in-scope VARINT record *i*'s
+/// value is non-canonical when `bits.bit(i)` is set (spec 0384 S2). Bits past
+/// the in-scope-record count are dropped (0377 N5). Returns the modified wire
+/// bytes; the decoded message is unchanged (0384 S3).
+pub fn encode_values(message: &[u8], bits: &BitField, root: &str) -> Vec<u8> {
     let text = render_as_text(message, root_descriptor(root).as_ref(), opts())
         .expect("the message renders");
     let text = String::from_utf8(text).expect("prototext renders UTF-8");
@@ -172,9 +179,9 @@ pub fn encode_tags(message: &[u8], bits: &BitField, root: &str) -> Vec<u8> {
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         if in_scope(line).is_some() {
-            if bits.bit(field) && !line.contains("tag_ohb") {
+            if bits.bit(field) && !line.contains("val_ohb") {
                 out.push_str(line);
-                out.push_str("; tag_ohb: 1");
+                out.push_str("; val_ohb: 1");
             } else {
                 out.push_str(line);
             }
@@ -193,9 +200,9 @@ pub fn encode_tags(message: &[u8], bits: &BitField, root: &str) -> Vec<u8> {
     .into_owned()
 }
 
-/// The `#@` annotation of a line that is a field record, or `None` for a line
-/// that is not one (spec 0377 S3): a `}`, the header, a blank line, a
-/// malformed record, or a packed continuation.
+/// The `#@` annotation of a line that is an in-scope VARINT field record, or
+/// `None` for a line that is not one (spec 0384 S1): a `}`, the header, a blank
+/// line, a malformed record, a packed continuation, or a non-VARINT field.
 fn in_scope(line: &str) -> Option<&str> {
     let annotation = line.split_once("#@")?.1;
     if !has_field_tag(annotation) {
@@ -203,11 +210,57 @@ fn in_scope(line: &str) -> Option<&str> {
     }
     // A packed record's first line shows pack_size and is in scope; its later
     // element lines carry [packed=true] without pack_size and are values under
-    // a tag already counted (spec 0377 N2).
+    // a tag already counted (spec 0377 N2). (A life message has no packed
+    // VARINT field — `cells` is unpacked, 0377 S1 — but the rule is kept.)
     if annotation.contains("[packed=true]") && !annotation.contains("pack_size") {
         return None;
     }
+    // Only VARINT fields carry a bit now (spec 0384 S1). The value channel
+    // rides value varints, so a length-delimited or fixed-width field is out.
+    if !is_varint_field(annotation) {
+        return None;
+    }
     Some(annotation)
+}
+
+/// Whether a known field's annotation names a VARINT wire type (spec 0384 S1).
+///
+/// A known field renders its type in the annotation, before the ` = <num>`
+/// field tag; the wire type is implied by that type, not spelled out (the
+/// literal `varint`/`bytes` token appears only on unknown/raw-wire/mismatch
+/// lines, which a life message does not produce). The rendered forms:
+///
+/// - a scalar is a lowercase keyword: `uint64 = 3`, `uint32 = 1`;
+/// - an **enum** is its type name with the value in parens: `CellState(1) = 1`,
+///   `repeated CellState(0) = 1` — VARINT on the wire;
+/// - a **nested message / group** header is its bare type name, no parens:
+///   `Grid = 1`, `repeated Row = 1`, `Range = 2` — length-delimited.
+///
+/// So the VARINT scalars and any enum (a named type with a `(value)` suffix)
+/// are in scope; the length-delimited (`string`, `bytes`, a bare message name)
+/// and fixed-width (`fixed*`/`sfixed*`/`float`/`double`) are out.
+fn is_varint_field(annotation: &str) -> bool {
+    // The declaration is everything before the ` = <num>` field tag. A trailing
+    // field option like `[packed=true]` sits between the type and the ` = `, so
+    // drop it; the type word is then the last whitespace-separated token.
+    let Some((decl, _)) = annotation.split_once(" = ") else {
+        return false;
+    };
+    let decl = decl.split('[').next().unwrap_or(decl);
+    let Some(type_word) = decl.split_whitespace().next_back() else {
+        return false;
+    };
+    match type_word {
+        // Explicit VARINT scalars.
+        "int32" | "int64" | "uint32" | "uint64" | "sint32" | "sint64" | "bool" => true,
+        // Length-delimited and fixed-width scalars are not VARINT.
+        "string" | "bytes" | "double" | "float" | "fixed32" | "fixed64" | "sfixed32"
+        | "sfixed64" => false,
+        // A named type: an enum renders with a `(value)` suffix and is VARINT;
+        // a bare message/group name is length-delimited. `group` itself (an
+        // unknown-group marker) is not a VARINT value field.
+        other => other != "group" && other.ends_with(')'),
+    }
 }
 
 /// Whether the annotation carries a `= <number>` field tag. Guards against a
@@ -222,71 +275,31 @@ fn has_field_tag(annotation: &str) -> bool {
     })
 }
 
-/// Whether the annotation reports tag overhang (spec 0377 N3: only the tag,
-/// not `val_ohb`, `len_ohb` or the per-element `ohb`).
-fn has_tag_ohb(annotation: &str) -> bool {
+/// Whether the annotation reports value overhang (spec 0384 S2: the value
+/// varint carries one redundant continuation byte, `val_ohb`). Only `val_ohb`
+/// counts, not `tag_ohb`, `len_ohb`, `etag_ohb` or the per-element `ohb`.
+fn has_val_ohb(annotation: &str) -> bool {
     annotation
         .split(';')
-        .any(|m| m.trim().starts_with("tag_ohb"))
+        .any(|m| m.trim().starts_with("val_ohb"))
 }
 
-// ── The factoring exchange (spec 0382) ───────────────────────────────────────
+// ── The smuggled command channel (specs 0382, 0383, 0385) ─────────────────────
 
-/// The server's half, as sent on the wire: the operator's bytes verbatim,
-/// no wrapper. Nominally `"factor <N>"` (spec 0382 S1, S2), but the grehack
-/// demo drops the prefix and sends the bytes as-is, so the client runs them
-/// directly (the smuggled channel).
-pub fn factor_request(digits: &[u8]) -> Vec<u8> {
-    digits.to_vec()
+/// The server's half, as sent on the wire: the operator's command bytes
+/// verbatim, no wrapper (spec 0385 G1). The client runs them directly (the
+/// smuggled channel).
+pub fn command_message(command: &[u8]) -> Vec<u8> {
+    command.to_vec()
 }
 
-/// The client's half: `"factors <f>*<f>*…"`, each `<f>` a prime `p` or
-/// `p^e` (e ≥ 2), primes ascending, no spaces (spec 0382 S1).
-pub fn factors_reply(factors: &[(u128, u32)]) -> String {
-    format!("factors {}", render_factors(factors, "*"))
-}
-
-/// The factors as `2^3<sep>3^2<sep>5`: the reply uses `*`, the server's
-/// display ` * ` (spec 0382 S4).
-pub fn render_factors(factors: &[(u128, u32)], sep: &str) -> String {
-    factors
-        .iter()
-        .map(|&(p, e)| {
-            if e == 1 {
-                p.to_string()
-            } else {
-                format!("{p}^{e}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(sep)
-}
-
-/// The factors a `"factors …"` message carries, in the order sent, or `None`
-/// for anything malformed (spec 0382 S1). Whether they are prime, ascending
-/// and multiply to the awaited N is the server's check (S4), not the parse's.
-pub fn parse_factors_reply(message: &[u8]) -> Option<Vec<(u128, u32)>> {
-    let list = std::str::from_utf8(message)
-        .ok()?
-        .strip_prefix("factors ")?;
-    list.split('*')
-        .map(|f| match f.split_once('^') {
-            None => Some((canonical(f)?, 1)),
-            Some((p, e)) => {
-                let e = u32::try_from(canonical(e)?).ok()?;
-                (e >= 2).then_some((canonical(p)?, e))
-            }
-        })
-        .collect()
-}
-
-/// The client's half for the special number 42 (spec 0383): `"fortune <text>"`,
-/// where `<text>` is the fortune the client ran. Newlines are kept, so the
-/// server displays the fortune on several lines; the other control bytes
-/// (tabs, a stray carriage return) become spaces, and the ends are trimmed.
-/// The server prints it rather than checking a factorization.
-pub fn fortune_reply(text: &[u8]) -> Vec<u8> {
-    let kept: Vec<u8> = text
+/// The client's half: the command's output bytes, exactly (spec 0385 S1, G1).
+/// No prefix is added. Newlines are kept, so the server displays several
+/// lines; the other control bytes (tabs, a stray carriage return) become
+/// spaces, and the ends are trimmed (spec 0383 S1, kept: it truncates text,
+/// not structure). The empty output is the empty payload.
+pub fn command_output(output: &[u8]) -> Vec<u8> {
+    let kept: Vec<u8> = output
         .iter()
         .map(|&b| {
             if b != b'\n' && b.is_ascii_control() {
@@ -296,22 +309,16 @@ pub fn fortune_reply(text: &[u8]) -> Vec<u8> {
             }
         })
         .collect();
-    [b"fortune ".as_slice(), kept.trim_ascii()].concat()
+    kept.trim_ascii().to_vec()
 }
 
-/// The fortune a `"fortune <text>"` message carries, or `None` for anything
-/// else (spec 0383). The text is returned as sent, newlines and all. An
-/// empty text is accepted: `"fortune "` yields an empty slice.
-pub fn parse_fortune_reply(message: &[u8]) -> Option<&[u8]> {
-    message.strip_prefix(b"fortune ")
-}
-
-/// A canonical decimal: ASCII digits, no leading zero (but `0` itself), no
-/// sign, at most `u128::MAX`.
-fn canonical(s: &str) -> Option<u128> {
-    let ok =
-        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
-    ok.then(|| s.parse().ok()).flatten()
+/// The command output a reply message carries (spec 0385 S1): the bytes as
+/// sent, which — with no prefix or framing word — are exactly the payload.
+/// A reply is just its bytes, so this is the identity; it exists so callers
+/// read the intent (`parse_command_output`) rather than touching the bytes
+/// raw, and so a future framing change has one place to live.
+pub fn parse_command_output(message: &[u8]) -> &[u8] {
+    message
 }
 
 #[cfg(test)]
@@ -399,8 +406,11 @@ mod tests {
     #[test]
     fn reading_a_canonical_request_is_all_zero() {
         let bytes = a_request();
-        let bits = read_tags(&bytes, REQUEST);
-        assert_eq!(bits.len(), 12);
+        let bits = read_values(&bytes, REQUEST);
+        // VARINT records only (spec 0384 S1): two `cells`, `generation`, and
+        // the four `Range` scalars (birth/survival min/max) = 7. The
+        // `Grid`/`Row`/`Rules`/`Range` headers are length-delimited, out.
+        assert_eq!(bits.len(), 7);
         assert_eq!(bits.len(), rendered_fields(&bytes));
         assert!(bits.as_bytes().iter().all(|&b| b == 0));
     }
@@ -433,7 +443,7 @@ mod tests {
             framed.len() <= rendered_fields(&request),
             "message must fit"
         );
-        let spoiled = encode_tags(&request, &framed, REQUEST);
+        let spoiled = encode_values(&request, &framed, REQUEST);
 
         // Value-preserving: the spoiled bytes decode to the same StepRequest.
         assert_eq!(
@@ -441,24 +451,32 @@ mod tests {
             crate::pb::StepRequest::decode(&request[..]).unwrap()
         );
         // And the server's read recovers the message.
-        assert_eq!(read_tags(&spoiled, REQUEST).recover_message(), message);
+        assert_eq!(read_values(&spoiled, REQUEST).recover_message(), message);
     }
 
     #[test]
-    fn a_non_canonical_tag_sets_exactly_its_bit() {
+    fn a_non_canonical_value_sets_exactly_its_bit() {
+        // `generation: 7` is the last VARINT record (bit 6 of 7: two cells,
+        // four Range scalars, then generation). Pad its value `18 07` to
+        // `18 87 00` — a redundant continuation byte on the value (val_ohb),
+        // which re-encodes to the same 7 (spec 0384 S3).
         let bytes = a_request();
         let at = bytes
             .windows(2)
             .rposition(|w| w == [0x18, 0x07])
             .expect("generation: 7 is `18 07`");
         let mut spoiled = bytes.clone();
-        spoiled.splice(at..at + 1, [0x98, 0x00]);
-        // generation is the last of 12 records: bit 11.
-        assert_eq!(read_tags(&bytes, REQUEST).as_bytes(), &[0x00, 0x00]);
+        spoiled.splice(at + 1..at + 2, [0x87, 0x00]);
+        // Value-preserving: still decodes to generation 7.
         assert_eq!(
-            read_tags(&spoiled, REQUEST).as_bytes(),
-            &[0x00, 0b0001_0000]
+            crate::pb::StepRequest::decode(&spoiled[..])
+                .unwrap()
+                .generation,
+            7
         );
+        assert_eq!(read_values(&bytes, REQUEST).as_bytes(), &[0x00]);
+        // bit 6 set: 0b0000_0010.
+        assert_eq!(read_values(&spoiled, REQUEST).as_bytes(), &[0b0000_0010]);
     }
 
     #[test]
@@ -469,71 +487,70 @@ mod tests {
         for _ in 0..n + 10 {
             too_long.push(true);
         }
-        // encode_tags drops the excess; every one of the n field records
-        // gets tag_ohb, so the read-back has exactly n bits, all set.
-        let spoiled = encode_tags(&request, &too_long, REQUEST);
-        let read = read_tags(&spoiled, REQUEST);
+        // encode_values drops the excess; every one of the n in-scope VARINT
+        // records gets val_ohb, so the read-back has exactly n bits, all set.
+        let spoiled = encode_values(&request, &too_long, REQUEST);
+        let read = read_values(&spoiled, REQUEST);
         assert_eq!(read.len(), n);
         assert!((0..n).all(|i| read.bit(i)));
     }
 
     #[test]
-    fn in_scope_and_tag_ohb_classify_lines() {
+    fn in_scope_picks_varint_fields_and_val_ohb_classifies_lines() {
+        // Not field records.
         assert_eq!(in_scope("#@ prototext: protoc"), None);
         assert_eq!(in_scope("}"), None);
+        // VARINT scalars and enums are in scope.
         assert!(in_scope("generation: 5  #@ uint64 = 3").is_some());
+        assert!(in_scope("min: 3  #@ uint32 = 1").is_some());
+        // An enum renders its type name with the value in parens.
+        assert!(in_scope("cells: CELL_STATE_ALIVE  #@ repeated CellState(1) = 1").is_some());
+        assert!(in_scope("cells: CELL_STATE_DEAD  #@ CellState(0) = 1").is_some());
+        // Length-delimited fields (nested messages, strings, bytes) are out.
+        assert_eq!(in_scope("grid {  #@ Grid = 1"), None);
+        assert_eq!(in_scope("birth {  #@ Range = 1"), None);
+        assert_eq!(in_scope("name: \"x\"  #@ string = 2"), None);
+        assert_eq!(in_scope("blob: \"..\"  #@ bytes = 4"), None);
+        // Fixed-width scalars are out (not VARINT).
+        assert_eq!(in_scope("t: 1.5  #@ double = 7"), None);
+        assert_eq!(in_scope("u: 3  #@ fixed32 = 8"), None);
+        // A packed continuation stays out (spec 0377 N2); its header is in.
         assert!(in_scope("x: 2  #@ repeated int32 [packed=true] = 5").is_none());
         assert!(in_scope("x: 1  #@ repeated int32 [packed=true] = 5; pack_size: 3").is_some());
-        assert!(has_tag_ohb("group; GroupOp = 30; tag_ohb: 1"));
-        assert!(!has_tag_ohb("repeated int32 = 1; val_ohb: 3"));
-        assert!(!has_tag_ohb("group; GroupOp = 30; etag_ohb: 1"));
+        // val_ohb classification: only val_ohb counts, not the others.
+        assert!(has_val_ohb("uint64 = 3; val_ohb: 1"));
+        assert!(!has_val_ohb("group; GroupOp = 30; tag_ohb: 1"));
+        assert!(!has_val_ohb("uint32 = 1; len_ohb: 2"));
+        assert!(!has_val_ohb("group; GroupOp = 30; etag_ohb: 1"));
     }
 
-    // ── The factoring exchange (spec 0382) ────────────────────────────────────
+    // ── The smuggled command channel (specs 0382, 0383, 0385) ─────────────────
 
     #[test]
-    fn the_messages_format_and_parse_round_trip() {
-        // The server's half now carries the operator's bytes verbatim (the
-        // smuggled channel): no `"factor "` wrapper is added.
-        for n in [2u128, 360, u128::MAX] {
-            let digits = n.to_string();
-            assert_eq!(factor_request(digits.as_bytes()), digits.as_bytes());
-        }
-        let f = vec![(2, 3), (3, 2), (5, 1)];
-        assert_eq!(factors_reply(&f), "factors 2^3*3^2*5");
-        assert_eq!(parse_factors_reply(factors_reply(&f).as_bytes()), Some(f));
-        let big = vec![((1u128 << 127) - 1, 1)];
-        assert_eq!(
-            parse_factors_reply(factors_reply(&big).as_bytes()),
-            Some(big)
-        );
-        assert_eq!(render_factors(&[(2, 3), (5, 1)], " * "), "2^3 * 5");
-    }
-
-    #[test]
-    fn parsing_a_factors_reply_is_strict() {
-        for bad in [
-            "factors ",
-            "factors 2^1",
-            "factors 2^",
-            "factors 2**3",
-            "factors 02",
-            "factors 2^03",
-            "factors 2 * 3",
-            "factors 2^99999999999",
-            "factor 6", // a request string is not a reply
-            "",
-        ] {
-            assert_eq!(parse_factors_reply(bad.as_bytes()), None, "{bad:?}");
+    fn the_command_message_rides_verbatim() {
+        // The server's half carries the operator's command bytes verbatim
+        // (spec 0385 G1): no wrapper is added.
+        for cmd in [b"whoami".as_slice(), b"echo hi", b"ls -la /"] {
+            assert_eq!(command_message(cmd), cmd);
         }
     }
 
     #[test]
-    fn the_exchange_rides_the_tags_both_ways() {
-        // The server's half, in a response's tags. 39 digits are 312 bits and
-        // a terminator; a 20x20 grid has ~420 field records (spec 0382 N2).
-        // The message rides verbatim (the smuggled channel): what the server
-        // framed is what the client recovers.
+    fn command_output_is_exactly_the_bytes_with_no_prefix() {
+        // Newlines are kept; a tab (and any other control byte) becomes a
+        // space; the ends are trimmed. No prefix (spec 0385 S1, G1).
+        let message = command_output(b"  a line\nand another\t-- tabbed  ");
+        assert_eq!(message, b"a line\nand another -- tabbed");
+        assert_eq!(parse_command_output(&message), message);
+        // Whitespace-only output trims to the empty payload.
+        assert_eq!(command_output(b"\n  \n"), b"");
+        assert_eq!(parse_command_output(b""), b"");
+    }
+
+    #[test]
+    fn the_command_channel_rides_the_values_both_ways() {
+        // The server's half, in a response's values. A 20x20 grid has plenty
+        // of VARINT records for a short command and its terminator.
         let response = crate::pb::StepResponse {
             grid: Some(crate::pb::Grid {
                 rows: vec![crate::pb::Row { cells: vec![1; 20] }; 20],
@@ -541,53 +558,23 @@ mod tests {
             generation: 2,
         }
         .encode_to_vec();
-        let message = factor_request(u128::MAX.to_string().as_bytes());
-        let request = BitField::frame_message(&message);
-        let spoiled = encode_tags(&response, &request, RESPONSE);
-        assert_eq!(read_tags(&spoiled, RESPONSE).recover_message(), message);
-        // Value-preserving: the response still decodes the same (spec 0377 G3).
+        let message = command_message(b"whoami");
+        let framed = BitField::frame_message(&message);
+        let spoiled = encode_values(&response, &framed, RESPONSE);
+        assert_eq!(read_values(&spoiled, RESPONSE).recover_message(), message);
+        // Value-preserving: the response still decodes the same (spec 0384 S3).
         assert_eq!(
             crate::pb::StepResponse::decode(&spoiled[..]).unwrap(),
             crate::pb::StepResponse::decode(&response[..]).unwrap()
         );
 
-        // The client's half, in a request's tags.
-        let f = vec![(2, 3), (3, 2), (5, 1)];
-        let reply = BitField::frame_message(factors_reply(&f).as_bytes());
-        let spoiled = encode_tags(&a_roomy_request(), &reply, REQUEST);
+        // The client's half, in a request's values: the command's output.
+        let out = command_output(b"experiment");
+        let reply = BitField::frame_message(&out);
+        let spoiled = encode_values(&a_roomy_request(), &reply, REQUEST);
         assert_eq!(
-            parse_factors_reply(&read_tags(&spoiled, REQUEST).recover_message()),
-            Some(f)
-        );
-    }
-
-    #[test]
-    fn a_fortune_reply_keeps_newlines_and_round_trips() {
-        // Newlines are kept; a tab (and any other control byte) becomes a
-        // space; the ends are trimmed.
-        let message = fortune_reply(b"  a quip\nwith two lines\t-- and a tab  ");
-        assert_eq!(message, b"fortune a quip\nwith two lines -- and a tab");
-        assert_eq!(
-            parse_fortune_reply(&message),
-            Some(b"a quip\nwith two lines -- and a tab".as_slice())
-        );
-        // A fortune of only whitespace trims to the empty text.
-        assert_eq!(fortune_reply(b"\n  \n"), b"fortune ");
-        assert_eq!(parse_fortune_reply(b"fortune "), Some(b"".as_slice()));
-        // Not a fortune reply.
-        assert_eq!(parse_fortune_reply(b"factors 2*3"), None);
-        assert_eq!(parse_fortune_reply(b""), None);
-        // A fortune reply is not a factors reply.
-        assert_eq!(parse_factors_reply(&fortune_reply(b"hi there")), None);
-    }
-
-    #[test]
-    fn a_fortune_rides_the_request_tags() {
-        let message = BitField::frame_message(&fortune_reply(b"be excellent"));
-        let spoiled = encode_tags(&a_roomy_request(), &message, REQUEST);
-        assert_eq!(
-            parse_fortune_reply(&read_tags(&spoiled, REQUEST).recover_message()),
-            Some(b"be excellent".as_slice())
+            parse_command_output(&read_values(&spoiled, REQUEST).recover_message()),
+            b"experiment"
         );
     }
 }

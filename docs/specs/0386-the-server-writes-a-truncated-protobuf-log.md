@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0386 — the server writes a truncated protobuf log
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-03
 App: grehack2026 (life-server)
 Refs: docs/specs/0375-a-game-of-life-to-spy-on.md (the server, its flags,
       its embedded descriptor — which this log type must stay out of);
@@ -230,4 +231,30 @@ the exclusion structural, not a flag someone can forget.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-03.
+
+- `life-server --log-file <path>` writes a `LogFile { repeated Request = 1;
+  repeated Response = 2 }` protobuf (`log.proto`, new). A failure to open is
+  fatal (S1). No flag → no log, and the stderr/stdout outputs are unchanged
+  (N2).
+- The write discipline lives in the server's `log.rs` (`Log::record`): each
+  step flushes the previous carry, the full `Request` entry, and the
+  `Response` entry minus its last body byte, holding that byte in `carry`.
+  So the file on disk always ends one body byte short of the last entry's
+  declared length (S3, G2). No signal handler, no flush-on-exit.
+- Verified end to end: drive the server over several steps, kill with
+  SIGINT, and `protoc --decode_raw < <file>` **fails** — the file is a
+  truncated protobuf. The invariant is also a unit test
+  (`the_on_disk_file_is_always_a_truncated_protobuf`, over 1/2/3/10 steps):
+  the on-disk bytes are exactly `full_stream − 1` and the tail entry's
+  length prefix overshoots.
+- `log.proto` imports `life.proto` and reuses `StepRequest`/`StepResponse`/
+  `Grid` (S4). `build.rs` compiles both protos but embeds **only**
+  `life.proto`'s FDP, now selected by name (the set holds more than one file
+  once log.proto imports life.proto — the old `let [file] = …` assertion was
+  replaced). Verified: `protoscan life-server` surfaces exactly
+  `grehack/life/v1/life.proto` and nothing from `log.proto` (G3, G4), and
+  the embedded `life.fdp` contains `StepRequest`/`Grid` but no `LogFile`/
+  `latency_us`.
+- The client is unchanged and never includes the generated `log` module
+  (G3); it lives under `life::pb::log` for the server's use only.

@@ -7,7 +7,6 @@
 //! server's alone (spec 0375 N4).
 
 pub mod codec;
-pub mod factor;
 pub mod tags;
 
 /// The generated messages and service of `grehack.life.v1`.
@@ -18,6 +17,17 @@ pub mod tags;
 /// installs neither gets a plain prost pass-through.
 pub mod pb {
     tonic::include_proto!("grehack.life.v1");
+
+    /// The traffic-log types of `grehack.life.v1.log` (spec 0386), compiled for
+    /// the server's `--log-file` encoding. Nested under `pb` so the generated
+    /// code's `super::StepRequest`/`super::StepResponse` resolve to the game
+    /// types above. **Not** reflected: `log.proto`'s `FileDescriptorProto` is
+    /// deliberately excluded from [`DESCRIPTOR`] (spec 0386 G4, build.rs), so
+    /// `protoscan` and a client-derived `life.desc` never surface these types
+    /// (G3). Only the server uses this module; the client leaves it unused.
+    pub mod log {
+        tonic::include_proto!("grehack.life.v1.log");
+    }
 }
 
 /// The serialized `FileDescriptorProto` of `life.proto`, which `protoscan`

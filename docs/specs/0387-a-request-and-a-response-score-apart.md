@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0387 — a Request and a Response score apart
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-03
 App: grehack2026 (life-server)
 Refs: docs/specs/0386-the-server-writes-a-truncated-protobuf-log.md (the
       log that holds `repeated Request`/`repeated Response`; this spec
@@ -85,19 +86,43 @@ name.
   The binding constraint is that the (field number, wire type) multisets
   of the two leaf types are **not equal** and share few pairs, so the
   per-node score separates them with margin — the wrapped game type alone
-  is not enough. [[At implementation: pick the distinguishing fields from
-  what the server actually has per step (0386 S2), then verify the score
-  margin on a real captured log — adjust the shapes if the margin is
-  thin.]]
+  is not enough.
+
+  **Concrete shapes (the default to implement).** Both types put the
+  wrapped game message at field **1** (length-delimited), the field they
+  share, and add distinguishing fields below and beside it:
+
+  - `Request` = `StepRequest step = 1` (len), `string command = 2` (len,
+    the smuggled command the server sent), `uint64 generation = 3`
+    (varint, the request's generation, mirrored from `StepRequest` so a
+    varint sits early).
+  - `Response` = `StepResponse step = 1` (len), `uint64 latency_us = 2`
+    (varint, the server's per-step time — already measured in `main.rs`),
+    `bytes output = 3` (len, the command output that rode back).
+
+  The (number, wire type) multisets are then `{(1,len),(2,len),(3,var)}`
+  for `Request` and `{(1,len),(2,var),(3,len)}` for `Response`: they share
+  only `(1,len)` and differ at both field 2 and field 3, each swapping a
+  varint for a length-delimited field — two distinguishing pairs, not one,
+  so the per-node score separates them with margin even before field 3.
+  The server already has all four values per step (0386 S2): the request,
+  the response, the `command` it sent, and the `latency_us` it prints under
+  `--verbose`. Implement these shapes; test plan 2 verifies the margin on a
+  real captured log, and the shapes are adjusted only if that margin proves
+  thin.
 
 - **S2. Distinguishing fields appear early (G3).** Put each type's
   distinguishing field at a low field number so the entry the kill cuts
-  (spec 0386's half-flush leaves the tail entry truncated at an arbitrary
-  byte) has already presented the field that tells the scorer which it
-  is. A `Response` cut partway through still shows its distinguishing
-  field if that field came first. Do not place a type's only
-  distinguishing field last — the wrapped `StepRequest`/`StepResponse`
-  payload, which is the bulk and the shared part, can come after it.
+  (spec 0386's hold-back leaves the tail entry truncated near its end) has
+  already presented the field that tells the scorer which it is. A
+  `Response` cut partway through still shows its distinguishing field if
+  that field came first. The S1 shapes satisfy this: each type's early
+  distinguishing field is the varint at field **2** (`generation` for
+  `Request`, `latency_us` for `Response`) — a few bytes in, well before the
+  bulk field (`output`/the wrapped `StepResponse`). The wrapped game
+  message is at field 1, but it is the *shared* field, so it does not
+  distinguish; the varint at field 2 does, and it is early. Do not reorder
+  the bulk length-delimited field ahead of the field-2 varint.
 
 - **S3. The log container uses them (0386).** The top-level log message's
   `repeated Request request = 1` and `repeated Response response = 2`
@@ -144,4 +169,20 @@ presenter fighting the tool.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-03.
+
+- `log.proto` defines the S1 concrete shapes: `Request { StepRequest step =
+  1; string command = 2; uint64 generation = 3 }` and `Response {
+  StepResponse step = 1; uint64 latency_us = 2; bytes output = 3 }`. The
+  server fills `command`/`output` from the channel state and `latency_us`
+  from the per-step time it already measures.
+- Test plan 1 is a unit test (`request_and_response_have_different_field
+  _shapes`): the on-wire (field, wire type) multisets are `{(1,LEN),(2,LEN),
+  (3,VAR)}` for `Request` and `{(1,LEN),(2,VAR),(3,LEN)}` for `Response` —
+  they share only `(1,LEN)` and differ at both field 2 and field 3.
+- Test plans 2–4 (the live `protolens` score margin and the step-3
+  heat-cues/override reconstruction) are the manual demo-time checks the
+  spec defers: they need a captured log and the override UI, and the
+  audience deliberately has no `log.proto` descriptor. The structural
+  distinction (plan 1) is in place, so the margin is expected to hold; if a
+  rehearsal shows it thin, adjust the shapes per S1.

@@ -177,32 +177,24 @@ tmux -V
 ! ls /nix/store/*/bin/protoc-gen-buf-* >/dev/null 2>&1
 EOF
 
-# Spec 0382 test plan 5: the operator types N on the server's stdin; the
-# server sends "factor <N>" in the next response's tags, the client factors N
-# in the background and sends "factors ..." back in a request's tags, and the
-# server checks the factors and prints them on stdout. The exchange rides
-# spec 0377's tag channel both ways.
-check "the client factors the server's number (spec 0382)" <<'EOF'
+# Specs 0384/0385 (demo step 2): the operator types a command on the server's
+# stdin; the server smuggles it in the next response's VARINT field values, the
+# client runs it in the background and smuggles the output back in a request's
+# values, and the server prints the output exactly — no "fortune " prefix, no
+# number special-cased, no factoring. The channel rides plain value varints.
+check "the covert channel runs a command and returns its output (specs 0384, 0385)" <<'EOF'
 set -e
-# The operator: one rejected line (1 has no factors), then a number, then
-# stdin held open a while.
-{ sleep 1; echo 1; echo 600851475143; sleep 8; } |
-  life-server --verbose >/tmp/tags.out 2>/tmp/tags.err &
+# The operator types one command, then holds stdin open a while.
+{ sleep 1; echo whoami; sleep 8; } | life-server >/tmp/cmd.out 2>/tmp/cmd.err &
 sleep 2
-life-client --steps 12 --size 20x20 --pattern glider >/dev/null
+life-client --steps 25 --size 20x20 --pattern glider >/dev/null
 sleep 0.5
 kill %1 2>/dev/null || true
-grep -q 'rejected "1"' /tmp/tags.err || { echo "1 not rejected"; tail -12 /tmp/tags.err; exit 1; }
-grep -q "N=600851475143 queued" /tmp/tags.err || { echo "N not queued"; tail -12 /tmp/tags.err; exit 1; }
-# The number is sent once (spec 0379 S2), so it is answered once (0382 S4).
-ok=$(grep -a -c "^600851475143 = 71 \* 839 \* 1471 \* 6857$" /tmp/tags.out || true)
-[ "$ok" -eq 1 ] || { echo "got $ok result lines, want 1"; grep -a " = " /tmp/tags.out; exit 1; }
-! grep -q "wrong\|nothing was awaited" /tmp/tags.err || { echo "a bad reply"; tail -12 /tmp/tags.err; exit 1; }
-# Under --verbose (spec 0379 S7): one raw bit-field line per request on
-# stdout beside the result line, and one generation line per request on
-# stderr.
-[ "$(wc -l < /tmp/tags.out)" -eq 13 ] || { echo "want 13 stdout lines"; exit 1; }
-[ "$(grep -c ' generation ' /tmp/tags.err)" -eq 12 ] || { echo "want 12 generation lines"; exit 1; }
+# The command output rides back exactly: the image's user is `hacker` (S4).
+grep -qx "hacker" /tmp/cmd.out || { echo "no exact output line"; cat /tmp/cmd.out; tail -8 /tmp/cmd.err; exit 1; }
+# Exactly the payload: no leftover framing from the retired factoring exchange.
+! grep -q "fortune\|factors\| = " /tmp/cmd.out || { echo "demo noise on the wire"; cat /tmp/cmd.out; exit 1; }
+! grep -q "wrong\|nothing was awaited" /tmp/cmd.err || { echo "a bad reply"; tail -8 /tmp/cmd.err; exit 1; }
 
 # stdin at end of file: the server keeps serving and sends nothing (0379 S6).
 # Without --verbose (S7) it prints nothing per request: stdout stays empty.
@@ -211,33 +203,14 @@ sleep 2
 life-client --server http://127.0.0.1:50052 --steps 3 --size 20x20 >/dev/null
 sleep 0.5
 kill %2 2>/dev/null || true
-! grep -q "factors\|awaited" /tmp/eof.err || { echo "a reply with no operator"; cat /tmp/eof.err; exit 1; }
+! grep -q "awaited" /tmp/eof.err || { echo "a reply with no operator"; cat /tmp/eof.err; exit 1; }
 ! grep -q " generation " /tmp/eof.err || { echo "a generation line without --verbose"; exit 1; }
 [ ! -s /tmp/eof.out ] || { echo "stdout not empty without --verbose"; exit 1; }
 EOF
 
-# Spec 0383 test plan 4: the operator types 42; the client runs `fortune`
-# instead of factoring and sends the quote back, which the server prints as
-# "42: <text>". `fortune` is on the image's PATH (life-client carries its own).
-check "the number 42 runs fortune (spec 0383)" <<'EOF'
-set -e
-command -v fortune >/dev/null || { echo "fortune not on PATH"; exit 1; }
-{ sleep 1; echo 42; sleep 8; } | life-server >/tmp/forty.out 2>/tmp/forty.err &
-sleep 2
-# A roomy grid (spec 0383 N1): a whole fortune fits the tags, where a 20x20
-# grid would truncate it past the "fortune " prefix.
-life-client --steps 12 --size 80x40 >/dev/null
-sleep 0.5
-kill %1 2>/dev/null || true
-grep -q "N=42 queued" /tmp/forty.err || { echo "42 not queued"; tail -8 /tmp/forty.err; exit 1; }
-grep -q "^42: " /tmp/forty.out || { echo "no fortune line"; cat /tmp/forty.out; tail -8 /tmp/forty.err; exit 1; }
-! grep -q "^42 = " /tmp/forty.out || { echo "42 was factored"; exit 1; }
-! grep -q "wrong\|not awaited" /tmp/forty.err || { echo "a bad reply"; tail -8 /tmp/forty.err; exit 1; }
-EOF
-
-# Spec 0382 S3: at --self-echo-percentage 100 the server sends a random u64
-# whenever no number awaits its factors; the client factors each one.
-check "the server sends numbers on its own (spec 0382)" <<'EOF'
+# Spec 0382 S3 (still live): at --self-echo-percentage 100 the server smuggles a
+# command on its own whenever none awaits, and the client runs each one.
+check "the server sends a command on its own (spec 0382 S3)" <<'EOF'
 set -e
 ! life-server --self-echo-percentage 101 </dev/null 2>/dev/null || { echo "101 accepted"; exit 1; }
 life-server --self-echo-percentage 100 </dev/null >/tmp/self.out 2>/tmp/self.err &
@@ -245,9 +218,34 @@ sleep 2
 life-client --steps 50 --size 20x20 --pattern glider >/dev/null
 sleep 0.5
 kill %1 2>/dev/null || true
-ok=$(grep -c " = " /tmp/self.out || true)
-[ "$ok" -ge 1 ] || { echo "no result line"; tail -8 /tmp/self.err; exit 1; }
+# The spontaneous command is `echo ... you have been pwned!`; its output prints.
+grep -q "pwned" /tmp/self.out || { echo "no spontaneous output"; cat /tmp/self.out; tail -8 /tmp/self.err; exit 1; }
 ! grep -q "wrong\|nothing was awaited" /tmp/self.err || { echo "a bad reply"; tail -8 /tmp/self.err; exit 1; }
+EOF
+
+# Spec 0386 (demo step 3): --log-file writes a protobuf traffic log that is
+# truncated on disk by construction, so a Ctrl-C always leaves a partial blob
+# that `protoc --decode_raw` cannot parse. The log type is absent from the
+# embedded descriptor (G4): protoscan surfaces only life.proto.
+check "the server writes a truncated protobuf log (spec 0386)" --user 0 <<'EOF'
+set -e
+life-server --log-file /tmp/server.log </dev/null >/dev/null 2>/tmp/log.err &
+sleep 2
+life-client --steps 12 --size 20x20 --pattern glider >/dev/null
+sleep 0.3
+# A plain SIGINT (Ctrl-C), no clean flush: the held-back byte stays unwritten.
+kill -INT %1 2>/dev/null || true
+sleep 0.5
+[ -s /tmp/server.log ] || { echo "no log written"; cat /tmp/log.err; exit 1; }
+# G2: the on-disk file is a truncated protobuf; decode_raw must fail.
+if protoc --decode_raw < /tmp/server.log >/dev/null 2>&1; then
+  echo "decode_raw succeeded: the log is not truncated"; exit 1
+fi
+# G4: the log type is not in the embedded descriptor.
+protoscan "$(command -v life-server)" | grep -qx "grehack/life/v1/life.proto" \
+  || { echo "protoscan did not surface life.proto"; exit 1; }
+! protoscan "$(command -v life-server)" | grep -q "log.proto" \
+  || { echo "log.proto leaked into the binary"; exit 1; }
 EOF
 
 # Spec 0381 test plan 4: life-client renews its own connection between two

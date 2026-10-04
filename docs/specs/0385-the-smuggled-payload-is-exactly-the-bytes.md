@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0385 — the smuggled payload is exactly the bytes
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-03
 App: grehack2026 (life-server, life-client)
 Refs: docs/specs/0382-the-client-factors-the-servers-number.md (the
       exchange whose remnants this removes: the `factor`/`factors`
@@ -90,12 +91,17 @@ Confirmed in the tree: `fortune_reply` prepends `b"fortune "`;
 
 - **S3. The server prints what came back.** `report_reply` on the server
   drops the `factors …` branch, `factors_are_right`, and the awaited-N
-  check: a reply is the command's output, printed as-is on the terminal
-  (step 2), or logged. The server still records what command it sent and
-  what came back, so the demo can read both sides; the exact surface
-  (stdout vs. stderr, labeling) matches what step 2 shows on terminal 1.
-  [[Confirm against the step-2 narration what the server prints and
-  where — the synopsis says "the answer surfaces on her terminal".]]
+  check: a reply is the command's output, printed as-is on stdout (the
+  `Report::Stdout` path, step 2's terminal 1), with no N prefix and no
+  label — exactly the raw bytes plus a trailing newline, which is what the
+  current non-42 branch already emits (`report_reply(Some(b"360"), …)` →
+  `Report::Stdout(b"be excellent\n")`). The step-2 narration confirms
+  this: the worked example reconstructs `whoami` → the output, and "the
+  answer surfaces on her terminal" is that stdout line. The one behavioral
+  change here is that with the awaited-N check gone, output prints whenever
+  *something* is awaited (any command was sent), not only when the awaited
+  N is "not 42". The `Report::Stderr` note for "nothing was awaited" stays
+  (a reply with no outstanding command is still noise worth flagging).
 
 - **S4. The parsers no longer distinguish two reply kinds.** With the
   `factors …` reply gone, `is_reply` and the two-branch report collapse
@@ -144,4 +150,32 @@ reader that has to know to strip `fortune ` is the problem, not the fix.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-03.
+
+- `fortune_reply`/`parse_fortune_reply` → `command_output`/
+  `parse_command_output`: the reply is the command's output bytes with no
+  prefix (the `fortune ` label is gone, G1). Control-byte handling (0383
+  S1) is kept; the empty output is the empty payload.
+- `factoring.rs` → `command_channel.rs`, `Factoring` → `CommandChannel`:
+  the worker runs every command via `run_command` (`sh -c <command>`) and
+  returns its output. `FORTUNE_N` and the `factorize(42, …)` path are gone
+  (G2). `run` passes the command straight to `run_command` (which already
+  wraps `sh -c`), fixing the old double-wrap.
+- Server `report_reply` takes a bool `awaited`: a reply is the command's
+  output printed on stdout exactly (no N prefix, no label), or a stderr
+  note when nothing was awaited. `factors_are_right`, `is_reply`,
+  `parse_factors_reply`/`factors_reply`/`render_factors`, and `FORTUNE_N`
+  are deleted (S3, S4).
+- `life::factor` (the whole module and its tests) is deleted (S5); nothing
+  references it, and the crate builds and tests pass without it.
+- **Bug found and fixed:** the client abandoned its in-flight worker on the
+  empty command the server sends every idle step, so the one real command's
+  output was wiped before a request carried it back — the covert channel
+  returned nothing end to end. `CommandChannel::start` now returns
+  `Option<JoinHandle>` and is a no-op on an empty command, leaving the
+  in-flight worker and any pending reply alone. Regression test:
+  `a_stream_of_empties_does_not_wipe_a_pending_reply`. This bug predates
+  these specs (inherited from the factoring worker) but only mattered once
+  the round-trip was exercised end to end.
+- Verified end to end (no `--verbose`): `whoami` → `experiment` on the
+  server's stdout, with no `fortune`/`factors`/` = ` on the wire.

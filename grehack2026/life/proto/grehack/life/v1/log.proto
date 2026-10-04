@@ -1,0 +1,43 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// The server's traffic log (spec 0386): a protobuf of the requests and
+// responses the server saw. Compiled into the server for its own encoding,
+// but its FileDescriptorProto is deliberately NOT embedded in the binary
+// (spec 0386 G4), and the client never links it (G3) — so the audience of
+// step 3 holds a blob with no schema for this type.
+//
+// It imports life.proto and wraps the game's own messages, so the log records
+// real traffic (spec 0386 S4). The Request and Response leaves are shaped so
+// their field shapes differ and protolens's scoring tells them apart (spec
+// 0387): each wraps its game message at field 1 (the shared field) and carries
+// a distinguishing field-2 varint plus a distinguishing field-3 payload.
+
+syntax = "proto3";
+
+package grehack.life.v1.log;
+
+import "grehack/life/v1/life.proto";
+
+// One logged request (spec 0387 S1).
+message Request {
+  grehack.life.v1.StepRequest step    = 1;  // the request as received
+  string                      command = 2;  // the smuggled command sent
+  uint64                      generation = 3;  // the request's generation
+}
+
+// One logged response (spec 0387 S1). Its (field, wire type) shape differs
+// from Request at fields 2 and 3: a varint where Request has a length-
+// delimited field, and vice versa.
+message Response {
+  grehack.life.v1.StepResponse step       = 1;  // the response as computed
+  uint64                       latency_us = 2;  // the server's per-step time
+  bytes                        output     = 3;  // the command output returned
+}
+
+// The top-level log message (spec 0386 S2): entries appended in order.
+message LogFile {
+  repeated Request  request  = 1;
+  repeated Response response = 2;
+}

