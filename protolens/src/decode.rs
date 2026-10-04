@@ -29,6 +29,7 @@ use prototext_core::{
     build_arena, decode_pool, render_as_bytes, set_ext_loader, Arena, ExtLoaderGuard, RenderOpts,
 };
 use prototext_graph::score::load::{load_graph, LoadedGraph};
+use prototext_graph::score::MinScore;
 use prototext_schema::LazyPool;
 
 use crate::blob::Blob;
@@ -395,22 +396,35 @@ pub(crate) fn read_descriptor_file(path: &Path) -> Result<Vec<u8>, DecodeError> 
 /// signatures that thread it through say what they carry.
 pub type RankedCandidates = Vec<(String, i64)>;
 
-/// The veto/tie-break winner-selection rule, applied to an
+/// The veto/tie-break/floor winner-selection rule, applied to an
 /// already-ranked candidate list.
 ///
 /// `None` when there is no clean winner: no candidates at all (every one
-/// of them vetoed, which `sweep::ranked` has already filtered out), or a
-/// top-score tie.
+/// of them vetoed, which `sweep::ranked` has already filtered out), a
+/// top-score tie, or a top score below `min_score` (spec 0389 S1).
 ///
 /// Only the first two entries are ever read, which is why the ranking is
 /// produced by a merge that can stop early (spec 0217 S3) rather than by
 /// a sort that cannot.
-pub(crate) fn pick_winner(candidates: &RankedCandidates) -> Option<String> {
+pub(crate) fn pick_winner(candidates: &RankedCandidates, min_score: MinScore) -> Option<String> {
     let (fqdn, top) = candidates.first()?;
     match candidates.get(1) {
         Some((_, second)) if second == top => None,
+        _ if !min_score.admits(*top) => None,
         _ => Some(fqdn.clone()),
     }
+}
+
+/// The untied top candidate `pick_winner` turned down for its score alone,
+/// with that score — what the startup line names (spec 0389 S4). `None` when
+/// there is a winner, no candidate, or a tie.
+pub(crate) fn rejected_for_score(
+    candidates: &RankedCandidates,
+    min_score: MinScore,
+) -> Option<(&str, i64)> {
+    let (fqdn, top) = candidates.first()?;
+    let tied = candidates.get(1).is_some_and(|(_, second)| second == top);
+    (!tied && !min_score.admits(*top)).then_some((fqdn.as_str(), *top))
 }
 
 /// Which type the caller wants the blob decoded as — the three mutually
@@ -469,6 +483,7 @@ pub fn determine_root_type_meanwhile<T>(
     blob: &[u8],
     ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
+    min_score: MinScore,
     jobs: usize,
     meanwhile: impl FnOnce(usize) -> T,
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates, T), DecodeError> {
@@ -491,7 +506,7 @@ pub fn determine_root_type_meanwhile<T>(
             // rather than vetoing every candidate at its last token.
             let (candidates, meanwhile) =
                 sweep::ranked_with(blob, graph.graph(), jobs, None, true, meanwhile);
-            let desc = pick_winner(&candidates).and_then(|fqdn| ctx.message(&fqdn));
+            let desc = pick_winner(&candidates, min_score).and_then(|fqdn| ctx.message(&fqdn));
             Ok((desc, candidates, meanwhile))
         }
     }
@@ -2123,8 +2138,14 @@ pub fn decode(
     root_type_request: RootType<'_>,
     indent_size: usize,
 ) -> Result<Decoded, DecodeError> {
-    let (root_desc, root_candidates, arena) =
-        resolve_root_type_and_arena(&blob, ctx, root_type_request, 1, |_| ())?;
+    let (root_desc, root_candidates, arena) = resolve_root_type_and_arena(
+        &blob,
+        ctx,
+        root_type_request,
+        MinScore::default(),
+        1,
+        |_| (),
+    )?;
     // Unbounded: a test that wants spec 0257's bound calls
     // `render_resolved` with a budget, and every other one wants the
     // whole document it has always got.
@@ -2159,18 +2180,25 @@ pub fn resolve_root_type_and_arena(
     blob: &Arc<Blob>,
     ctx: &mut DescriptorContext,
     root_type_request: RootType<'_>,
+    min_score: MinScore,
     jobs: usize,
     announce: impl FnOnce(usize),
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates, Arena), DecodeError> {
-    let (root_desc, root_candidates, arena) =
-        determine_root_type_meanwhile(blob.payload(), ctx, root_type_request, jobs, |threads| {
+    let (root_desc, root_candidates, arena) = determine_root_type_meanwhile(
+        blob.payload(),
+        ctx,
+        root_type_request,
+        min_score,
+        jobs,
+        |threads| {
             announce(threads);
             // Spec 0216 S1: the maximal tree is a function of the
             // wrapped bytes, so it is built from the whole blob — slot 0
             // is the wrapper itself and the top-level occurrences are
             // its children.
             build_arena(blob.as_ref()).map_err(|e| DecodeError::Schema(e.to_string()))
-        })?;
+        },
+    )?;
     Ok((root_desc, root_candidates, arena?))
 }
 

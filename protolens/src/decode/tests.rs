@@ -26,7 +26,8 @@ fn determine_root_type(
     ctx: &mut DescriptorContext,
     root_type: RootType<'_>,
 ) -> Result<(Option<MessageDescriptor>, RankedCandidates), DecodeError> {
-    determine_root_type_meanwhile(blob, ctx, root_type, 1, |_| ()).map(|(d, c, ())| (d, c))
+    determine_root_type_meanwhile(blob, ctx, root_type, MinScore::default(), 1, |_| ())
+        .map(|(d, c, ())| (d, c))
 }
 
 #[test]
@@ -1395,4 +1396,56 @@ fn a_packed_wrapper_is_repeated_whatever_the_caller_asked_for() {
         Cardinality::Repeated
     );
     assert!(packed.get_field(1).unwrap().is_packed());
+}
+
+fn ranked(entries: &[(&str, i64)]) -> RankedCandidates {
+    entries.iter().map(|(f, s)| (f.to_string(), *s)).collect()
+}
+
+/// Spec 0389 test plan 1: an untied winner below the floor is not used, and
+/// is named as the one rejected for its score; a lower floor, or none, lets
+/// it through.
+#[test]
+fn pick_winner_rejects_a_score_below_the_threshold() {
+    let candidates = ranked(&[("a.Row", -55), ("a.Other", -80)]);
+    assert_eq!(pick_winner(&candidates, MinScore::default()), None);
+    assert_eq!(
+        rejected_for_score(&candidates, MinScore::default()),
+        Some(("a.Row", -55))
+    );
+    assert_eq!(
+        pick_winner(&candidates, MinScore::AtLeast(-100)),
+        Some("a.Row".to_string())
+    );
+    assert_eq!(
+        pick_winner(&candidates, MinScore::Any),
+        Some("a.Row".to_string())
+    );
+    assert_eq!(rejected_for_score(&candidates, MinScore::Any), None);
+}
+
+/// Spec 0389 test plan 2: a top-score tie stays ambiguous whatever the
+/// floor, and is not reported as a rejection for its score.
+#[test]
+fn pick_winner_keeps_a_tie_ambiguous() {
+    let candidates = ranked(&[("a.A", 40), ("a.B", 40)]);
+    for floor in [MinScore::default(), MinScore::AtLeast(-100), MinScore::Any] {
+        assert_eq!(pick_winner(&candidates, floor), None);
+        assert_eq!(rejected_for_score(&candidates, floor), None);
+    }
+}
+
+/// Spec 0389 test plan 3: a score equal to the floor wins.
+#[test]
+fn pick_winner_accepts_the_threshold_itself() {
+    let candidates = ranked(&[("a.A", 0), ("a.B", -3)]);
+    assert_eq!(
+        pick_winner(&candidates, MinScore::default()),
+        Some("a.A".to_string())
+    );
+    let candidates = ranked(&[("a.A", -7)]);
+    assert_eq!(
+        pick_winner(&candidates, MinScore::AtLeast(-7)),
+        Some("a.A".to_string())
+    );
 }

@@ -28,6 +28,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser};
 use clap_complete::engine::ArgValueCompleter;
 use clap_complete::CompleteEnv;
+use prototext_graph::score::MinScore;
 
 use crate::blob::Blob;
 
@@ -101,6 +102,23 @@ struct Cli {
     /// Number of spaces per nesting level in the rendered text.
     #[arg(long = "indent", default_value_t = 2)]
     indent: usize,
+
+    /// The lowest score an inferred root type may have and still be used
+    /// (spec 0389): an integer, negative allowed, or `any` for no floor.
+    /// Below it, the blob opens with no type, as on a tie; the override
+    /// pane still lists every candidate. A score is matches minus weighted
+    /// penalties, so a negative one means the type contradicts the bytes
+    /// more than it explains them. Ignored with --type and --raw. Shares
+    /// its env var with `prototext`.
+    #[arg(
+        long = "min-score",
+        value_name = "N",
+        default_value = "0",
+        env = "PROTOTEXT_MIN_SCORE",
+        allow_negative_numbers = true,
+        value_parser = parse_min_score,
+    )]
+    min_score: MinScore,
 
     /// CPU budget for root-type inference (spec 0217). Inference is the
     /// one startup phase whose cost scales with the size of the schema
@@ -306,6 +324,11 @@ impl ExtractFormatArg {
 /// caller didn't set one explicitly (spec 0155 G2) — `None` (no
 /// fallback applied) whenever `cli_proto_root` is already `Some`, or
 /// whenever the candidate directory doesn't exist.
+/// `--min-score`'s value: an integer, negative allowed, or `any` (spec 0389).
+fn parse_min_score(s: &str) -> Result<MinScore, String> {
+    s.parse()
+}
+
 fn resolve_proto_root(
     cli_proto_root: Option<PathBuf>,
     descriptor_set: Option<&Path>,
@@ -612,29 +635,44 @@ fn main() -> ExitCode {
             );
         }
     };
-    let decoded =
-        decode::resolve_root_type_and_arena(&blob, &mut ctx, root_type, jobs, announce_sweep)
-            .and_then(|(root_desc, root_candidates, arena)| {
-                if announce {
-                    eprintln!(
-                        "protolens: rendering root node as {}{}...",
-                        root_desc
-                            .as_ref()
-                            .map(|d| d.full_name())
-                            .unwrap_or("(no type)"),
-                        size_suffix(&cli.blob)
-                    );
-                }
-                decode::render_resolved(
-                    Arc::clone(&blob),
-                    &mut ctx,
-                    root_desc,
-                    root_candidates,
-                    arena,
-                    cli.indent,
-                    startup_row_budget,
-                )
-            });
+    let decoded = decode::resolve_root_type_and_arena(
+        &blob,
+        &mut ctx,
+        root_type,
+        cli.min_score,
+        jobs,
+        announce_sweep,
+    )
+    .and_then(|(root_desc, root_candidates, arena)| {
+        if announce {
+            // Spec 0389 S4: say why a clear winner was not used.
+            if let Some((fqdn, score)) = decode::rejected_for_score(&root_candidates, cli.min_score)
+            {
+                eprintln!(
+                    "protolens: best candidate {fqdn} scored {score}, below \
+                             --min-score {}: rendering with no type",
+                    cli.min_score
+                );
+            }
+            eprintln!(
+                "protolens: rendering root node as {}{}...",
+                root_desc
+                    .as_ref()
+                    .map(|d| d.full_name())
+                    .unwrap_or("(no type)"),
+                size_suffix(&cli.blob)
+            );
+        }
+        decode::render_resolved(
+            Arc::clone(&blob),
+            &mut ctx,
+            root_desc,
+            root_candidates,
+            arena,
+            cli.indent,
+            startup_row_budget,
+        )
+    });
     let decoded = match decoded {
         Ok(d) => d,
         Err(e) => {

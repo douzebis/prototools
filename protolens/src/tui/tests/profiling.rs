@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use super::super::*;
 use crate::decode::{decode, RootType};
+use prototext_graph::score::MinScore;
 
 /// Throwaway diagnostic: does `/tmp/pdb.desc`'s decoded tree contain
 /// any parent with a very large number of direct children? Hypothesis
@@ -1655,7 +1656,7 @@ fn measure_root_type_gate(desc_path: &Path, decode_too: bool) {
     let t = Instant::now();
     // `true`, as the startup sweep this is standing in for (spec 0310 S7).
     let candidates = crate::sweep::ranked(&blob, graph.graph(), 1, None, true);
-    let winner = decode::pick_winner(&candidates);
+    let winner = decode::pick_winner(&candidates, MinScore::default());
     let sweep = t.elapsed();
     eprintln!(
         "root-type sweep              {sweep:?}  -> {winner:?} ({} candidates)",

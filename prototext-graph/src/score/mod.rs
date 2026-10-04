@@ -5,8 +5,10 @@
 //! Score a binary protobuf against a compiled scoring graph.
 
 pub mod load;
+mod min_score;
 pub(crate) mod walk;
 
+pub use min_score::MinScore;
 pub use walk::{
     partition_roots, score_all, score_one, score_subset, EntryScore, Policy, ScoringOpts,
 };

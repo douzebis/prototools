@@ -17,7 +17,7 @@ use prototext_core::{
 };
 use prototext_graph::score::{
     load::{load_graph, LoadedGraph},
-    score_all, score_one, ScoringOpts,
+    score_all, score_one, MinScore, ScoringOpts,
 };
 
 use crate::inputs::{expand_path, InputFile};
@@ -180,14 +180,22 @@ pub enum InferOutcome {
     /// Multiple types tied at the top score; contains the tied entries
     /// (lexicographically sorted, capped at MAX_AMBIGUOUS_TYPES).
     Ambiguous(Vec<InferredType>),
+    /// A unique winner, but its score is below `--min-score` (spec 0389):
+    /// reported like an ambiguous result rather than used.
+    BelowThreshold {
+        best: InferredType,
+        threshold: MinScore,
+    },
 }
 
 /// Score `pb_bytes` against `graph` and return the inference outcome,
-/// or a hard error (e.g. all entries vetoed, or encoding failure).
+/// or a hard error (e.g. all entries vetoed, or encoding failure). An untied
+/// winner scoring below `min_score` is `BelowThreshold` (spec 0389 S1).
 pub fn infer_type(
     pb_bytes: &[u8],
     graph: &LoadedGraph,
     scoring_opts: &ScoringOpts,
+    min_score: MinScore,
 ) -> Result<InferOutcome, String> {
     let binary_buf;
     let pb_bytes = {
@@ -246,7 +254,7 @@ pub fn infer_type(
     }
 
     let winner = &non_vetoed[0];
-    Ok(InferOutcome::Unique(InferredType {
+    let inferred = InferredType {
         fqdn: winner.fqdn.to_owned(),
         score: top_score,
         matches: winner.matches,
@@ -256,7 +264,14 @@ pub fn infer_type(
         mismatches: winner.mismatches,
         truncated: winner.truncated,
         packing: winner.packing,
-    }))
+    };
+    if !min_score.admits(top_score) {
+        return Ok(InferOutcome::BelowThreshold {
+            best: inferred,
+            threshold: min_score,
+        });
+    }
+    Ok(InferOutcome::Unique(inferred))
 }
 
 /// Format the `# Type:` / `# Score:` inference header (with trailing blank line).
@@ -463,6 +478,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
             no_packing_penalty,
             no_expand_message_set,
             hide_unknown_fields,
+            min_score,
             strict,
             paths,
         } => {
@@ -506,6 +522,7 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
                     expand_message_set: !no_expand_message_set,
                     detailed_score,
                     scoring_opts: &scoring_opts,
+                    min_score,
                     strict,
                     output: &cli.output,
                     output_root: output_root.as_ref(),
@@ -769,6 +786,7 @@ struct DecodeOpts<'a> {
     expand_message_set: bool,
     detailed_score: bool,
     scoring_opts: &'a ScoringOpts,
+    min_score: MinScore,
     strict: bool,
     output: &'a Option<PathBuf>,
     output_root: Option<&'a PathBuf>,
@@ -790,6 +808,7 @@ fn run_decode(
     let expand_message_set = opts.expand_message_set;
     let detailed_score = opts.detailed_score;
     let scoring_opts = opts.scoring_opts;
+    let min_score = opts.min_score;
     let strict = opts.strict;
     let output = opts.output;
     let output_root = opts.output_root;
@@ -908,10 +927,15 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap(); // checked earlier
-            match infer_type(&data, graph, scoring_opts)? {
+            match infer_type(&data, graph, scoring_opts, min_score)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
                     rep.report_ambiguous("<stdin>", &tied, detailed_score);
+                    std::process::exit(if strict { 1 } else { 0 });
+                }
+                InferOutcome::BelowThreshold { best, threshold } => {
+                    let mut rep = InferFailureReporter::new();
+                    rep.report_below_threshold("<stdin>", &best, threshold, detailed_score);
                     std::process::exit(if strict { 1 } else { 0 });
                 }
                 InferOutcome::Unique(inferred) => {
@@ -950,10 +974,16 @@ fn run_decode(
 
         if auto_infer {
             let graph = desc_ctx.graph.as_ref().unwrap();
-            match infer_type(&data, graph, scoring_opts)? {
+            match infer_type(&data, graph, scoring_opts, min_score)? {
                 InferOutcome::Ambiguous(tied) => {
                     let mut rep = InferFailureReporter::new();
                     rep.report_ambiguous(&f.abs.display().to_string(), &tied, detailed_score);
+                    std::process::exit(if strict { 1 } else { 0 });
+                }
+                InferOutcome::BelowThreshold { best, threshold } => {
+                    let mut rep = InferFailureReporter::new();
+                    let path = f.abs.display().to_string();
+                    rep.report_below_threshold(&path, &best, threshold, detailed_score);
                     std::process::exit(if strict { 1 } else { 0 });
                 }
                 InferOutcome::Unique(inferred) => {
@@ -992,6 +1022,7 @@ fn run_decode(
             decode_opts,
             &BatchInferOpts {
                 scoring_opts,
+                min_score,
                 detailed_score,
                 strict,
             },
@@ -1284,6 +1315,24 @@ impl InferFailureReporter {
         }
     }
 
+    /// An untied winner below `--min-score` (spec 0389 S4): listed like an
+    /// ambiguous file's one candidate, with the floor it missed.
+    fn report_below_threshold(
+        &mut self,
+        path: &str,
+        best: &InferredType,
+        threshold: MinScore,
+        detailed_score: bool,
+    ) {
+        self.ensure_heading();
+        self.had_warning = true;
+        let mut stderr = io::stderr();
+        let _ = writeln!(stderr, "- path: {path}");
+        let _ = writeln!(stderr, "  below_min_score: {threshold}");
+        let _ = writeln!(stderr, "  types:");
+        write_type_entry(&mut stderr, "  ", best, detailed_score);
+    }
+
     fn report_error(&mut self, path: &str, error: &str) {
         self.ensure_heading();
         self.had_hard_error = true;
@@ -1315,6 +1364,7 @@ impl InferFailureReporter {
 
 struct BatchInferOpts<'a> {
     scoring_opts: &'a ScoringOpts,
+    min_score: MinScore,
     detailed_score: bool,
     strict: bool,
 }
@@ -1360,11 +1410,18 @@ fn run_batch_infer(
                 continue;
             }
         };
-        match infer_type(&data, graph, infer.scoring_opts) {
+        match infer_type(&data, graph, infer.scoring_opts, infer.min_score) {
             Err(e) => reporter.report_error(&f.abs.display().to_string(), &e),
             Ok(InferOutcome::Ambiguous(tied)) => {
                 reporter.report_ambiguous(&f.abs.display().to_string(), &tied, infer.detailed_score)
             }
+            Ok(InferOutcome::BelowThreshold { best, threshold }) => reporter
+                .report_below_threshold(
+                    &f.abs.display().to_string(),
+                    &best,
+                    threshold,
+                    infer.detailed_score,
+                ),
             Ok(InferOutcome::Unique(inferred)) => successes.push((f, data, inferred)),
         }
     }
@@ -1520,6 +1577,83 @@ fn expand_all_paths(paths: &[String], base: &Path) -> Result<Vec<InputFile>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use prototext_graph::build_scoring_graph::build_from_strings;
+
+    /// A one-message scoring graph, built in memory: `Msg { uint64 = 1 }`.
+    fn one_entry_graph() -> LoadedGraph {
+        let yaml = "entries:\n- Msg\nmessages:\n  Msg:\n    fields:\n    - number: 1\n      \
+                    type: uint64\n"
+            .to_string();
+        let (bytes, _, _) =
+            build_from_strings(&[yaml], false, false, |_, _| {}).expect("test graph must build");
+        LoadedGraph::from_static_bytes(Box::leak(bytes.into_boxed_slice()))
+            .expect("test graph must load")
+    }
+
+    fn opts() -> ScoringOpts {
+        ScoringOpts {
+            end_undeclared: true,
+            ..Default::default()
+        }
+    }
+
+    /// Field 1 as a varint: what `Msg` declares, so a positive score.
+    const MATCHING: &[u8] = &[0x08, 0x05];
+    /// Field 1, then fields 2 and 3, which `Msg` does not declare: two
+    /// unknowns (−10 each) outweigh the one match, so a negative score
+    /// without a veto (a wire-type mismatch would veto `Msg` outright).
+    const UNDECLARED: &[u8] = &[0x08, 0x05, 0x10, 0x01, 0x18, 0x01];
+
+    /// Spec 0389 test plan 4: an untied winner below the floor is
+    /// `BelowThreshold`, and the same winner is used when the floor allows it.
+    #[test]
+    fn a_winner_below_the_floor_is_not_used() {
+        let graph = one_entry_graph();
+        let score = match infer_type(UNDECLARED, &graph, &opts(), MinScore::Any).unwrap() {
+            InferOutcome::Unique(t) => t.score,
+            _ => panic!("with no floor, the one candidate wins"),
+        };
+        assert!(score < 0, "the mismatch must score below zero, got {score}");
+        match infer_type(UNDECLARED, &graph, &opts(), MinScore::default()).unwrap() {
+            InferOutcome::BelowThreshold { best, threshold } => {
+                assert_eq!(best.fqdn.trim_start_matches('.'), "Msg");
+                assert_eq!(best.score, score);
+                assert_eq!(threshold, MinScore::AtLeast(0));
+            }
+            _ => panic!("below the default floor of 0, the winner is not used"),
+        }
+        assert!(matches!(
+            infer_type(UNDECLARED, &graph, &opts(), MinScore::AtLeast(score)).unwrap(),
+            InferOutcome::Unique(_)
+        ));
+        assert!(matches!(
+            infer_type(MATCHING, &graph, &opts(), MinScore::default()).unwrap(),
+            InferOutcome::Unique(_)
+        ));
+    }
+
+    /// Spec 0389 test plan 5: `--min-score` takes negative integers, in
+    /// both spellings, and `any`; anything else is refused.
+    #[test]
+    fn min_score_parses_negative_numbers_and_any() {
+        let parse = |args: &[&str]| -> Result<MinScore, String> {
+            let mut argv = vec!["prototext", "decode"];
+            argv.extend_from_slice(args);
+            argv.push("x.pb");
+            match crate::Cli::try_parse_from(argv)
+                .map_err(|e| e.to_string())?
+                .command
+            {
+                crate::Command::Decode { min_score, .. } => Ok(min_score),
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(parse(&["--min-score", "-100"]), Ok(MinScore::AtLeast(-100)));
+        assert_eq!(parse(&["--min-score=-100"]), Ok(MinScore::AtLeast(-100)));
+        assert_eq!(parse(&["--min-score", "any"]), Ok(MinScore::Any));
+        assert!(parse(&["--min-score", "abc"]).is_err());
+    }
 
     fn inferred(packing: u64) -> InferredType {
         InferredType {

@@ -16,6 +16,7 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
 use crate::decode::{decode, DescriptorContext, RootType};
+use prototext_graph::score::MinScore;
 
 /// `<label> <ty> <name> = <number>;` for a primitive `ty`.
 pub(super) fn field(name: &str, number: i32, label: Label, ty: Type) -> FieldDescriptorProto {
@@ -357,6 +358,7 @@ pub(super) fn closed_bounded_fixture_under(
         &blob,
         &mut ctx,
         RootType::Named(root),
+        MinScore::default(),
         1,
         |_| {},
     )

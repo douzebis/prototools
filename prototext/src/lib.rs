@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
+use prototext_graph::score::MinScore;
 
 use complete::{
     complete_any_path, complete_descriptor_path, complete_dir_path, complete_input_paths,
@@ -57,6 +58,11 @@ pub static WKT_INDEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wkt_inde
 ///   bash:  source <(PROTOTEXT_COMPLETE=bash prototext)
 ///   zsh:   source <(PROTOTEXT_COMPLETE=zsh prototext)
 ///   fish:  PROTOTEXT_COMPLETE=fish prototext | source
+/// `--min-score`'s value: an integer, negative allowed, or `any` (spec 0389).
+fn parse_min_score(s: &str) -> Result<MinScore, String> {
+    s.parse()
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "prototext",
@@ -208,6 +214,21 @@ pub enum Command {
         /// With --no-annotations, restores protoc-compatible output.
         #[arg(long = "hide-unknown-fields")]
         hide_unknown_fields: bool,
+
+        /// The lowest score an inferred type may have and still be used
+        /// (spec 0389): an integer, negative allowed, or `any` for no floor.
+        /// Below it, the file is reported like an ambiguous one rather than
+        /// decoded. Only applicable when auto-inferring the type.
+        #[arg(
+            long = "min-score",
+            value_name = "N",
+            default_value = "0",
+            env = "PROTOTEXT_MIN_SCORE",
+            allow_negative_numbers = true,
+            value_parser = parse_min_score,
+            help_heading = "Advanced options",
+        )]
+        min_score: MinScore,
 
         /// Treat type-inference warnings (ambiguous type) as errors:
         /// exit 1 instead of exit 2.  Only applicable when auto-inferring type
