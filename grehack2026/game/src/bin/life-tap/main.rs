@@ -64,7 +64,8 @@ struct Args {
     stop: bool,
 
     /// Leave out the startup block of dumpcap and tshark commands to adapt
-    /// (spec 0393 S4). The per-message lines and the summary still print.
+    /// (spec 0393 S4), and the "missing messages" hint (spec 0396). The
+    /// per-message lines and the summary still print.
     #[arg(short, long)]
     quiet: bool,
 }
@@ -505,8 +506,9 @@ fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
         let lines = BufReader::new(tshark.stdout.take().expect("piped"));
         let log = Arc::clone(&log);
         let out = out.to_path_buf();
+        let quiet = args.quiet;
         let mut tracker = Tracker::new(args.port, next_call(&out));
-        thread::spawn(move || read(lines, &mut tracker, &out, owner, &log))
+        thread::spawn(move || read(lines, &mut tracker, &out, owner, &log, quiet))
     };
 
     let outcome = run(&mut capture);
@@ -642,6 +644,7 @@ fn read(
     out: &Path,
     owner: (u32, u32),
     log: &Mutex<Log>,
+    quiet: bool,
 ) -> String {
     let say = |line: &str| log.lock().unwrap().say(line);
     for line in lines.lines() {
@@ -653,7 +656,7 @@ fn read(
                 continue;
             }
         };
-        if fed.first_missed {
+        if fed.first_missed && !quiet {
             say("life-tap: missing messages: their connection predates the tap, so tshark");
             say("          cannot tell they are gRPC; life-client renews its connection every");
             say("          2 s (--renew-every), and the tap sees the next one whole");
