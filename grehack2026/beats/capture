@@ -61,7 +61,7 @@ steps:
 
   - text: |
       The second field is `rules` — another nested message, with the birth
-      and survival ranges and the topology.
+      and survival ranges.
 
       👋 Press space.
     node: /
