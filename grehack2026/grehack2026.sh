@@ -83,7 +83,7 @@ clear && header "1. On the wire"
 sudo -v && (life-tap -q &)
 # \
 #                                                                              \
-# 👉 In Bob's window — play the game of life, then pause it:                   \
+# 👉 In Bob's window — pause the game, so the tap stops scrolling:             \
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
