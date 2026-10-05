@@ -65,16 +65,23 @@ Every capture starts the same way. Bob's client is not running (Bob quits it wit
 
 ## 2. Eve is spying
 
-- Claim: Eve's server is exfiltrating from Bob's client, and the server drives the channel. A whole command rides in one response, and the whole answer comes back in a later request; neither changes the decoded grid.
-- Capture:
-  1. The tap starts (Bob's client is still quit from section 1).
-  2. In her window, Eve types `whoami`. The server sends it once, in the next response.
-  3. Bob runs `life-client --paused` and presses `n`: `000001-response.pb` carries `whoami`, and the client runs it.
-  4. Bob presses `n` again: `000002-request.pb` carries the output, which then shows up in Eve's window. Bob quits the client.
-  5. `life-tap --stop`, then `tail -n 3 capture/tap.log`.
-- `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a decode that follows the schema shows nothing.
+Two parts (spec 0395). First the capability, live, with no tap; then one controlled capture for protolens to dissect. Bob's hints never name the `whoami`/`experiment` payload — that is the reveal in 2b.
+
+- Part 1 — the capability, on screen:
+  1. Bob runs `life-client` (running, no `--paused`).
+  2. In her window, Eve types shell commands on the server's stdin — e.g. `ls ~/.ssh`, `id` — and a few Life steps later their output appears on her screen. Those commands ran on Bob's machine: the "Life server" is a remote shell.
+  3. Bob quits the client (Ctrl-C).
+
+## 2b. Hidden bits
+
+- One controlled capture:
+  1. Eve types `whoami` (queued for the next response).
+  2. The tap starts.
+  3. Bob runs `life-client --paused`, presses `n` twice (`000001-response.pb` carries `whoami`; `000002-request.pb` carries the reply), then quits the client.
+  4. `life-tap --stop`, then `tail -n 3 capture/tap.log`.
+- `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a schema-faithful decode shows nothing — it must hide below the values.
 - `protolens … capture/000002-request.pb --script beats/smuggle` flags the fields that do not sit the way the schema expects. At wire level (`w`), a VARINT is base-128, in little-endian 7-bit groups, and the high bit of each byte means "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, with the value unchanged.
-- Read across the fields, the bits group into bytes, and the bytes are ASCII. The request gives `experiment` (the client trims the output's ends, so no newline), and the response gives `whoami`. The deck and the beat show the bit table.
+- Read across the fields, the bits group into bytes, and the bytes are ASCII: the request gives `experiment` (the client trims the output's ends, so no newline), the response `whoami`. The reveal lands here: Eve asked `whoami`, Bob's machine answered `experiment`, recovered from the wire alone.
 
 ## 3. No schema
 
@@ -108,3 +115,4 @@ Then a pointer to <https://github.com/ThalesGroup/prototools>.
 - `docs/specs/0388-the-demo-runs-from-grehack2026.md`: this layout, the tap's rename, and the fixed captures.
 - `docs/specs/0391-every-log-entry-is-a-capture.md`: one log entry type, `Capture`, with the contraband field.
 - `docs/specs/0393-only-dumpcap-runs-as-root.md`: the tap in the background, only `dumpcap` as root, `life-tap -q`, and `life-client --paused`.
+- `docs/specs/0395-the-teleprompt-deck-reads-more-easily.md`: splash banners, spacing, `| view` on the hexdump, syntax-colored `view`, and the two-part Eve section.

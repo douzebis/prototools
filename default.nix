@@ -534,7 +534,7 @@ let
   # grpconf2026/shell.nix select these. Built from Nix only, never from
   # target/release/.
   demoShells = import ./nix/demo-shells.nix {
-    inherit pkgs wktDb grpconfDemo;
+    inherit pkgs wktDb grpconfDemo buf;
     telepromptSrc  = ./bin/teleprompt;
     grehackRuntime = grehack2026.runtime;
     inherit (rust) prototext protolensLean;

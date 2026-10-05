@@ -24,12 +24,23 @@
 , googleapisDb
 , googleapisPbs
 , grpconfDemo
+, buf             # narrow-pinned buf, for the proto LSP in the nvim config
 }:
 
 let
+  # Neovim config for `view` / `view_textproto` / `view_proto`: desert theme,
+  # proto and textproto highlighting (spec 0395 fix). The dev-shell writes the
+  # same highlighting through _hook_nvim; the demo shells no longer run that
+  # hook (spec 0394), so teleprompt carries its own config under XDG_CONFIG_HOME.
+  telepromptNvimConfig = pkgs.runCommand "teleprompt-nvim-config" { } ''
+    mkdir -p $out/nvim
+    cp ${../nix/demo-nvim/init.lua} $out/nvim/init.lua
+  '';
+
   # bin/teleprompt calls python3 (its readline coprocess, which finds
   # libreadline through TELEPROMPT_LIBREADLINE), magick and chafa (`header`),
-  # nvim (`view`, `view_textproto`, `view_proto`), and tput/stty.
+  # nvim (`view`, `view_textproto`, `view_proto`), and tput/stty. buf is on
+  # PATH for the proto LSP the nvim config starts.
   teleprompt = pkgs.runCommand "teleprompt"
     { nativeBuildInputs = [ pkgs.makeWrapper ]; }
     ''
@@ -40,8 +51,9 @@ let
       wrapProgram $out/bin/teleprompt \
         --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [
           bash python3 imagemagick chafa neovim ncurses coreutils
-        ])} \
-        --set TELEPROMPT_LIBREADLINE ${pkgs.readline}/lib/libreadline.so
+        ]) + ":" + buf + "/bin"} \
+        --set TELEPROMPT_LIBREADLINE ${pkgs.readline}/lib/libreadline.so \
+        --set XDG_CONFIG_HOME ${telepromptNvimConfig}
     '';
 
   # What both decks call besides the prototools: protoc and hexdump.

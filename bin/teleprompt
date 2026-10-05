@@ -287,6 +287,17 @@ export -f header
 blue() { printf '\e[1;94m%s\e[0m\n' "$*"; }
 export -f blue
 
+# splash TEXT — a small boxed banner, for "now entering <tool>" moments
+# (spec 0395). Bright cyan, so it stands apart from the blue narration and
+# the big header() title. One blank line on each side gives it room.
+splash() {
+    local text=" $* " line
+    printf -v line '%*s' "${#text}" ''
+    line=${line// /─}
+    printf '\n\e[1;96m┌%s┐\n│%s│\n└%s┘\e[0m\n\n' "$line" "$text" "$line"
+}
+export -f splash
+
 view() {
     if [[ $# -eq 0 ]]; then
         nvim -R -

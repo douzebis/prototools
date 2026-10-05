@@ -107,7 +107,7 @@ life-tap --stop
 tail -n 3 capture/tap.log
 
 # Look at the first captured request as raw bytes:
-hexdump -v -C capture/000001-request.pb
+hexdump -v -C capture/000001-request.pb | view
 # \
 # Quite opaque. Protobuf is self-describing only up to field numbers and       \
 # wire types; to read values we need the schema — a descriptor set and a       \
@@ -117,6 +117,7 @@ hexdump -v -C capture/000001-request.pb
 # Where would a schema come from? The client binary carries its own. Our       \
 # first prototool, protoscan, scans any blob for embedded descriptors:         \
 
+splash "ENTER PROTOSCAN"
 protoscan life-client
 # \
 # There they are: protoscan found two FileDescriptorProtos embedded in         \
@@ -128,6 +129,7 @@ protoscan life-client
 # Let's process those descriptors with our second prototool, reproto, so       \
 # we can read them in the clear and enable type inference:                     \
 
+splash "ENTER REPROTO"
 reproto -I life-client --schema-db-out life.desc
 
 
@@ -156,6 +158,7 @@ view life/proto/grehack/life/v1/life.proto
 # Now that we have a corpus, our third prototool, prototext, can infer         \
 # the type of a capture by scoring it against the DB:                          \
 
+splash "ENTER PROTOTEXT"
 prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
 
 # \
@@ -170,6 +173,7 @@ protoc --descriptor_set_in=life.desc \
 # Then the better view: our fourth prototool, protolens — more                 \
 # convenient, and it shows wire-level detail, scoring, and navigation:         \
 
+splash "ENTER PROTOLENS"
 protolens --descriptor-set life.desc capture/000001-response.pb \
   --script beats/capture
 # \
@@ -183,64 +187,103 @@ protolens --descriptor-set life.desc capture/000001-response.pb \
 clear && header "2. Eve is spying"
 
 # \
-# Claim: Eve's server is not an innocent Life server — it is exfiltrating      \
-# from Bob's client. And the covert channel runs the opposite way to what      \
-# you would expect: the server drives it.                                      \
+#                                                                              \
+# Claim: Eve's server is not an innocent Life server.                          \
+#                                                                              \
+# Watch her server's window. The grid plays on as usual — but Eve is           \
+# about to make it do more than play.                                          \
 
 # \
-#    Eve 😈  ──  "whoami"      (hidden in a response)  ──▶  Bob 🙂             \
-#    Eve 😈  ◀──  "experiment"  (hidden in a request)   ──   Bob 🙂            \
-#    One Life message carries a whole command, and the next one the            \
-#    whole answer — without changing the decoded grid.                         \
+#                                                                              \
+# 👉 Bob's window — start the client (running, no --paused):                   \
+#        life-client                                                           \
+
+# \
+#                                                                              \
+# 👉 Eve's window — Eve types shell commands on her server's stdin, and        \
+#    a few Life steps later their output appears back on her screen:           \
+#        ls ~/.ssh                                                             \
+#        id                                                                    \
+#                                                                              \
+# Those commands ran on Bob's machine. Eve's "Life server" is a remote         \
+# shell, hidden inside an ordinary-looking game.                               \
+
+# \
+#                                                                              \
+# 👉 Bob's window — Ctrl-C quits the client.                                   \
+#                                                                              \
+# So the channel exists. Now Alice, who only has the wire, has to find         \
+# it. She takes one clean capture of a single exchange.                        \
+
+
+clear && header "2b. Hidden bits"
+
+# \
+#                                                                              \
+# 👉 Eve's window — queue one command for the next response:                   \
+#        whoami                                                                \
 
 rm -rf capture
 sudo -v && (life-tap -q &)
 
 # \
 #                                                                              \
-# 👉 Eve's window — Eve types a command on her server's stdin:                 \
-#        whoami                                                                \
-#    It waits for the next Life step.                                          \
-# 👉 Bob's window — start a paused client:                                     \
+# 👉 Bob's window — start a paused client and step it twice:                   \
 #        life-client --paused                                                  \
-#    Press n: response 1 carries "whoami", and Bob's client runs it.           \
-#    Press n again: request 2 carries the answer, which surfaces in            \
-#    Eve's window. Then Ctrl-C quits the client.                               \
+#    Press n, then n again. Two steps: two requests, two responses.            \
+#    Then Ctrl-C quits the client.                                             \
 
 life-tap --stop
 tail -n 3 capture/tap.log
 
-# Alice decodes the second request with protoc → nothing surfaces:
+# \
+#                                                                              \
+# Alice decodes the captured request with protoc — the schema-faithful         \
+# decoder — and nothing unusual surfaces:                                      \
+
 protoc --descriptor_set_in=life.desc \
        --decode=grehack.life.v1.StepRequest < capture/000002-request.pb \
   | view_textproto
-# \
-# A perfectly ordinary message. The smuggled payload is value-preserving,      \
-# so a schema-faithful decode shows nothing.                                   \
 
-# Now look again with protolens — the anomalies show up:
+# \
+#                                                                              \
+# A perfectly ordinary message. Whatever Eve is doing, it survives a           \
+# schema-faithful decode untouched — so it must hide below the values.         \
+
+# \
+#                                                                              \
+# The same capture, through protolens:                                         \
+
 protolens --descriptor-set life.desc capture/000002-request.pb \
   --script beats/smuggle
+
 # \
+#                                                                              \
 # protolens flags the fields that do not sit the way the schema expects.       \
-# At wire level: a VARINT is base-128, little-endian groups, high bit = a      \
-# continuation. The trick is a spurious continuation bit — one hidden bit      \
-# per field, with the decoded value unchanged.                                 \
+#                                                                              \
+# At wire level, a VARINT is base-128: little-endian groups, the high bit      \
+# a continuation flag. The trick is a spurious continuation bit — one          \
+# hidden bit per field, with the decoded value unchanged.                      \
 
 # \
-# Reading the pattern across fields reconstructs the hidden bits into          \
-# bytes, and the bytes map to lowercase ASCII:                                 \
+#                                                                              \
+# Read those hidden bits across the fields, group them into bytes, and         \
+# they are ASCII:                                                              \
 
 # \
+#                                                                              \
 #   01100101 01111000 01110000 ... 01101110 01110100                           \
 #      e        x        p     ...    n        t      → experiment             \
+#                                                                              \
 #   01110111 01101000 01101111 01100001 01101101 01101001                      \
 #      w        h        o        a        m        i      → whoami            \
 
 # \
-# The channel is legible end to end: Eve asked "whoami", Bob's machine         \
-# answered "experiment". We understand the mechanism and can read both         \
-# directions.                                                                  \
+#                                                                              \
+# There it is, end to end: Eve asked "whoami", and Bob's machine               \
+# answered "experiment" — the exact exchange, recovered from the wire          \
+# alone. The server drives the channel, hidden inside the responses;           \
+# the answers ride home inside the requests.                                   \
 
 
 clear && header "3. No schema"
