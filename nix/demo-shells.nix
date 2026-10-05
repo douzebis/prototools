@@ -71,9 +71,14 @@ in
   inherit teleprompt;
 
   # grehack2026/, eve/ and bob/ (spec 0394 S1).
+  #
+  # neovim and buf are on the shell PATH (not only inside teleprompt's own
+  # wrapper) so that protolens's `v` jump-to-definition works when
+  # protolens is run directly in the shell, not only through the deck: `v`
+  # spawns a bare `nvim`, whose config then starts `buf lsp serve`.
   grehack2026-shell = pkgs.mkShell {
     name = "grehack2026";
-    packages = [ grehackRuntime ] ++ deckTools;
+    packages = [ grehackRuntime pkgs.neovim buf ] ++ deckTools;
     shellHook = ''
       ${notDevShell}
       export PROTOTEXT_DESCRIPTOR_SET="${wktSet}"
