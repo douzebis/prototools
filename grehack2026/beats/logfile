@@ -29,17 +29,17 @@ steps:
          StepResponse.
 
       3. Every top-level entry is the same field, 42 — our captures. Pin
-         its type: on the field, `o` prefills an `override ... --as-new
-         Capture`; tailor the name, Enter, `t` to apply. Now the entries
-         read as a repeated Capture.
+         its type: on the field, `t` then `o` prefills an `override ...
+         --as-new Capture`; tailor the name, Enter. Now the entries read
+         as a repeated Capture.
 
-      4. Find the `generation` field and name it the same way: `o` for a
-         prefilled override, tailor, Enter.
+      4. Find the `generation` field and name it the same way: `t`, `o`
+         for a prefilled override, tailor, Enter.
 
       5. Go to the non-canonical fields — the strings the client's schema
          never declared. Where one is set it reads "whoami" or
          "experiment": Eve's contraband. Name that field `contraband` with
-         `o` again.
+         `t`, `o` again.
 
       All done: a schema reverse-crafted from a truncated, type-less blob,
       and Eve's covert channel read straight out of her own log.
