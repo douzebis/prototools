@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Reminder-only beat for demo step 3: the truncated log, no root type.
+# Reminder-only beat for demo step 4: the truncated log, no root type.
 #
-# This beat never drives protolens — it only paces the presenter and shows
-# short reminders in the script pane. The presenter runs the overrides and
-# heat cues by hand. Advance each step with space or Enter.
+# A single step: the script pane summarizes the whole operation and the
+# presenter drives protolens by hand (fold, G, i, o, t, /). Reverse-
+# crafting a schema for an unknown blob from the fields the corpus does
+# know. Advance (to quit) with space or Enter.
 #
 # Invocation (from grehack2026.sh):
 #   protolens --descriptor-set life.desc eve/server.log \
@@ -16,45 +17,32 @@ title: A blob with no schema
 
 steps:
   - text: |
-      eve/server.log, opened against life.desc only.
+      eve/server.log, opened against life.desc — no known root type
+      matches, so the root is a generic `message`. Walk the recovery:
 
-      protolens opens it, but no known root type matches — instead of a
-      type name you get a generic `message`. And the tail is flagged
-      TRUNCATED: that is exactly why protoc --decode_raw choked.
+      1. Fold to depth 1 (`1`), then `G` to the end — the tail is flagged
+         TRUNCATED. That is why protoc --decode_raw choked on the whole
+         file.
 
-      Every top-level entry is the same field, 42, repeated: one entry
-      per message Eve's server saw.
+      2. Fold to depth 2 (`2`), turn on heat cues (`i`), and hover: inside
+         each entry the corpus recognizes the game's own StepRequest and
+         StepResponse.
 
-      👋 Fold the message (`1`) so the entries fit on screen.
+      3. Every top-level entry is the same field, 42 — our captures. Pin
+         its type: on the field, `o` prefills an `override ... --as-new
+         Capture`; tailor the name, Enter, `t` to apply. Now the entries
+         read as a repeated Capture.
 
-  - text: |
-      Enable the heat cues — press `i`.
+      4. Find the `generation` field and name it the same way: `o` for a
+         prefilled override, tailor, Enter.
 
-      Every substructure gets a cue showing how well the corpus can type
-      it. Inside each entry, protolens recognizes the game's own
-      StepRequest or StepResponse from its fields.
+      5. Go to the non-canonical fields — the strings the client's schema
+         never declared. Where one is set it reads "whoami" or
+         "experiment": Eve's contraband. Name that field `contraband` with
+         `o` again.
 
-      👋 Press `i`, then hover over the bright cues.
-
-  - text: |
-      Pin the recognized types with an override (the override pane, or the
-      prefilled command protolens proposes on a cue): StepRequest and
-      StepResponse, inside the entries.
-
-      👋 Commit the proposed overrides.
-
-  - text: |
-      Each entry also carries field 666: a string the client's schema has
-      never heard of. In most entries it is absent. Where it is there, read
-      it.
-
-      👋 Find a field 666 (`/666`).
-
-  - text: |
-      "whoami", in the entry of the response that smuggled it, and
-      "experiment", in the entry of the request that brought it back.
-      Eve's own log records her covert channel — and we read it from a
-      truncated blob with no schema, type by type, from the field shapes
-      the corpus does know.
+      All done: a schema reverse-crafted from a truncated, type-less blob,
+      and Eve's covert channel read straight out of her own log.
 
       👋 Type `:q` to quit protolens.
+    node: /
