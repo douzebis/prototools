@@ -158,7 +158,7 @@ view life/proto/grehack/life/v1/life.proto
 #                                                                              \
 
 protolens --descriptor-set life.desc capture/000001-request.pb \
-    --script beats/capture # \
+    --script beats/capture
 
 
 # \
