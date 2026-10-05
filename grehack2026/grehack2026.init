@@ -30,7 +30,7 @@ unset _init_dir _client _wrapped
 header "prototools"
 
 echo "
-            [1;94mGreHack 2026
+            [1;94mS3NS Seminar - October 2026
 
 
             Dissecting protobuf:
@@ -41,10 +41,6 @@ echo "
             A live demo of prototools
             https://github.com/ThalesGroup/prototools
 
-
-            Frederic Ruget
-            Senior Cloud Architect, S3NS
-            fred@s3ns.io
 [0m
 
 

@@ -430,15 +430,9 @@ let
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     inherit wktDb;
-    # dev-shell only, for PROTOTEXT_GOOGLEAPIS_SET / PROTOTEXT_GOOGLEAPIS_PBS.
-    # Entering the dev-shell therefore forces googleapisDb — a fetch of the
-    # pinned corpus, a whole-corpus protoc run and a reproto --schema-db-out.
-    # It is `full-tests` material, not `ci` material, and it is deliberately
-    # kept out of user-shell for that reason.
-    inherit (python) googleapisDb googleapisPbs;
-    inherit grpconfDemo;
-    # dev-shell only: life-server, life-client and life-tap (spec 0375 S10).
-    inherit grehackLife;
+    # The demos' inputs — the googleapis database, the grpconf stage, the
+    # life binaries — are not passed: each demo has its own shell
+    # (spec 0394, demoShells below).
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;
   };
@@ -536,6 +530,17 @@ let
     inherit (python) reproto protoscan googleapisDb googleapisPbs;
   };
 
+  # One shell per demo directory (spec 0394): grehack2026/shell.nix and
+  # grpconf2026/shell.nix select these. Built from Nix only, never from
+  # target/release/.
+  demoShells = import ./nix/demo-shells.nix {
+    inherit pkgs wktDb grpconfDemo;
+    telepromptSrc  = ./bin/teleprompt;
+    grehackRuntime = grehack2026.runtime;
+    inherit (rust) prototext protolensLean;
+    inherit (python) reproto protoscan googleapisDb googleapisPbs;
+  };
+
   # ---------------------------------------------------------------------------
   # CI targets
   #
@@ -609,6 +614,9 @@ in
   prototools-closure-check = prototoolsClosureCheck;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
+  grehack2026-shell    = demoShells.grehack2026-shell;
+  grpconf2026-shell    = demoShells.grpconf2026-shell;
+  teleprompt           = demoShells.teleprompt;
   wkt-db               = wktDb;
   protoscan            = python.protoscan;
   fdp-scan-lib         = rust.fdpScanLib;

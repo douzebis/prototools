@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0393 — only dumpcap runs as root
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-05
 App: grehack2026 (life-tap, life-client, teleprompt deck)
 Refs: docs/specs/0375-a-game-of-life-to-spy-on.md (the tap, its
       dumpcap | tee | tshark pipeline, and running it as root);
@@ -199,4 +200,33 @@ message. `-n` turns that into an immediate, explained failure.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-05 on the development machine.
+
+- Items 1–3: unit tests for the dumpcap choice (`choose_dumpcap`), the
+  `sudo -n` command and its display, the startup block and `-q`, and the
+  client's `--paused`. All 70 tests of the game crate pass; clippy and
+  `cargo fmt --check` are clean.
+- Before creating any file, the tap checks the credentials with
+  `sudo -n -v`, which runs nothing as root. A tap without cached
+  credentials therefore fails before it starts tshark or writes into
+  `capture/`.
+- Item 4: `smoke-test.sh` passes all 18 checks under rootless Podman and
+  under Docker 29.8, on an image built from this tree. Its tap checks run
+  as root, which is case 2.
+- Item 5, case 3 on this machine (no NixOS wrapper, not in the
+  `wireshark` group), in a scratch directory on a spare port. The tap
+  was started as `sudo -n -v && (life-tap -q &)`, five client steps
+  were taken, then `life-tap --stop`:
+  - `ps` showed `life-tap` and `tshark` running as the user, and only
+    `dumpcap`, under `sudo -n`, as root;
+  - all files were owned by the user;
+  - `--stop` returned after 1.1 s (`STOP_GRACE` plus the drain), once
+    "5 requests and 5 responses saved, 0 messages missed" was in
+    `tap.log`;
+  - SIGTERM reached dumpcap through sudo, as S2 relies on.
+- Not done: the expired-credentials case (`sudo -k`). Clearing the sudo
+  cache could have disturbed a rehearsal running in the user's own
+  windows at the time, and `sudo -n` succeeds non-interactively on this
+  machine.
+- Not verified: the backgrounded tap inside teleprompt itself, during a
+  rehearsal of the deck.

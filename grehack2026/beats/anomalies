@@ -7,7 +7,7 @@
 # security audience. A copy of grpconf2026/anomalies.script, beside a copy
 # of its blob, so that the GreHack 2026 demo stands alone (spec 0388 S12).
 #
-# Invocation (from grehack2026.sh; the dev-shell's PROTOTEXT_DESCRIPTOR_SET
+# Invocation (from grehack2026.sh; the demo shell's PROTOTEXT_DESCRIPTOR_SET
 # supplies the well-known types):
 #   protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
 #       --script beats/anomalies

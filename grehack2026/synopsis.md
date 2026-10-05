@@ -12,7 +12,7 @@ The demo app is the crate in `game/`: a Game of Life client and server talking c
 
 ## Setup
 
-Three windows, all opened beforehand and already inside the repository's dev-shell (`nix-shell dev-shell.nix`), which puts the three `life-*` binaries and the prototools on the PATH:
+Three windows, all opened beforehand. In each, `cd` to the window's directory (below), then run `nix-shell`: each directory's `shell.nix` gives the demo's own shell (spec 0394), with every tool built by Nix from committed sources, as in the workshop image — the prototools, the three `life-*` binaries, `dumpcap`/`tshark`, `teleprompt`, `protoc` and `hexdump`:
 
 | Window | Directory | Runs |
 |---|---|---|
@@ -28,9 +28,9 @@ The deck runs in Alice's window. The `#` lines are on-screen narration: teleprom
 - It wipes what earlier runs generated: `capture/`, `life.desc`, `life/` and `eve/server.log`.
 - It copies the client binary to `grehack2026/life-client`, which is "the client binary Alice has". On a Nix PATH, `life-client` is a wrapper script, and the copy is the real binary behind it.
 
-The tap runs in Alice's window, in the foreground, as `sudo env PATH="$PATH" life-tap`. `sudo` asks for the password on stage. The tap prints one line per message, saves each message as `capture/NNNNNN-request.pb` / `-response.pb`, and stops on Ctrl-C. While it runs the deck waits, so the 👉 hints for the other windows come right before it.
+The tap runs in Alice's window, in the background, started with `sudo -v && (life-tap -q &)`. `sudo -v` asks for the password on stage; only `dumpcap` then runs as root, through `sudo -n`, while the tap and `tshark` run as Alice (spec 0393). `-q` leaves out the tap's startup block of commands. The tap prints one line per message and saves each message as `capture/NNNNNN-request.pb` / `-response.pb`. Because it runs in the background, the 👉 hints for the other windows come after it has started. `life-tap --stop` stops it and returns once its files are written; `tail -n 3 capture/tap.log` then shows the closing summary.
 
-Every capture starts the same way. Bob pauses the game (Space), the deck runs `rm -rf capture` and starts the tap, and Bob then plays single steps with `n`. A capture therefore always starts at `000001`, and the deck can name its files in advance. The two-second wait before the first `n` makes sure the client opens a new connection, which the tap sees from the start (`life-client --renew-every`, 2 s by default).
+Every capture starts the same way. Bob's client is not running (Bob quits it with Ctrl-C), the deck runs `rm -rf capture` and starts the tap, and Bob then starts a paused client, `life-client --paused`, and plays single steps with `n`. A capture therefore always starts at `000001`, and the deck can name its files in advance. The client is a new process, so its connection opens while the tap is watching, and the tap sees it from the start. Without `--paused`, the client runs from launch, as it does in section 0.
 
 ## Why prototools
 
@@ -46,7 +46,7 @@ Every capture starts the same way. Bob pauses the game (Space), the deck runs `r
 
 ## 1. On the wire
 
-- Capture: Bob pauses, the tap starts, Bob presses `n` three times, Ctrl-C stops the tap, and Bob resumes the game.
+- Capture: Bob quits the client, the tap starts, Bob runs `life-client --paused`, presses `n` three times and quits it, then `life-tap --stop` and `tail -n 3 capture/tap.log`.
 - `hexdump -v -C capture/000001-request.pb`: opaque. Protobuf is self-describing only up to field numbers and wire types; reading values needs a schema, that is, a descriptor set and a root type.
 - `protoscan life-client`: the client carries its own schema. protoscan lists the embedded `FileDescriptorProto`s: the game's `grehack/life/v1/life.proto`, and the well-known `google/protobuf/descriptor.proto`. `--proto_out DIR` would extract them.
 - `reproto -I life-client --schema-db-out life.desc` turns those descriptors into a schema database. reproto needs `descriptor.proto` in its input set, and the client carries it, so no `--use-variant` is needed.
@@ -67,11 +67,11 @@ Every capture starts the same way. Bob pauses the game (Space), the deck runs `r
 
 - Claim: Eve's server is exfiltrating from Bob's client, and the server drives the channel. A whole command rides in one response, and the whole answer comes back in a later request; neither changes the decoded grid.
 - Capture:
-  1. Bob pauses, and the tap starts.
+  1. The tap starts (Bob's client is still quit from section 1).
   2. In her window, Eve types `whoami`. The server sends it once, in the next response.
-  3. Bob presses `n`: `000001-response.pb` carries `whoami`, and the client runs it.
-  4. Bob presses `n` again: `000002-request.pb` carries the output, which then shows up in Eve's window.
-  5. Ctrl-C stops the tap, and Bob resumes the game.
+  3. Bob runs `life-client --paused` and presses `n`: `000001-response.pb` carries `whoami`, and the client runs it.
+  4. Bob presses `n` again: `000002-request.pb` carries the output, which then shows up in Eve's window. Bob quits the client.
+  5. `life-tap --stop`, then `tail -n 3 capture/tap.log`.
 - `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a decode that follows the schema shows nothing.
 - `protolens … capture/000002-request.pb --script beats/smuggle` flags the fields that do not sit the way the schema expects. At wire level (`w`), a VARINT is base-128, in little-endian 7-bit groups, and the high bit of each byte means "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, with the value unchanged.
 - Read across the fields, the bits group into bytes, and the bytes are ASCII. The request gives `experiment` (the client trims the output's ends, so no newline), and the response gives `whoami`. The deck and the beat show the bit table.
@@ -87,7 +87,7 @@ Every capture starts the same way. Bob pauses the game (Space), the deck runs `r
 ## 4. Anomalies
 
 - `protolens --type google.protobuf.FileDescriptorSet anomalies.pb --script beats/anomalies` walks through one example of every encoding anomaly prototext reports, from bytes every parser accepts to bytes none can read.
-- `anomalies.pb` and `beats/anomalies` are copies of `grpconf2026/anomalies.pb` and `grpconf2026/anomalies.script`, kept here so the demo stands alone. The root type is `FileDescriptorSet`. The dev-shell's `PROTOTEXT_DESCRIPTOR_SET` supplies the well-known types.
+- `anomalies.pb` and `beats/anomalies` are copies of `grpconf2026/anomalies.pb` and `grpconf2026/anomalies.script`, kept here so the demo stands alone. The root type is `FileDescriptorSet`. The demo shell's `PROTOTEXT_DESCRIPTOR_SET` supplies the well-known types.
 
 ## 5. Takeaways
 
@@ -107,3 +107,4 @@ Then a pointer to <https://github.com/ThalesGroup/prototools>.
 - `docs/specs/0387-a-request-and-a-response-score-apart.md`: the log's two old entry types, replaced by spec 0391.
 - `docs/specs/0388-the-demo-runs-from-grehack2026.md`: this layout, the tap's rename, and the fixed captures.
 - `docs/specs/0391-every-log-entry-is-a-capture.md`: one log entry type, `Capture`, with the contraband field.
+- `docs/specs/0393-only-dumpcap-runs-as-root.md`: the tap in the background, only `dumpcap` as root, `life-tap -q`, and `life-client --paused`.

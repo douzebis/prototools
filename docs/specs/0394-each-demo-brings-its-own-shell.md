@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0394 — each demo brings its own shell
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-05
 App: nix (dev-shell, demo shells), grehack2026, grpconf2026
 Refs: docs/specs/0374-a-workshop-image-for-every-laptop.md (the
       `runtime` tool set the workshop image ships, reused here);
@@ -89,9 +90,12 @@ assume the repository root (`_hook_cargo` builds
   and gitignored, so they get no `shell.nix`; the grpconf demo runs from
   `grpconf2026/`.
 
-- **S3. `teleprompt` as a derivation.** `bin/teleprompt`, packaged with
-  `writeShellApplication` or `wrapProgram` so that `imagemagick` and
-  `chafa` (its `header`) are on its PATH. The demo shells do not put
+- **S3. `teleprompt` as a derivation** (`nix-build -A teleprompt`).
+  `bin/teleprompt`, taken as a store path and wrapped with `wrapProgram`
+  so that everything it calls is on its PATH: `python3` (its readline
+  coprocess, which finds libreadline through `TELEPROMPT_LIBREADLINE`,
+  also set by the wrapper), `magick` and `chafa` (`header`), `nvim`
+  (`view`, `view_textproto`), and `tput`/`stty`. The demo shells do not put
   `bin/` on PATH: its `prototext`, `reproto` and `protoscan` wrappers
   point at `target/release/` (G2).
 
@@ -99,6 +103,8 @@ assume the repository root (`_hook_cargo` builds
   `PROTOTEXT_DESCRIPTOR_SET` (the WKT database), and grpconf's also
   `PROTOTEXT_GOOGLEAPIS_SET` and `PROTOTEXT_GOOGLEAPIS_PBS`. They do
   not export `NIXSHELL_REPO`: they are not development shells (N3).
+  They `unset` it, since `nix-shell` inherits the caller's environment
+  and a demo shell entered from the dev-shell would otherwise keep it.
   So the post-edit lint hook treats them like any foreign shell and asks
   for the dev-shell before linting.
 
@@ -165,7 +171,9 @@ directory makes the right shell the default where it is needed.
 
 ## Test plan
 
-1. `nix-build -A grehack2026-shell -A grpconf2026-shell` builds.
+1. `nix-build -A teleprompt` builds. (A `mkShell` derivation is not
+   meant to be built, so the shells themselves are checked by entering
+   them, items 2–3.)
 2. In `grehack2026/`, `grehack2026/eve/` and `grehack2026/bob/`,
    `nix-shell --run 'command -v protolens prototext reproto protoscan
    life-server life-client life-tap teleprompt protoc hexdump'`: every
@@ -186,4 +194,34 @@ directory makes the right shell the default where it is needed.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-05 on the development machine.
+
+- Item 1: `teleprompt` builds, its shebang patched to the store's bash.
+  It uses no bash line-editing builtins (its Python coprocess edits), so
+  plain `bash` serves.
+- Item 2: from `grehack2026/`, `eve/` and `bob/`, all twelve tools
+  checked (the four prototools, the three `life-*`, `teleprompt`,
+  `protoc`, `hexdump`, `dumpcap`, `tshark`) resolve into `/nix/store`.
+  `PROTOTEXT_DESCRIPTOR_SET` is set and `NIXSHELL_REPO` unset. The first
+  check found `NIXSHELL_REPO` set, inherited from the calling dev-shell,
+  which is why S4 now unsets it.
+- Item 3: entered from an empty scratch directory named `grpconf2026`,
+  the shell populated `bob/` (`app` executable, `logfile`, `capture`)
+  and `alice/`. A second entry skipped the copy. The tools resolve into
+  `/nix/store`, and the three database variables name existing files.
+- Item 4: the dev-shell's derivation depended on `googleapis-db`,
+  `grpconf-demo`, the `life` package and `wireshark-cli` at HEAD, and
+  depends on none of them after (`nix-store -qR` on
+  `nix-instantiate dev-shell.nix`). Entering it runs every hook but the
+  removed `_hook_demo`, and exports no `PROTOTEXT_GOOGLEAPIS_*`.
+- Item 5: the new lines of `bin/profile` resolve the database from
+  another working directory (`googleapis.desc`, 25 MB). A full
+  `bin/profile startup` run, which builds and runs `perf`, was not done.
+- Not done: item 6 (a dry run of each deck, which needs a terminal) and
+  item 7 (timing a cold dev-shell entry with googleapis's inputs
+  changed). Item 4 shows the dependency is gone; its cost was not
+  measured.
+- S6: the two grpconf `.init` files were identical, so nothing was lost
+  with the long deck's. The 20-minute deck had no `[CUT n]` markers
+  left, so `speaker-notes.md`'s two-version timing section became a
+  single table.

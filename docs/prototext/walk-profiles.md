@@ -21,6 +21,11 @@ time target/release/protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET \
                               $PROTOTEXT_GOOGLEAPIS_SET quit
 ```
 
+The dev shell no longer exports `PROTOTEXT_GOOGLEAPIS_SET` (spec 0394).
+Set it from `nix-build -A googleapis-db --no-out-link` (the database is
+`googleapis.desc` inside it), or enter the grpconf2026 demo shell, which
+exports it. `bin/profile startup` builds it on demand when it is unset.
+
 ## Executive summary
 
 - **That command is the scoring walk, and almost nothing else.**  68% of its

@@ -53,9 +53,13 @@ case "$TARGET" in
     *) echo "usage: bin/profile {score|decode|startup} [args...]" >&2; exit 2 ;;
 esac
 
+# The googleapis database is no longer in the dev shell (spec 0394 S8): when
+# PROTOTEXT_GOOGLEAPIS_SET is unset, build it on demand. The repository root
+# is this script's parent directory.
 if [[ "$TARGET" == startup && -z "${PROTOTEXT_GOOGLEAPIS_SET:-}" ]]; then
-    echo "bin/profile: PROTOTEXT_GOOGLEAPIS_SET is unset; enter the dev shell" >&2
-    exit 1
+    echo "bin/profile: PROTOTEXT_GOOGLEAPIS_SET is unset; building googleapis-db" >&2
+    db=$(nix-build "$(dirname "$0")/.." -A googleapis-db --no-out-link) || exit 1
+    export PROTOTEXT_GOOGLEAPIS_SET="$db/googleapis.desc"
 fi
 
 # Same lock as bin/bench, for the same reason: a build must not overlap a

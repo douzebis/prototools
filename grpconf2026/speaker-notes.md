@@ -157,11 +157,8 @@ these as one fluid compound. Practice them before the talk.
 
 ## Timing hints
 
-Two versions of the script exist: `grpconf2026.sh` (full, ~26 min) and
-`grpconf2026-20min.sh` (20-minute cut). The three cuts in the short
-version are marked with `[CUT 1/2/3]` comments in the script.
-
-### Full version (~26 min)
+The script is `grpconf2026.sh`, a 20-minute cut. (An earlier, longer
+version was retired; spec 0394 gave this cut its name.)
 
 | Section | Target duration |
 |---------|----------------|
@@ -169,28 +166,12 @@ version are marked with `[CUT 1/2/3]` comments in the script.
 | prototools overview | 2 min |
 | The stage (scenario setup) | 1 min |
 | protoc falls short | 2 min |
-| protoscan + reproto | 3 min |
-| prototext + protolens/capture | 4 min |
+| protoscan + reproto (no tree/file view) | 1.5 min |
+| prototext + protolens/capture (no intermediate protoc decode) | 3 min |
 | protolens/logfile (app.desc) | 5 min |
 | protolens/logfile (googleapis) | 5 min |
-| Scale demo + conclusion | 2 min |
-| **Total** | **~26 min** |
-
-### Short version (~20 min) — `grpconf2026-20min.sh`
-
-| Section | Cut? | Target duration |
-|---------|------|----------------|
-| S3NS intro | — | 2 min |
-| prototools overview | — | 2 min |
-| The stage (scenario setup) | — | 1 min |
-| protoc falls short | — | 2 min |
-| protoscan + reproto | Cut 2: no tree/file view | 1.5 min |
-| prototext + protolens/capture | Cut 3: no intermediate protoc decode | 3 min |
-| protolens/logfile (app.desc) | — | 5 min |
-| protolens/logfile (googleapis) | — | 5 min |
-| Scale demo | Cut 1: removed | — |
-| Conclusion | — | 0.5 min |
-| **Total** | | **~22 min** |
+| Conclusion | 0.5 min |
+| **Total** | **~22 min** |
 
 The remaining 2-minute margin gives room for a slow start, an
 unexpected question, or a tool hiccup. Do not try to spend it.

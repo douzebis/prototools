@@ -494,7 +494,10 @@ override — which is beat 10's subject anyway. See the synopsis, "The two
 schema databases".
 
 So this step is only a lookup. The corpus lives at
-`$PROTOTEXT_GOOGLEAPIS_SET`, whose store path **changes on rebuild** —
+`$PROTOTEXT_GOOGLEAPIS_SET`, exported by the demo's own shell (`cd
+grpconf2026 && nix-shell`, spec 0394, which also populates `bob/` and
+`alice/` from the grpconf-demo derivation), and whose store path
+**changes on rebuild** —
 resolve it with `nix-build --no-out-link -A googleapis-db` and never
 from a written-down path. Several stale `*-googleapis-db` paths coexist
 in the store and an old one carries a v2 scoring graph the current

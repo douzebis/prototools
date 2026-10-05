@@ -62,6 +62,11 @@ struct Args {
     #[arg(long)]
     steps: Option<u64>,
 
+    /// Start the game paused: nothing is sent until Space or `n` (spec 0393
+    /// S7). Without it, the game runs from launch. Ignored with --steps.
+    #[arg(long)]
+    paused: bool,
+
     /// Where the `s`-key command runner writes each command's output
     /// (spec 0380): a file, since the TUI owns stdout and stderr.
     #[arg(long, default_value = "/tmp/life-client-commands.log")]
@@ -409,7 +414,8 @@ fn run(
         .open(&args.command_log)
         .map_err(|e| format!("opening {}: {e}", args.command_log))?;
     let mut ui = Ui {
-        running: false,
+        // Spec 0393 S7: running from launch, unless `--paused`.
+        running: !args.paused,
         speed: SPEED,
         rtt: None,
         error: None,
@@ -600,4 +606,21 @@ fn draw(frame: &mut Frame, game: &Game, ui: &Ui) {
             ..area
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 0393 test plan 3 (S7): the game runs from launch unless
+    /// `--paused`.
+    #[test]
+    fn the_game_runs_from_launch_unless_paused() {
+        assert!(!Args::try_parse_from(["life-client"]).unwrap().paused);
+        assert!(
+            Args::try_parse_from(["life-client", "--paused"])
+                .unwrap()
+                .paused
+        );
+    }
 }

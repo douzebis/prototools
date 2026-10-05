@@ -15,8 +15,7 @@
 #             order, each printing a one-line recap:
 #
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
-#                                  PROTOTEXT_WKT_SET, PROTOTEXT_GOOGLEAPIS_SET,
-#                                  PROTOTEXT_GOOGLEAPIS_PBS, PYO3_PYTHON, PATH, PYTHONPATH
+#                                  PROTOTEXT_WKT_SET, PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
@@ -49,10 +48,6 @@
 , treeSitterTextprotoRustLib
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
-, googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
-, googleapisPbs     # googleapis per-file FDS blob; dev-shell only (PROTOTEXT_GOOGLEAPIS_PBS)
-, grpconfDemo       # grpconf-demo stage: bin/bobapp, logfile, capture, beats/
-, grehackLife       # GreHack 2026 life-server, life-client, life-tap (spec 0375)
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -177,17 +172,9 @@ in
       # which uses ctypes to access rl_add_funmap_entry and readline() directly
       # for proper multi-line buffer support.
       readline
-      # wireshark-cli — tshark and dumpcap, for the GreHack 2026 life tap
-      #   (spec 0375 S10). The store's dumpcap cannot capture; see the PATH
-      #   note in _hook_env for the privileged one.
-      wireshark-cli
-      # fortune — a harmless command to send through the GreHack 2026
-      #   covert channel. The Nix-built client carries its own wrapped
-      #   `fortune` (grehack2026/game/default.nix), so this is for running
-      #   `fortune` by hand in the shell, and so `target/release/life-client`
-      #   finds one when run unwrapped.
-      fortune
-    ]) ++ [ buf grpconfDemo grehackLife ];
+      # The demos' tools (wireshark-cli, fortune, the life binaries, the
+      # grpconf stage) live in their own shells (spec 0394).
+    ]) ++ [ buf ];
 
     shellHook = ''
       old_opts=$(set +o)
@@ -196,7 +183,7 @@ in
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_GOOGLEAPIS_PBS, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -211,23 +198,16 @@ in
         # `nix-shell dev-shell.nix` agree.
         export PROTOTEXT_DESCRIPTOR_SET="${wktDb}/share/prototools/wkt.desc"
 
-        # The two schema DBs by name, for reaching at one directly rather
-        # than switching the default. Both are `<stub>.desc` beside a
-        # `<stub>/` holding hopcroft.rkyv, index.rkyv and the decompiled
-        # proto/ tree, which is the layout every consumer derives from the
-        # descriptor path with its extension stripped — so either one is a
-        # complete answer to --descriptor-set on its own.
-        #
         # PROTOTEXT_WKT_SET is the same path as the default above, named so
         # that a script asking for the WKTs says so rather than relying on
-        # what the default happens to be today.
+        # what the default happens to be today. It is `<stub>.desc` beside a
+        # `<stub>/` holding hopcroft.rkyv, index.rkyv and the decompiled
+        # proto/ tree.
         #
-        # dev-shell only. googleapisDb is a full-tests derivation — a corpus
-        # fetch, a whole-corpus protoc run and a reproto pass — and putting
-        # it in user-shell would make a first `nix-shell` build all of it.
+        # The googleapis database is not here (spec 0394): it is a corpus
+        # fetch, a whole-corpus protoc run and a reproto pass. The grpconf2026
+        # demo shell exports it, and bin/profile builds it on demand.
         export PROTOTEXT_WKT_SET="${wktDb}/share/prototools/wkt.desc"
-        export PROTOTEXT_GOOGLEAPIS_SET="${googleapisDb}/googleapis.desc"
-        export PROTOTEXT_GOOGLEAPIS_PBS="${googleapisPbs}/googleapis.pb"
 
         # The spec-0226 fixture: one example of every annotation prototext can
         # emit, as `#@` prototext text under a `.pb` name.  It is a test
@@ -237,7 +217,7 @@ in
         # vocabulary at once, so a demo beat may want to reach for it.  Named
         # here so that such a beat never has to spell a repo-relative path.
         #
-        # A source path, not a store path, unlike the two sets above: the
+        # A source path, not a store path, unlike the set above: the
         # fixture is committed, and it is edited by hand.  Its `.script`
         # sidecar is found *beside the blob* by protolens' script discovery,
         # which the source tree satisfies for free.
@@ -245,16 +225,6 @@ in
 
         export PYO3_PYTHON="${pythonExecutable}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
-        # NixOS's `programs.wireshark.enable` installs a dumpcap with capture
-        # capabilities in /run/wrappers/bin; the unprivileged one this shell
-        # adds would shadow it, so put the wrapper back in front (spec 0375
-        # S10). Only dumpcap: /run/wrappers/bin also holds sudo and friends,
-        # whose position in PATH stays as it was.
-        if [ -x /run/wrappers/bin/dumpcap ]; then
-          mkdir -p "${repoRoot}/.dumpcap-wrapper"
-          ln -sf /run/wrappers/bin/dumpcap "${repoRoot}/.dumpcap-wrapper/dumpcap"
-          export PATH="${repoRoot}/.dumpcap-wrapper:$PATH"
-        fi
         # `devOnlyPyDeps` is appended rather than folded into
         # reprotoTestDeps: that list is also the dep set of reprotoTests,
         # googleapisTests and customTests, and nothing that runs under
@@ -460,47 +430,6 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         makewhatis "$PWD/man" 2>/dev/null || true
       }
 
-      _hook_demo() {
-        # Populate grpconf2026/{bob,alice} from the grpconf-demo nix derivation
-        # so that the presenter has a writable working directory.
-        #
-        # --no-preserve=mode strips the 0444/0555 modes from the copy so that
-        # all files are writable.
-        #
-        # Layout written into grpconf2026/:
-        #   bob/app          the bobapp binary (Places embedded; Routes via extra pool)
-        #   bob/logfile      the log: Routes entries first, then SearchText (truncated)
-        #   bob/capture      one SearchText request body (spec 0350)
-        #   alice/           empty writable scratch directory for Alice's outputs
-        #
-        # beats/ is committed source — it is never touched by this hook.
-        # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
-        #
-        # The copy is guarded by a sentinel file recording the nix store path
-        # that last populated the directory.  If it matches, skip everything to
-        # avoid the overhead on every shell entry after the first.
-        #
-        # grpconf2026/{bob,alice} are gitignored, so nothing here touches
-        # the repo index.
-        local stage="$PWD/grpconf2026"
-        local bob="$stage/bob"
-        local sentinel="$bob/.demo-source"
-        local demo="${grpconfDemo}"
-        if [[ "$(cat "$sentinel" 2>/dev/null)" == "$demo" ]]; then
-          echo "[hook] demo: grpconf2026/ up to date — skipping"
-          return
-        fi
-        echo "[hook] demo: populating grpconf2026/ from grpconf-demo"
-        rm -rf "$bob"
-        mkdir -p "$bob" "$stage/alice"
-        cp --no-preserve=mode "$demo/bin/bobapp" "$bob/app"
-        cp --no-preserve=mode "$demo/logfile"    "$bob/logfile"
-        cp --no-preserve=mode "$demo/capture"   "$bob/capture"
-        # Record which nix derivation populated the directory.
-        echo "$demo" > "$sentinel"
-        echo "[hook] demo: grpconf2026/ ready ($(du -sh "$stage" | cut -f1) total)"
-      }
-
       _hook_nvim() {
         # Write a repo-local Neovim config and point XDG_CONFIG_HOME at it, so
         # the demo's `nvim` session is colourful and proto-aware without
@@ -659,7 +588,6 @@ LUAEOF
       _hook_codegen
       _hook_rust
       _hook_cargo
-      _hook_demo
       _hook_man
       _hook_nvim
       _hook_completions

@@ -26,10 +26,11 @@ use std::time::{Duration, Instant};
 use tracker::Tracker;
 
 const CAPTURE_HELP: &str = "\
-Capturing needs root:
+Capturing needs privilege, for dumpcap alone (spec 0393):
+  on a Linux machine          sudo -v, then life-tap as yourself: it runs
+                              dumpcap with sudo -n, and tshark as you
   in the workshop container   podman exec -it workshop life-tap
                               docker exec -it -u 0 workshop life-tap
-  on a Linux machine          sudo \"$(command -v life-tap)\"
   on NixOS, without sudo      programs.wireshark.enable = true, and your
                               user in the wireshark group";
 
@@ -61,6 +62,11 @@ struct Args {
     /// Stop the tap writing to the output directory (one started detached).
     #[arg(long)]
     stop: bool,
+
+    /// Leave out the startup block of dumpcap and tshark commands to adapt
+    /// (spec 0393 S4). The per-message lines and the summary still print.
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 fn main() -> ExitCode {
@@ -162,27 +168,102 @@ fn owner() -> (u32, u32) {
     unsafe { (libc::getuid(), libc::getgid()) }
 }
 
-/// The dumpcap to run: NixOS's programs.wireshark installs one with capture
-/// capabilities, usable without root by the wireshark group; otherwise
-/// dumpcap from PATH, which needs root.
-fn dumpcap() -> Result<String, String> {
-    const WRAPPER: &str = "/run/wrappers/bin/dumpcap";
+/// How the tap runs dumpcap (spec 0393 S1). tshark always runs as the
+/// tap's own user.
+#[derive(Debug, PartialEq)]
+enum Dumpcap {
+    /// Run as is: NixOS's capability wrapper, or plain dumpcap when the tap
+    /// is root already (the workshop container).
+    Direct(String),
+    /// `sudo -n <path>`: the tap runs as the user, and dumpcap alone gets
+    /// root. `-n` never prompts, since a tap in the background cannot read
+    /// a password.
+    Sudo(String),
+}
+
+impl Dumpcap {
+    fn command(&self) -> Command {
+        match self {
+            Dumpcap::Direct(path) => Command::new(path),
+            Dumpcap::Sudo(path) => {
+                let mut command = Command::new("sudo");
+                command.arg("-n").arg(path);
+                command
+            }
+        }
+    }
+
+    /// The command line as the startup block prints it.
+    fn shown(&self, args: &[String]) -> String {
+        match self {
+            Dumpcap::Direct(path) => words(path, args),
+            Dumpcap::Sudo(path) => format!("sudo {}", words(path, args)),
+        }
+    }
+}
+
+const WRAPPER: &str = "/run/wrappers/bin/dumpcap";
+
+/// Spec 0393 S1's order: the NixOS wrapper (`wrapper_usable`), then plain
+/// dumpcap when the tap is `root`, then `sudo -n` on dumpcap's path.
+fn choose_dumpcap(
+    wrapper_usable: bool,
+    root: bool,
+    on_path: Option<String>,
+) -> Result<Dumpcap, String> {
+    if wrapper_usable {
+        return Ok(Dumpcap::Direct(WRAPPER.to_string()));
+    }
+    if root {
+        return Ok(Dumpcap::Direct("dumpcap".to_string()));
+    }
+    on_path.map(Dumpcap::Sudo).ok_or_else(|| {
+        "dumpcap is not on PATH: run the tap from the grehack2026 demo shell \
+         (cd grehack2026 && nix-shell, spec 0394)"
+            .to_string()
+    })
+}
+
+/// The dumpcap to run (spec 0393 S1). In the `sudo` case, the credentials
+/// are checked here, without running anything (`sudo -n -v`), so that a
+/// tap with none fails before it creates a file or starts tshark.
+fn dumpcap() -> Result<Dumpcap, String> {
     let usable = Command::new(WRAPPER)
         .arg("-v")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
-    if usable {
-        return Ok(WRAPPER.to_string());
-    }
     // SAFETY: geteuid cannot fail.
-    if unsafe { libc::geteuid() } == 0 {
-        return Ok("dumpcap".to_string());
+    let root = unsafe { libc::geteuid() } == 0;
+    let chosen = choose_dumpcap(usable, root, find_on_path("dumpcap"))?;
+    if matches!(chosen, Dumpcap::Sudo(_)) {
+        let cached = Command::new("sudo")
+            .args(["-n", "-v"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !cached {
+            return Err(format!(
+                "capturing needs root: run `sudo -v` first, then start the tap again\n\n\
+                 {CAPTURE_HELP}"
+            ));
+        }
     }
-    Err(format!(
-        "capturing needs root, or on NixOS the wireshark group\n\n{CAPTURE_HELP}"
-    ))
+    Ok(chosen)
+}
+
+/// `name`'s full path, from PATH: `sudo` resets PATH, so the demo shell's
+/// dumpcap is passed to it by path.
+fn find_on_path(name: &str) -> Option<String> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned())
+    })
 }
 
 /// Give a file or directory the tap created to the user it works for. A
@@ -356,14 +437,11 @@ fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
         args.port,
         out.display()
     ));
-    say("life-tap: the commands, to adapt in a root terminal of your own:");
-    say(&format!("  {} \\", words(&dumpcap, &dumpcap_args)));
-    say(&format!(
-        "    | tee {} \\",
-        word(&pcap_path.to_string_lossy())
-    ));
-    say(&format!("    | {}", words("tshark", &tshark_args)));
-    say("");
+    if !args.quiet {
+        for line in startup_block(&dumpcap, &dumpcap_args, &pcap_path, &tshark_args) {
+            say(&line);
+        }
+    }
 
     let pcap = File::create(&pcap_path).map_err(|e| format!("{}: {e}", pcap_path.display()))?;
     give(&pcap_path, owner);
@@ -378,13 +456,14 @@ fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| starting("tshark", &e))?;
-    let mut capture = Command::new(&dumpcap)
+    let mut capture = dumpcap
+        .command()
         .args(&dumpcap_args)
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| starting(&dumpcap, &e))?;
+        .map_err(|e| starting("dumpcap", &e))?;
     fs::write(&pid_file, format!("{}\n", std::process::id()))
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
 
@@ -461,11 +540,33 @@ fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
             let lower = err.to_lowercase();
             if lower.contains("permission") || lower.contains("not permitted") {
                 say("life-tap: in a container without NET_RAW (rootless Podman's default), start");
-                say("          it with --cap-add NET_RAW; elsewhere, run the tap as root");
+                say("          it with --cap-add NET_RAW; elsewhere, run sudo -v before the tap");
             }
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// The block of commands to adapt that the tap prints on startup, unless
+/// `-q` (spec 0393 S4). Run as root (the container), they are for a root
+/// terminal; through `sudo`, for any terminal.
+fn startup_block(
+    dumpcap: &Dumpcap,
+    dumpcap_args: &[String],
+    pcap_path: &Path,
+    tshark_args: &[String],
+) -> Vec<String> {
+    let whose = match dumpcap {
+        Dumpcap::Sudo(_) => "a terminal",
+        Dumpcap::Direct(_) => "a root terminal",
+    };
+    vec![
+        format!("life-tap: the commands, to adapt in {whose} of your own:"),
+        format!("  {} \\", dumpcap.shown(dumpcap_args)),
+        format!("    | tee {} \\", word(&pcap_path.to_string_lossy())),
+        format!("    | {}", words("tshark", tshark_args)),
+        String::new(),
+    ]
 }
 
 /// Why a Wireshark tool did not start, and, when it is not installed, how
@@ -473,8 +574,8 @@ fn tap(args: &Args, out: &Path) -> Result<ExitCode, String> {
 fn starting(program: &str, e: &io::Error) -> String {
     if e.kind() == io::ErrorKind::NotFound {
         format!(
-            "{program} is not on PATH: run the tap from the repository's dev shell \
-             (nix-shell dev-shell.nix), or use the Nix-built life-tap \
+            "{program} is not on PATH: run the tap from the grehack2026 demo shell \
+             (cd grehack2026 && nix-shell, spec 0394), or use the Nix-built life-tap \
              (nix-build -A grehack2026.life), which carries it"
         )
     } else {
@@ -586,6 +687,71 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec 0393 test plan 1 (S1): the wrapper first, then root, then
+    /// `sudo -n` on dumpcap's path.
+    #[test]
+    fn dumpcap_is_chosen_wrapper_then_root_then_sudo() {
+        let path = Some("/nix/store/x/bin/dumpcap".to_string());
+        assert_eq!(
+            choose_dumpcap(true, false, path.clone()),
+            Ok(Dumpcap::Direct(WRAPPER.to_string()))
+        );
+        assert_eq!(
+            choose_dumpcap(true, true, path.clone()),
+            Ok(Dumpcap::Direct(WRAPPER.to_string()))
+        );
+        assert_eq!(
+            choose_dumpcap(false, true, path.clone()),
+            Ok(Dumpcap::Direct("dumpcap".to_string()))
+        );
+        assert_eq!(
+            choose_dumpcap(false, false, path.clone()),
+            Ok(Dumpcap::Sudo("/nix/store/x/bin/dumpcap".to_string()))
+        );
+        assert!(choose_dumpcap(false, false, None).is_err());
+    }
+
+    /// Spec 0393 S1: through sudo, dumpcap is run as `sudo -n <path>`, and
+    /// shown as `sudo <path> …`.
+    #[test]
+    fn a_sudo_dumpcap_runs_and_shows_through_sudo() {
+        let dumpcap = Dumpcap::Sudo("/bin/dumpcap".to_string());
+        let command = dumpcap.command();
+        assert_eq!(command.get_program(), "sudo");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-n", "/bin/dumpcap"]);
+        assert_eq!(dumpcap.shown(&["-q".to_string()]), "sudo /bin/dumpcap -q");
+    }
+
+    /// Spec 0393 test plan 2 (S4): the startup block is the heading and
+    /// the pipeline; `-q` prints none of it (the caller skips it). Through
+    /// sudo, the heading no longer asks for a root terminal.
+    #[test]
+    fn the_startup_block_names_the_pipeline_and_who_runs_it() {
+        let args = ["-q".to_string()];
+        let tshark = ["-l".to_string()];
+        let pcap = Path::new("/tmp/c/capture.pcapng");
+        let sudo = startup_block(&Dumpcap::Sudo("/bin/dumpcap".into()), &args, pcap, &tshark);
+        assert_eq!(
+            sudo[0],
+            "life-tap: the commands, to adapt in a terminal of your own:"
+        );
+        assert!(sudo[1].starts_with("  sudo /bin/dumpcap -q"), "{}", sudo[1]);
+        assert!(sudo[3].contains("tshark -l"), "{}", sudo[3]);
+        let root = startup_block(&Dumpcap::Direct("dumpcap".into()), &args, pcap, &tshark);
+        assert_eq!(
+            root[0],
+            "life-tap: the commands, to adapt in a root terminal of your own:"
+        );
+    }
+
+    #[test]
+    fn quiet_is_an_option() {
+        let args = Args::try_parse_from(["life-tap", "-q"]).unwrap();
+        assert!(args.quiet);
+        assert!(!Args::try_parse_from(["life-tap"]).unwrap().quiet);
+    }
 
     #[test]
     fn words_are_quoted_only_when_needed() {

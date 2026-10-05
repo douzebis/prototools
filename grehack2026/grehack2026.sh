@@ -1,57 +1,61 @@
 clear && header "Why prototools"
 
 # \
+#                                                                              \
 # At S3NS we operate a Trusted Partner Cloud (TPC). Google ships us its        \
 # software update packages, and before any of them reaches production we       \
-# audit it, to make sure it does nothing it should not.                        \
-
-# \
+# audit them, to make sure they do nothing they should not.                    \
+#                                                                              \
 # Inside those packages, protobuf is everywhere: it is the data                \
 # serialization format of the Google infrastructure — configuration,           \
 # RPCs, logs, stored data. And on the wire, protobuf is opaque.                \
-
-# \
+#                                                                              \
 # So we built prototools: a suite of tools to dissect protobufs, even          \
 # when nobody hands us the schema.                                             \
-
-# \
+#                                                                              \
 # What follows is a demo of prototools, told as a toy cyber-investigation.     \
 # The scenario is made up; the tools and their features are real.              \
-
+#                                                                              \
 
 clear && header "0. The cast"
 
 # \
+#                                                                              \
 # Meet Bob 🙂, the player. He runs a Game of Life client and thinks he         \
 # is just playing.                                                             \
-
-# \
+#                                                                              \
+#                                                                              \
 # Meet Eve 👩, the server administrator. Her server computes each Life         \
 # generation for Bob's client. Keep an eye on her.                             \
-
-# \
+#                                                                              \
+#                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
 #    │     Bob      │ ─────────────────────────▶ │     Eve      │              \
 #    │ life-client  │ ◀───────────────────────── │ life-server  │              \
 #    └──────────────┘        StepResponse        └──────────────┘              \
 #                           cleartext gRPC                                     \
+#                                                                              \
+#                                                                              \
 
 # \
+#                                                                              \
 # 👉 Eve's window (eve/) — Eve starts her server:                              \
 #        life-server                                                           \
 # 👉 Bob's window (bob/) — Bob starts his client:                              \
 #        life-client                                                           \
-
-# \
+#                                                                              \
+#                                                                              \
 # On screen it is an ordinary Game of Life: the grid steps, nothing looks      \
 # amiss.                                                                       \
+#                                                                              \
 
 # \
+#                                                                              \
 # Now meet Alice 🕵️, the investigator. She taps the wire between Bob and       \
 # Eve. She has the network capture and the client binary, nothing else —       \
 # no help from either endpoint.                                                \
-
-# \
+#                                                                              \
+#                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
 #    │     Bob      │ ───────────┬─────────────▶ │     Eve      │              \
 #    │ life-client  │ ◀──────────┼────────────── │ life-server  │              \
@@ -61,34 +65,46 @@ clear && header "0. The cast"
 #              │ Alice — this window                           │               \
 #              │   life-tap ──▶ capture/*.pb ──▶ prototools    │               \
 #              └───────────────────────────────────────────────┘               \
+#                                                                              \
+#                                                                              \
 
 # \
+#                                                                              \
 # This window is Alice's control tower. The analysis runs here; when           \
 # something must happen in Eve's or Bob's window, this window says so,         \
 # with the exact keys or command to type.                                      \
-
-# \
+#                                                                              \
+#                                                                              \
 # Goal: take an unknown protobuf stream and, with no help from either          \
 # endpoint, work out its structure, read it, then notice what it is not        \
 # telling us.                                                                  \
+#                                                                              \
 
 
 clear && header "1. On the wire"
 
 # \
-# Alice starts her tap. It needs root, so she types her password; it then      \
-# prints one line per message, and saves each message in capture/.             \
+#                                                                              \
+# Alice starts her tap, in the background. Only its capture needs root,        \
+# so she types her password once. The tap prints one line per message,         \
+# and saves each message in capture/.                                          \
 
 # \
-# 👉 Bob's window — Space pauses the game.                                     \
-# 👉 Here — the next two commands start the tap on an empty capture/.          \
-# 👉 Bob's window — wait two seconds, then press n three times: three          \
-#    Life steps, one at a time, each a request and a response.                 \
-# 👉 Here — Ctrl-C stops the tap.                                              \
-# 👉 Bob's window — Space sets the game running again.                         \
+#                                                                              \
+# 👉 Bob's window — Ctrl-C quits the client, so the capture starts quiet.      \
 
 rm -rf capture
-sudo env PATH="$PATH" life-tap
+sudo -v && (life-tap -q &)
+
+# \
+#                                                                              \
+# 👉 Bob's window — start a paused client, and step it by hand:                \
+#        life-client --paused                                                  \
+#    Press n three times: three Life steps, each a request and a               \
+#    response. Then Ctrl-C quits the client.                                   \
+
+life-tap --stop
+tail -n 3 capture/tap.log
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb
@@ -177,20 +193,22 @@ clear && header "2. Eve is spying"
 #    One Life message carries a whole command, and the next one the            \
 #    whole answer — without changing the decoded grid.                         \
 
+rm -rf capture
+sudo -v && (life-tap -q &)
+
 # \
-# 👉 Bob's window — Space pauses the game.                                     \
-# 👉 Here — the next two commands start the tap on an empty capture/.          \
+#                                                                              \
 # 👉 Eve's window — Eve types a command on her server's stdin:                 \
 #        whoami                                                                \
 #    It waits for the next Life step.                                          \
-# 👉 Bob's window — wait two seconds, then press n: response 1                 \
-#    carries "whoami", and Bob's client runs it. Press n again:                \
-#    request 2 carries the answer, which surfaces in Eve's window.             \
-# 👉 Here — Ctrl-C stops the tap.                                              \
-# 👉 Bob's window — Space sets the game running again.                         \
+# 👉 Bob's window — start a paused client:                                     \
+#        life-client --paused                                                  \
+#    Press n: response 1 carries "whoami", and Bob's client runs it.           \
+#    Press n again: request 2 carries the answer, which surfaces in            \
+#    Eve's window. Then Ctrl-C quits the client.                               \
 
-rm -rf capture
-sudo env PATH="$PATH" life-tap
+life-tap --stop
+tail -n 3 capture/tap.log
 
 # Alice decodes the second request with protoc → nothing surfaces:
 protoc --descriptor_set_in=life.desc \
