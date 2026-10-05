@@ -196,11 +196,7 @@ protolens --descriptor-set life.desc capture/000001-request.pb \
 
 
 # \
-# On a field whose type is a named message or enum, v hands off to Neovim,     \
-# opened at that type's declaration in the reconstructed .proto — thanks       \
-# to the SourceCodeInfo reproto synthesized. Schema recovery is not just a     \
-# flat type list: we go from a byte on the wire to the line of source that     \
-# defines it, and back.                                                        \
+# Schema recovery reaches the source: `v` jumps to the type's .proto.          \
 
 
 clear && header "2. Eve is spying"
@@ -217,7 +213,7 @@ clear && header "2. Eve is spying"
 # 👉 In Bob's window — resume the game                                         \
 #                                                                              \
 # 👉 In Eve's window — Eve types shell commands on her server's stdin, and     \
-#    a their output appears back on her screen:                                \
+#    their output appears back on her screen:                                  \
 #        ls ~/.ssh                                                             \
 #        id                                                                    \
 #                                                                              \
@@ -249,11 +245,6 @@ protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 
 # \
 #                                                                              \
-# The beat walks the wire: the spurious continuation bytes, the hidden         \
-# bits, and the ASCII they spell.                                              \
-
-# \
-#                                                                              \
 # Recovered from the wire alone: Eve asked "whoami", Bob's machine             \
 # answered "experiment". The server drives the channel, hidden in the          \
 # responses; the answers ride home in the requests.                            \
@@ -277,15 +268,7 @@ protoc --decode_raw < eve/server.log
 protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
 # \
-# A protobuf after all: Eve's traffic log, cut off mid-field. protoc           \
-# rejects the whole file for its truncated tail; protolens reads up to it      \
-# and flags it. The log's own type is nowhere in the client, yet every         \
-# entry has the same shape: the heat cues recognize the game's StepRequest     \
-# and StepResponse inside, and overrides pin them.                             \
-
-# \
-# One field in each entry is in no schema we hold: 666, a string. Where it     \
-# is set, it reads "whoami" or "experiment". Eve logs her own contraband.      \
+# A schema reverse-crafted from a truncated, type-less blob — Eve's own log.   \
 
 
 clear && header "5. Anomalies"
