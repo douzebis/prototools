@@ -3250,11 +3250,11 @@ fn no_match_crosses_two_help_lines() {
     assert!(app.message.is_empty(), "{}", app.message);
 }
 
-/// Spec 0397: a path match tints the whole line, not a single cell. `/3`
-/// names the scalar `a: 42` row; `search_current_cell`'s width spans the
-/// whole content (`a: 42` → 5 cells), not the old width 1.
+/// Spec 0397 S1: a path match's hit spans the whole line's content, not
+/// one cell. (The *rendered* tint is asserted in the script tests, which
+/// have the script-search setup that populates the highlight pattern.)
 #[test]
-fn a_path_match_highlights_the_whole_line() {
+fn a_path_match_hit_spans_the_whole_line() {
     let (mut app, ..) = packed_run_with_tail_fixture();
     app.splash = false;
     app.term_width = 120;
@@ -3262,6 +3262,7 @@ fn a_path_match_highlights_the_whole_line() {
     app.set_cursor(app.first_node);
     app.run_search(SearchScope::Main, SearchDir::Forward, "/3");
     settle_sweep(&mut app);
+
     let (line, _column, width, on_path) = app
         .search_current_cell()
         .expect("the path match is current");
@@ -3269,9 +3270,6 @@ fn a_path_match_highlights_the_whole_line() {
     let text = &app.document_lines()[line];
     let indent = text.len() - text.trim_start().len();
     let content_width = text.trim_end().chars().count() - indent;
-    assert_eq!(
-        width, content_width,
-        "the whole line's content is tinted, not one cell (line {line:?}: {text:?})"
-    );
-    assert!(width > 1, "and it is more than the old single cell");
+    assert_eq!(width, content_width, "hit width spans the content");
+    assert!(width > 1, "more than the old single cell");
 }

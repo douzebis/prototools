@@ -210,6 +210,18 @@ impl App {
         // index through every helper below for no measurable gain.
         let step: Step = state.script.steps[state.current].clone();
 
+        // Spec 0397 S5: the view the reader is looking at *before* this
+        // step runs is the baseline the step's lazy focus decides
+        // against. `script_reset` and the view directives below
+        // (`wire:`, `search:`, `node:`) each nudge the scroll as a side
+        // effect of their own — `set_wire_span` re-anchors the cursor's
+        // row, a search pans its hit into view. Captured here and handed
+        // to `script_focus`, so its "already visible?" test (S2) asks
+        // whether the step's node fits the view the reader had, not the
+        // one these side effects happened to leave. One lazy rule, in
+        // `script_focus`, covering every directive that perturbs scroll.
+        let baseline_scroll = self.scroll;
+
         self.script_reset();
         let mut errors = Vec::new();
         // Spec 0356 S8: mode switches applied before all view directives so
@@ -228,10 +240,13 @@ impl App {
                 Directive::Wire(wire) => self.script_apply_wire(wire, &mut errors),
                 Directive::SelectLine => self.script_apply_select_line(),
                 Directive::SelectNode => self.script_apply_select_node(),
+                Directive::SelectLines { from, to } => {
+                    self.script_apply_select_lines(from, to, &mut errors)
+                }
                 Directive::Search(pat) => self.script_apply_search(pat, &mut errors),
             }
         }
-        self.script_focus(&step);
+        self.script_focus(&step, baseline_scroll);
         self.pan_to_caret();
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
@@ -554,6 +569,60 @@ impl App {
         self.select_engaged = true;
     }
 
+    /// Spec 0397 S6: select the contiguous range from `from`'s first line
+    /// through `to`'s last line — the multi-node twin of
+    /// `script_apply_select_node`, which spans exactly one node.
+    ///
+    /// Both ends resolve like any other position; an unresolved end is a
+    /// step diagnostic and selects nothing. The anchor is `from`'s header
+    /// at column 0 and the caret is `to`'s last line at `usize::MAX - 1`
+    /// (the same full-line sentinel `select_node` uses, which
+    /// `selected_columns` clamps). `selection_span` orders the two ends,
+    /// so passing them in document order is not required — but the beat
+    /// always does, `/1/1/1` before `/1/1/8`.
+    fn script_apply_select_lines(
+        &mut self,
+        from: &Position,
+        to: &Position,
+        errors: &mut Vec<String>,
+    ) {
+        let resolved_from = self.script_resolve(from);
+        let resolved_to = self.script_resolve(to);
+        if resolved_from.is_none() {
+            errors.push(unresolved(from));
+        }
+        if resolved_to.is_none() {
+            errors.push(unresolved(to));
+        }
+        let (Some(first), Some(last)) = (resolved_from, resolved_to) else {
+            return;
+        };
+        let last_total = self.tree[last].lines_total as usize;
+        if last_total == 0 {
+            return;
+        }
+        self.select_anchor = Some(CursorPos {
+            node: first,
+            line_in_node: 0,
+            column: 0,
+        });
+        let last_abs = self.absolute_start(last) + last_total - 1;
+        let caret = match self.line_pos(last_abs) {
+            Some(lp) => CursorPos {
+                node: lp.node,
+                line_in_node: lp.line_in_node,
+                column: usize::MAX - 1,
+            },
+            None => CursorPos {
+                node: last,
+                line_in_node: (last_total - 1) as u32,
+                column: usize::MAX - 1,
+            },
+        };
+        self.select_caret = Some(caret);
+        self.select_engaged = true;
+    }
+
     /// Spec 0357: fire the search highlight for the step's `search:`
     /// pattern, as if `/pattern Enter` had been typed from column 0 of
     /// the caret node's header line.
@@ -622,7 +691,17 @@ impl App {
     /// Runs after the wire span is set, because a wire row makes its
     /// document row two terminal rows tall and every extent here is in
     /// terminal rows.
-    fn script_focus(&mut self, step: &Step) {
+    ///
+    /// `baseline` is the scroll the reader had before this step's
+    /// directives ran (spec 0397 S5). The directives — `script_reset`'s
+    /// wire clear, a `wire:` panel, a `search:` pan — each move the
+    /// scroll as a side effect, so the S2 "already visible?" test must
+    /// ask against the reader's own view, not the churn those side
+    /// effects left. Restoring `baseline` first makes this the one place
+    /// the final scroll is decided, for every view directive at once: a
+    /// step that lands on a node the reader can already see does not
+    /// scroll, whichever directive moved the cursor there.
+    fn script_focus(&mut self, step: &Step, baseline: super::PaneScroll) {
         if !step.has_node() || self.tree.is_empty() {
             return;
         }
@@ -630,6 +709,7 @@ impl App {
         if pane == 0 {
             return;
         }
+        self.scroll = baseline;
         let heights = self.row_heights();
         // `extent` is `None` for a node drawn nowhere — a folded-away
         // ancestor cannot be aimed at, and the climb stops below it.
@@ -645,10 +725,27 @@ impl App {
         };
         let mut bottom = top + self.tree[node].lines_visible as usize;
 
+        // Spec 0397 S6: a `select_lines:` range is the thing the step
+        // shows, not just the cursor node at its head — so the extent the
+        // rules below measure reaches down to the last visible line of
+        // the selection. The range is contiguous and the cursor sits on
+        // its first node, so `top` already marks its start; only `bottom`
+        // needs to grow. With it, S2 holds the scroll only when the whole
+        // range is on screen, and the climb scrolls to reveal the whole
+        // range rather than stopping at its first cell.
+        if let Some((_, _, hi_line, _)) = self.selection_span() {
+            if let Some(row) = self.visible_row_of_line(hi_line) {
+                bottom = bottom.max(row + 1);
+            }
+        }
+
         // Spec 0397 S2: if the step's node is already fully on screen —
-        // its visible subtree and, when a wire panel is open, its wire
-        // rows included (both are already folded into `heights`) — leave
-        // the scroll where it is. The climb below re-anchors the view to
+        // its visible subtree, a `select_lines:` range's lower end, and,
+        // when a wire panel is open, its wire rows included (all folded
+        // into `bottom`/`heights`) — leave the scroll where it is. That
+        // is what the user asked for the byte-selection steps: hold the
+        // view when the selected cells already show, scroll only to bring
+        // a hidden one on. The climb below re-anchors the view to
         // the top of a fitting ancestor, which on a node deep inside a
         // tall subtree (a cell in a large grid) scrolls the subtree's
         // own head off the top for no reason. Only scroll when something

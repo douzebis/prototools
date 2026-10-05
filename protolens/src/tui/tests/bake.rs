@@ -1130,7 +1130,7 @@ fn an_anchor_climbs_out_of_a_flattened_subtree() {
 /// 0329 G2 at all: it makes the document shorter than the scroll
 /// position it would have to restore, and `set_scroll_top`'s clamp,
 /// which S6 leaves with the last word, wins over the anchor.
-fn opaque_items_fixture(n: usize) -> (App, Vec<usize>) {
+pub(super) fn opaque_items_fixture(n: usize) -> (App, Vec<usize>) {
     use prost_types::field_descriptor_proto::{Label, Type};
     use prototext_core::helpers::{write_tag, write_varint};
 

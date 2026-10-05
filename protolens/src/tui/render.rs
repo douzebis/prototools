@@ -2438,19 +2438,22 @@ impl App {
                             }
                         }
                     } else {
-                        // Spec 0235 S22: a path match has nothing visible to
-                        // mark, so it gets one cell rather than a range —
-                        // exactly the cell the caret will land on at
-                        // `Enter`.
+                        // Spec 0397 S1: a path match tints the whole line —
+                        // from the row's first non-blank (`column`) across
+                        // its content (`hit_width`) — rather than the single
+                        // cell spec 0235 S22 used to mark. The row *is* what
+                        // the path names, so the highlight reads as "this
+                        // line", not a lone cursor tick.
                         let path_cell = search_current
                             .filter(|&(line, _, _, on_path)| on_path && Some(line) == line_idx);
-                        if let Some((_, column, _, _)) = path_cell {
+                        if let Some((_, column, hit_width, _)) = path_cell {
                             if let Some(index) =
                                 (FOLD_FIELD_WIDTH + column).checked_sub(self.pan_offset)
                             {
-                                let cell = index + HEAT_FIELD_WIDTH;
-                                if cell < width {
-                                    restyle_range(&mut spans, cell..cell + 1, |style| {
+                                let start = index + HEAT_FIELD_WIDTH;
+                                let end = (start + hit_width.max(1)).min(width);
+                                if start < end {
+                                    restyle_range(&mut spans, start..end, |style| {
                                         style.patch(current)
                                     });
                                 }

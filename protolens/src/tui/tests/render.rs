@@ -3307,10 +3307,10 @@ fn the_search_highlight_yields_its_cell_to_the_caret() {
     assert!(search_current_cells(&app, &terminal).contains(&(1, "a".to_string())));
 }
 
-/// Spec 0235 test-plan item 21 (S22). A path is not on screen, so a
-/// path match marks the one cell `Enter` would put the caret on — and
-/// only for the current match, or a pattern matching most paths would
-/// tint most of the document for nothing.
+/// Spec 0235 test-plan item 21 (S22), amended by spec 0397 S1. A path
+/// match tints the whole matched line (the row the path names) — but
+/// only the *current* match's row, or a pattern matching most paths
+/// would tint most of the document for nothing.
 #[test]
 fn a_path_match_tints_only_the_current_row() {
     let (mut app, ..) = packed_run_with_tail_fixture();
@@ -3326,8 +3326,16 @@ fn a_path_match_tints_only_the_current_row() {
 
     let terminal = drawn_frame(&mut app, 80, 16);
     let current = search_current_cells(&app, &terminal);
-    assert_eq!(current.len(), 1, "one cell, not a range: {current:?}");
-    assert_eq!(current[0].0, 1, "the first row after the one it started on");
+    // Spec 0397 S1: the whole matched line is tinted, not one cell — but
+    // still only the *current* row carries the tint (the test's point).
+    assert!(
+        current.len() > 1,
+        "the whole line, not one cell: {current:?}"
+    );
+    assert!(
+        current.iter().all(|(line, _)| *line == 1),
+        "only the first row after the one it started on is tinted: {current:?}"
+    );
     assert!(search_match_cells(&app, &terminal).is_empty());
 }
 

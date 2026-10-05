@@ -30,6 +30,13 @@ pub enum Directive {
     Wire(Wire),
     SelectLine,
     SelectNode,
+    /// Spec 0397 S6: select a contiguous *range* of nodes, from the line
+    /// of `from` through the last line of `to`. The multi-node twin of
+    /// `SelectLine`, mirroring `Wire::Lines`.
+    SelectLines {
+        from: Position,
+        to: Position,
+    },
     Search(String),
 }
 
@@ -441,6 +448,14 @@ fn parse_step(value: serde_norway::Value) -> Result<Step, String> {
                     directives.push(Directive::SelectNode);
                 }
             }
+            "select_lines" => {
+                let raw: RawRange = serde_norway::from_value(v.clone())
+                    .map_err(|e| format!("select_lines: {e}"))?;
+                directives.push(Directive::SelectLines {
+                    from: Position::parse(&raw.from),
+                    to: Position::parse(&raw.to),
+                });
+            }
             "search" => {
                 let pat = v.as_str().ok_or("search: must be a string")?.to_string();
                 directives.push(Directive::Search(pat));
@@ -649,6 +664,32 @@ mod tests {
                 Directive::Search("foo".into()),
                 Directive::Node(Position::Path("/2".into())),
                 Directive::SelectLine,
+            ]
+        );
+    }
+
+    /// Spec 0397 S6: `select_lines: {from, to}` parses to a
+    /// `SelectLines` directive with both ends classified as positions,
+    /// keeping its place in YAML key order.
+    #[test]
+    fn select_lines_parses_as_a_range_directive() {
+        let s = parse(
+            "steps:\n\
+             - text: x\n  \
+               node: /1/1/1\n  \
+               select_lines:\n    \
+                 from: /1/1/1\n    \
+                 to: /1/1/8\n",
+        )
+        .expect("must parse");
+        assert_eq!(
+            s.steps[0].directives,
+            vec![
+                Directive::Node(Position::Path("/1/1/1".into())),
+                Directive::SelectLines {
+                    from: Position::Path("/1/1/1".into()),
+                    to: Position::Path("/1/1/8".into()),
+                },
             ]
         );
     }

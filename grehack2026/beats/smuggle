@@ -55,16 +55,8 @@ steps:
     search: /1/1/2
 
   - text: |
-      One hidden bit per cell: 1 where the varint is padded, 0 where it
-      is minimal. Read them in order across the grid.
-
-      A VARINT is base-128 — little-endian 7-bit groups, high bit a
-      continuation flag — so the padding is invisible to any decoder.
-
-      👋 Press space.
-
-  - text: |
-      The bits group into bytes, and the bytes are lowercase ASCII:
+      Eight cells, eight bits — the first byte, selected end to end. The
+      bytes are lowercase ASCII:
 
         char  dec  binary        char  dec  binary        char  dec  binary
          a     97  01100001       j    106  01101010       s    115  01110011
@@ -77,7 +69,31 @@ steps:
          h    104  01101000       q    113  01110001       z    122  01111010
          i    105  01101001       r    114  01110010
 
+      These eight → 01110111 → w.
+
       👋 Press space.
+    node: /1/1/1
+    select_lines:
+      from: /1/1/1
+      to: /1/1/8
+
+  - text: |
+      The next eight cells → 01101000 → h.
+
+      👋 Press space.
+    node: /1/1/9
+    select_lines:
+      from: /1/1/9
+      to: /1/1/16
+
+  - text: |
+      The next eight → 01101111 → o.
+
+      👋 Press space.
+    node: /1/1/17
+    select_lines:
+      from: /1/1/17
+      to: /1/1/24
 
   - text: |
       The cells we just read start the first byte:

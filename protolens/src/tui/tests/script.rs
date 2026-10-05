@@ -452,6 +452,66 @@ fn select_directive_highlights_the_caret_line() {
     assert!(app.selection_span().is_none());
 }
 
+/// Spec 0397 S6: `select_lines: {from, to}` selects a contiguous range
+/// of nodes — from `from`'s first line through `to`'s last line. The
+/// smuggle beat uses it to select a byte's worth of grid cells at once.
+#[test]
+fn select_lines_directive_spans_a_range_of_nodes() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(
+        "steps:\n\
+         - text: first\n  node: /1\n  select_lines:\n    from: /1\n    to: /3\n\
+         - text: second\n  node: /2\n",
+    ));
+
+    assert!(app.select_engaged, "select_lines must engage the selection");
+    let (lo_line, lo_col, hi_line, _hi_col) = app.selection_span().expect("a span must be present");
+    assert_eq!(lo_col, 0, "the range starts at column 0");
+
+    // `/1` opens the range, `/3` closes it. The span runs from `/1`'s
+    // header through the last line of `/3`.
+    let first = app.resolve_path("/1").expect("/1 resolves");
+    let last = app.resolve_path("/3").expect("/3 resolves");
+    assert_eq!(
+        lo_line,
+        app.absolute_start(first),
+        "the range starts on /1's first line"
+    );
+    assert_eq!(
+        hi_line,
+        app.absolute_start(last) + app.tree[last].lines_total as usize - 1,
+        "the range ends on /3's last line"
+    );
+
+    // Advancing clears it, like every other selection directive.
+    app.script_advance(true);
+    assert!(!app.select_engaged, "the range clears at the next step");
+    assert!(app.selection_span().is_none());
+}
+
+/// Spec 0397 S6: an unresolved `select_lines` end is a step diagnostic,
+/// and nothing is selected.
+#[test]
+fn select_lines_with_an_unresolved_end_is_a_diagnostic() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(
+        "steps:\n- text: t\n  node: /1\n  select_lines:\n    from: /1\n    to: /99\n",
+    ));
+    assert!(
+        !app.select_engaged,
+        "an unresolvable range must select nothing"
+    );
+    let diagnostics = app
+        .script
+        .as_ref()
+        .map(|s| s.diagnostics.join("; "))
+        .unwrap_or_default();
+    assert!(
+        diagnostics.contains("/99"),
+        "the unresolved end is reported: {diagnostics:?}"
+    );
+}
+
 /// Spec 0357: `search:` fires the search highlight; advancing clears it.
 #[test]
 fn search_directive_highlights_pattern() {
@@ -1243,6 +1303,47 @@ fn a_step_does_not_scroll_when_its_node_is_already_visible() {
     );
 }
 
+/// Spec 0397 S6: the view follows the whole `select_lines:` range, not
+/// just the cursor node at its head. Step 1 parks the view over item
+/// `/16`; step 2 then aims at `/18`, which lands mid-pane — already on
+/// screen on its own, so the head-only rule (S2) would hold the scroll
+/// and leave the tail of a `/18..24` range just below the bottom edge.
+/// The range fits the pane, so following it scrolls the few rows needed
+/// to show `/24` too, which is exactly what the byte-selection steps of
+/// the smuggle beat need: reveal the whole selected byte, do not stop at
+/// its first cell. (Confirmed to fail without the extension: the end
+/// stays off the bottom and the scroll sits three rows higher.)
+#[test]
+fn a_step_reveals_the_whole_selection_range_not_just_its_head() {
+    let on_screen = |app: &super::super::App, path: &str| {
+        let node = app.resolve_path(path).expect("path resolves");
+        let last_line = app.absolute_start(node) + app.tree[node].lines_total as usize - 1;
+        (app.absolute_start(node)..=last_line).all(|line| {
+            let Some(row) = app.visible_row_of_line(line) else {
+                return false;
+            };
+            let term = app.terminal_row_of(row);
+            term >= 0 && term < app.main_area.height as isize
+        })
+    };
+
+    let (mut app, _) = super::bake::opaque_items_fixture(40);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 50, 8);
+    app.set_script(script_of(
+        "steps:\n- text: tail\n  node: /16\n\
+         - text: the byte\n  node: /18\n  select_lines:\n    from: /18\n    to: /24\n",
+    ));
+    app.script_advance(true);
+    assert_eq!(app.positional_path(app.cursor), "/18");
+
+    assert!(on_screen(&app, "/18"), "the range head /18 is on screen");
+    assert!(
+        on_screen(&app, "/24"),
+        "the range end /24 is on screen, not just its head"
+    );
+}
+
 /// Spec 0397 S3: a step whose node is taller than the pane puts the
 /// node's own first line at the top of the viewport — no climb, no
 /// caption, which would only push that line off the top.
@@ -1261,5 +1362,72 @@ fn a_step_too_tall_to_fit_opens_on_its_own_first_line() {
         app.terminal_row_of(top),
         0,
         "the too-tall node's first line opens the pane"
+    );
+}
+
+/// Spec 0397 S1, at the pixels: a step's path search tints the *whole*
+/// matched line, not one cell. Driving it through a script step is what
+/// populates the highlight pattern the renderer needs (an earlier version
+/// set the hit width but still painted a single cell).
+#[test]
+fn a_scripted_path_search_tints_the_whole_line() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    // `/3/1` is the last item's scalar `v: 7` — a single short line.
+    app.set_script(script_of("steps:\n- text: the value\n  search: /3/1\n"));
+
+    let (line, _col, width, on_path) = app
+        .search_current_cell()
+        .expect("the path search is current");
+    assert!(on_path, "`/3/1` is a path match");
+
+    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let bg = crate::theme::search_current_style(app.theme).bg;
+    let y = app.main_area.y + line as u16;
+    let tinted: usize = (app.main_area.x..app.main_area.x + app.main_area.width)
+        .filter(|&x| buffer[(x, y)].style().bg == bg)
+        .count();
+    assert_eq!(
+        tinted, width,
+        "the whole matched line is tinted ({tinted} cells), not one"
+    );
+    assert!(tinted > 1, "more than the old single cell");
+}
+/// Spec 0397 S5: `set_wire_span` does not scroll when the span and the
+/// cursor are already on screen. This is the smuggle beat's exact shape
+/// (spec 0396): two steps hold the *same* wire span open while the search
+/// moves the caret from one cell to the contiguous next. The wire rows do
+/// not change, and both cells stay in view, so the viewport must not shift
+/// — the old unconditional re-anchor slid it by the one row the caret
+/// dropped.
+#[test]
+fn two_steps_sharing_a_wire_span_do_not_scroll_between_cells() {
+    // `/3` (a) and `/4` (b) are two contiguous scalar siblings with no
+    // header between them — the beat's shape, a grid row's two cells. The
+    // span `/3`..`/4` and either caret fit the pane with room to spare, so
+    // nothing the steps show leaves the screen — the view must hold still.
+    let (mut app, ..) = packed_run_with_tail_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 60, 14);
+    app.set_script(script_of(
+        "steps:\n\
+         - text: first cell\n  node: /3\n  wire_lines:\n    from: /3\n    to: /4\n  search: /3\n\
+         - text: next cell\n  node: /4\n  wire_lines:\n    from: /3\n    to: /4\n  search: /4\n",
+    ));
+    assert_eq!(app.positional_path(app.cursor), "/3");
+    let after_step1 = app.scroll_top();
+
+    app.script_advance(true);
+    assert_eq!(app.positional_path(app.cursor), "/4");
+    assert_eq!(
+        app.scroll_top(),
+        after_step1,
+        "an unchanged wire span with both cells visible must not scroll"
     );
 }

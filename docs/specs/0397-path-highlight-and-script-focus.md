@@ -82,6 +82,44 @@ rough edges in how protolens handles a scripted path search.
   outermost ancestor that fits, and reach back over its preceding
   sibling when the two still fit together.
 
+- **S5. The lazy test reads the view the reader had, not the step's own
+  churn (G2).** A step's view directives each move the scroll as a side
+  effect of their own work before `script_focus` runs: `script_reset`
+  clears the previous step's wire panel, a `wire:` directive opens a new
+  one (`set_wire_span` re-anchors the caret's drawn row so a `w` gesture
+  holds its place), and a `search:` pans its hit into view. Measured
+  against that churn, S2's "already visible?" test answers about a
+  viewport the step itself just perturbed — so two steps that hold one
+  wire span open while the search steps the caret from a cell to its
+  contiguous neighbor (the smuggle beat, spec 0396) scrolled by the one
+  row the caret dropped, even though nothing left the screen.
+
+  So the scroll in effect **before** the step's directives run is
+  captured in `script_apply` and handed to `script_focus`, which
+  restores it before S2/S3. This keeps the lazy decision in one place
+  for every view directive at once — `node:`, `wire:`, `search:`,
+  `fold:` — rather than teaching each directive its own "don't scroll"
+  rule: `set_wire_span` keeps serving the interactive `w` gesture
+  unchanged, and the script path's view is decided solely by
+  `script_focus` against the reader's own baseline.
+
+- **S6. A step can select a contiguous *range* of nodes, and the range
+  drives the view.** A new `select_lines: {from, to}` directive selects
+  from `from`'s first line through `to`'s last line — the multi-node
+  twin of `select_line`, mirroring `wire_lines`. Both ends resolve like
+  any position; an unresolved end is a step diagnostic and selects
+  nothing. The selection uses the existing two-ended `SelectionSpan`
+  machinery (anchor at `from`'s header column 0, caret at `to`'s last
+  line, full-line), so it needs no new selection state.
+
+  For the view: when a step carries a range, `script_focus` extends the
+  extent it measures (S2/S3/S4) down to the range's lower end, not just
+  the cursor node at its head. So the lazy rule holds the scroll when the
+  **whole** selected range is already on screen and scrolls only to bring
+  a hidden part of it on — which is what the byte-selection steps of the
+  smuggle beat need (eight cells at a time), where `node:` names the
+  range's first cell and the selection names the rest.
+
 ## Alternatives considered
 
 ### Leave the path highlight one cell, fix it in the beat
@@ -111,6 +149,12 @@ kept for the off-screen-but-fits case (S4); only the already-visible
 4. The existing `script_focus` tests (`a_step_leaves_room_below_its_node`,
    `a_step_keeps_the_row_above_its_subtree`) still pass: the off-screen
    climb (S4) is unchanged.
+5. `two_steps_sharing_a_wire_span_do_not_scroll_between_cells`: two
+   steps hold one wire span open while the search moves the caret from
+   one contiguous sibling to the next; the scroll does not move. Without
+   the S5 baseline it slides by one row (confirmed by disabling the
+   restore). The interactive `w`-gesture tests (`wire.rs`) are untouched,
+   since `set_wire_span` is unchanged.
 
 ## Measured outcome
 
@@ -120,9 +164,13 @@ Measured 2026-10-05 on the development machine.
   tests pass.
 - S2/S3: the two new `script.rs` tests pass, and the two pre-existing
   `script_focus` view tests still pass (S4 unchanged).
+- S5: `two_steps_sharing_a_wire_span_do_not_scroll_between_cells` passes
+  and fails (by one row) with the baseline restore disabled; the `w`
+  gesture tests are untouched.
 - The smuggle beat (spec 0396), driven headlessly through protolens's
   `script` mode, no longer relies on the presenter panning up: cells 1
   and 2 and their wire sit below the message head, which stays on
-  screen.
+  screen, and the view holds still as the search steps from cell to
+  cell.
 - The whole protolens suite passes; `cargo fmt --check` and clippy are
   clean.
