@@ -81,9 +81,6 @@ clear && header "1. On the wire"
 # password once. One line per message; each saved in capture/.                 \
 
 sudo -v && (life-tap -q &)
-# \
-#                                                                              \
-# 👉 In Bob's window — pause the game, so the tap stops scrolling:             \
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
