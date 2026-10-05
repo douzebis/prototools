@@ -83,13 +83,10 @@ clear && header "1. On the wire"
 # Alice starts her tap in the background. Only the capture needs root —        \
 # password once. One line per message; each saved in capture/.                 \
 
-rm -rf capture
 sudo -v && (life-tap -q &)
 # \
 #                                                                              \
 # 👉 In Bob's window — play the game of life, then pause it:                   \
-
-ls -lrt capture | head
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
@@ -229,7 +226,7 @@ protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 # Commands ride the responses; answers ride home in the requests.              \
 
 
-clear && header "4. No schema"
+clear && header "4. Eve's own log"
 
 # \
 #                                                                              \
@@ -239,7 +236,8 @@ ls -lh eve/server.log
 
 # \
 #                                                                              \
-# An unknown blob. Try the one schema we have — the client's — against it:     \
+# We have no schema for Eve's server. All we hold is the client's — try it     \
+# as an ersatz against the blob:                                               \
 
 protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
