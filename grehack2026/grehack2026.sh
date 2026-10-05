@@ -147,20 +147,8 @@ view life/proto/grehack/life/v1/life.proto
 
 # \
 #                                                                              \
-# With a corpus, prototext infers a capture's type by scoring it:              \
-
-# \
-#                                                                              \
-# ######################################################################       \
-# #                          Enters prototext                          #       \
-# ######################################################################       \
-#                                                                              \
-
-prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
-
-# \
-#                                                                              \
-# Read one capture with protolens: wire-level detail, scoring, navigation.     \
+# Read a capture with protolens — it infers the type and shows wire-level      \
+# detail, scoring, navigation:                                                 \
 
 # \
 #                                                                              \
@@ -204,6 +192,13 @@ clear && header "3. Hidden bits"
 #                                                                              \
 # A hidden channel — Alice must find it on the wire. Look for oddly            \
 # encoded messages. prototext has `is-canonical`:                              \
+
+# \
+#                                                                              \
+# ######################################################################       \
+# #                          Enters prototext                          #       \
+# ######################################################################       \
+#                                                                              \
 
 prototext is-canonical capture/*.pb || echo Some messages have anomalies
 
