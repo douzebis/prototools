@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0398 — a script step reveals each directive's own target, lazily, in turn
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-05
 App: protolens
 Refs: docs/specs/0271-*.md (a step declares a view; S6/S10/S14);
       docs/specs/0279-*.md (S5: the end-of-step `node:` climb this spec
@@ -155,4 +156,28 @@ lost, it is restored in the beat, not by reviving the climb.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-05 on the development machine.
+
+- The end-of-step `script_focus` and its baseline snapshot are gone;
+  each directive reveals its own target in `script_apply` via one
+  `script_reveal_rows` helper (S2) fed node / selection / search / wire
+  extents (S3).
+- `a_search_hit_on_a_tall_node_does_not_scroll`: `node: /` +
+  `fold: ["/ 1", "/N Z"]` + `search: /N` holds `scroll_top` at 0 with the
+  root header at terminal row 0, for each of `/1`, `/2`, `/3` — the
+  capture beat's step 2, which previously slid the root off by one row.
+- `a_search_scrolls_minimally_to_an_offscreen_hit`: an off-screen hit
+  lands on the pane's last row, not over-scrolled.
+- `a_node_reveal_no_longer_climbs_to_an_ancestor`: a deep `node:` opens
+  on its own line with the ancestor not pulled to the top; the two spec
+  0279 climb tests were replaced by this one.
+- The lazy no-scroll cases (`a_step_does_not_scroll_when_its_node_is_
+  already_visible`, `two_steps_sharing_a_wire_span_do_not_scroll_between_
+  cells`) and the select_lines range reveal still pass; the anomalies
+  walk (`batch_script`) still resolves every position.
+- The whole protolens suite passes (1316 + 25 + 4); `cargo fmt --check`,
+  clippy, and `reuse lint` are clean.
+
+The `node:` climb was dropped (S3). The anomalies beat, re-checked, keeps
+its section captions on screen through its own `fold: ["/ 1", "/N Z"]`
+(S6), so nothing in it was restored.

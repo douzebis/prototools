@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# 0397 — a path match highlights its whole line; a script view scrolls only when it must
+# 0397 — a path match highlights its whole line
 
 Status: implemented
 Implemented in: 2026-10-05
@@ -13,43 +13,34 @@ Refs: docs/specs/0246-the-search-prompt-browses-history-and-rotates-matches.md
       (S9/S22: a path match was one stop owning a single cell);
       docs/specs/0273-*.md (a main-pane line's haystack is its path when
       the pattern is one);
-      docs/specs/0279-*.md (S5: a script step declares a view, scrolled
-      so the outermost fitting ancestor opens the pane);
       docs/specs/0396-prototext-is-canonical.md (the smuggle beat whose
-      rehearsal surfaced both issues)
+      rehearsal surfaced the issue);
+      docs/specs/0398-a-script-step-scrolls-per-directive.md (**supersedes
+      this spec's scroll half** — S2–S6 below described a single
+      end-of-step `script_focus`, which 0398 replaced with a per-directive
+      reveal; only the whole-line tint, S1, remains in force here)
 
 ## Background
 
-Rehearsing the GreHack "hidden bits" beat (spec 0396) turned up two
-rough edges in how protolens handles a scripted path search.
+Rehearsing the GreHack "hidden bits" beat (spec 0396) turned up a path
+search (`/1/1/2`) that highlighted only the **first character** of the
+matched line. The match names a node, not a span of text, so spec 0246
+S22 gave it `width: 1`; on screen that is a one-cell tick, not a legible
+"this line" highlight.
 
-- A path search (`/1/1/2`) highlighted only the **first character** of
-  the matched line. The match names a node, not a span of text, so spec
-  0246 S22 gave it `width: 1`. On screen that is a one-cell tick, not a
-  legible "this line" highlight.
-- A script step that searches a node deep inside a tall subtree (a cell
-  in a ≥20×20 grid) scrolled that node to the top of the pane
-  (`script_focus`, spec 0279 S5), pushing the message's own first lines
-  (`grid {`, `rows {`, the first cell) off the top — so the presenter
-  had to pan up by hand. The wire panel, which makes the node's row
-  taller, made it worse. `script_focus` runs after the directives, on
-  the post-search cursor, so a `node:` directive did not change this.
+(The same rehearsal also turned up a scripted-scroll rough edge, which
+this spec first addressed with a `script_focus` rework. That half was
+superseded by spec 0398 — see the Specification note below.)
 
 ## Goals
 
 - **G1.** A path match highlights the whole matched line, not one cell.
-- **G2.** A script step does not scroll when the node it shows is already
-  on screen; scrolls to reveal it when it is off screen; and when the
-  node is simply too tall to fit, opens the pane on the node's own first
-  line.
 
 ## Non-goals
 
 - **N1.** No change to what a path match *selects* (the node) or where
   the caret lands (the row's first non-blank, spec 0235 S20) — only to
   the tint's width.
-- **N2.** No change to the reader's own `clamp_scroll_to_cursor` rule,
-  which is separate from a script step's declared view (spec 0279 S5).
 
 ## Specification
 
@@ -61,64 +52,25 @@ rough edges in how protolens handles a scripted path search.
   what is drawn. The match still owns the node and lands the caret as
   before (N1).
 
-- **S2. A visible node is not scrolled (G2).** In `script_focus`, before
-  the ancestor climb, if the step's node is already fully on screen — its
-  first drawn row at or below the current scroll top and its last drawn
-  row at or above the bottom — return without changing the scroll. "Its
-  last drawn row" includes the node's **visible** subtree (fold-aware,
-  `lines_visible`) and, when a wire panel is open for the step, its wire
-  rows: both are already folded into the row heights `script_focus`
-  measures with, so no extra bookkeeping is needed.
+- **S2. A step can select a contiguous *range* of nodes.** A
+  `select_lines: {from, to}` directive selects from `from`'s first line
+  through `to`'s last line — the multi-node twin of `select_line`,
+  mirroring `wire_lines`. Both ends resolve like any position; an
+  unresolved end is a step diagnostic and selects nothing. The selection
+  uses the existing two-ended `SelectionSpan` machinery (anchor at
+  `from`'s header column 0, caret at `to`'s last line, full-line), so it
+  needs no new selection state. How the range drives the view is spec
+  0398 (each directive reveals its own target).
 
-- **S3. A too-tall node opens on its own first line (G2).** Still in
-  `script_focus`, after S2: if the node's own extent (subtree + wire)
-  is taller than the pane, set the scroll so the node's first line is
-  the pane's top row, and stop — no ancestor climb and no preceding-
-  sibling caption, since neither can fit above a node that already
-  overflows.
+### Superseded: the scroll half (was S2–S6)
 
-- **S4. Otherwise, climb as before (spec 0279 S5).** When the node is off
-  screen but fits, the existing rule stands: open the view at the
-  outermost ancestor that fits, and reach back over its preceding
-  sibling when the two still fit together.
-
-- **S5. The lazy test reads the view the reader had, not the step's own
-  churn (G2).** A step's view directives each move the scroll as a side
-  effect of their own work before `script_focus` runs: `script_reset`
-  clears the previous step's wire panel, a `wire:` directive opens a new
-  one (`set_wire_span` re-anchors the caret's drawn row so a `w` gesture
-  holds its place), and a `search:` pans its hit into view. Measured
-  against that churn, S2's "already visible?" test answers about a
-  viewport the step itself just perturbed — so two steps that hold one
-  wire span open while the search steps the caret from a cell to its
-  contiguous neighbor (the smuggle beat, spec 0396) scrolled by the one
-  row the caret dropped, even though nothing left the screen.
-
-  So the scroll in effect **before** the step's directives run is
-  captured in `script_apply` and handed to `script_focus`, which
-  restores it before S2/S3. This keeps the lazy decision in one place
-  for every view directive at once — `node:`, `wire:`, `search:`,
-  `fold:` — rather than teaching each directive its own "don't scroll"
-  rule: `set_wire_span` keeps serving the interactive `w` gesture
-  unchanged, and the script path's view is decided solely by
-  `script_focus` against the reader's own baseline.
-
-- **S6. A step can select a contiguous *range* of nodes, and the range
-  drives the view.** A new `select_lines: {from, to}` directive selects
-  from `from`'s first line through `to`'s last line — the multi-node
-  twin of `select_line`, mirroring `wire_lines`. Both ends resolve like
-  any position; an unresolved end is a step diagnostic and selects
-  nothing. The selection uses the existing two-ended `SelectionSpan`
-  machinery (anchor at `from`'s header column 0, caret at `to`'s last
-  line, full-line), so it needs no new selection state.
-
-  For the view: when a step carries a range, `script_focus` extends the
-  extent it measures (S2/S3/S4) down to the range's lower end, not just
-  the cursor node at its head. So the lazy rule holds the scroll when the
-  **whole** selected range is already on screen and scrolls only to bring
-  a hidden part of it on — which is what the byte-selection steps of the
-  smuggle beat need (eight cells at a time), where `node:` names the
-  range's first cell and the selection names the rest.
+This spec first paired the path tint with a rework of how a script step
+scrolls — a single end-of-step `script_focus` with an already-visible
+shortcut, a too-tall rule, the spec 0279 ancestor climb, a pre-directive
+baseline, and a range-aware extent. Spec 0398 replaced that whole model
+with a per-directive lazy reveal and dropped the climb; the fields and
+helpers those sections named no longer exist. The history is in `git
+log`; the live rule is 0398.
 
 ## Alternatives considered
 
@@ -128,49 +80,26 @@ A beat cannot widen the tint; the width is computed in `sweep_test`.
 And a one-cell highlight reads as a cursor, not a selection, for every
 path search, not only this beat's — so the fix belongs in protolens.
 
-### Make `script_focus` always scroll minimally
-
-Dropping the climb entirely (always "scroll just enough") reintroduces
-the bug spec 0279 S5 was written against: a step's node lands on the
-pane's last row with its subtree and wire off the bottom. The climb is
-kept for the off-screen-but-fits case (S4); only the already-visible
-(S2) and too-tall (S3) cases are new.
-
 ## Test plan
 
 1. `a_path_match_highlights_the_whole_line`: a `/3` match on a scalar
    row reports a width equal to the line's content width, > 1.
-2. `a_step_does_not_scroll_when_its_node_is_already_visible`: a step
-   aimed at a node the previous step's view already shows in full leaves
-   the scroll untouched.
-3. `a_step_too_tall_to_fit_opens_on_its_own_first_line`: a step aimed at
-   a node taller than the pane puts the node's first line at terminal
-   row 0.
-4. The existing `script_focus` tests (`a_step_leaves_room_below_its_node`,
-   `a_step_keeps_the_row_above_its_subtree`) still pass: the off-screen
-   climb (S4) is unchanged.
-5. `two_steps_sharing_a_wire_span_do_not_scroll_between_cells`: two
-   steps hold one wire span open while the search moves the caret from
-   one contiguous sibling to the next; the scroll does not move. Without
-   the S5 baseline it slides by one row (confirmed by disabling the
-   restore). The interactive `w`-gesture tests (`wire.rs`) are untouched,
-   since `set_wire_span` is unchanged.
+2. `select_lines_parses_as_a_range_directive` /
+   `select_lines_directive_spans_a_range_of_nodes` /
+   `select_lines_with_an_unresolved_end_is_a_diagnostic`: the directive
+   parses, selects `from`..`to`, and reports an unresolved end.
+
+(The scroll tests this spec first listed moved to spec 0398.)
 
 ## Measured outcome
 
 Measured 2026-10-05 on the development machine.
 
-- S1: `a_path_match_highlights_the_whole_line` passes; the 130 search
-  tests pass.
-- S2/S3: the two new `script.rs` tests pass, and the two pre-existing
-  `script_focus` view tests still pass (S4 unchanged).
-- S5: `two_steps_sharing_a_wire_span_do_not_scroll_between_cells` passes
-  and fails (by one row) with the baseline restore disabled; the `w`
-  gesture tests are untouched.
-- The smuggle beat (spec 0396), driven headlessly through protolens's
-  `script` mode, no longer relies on the presenter panning up: cells 1
-  and 2 and their wire sit below the message head, which stays on
-  screen, and the view holds still as the search steps from cell to
-  cell.
+- S1: `a_path_match_highlights_the_whole_line` passes; the search tests
+  pass.
+- S2: the three `select_lines` tests pass.
 - The whole protolens suite passes; `cargo fmt --check` and clippy are
   clean.
+
+The scroll rework this spec first carried was superseded by spec 0398
+the same day; its measured outcome lives there.

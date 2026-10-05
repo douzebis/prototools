@@ -193,16 +193,6 @@ pub struct Step {
     pub set_heat_cues: Option<HeatCueMode>,
 }
 
-impl Step {
-    /// Whether any `Node` directive appears in this step.  Used by
-    /// `script_focus` to decide whether to adjust the scroll position.
-    pub fn has_node(&self) -> bool {
-        self.directives
-            .iter()
-            .any(|d| matches!(d, Directive::Node(_)))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Script {
     pub title: Option<String>,

@@ -4,13 +4,13 @@
 
 # Reminder-only beat for demo step 1b: protolens on a clean capture.
 #
-# This beat never *moves* the view by hand — every step keeps the cursor
-# on the root (`node: /`), folds the message down to its top-level fields,
-# and unfolds plus highlights the one field it is talking about. So the
-# viewport never scrolls between steps: the message stays rooted at the
-# top and only one field opens at a time. The presenter still runs the
-# interactive gestures (`w`, `v`, `z`, `a`) live. Advance with space or
-# Enter.
+# The view stays rooted (`node: /`) throughout, so it never scrolls out
+# from under the reader. The message opens fully unfolded; two steps then
+# fold the big `grid` field down (level 1, then level 0) until the three
+# top-level fields — `grid`, `rules`, `generation` — fit on screen
+# together, and the last steps point at each with `search`. The presenter
+# still runs the interactive gestures (`w`, `v`, `z`, `a`) live. Advance
+# with space or Enter.
 #
 # Invocation (from grehack2026.sh):
 #   protolens --descriptor-set life.desc capture/000001-request.pb \
@@ -33,30 +33,49 @@ steps:
     node: /
 
   - text: |
-      A StepRequest has three top-level fields. The first — highlighted —
-      is `grid`, a nested Grid message: rows of cells.
+      Fully expanded. A StepRequest has three top-level fields — the first,
+      highlighted, is `grid`: a Grid message, rows of cells, and most of
+      what is on screen.
 
       👋 Press space.
     node: /
-    fold: ["/ 1", "/1 Z"]
     search: /1
 
   - text: |
-      The second is `rules` — another nested message, with the birth and
-      survival ranges and the topology.
+      `grid` folds down one level — its rows collapse to a single line
+      each, the whole grid now a short block.
 
       👋 Press space.
     node: /
-    fold: ["/ 1", "/2 Z"]
+    fold: ["/1 1"]
+    search: /1
+
+  - text: |
+      And fully: `grid` is now one line. The three top-level fields fit on
+      screen together.
+
+      👋 Press space.
+    node: /
+    fold: ["/1 0"]
+    search: /1
+
+  - text: |
+      The second field is `rules` — another nested message, with the birth
+      and survival ranges and the topology.
+
+      👋 Press space.
+    node: /
+    fold: ["/1 0"]
     search: /2
 
   - text: |
-      The third is `generation` — a scalar `uint64`. Drop to wire level
-      with `w`: the raw bytes, the tag, the wire type, the varint groups.
+      The third is `generation` — a scalar `uint64`, sitting just below
+      `rules`. Drop to wire level with `w`: the raw bytes, the tag, the
+      wire type, the varint groups.
 
       👋 Press `w` on `generation`, then `w` again to close it.
     node: /
-    fold: ["/ 1", "/3 Z"]
+    fold: ["/1 0"]
     search: /3
 
   - text: |
@@ -69,7 +88,7 @@ steps:
 
       👋 Press `v` on `grid` or `rules`, look at the declaration, come back.
     node: /
-    fold: ["/ 1"]
+    fold: ["/1 0"]
     search: /1
 
   - text: |

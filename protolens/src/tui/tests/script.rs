@@ -218,16 +218,15 @@ fn a_step_waits_for_its_lines() {
     );
 }
 
-/// Spec 0279 S5, amending spec 0271 S6. A step declares a view, so it
-/// places its node where the subtree it is about can be read.
-/// `clamp_scroll_to_cursor` — the reader's rule, which only ever moves
-/// far enough to bring a row on screen — would land it on the pane's
-/// last row whenever the step before it was higher up, putting
-/// everything the step is about off the bottom.
+/// Spec 0398 S3: a `node:` reveals its own visible subtree, not its
+/// ancestors — the spec 0279 climb and its preceding-sibling caption are
+/// gone. Step 1 places `/1` at the top; step 2 aims at `/3/1`, deep in
+/// the last item. The view scrolls the minimum to bring `/3/1` on screen
+/// (so it lands on the pane's last row, spec 0398 S2), and does *not*
+/// pull `/3`'s header, or the sibling above it, to the top.
 #[test]
-fn a_step_leaves_room_below_its_node() {
+fn a_node_reveal_no_longer_climbs_to_an_ancestor() {
     let (mut app, _) = repeated_message_fixture();
-    // Room for one item's three lines and one row to spare.
     app.main_area = Rect::new(0, 0, 40, 4);
     app.set_script(script_of(
         "steps:\n- text: the first item\n  node: /1\n\
@@ -237,57 +236,26 @@ fn a_step_leaves_room_below_its_node() {
     app.script_advance(true);
     assert_eq!(app.positional_path(app.cursor), "/3/1");
 
-    // The enclosing item, whole: its header, `v: 7`, and its footer.
-    let item = app.parent(app.cursor).expect("/3/1 has a parent");
-    let top = app
-        .visible_row_of_line(app.absolute_start(item))
-        .expect("the item is on screen");
-    let rows = app.tree[item].lines_visible as usize;
-    assert_eq!(app.terminal_row_of(top), 0, "the subtree opens the pane");
+    // `/3/1` itself is on screen — its single `v: 7` line is drawn inside
+    // the pane.
+    let target_row = app
+        .visible_row_of_line(app.absolute_start(app.cursor))
+        .expect("the target is on screen");
+    let term = app.terminal_row_of(target_row);
     assert!(
-        app.terminal_row_of(top + rows) <= app.main_area.height as isize,
-        "and ends inside it"
+        term >= 0 && term < app.main_area.height as isize,
+        "the node's own line is visible (terminal row {term})"
     );
-}
 
-/// Spec 0279 S5, amended 2026-08-12. A caption need not be an ancestor:
-/// in `tests/fixtures/anomalies.pb` it is the top-level `dependency` line *beside*
-/// the wrapper, so that folding the document leaves the headings
-/// readable. The climb alone puts the wrapper's first row at the top of
-/// the pane and the row naming it just above the fold, so the view
-/// reaches back over the fitting ancestor's previous sibling whenever
-/// the two still fit together.
-#[test]
-fn a_step_keeps_the_row_above_its_subtree() {
-    let (mut app, _) = repeated_message_fixture();
-    // Room for two items' three lines each, and one row to spare.
-    app.main_area = Rect::new(0, 0, 40, 7);
-    app.set_script(script_of(
-        "steps:\n- text: the first item\n  node: /1\n\
-         - text: the last item's value\n  node: /3/1\n",
-    ));
-
-    app.script_advance(true);
-    assert_eq!(app.positional_path(app.cursor), "/3/1");
-
+    // But the enclosing item `/3` is *not* opened at the top — no climb.
     let item = app.parent(app.cursor).expect("/3/1 has a parent");
-    let before = app.prev_sibling(item).expect("/3 has a sibling above it");
-    let top = app
-        .visible_row_of_line(app.absolute_start(before))
-        .expect("the sibling is on screen");
-    assert_eq!(
-        app.terminal_row_of(top),
+    let item_top = app
+        .visible_row_of_line(app.absolute_start(item))
+        .expect("the item header is drawn");
+    assert_ne!(
+        app.terminal_row_of(item_top),
         0,
-        "the row above the subtree opens the pane"
-    );
-    let rows = app.tree[item].lines_visible as usize;
-    let end = app
-        .visible_row_of_line(app.absolute_start(item))
-        .expect("the item is on screen")
-        + rows;
-    assert!(
-        app.terminal_row_of(end) <= app.main_area.height as isize,
-        "and the subtree still ends inside it"
+        "the ancestor is not pulled to the pane's top"
     );
 }
 
@@ -1275,31 +1243,130 @@ fn step_directive_heat_cues_bad_value_is_load_error() {
     );
 }
 
-/// Spec 0397 S2: a step whose node is already fully on screen does not
-/// scroll. Step 1 aims at `/3/1`, deep in the last item, which scrolls
-/// the view down; step 2 aims at `/3`, which that view already shows in
-/// full — so the scroll must not move.
+/// Spec 0398 S2: a reveal of something already fully on screen does not
+/// scroll. Step 1 aims at `/3`, the last item, scrolling it into view in
+/// full; step 2 aims at `/3/1`, a line *inside* `/3` that step 1 already
+/// shows — so the scroll must not move.
 #[test]
 fn a_step_does_not_scroll_when_its_node_is_already_visible() {
     let (mut app, _) = repeated_message_fixture();
-    // Tall enough that the whole document (root + three 3-line items)
-    // does not fit, so step 1 genuinely scrolls, yet `/3` fits with room.
+    // Tall enough that `/3` fits whole once scrolled to, with room, but
+    // the whole document (root + three 3-line items) does not — so step 1
+    // genuinely scrolls.
     app.main_area = Rect::new(0, 0, 40, 7);
     app.set_script(script_of(
-        "steps:\n- text: deep in the last item\n  node: /3/1\n\
-         - text: the last item itself\n  node: /3\n",
+        "steps:\n- text: the last item\n  node: /3\n\
+         - text: a line inside it\n  node: /3/1\n",
     ));
-    // Step 1.
-    assert_eq!(app.positional_path(app.cursor), "/3/1");
+    // Step 1 scrolled `/3` into view.
+    assert_eq!(app.positional_path(app.cursor), "/3");
     let after_step1 = app.scroll_top();
 
-    // Step 2: /3 is already fully visible in step 1's view.
+    // Step 2: `/3/1` is already fully visible inside `/3`.
     app.script_advance(true);
-    assert_eq!(app.positional_path(app.cursor), "/3");
+    assert_eq!(app.positional_path(app.cursor), "/3/1");
     assert_eq!(
         app.scroll_top(),
         after_step1,
         "an already-visible node leaves the scroll untouched"
+    );
+}
+
+/// A message like the capture's StepRequest: a tall first field (`grid`,
+/// many rows) followed by small siblings. Returns the app.
+fn tall_first_field_app() -> App {
+    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::helpers::{write_tag, write_varint};
+    let fds = proto3_fds(
+        "tall.proto",
+        vec![
+            message(
+                "Outer",
+                vec![
+                    field_of("grid", 1, Label::Optional, Type::Message, ".test.Big"),
+                    field_of("rules", 2, Label::Optional, Type::Message, ".test.Small"),
+                    field("generation", 3, Label::Optional, Type::Uint64),
+                ],
+            ),
+            message(
+                "Big",
+                vec![field("cells", 1, Label::Repeated, Type::Uint32)],
+            ),
+            message("Small", vec![field("k", 1, Label::Optional, Type::Uint32)]),
+        ],
+    );
+    let mut big = Vec::new();
+    for i in 0..40u64 {
+        write_tag(1, 0, &mut big);
+        write_varint(i + 1, &mut big);
+    }
+    let mut blob = Vec::new();
+    write_tag(1, 2, &mut blob);
+    write_varint(big.len() as u64, &mut blob);
+    blob.extend_from_slice(&big);
+    let mut small = Vec::new();
+    write_tag(1, 0, &mut small);
+    write_varint(7, &mut small);
+    write_tag(2, 2, &mut blob);
+    write_varint(small.len() as u64, &mut blob);
+    blob.extend_from_slice(&small);
+    write_tag(3, 0, &mut blob);
+    write_varint(5, &mut blob);
+    let mut app = fixture_under("tallfirst", &fds, "test.Outer", &blob);
+    app.splash = false;
+    app
+}
+
+/// Spec 0398 S2/S3: `node: /` + `fold: ["/ 1", "/N Z"]` + `search: /N` —
+/// the capture beat's shape. The search highlights one line (the field's
+/// header); folding keeps the message rooted at the top. The highlighted
+/// line is already on screen, so nothing scrolls, even though `/1`
+/// unfolded is far taller than the pane.
+#[test]
+fn a_search_hit_on_a_tall_node_does_not_scroll() {
+    let root_term = |a: &App| {
+        let rl = a.absolute_start(a.first_node);
+        a.visible_row_of_line(rl).map(|r| a.terminal_row_of(r))
+    };
+    for target in ["/1", "/2", "/3"] {
+        let mut app = tall_first_field_app();
+        app.main_area = Rect::new(0, 0, 50, 10);
+        app.set_script(script_of(&format!(
+            "steps:\n- text: t\n  node: /\n  fold: [\"/ 1\", \"{target} Z\"]\n  search: {target}\n"
+        )));
+        assert_eq!(
+            app.scroll_top(),
+            0,
+            "search on {target} must not scroll the rooted view"
+        );
+        assert_eq!(
+            root_term(&app),
+            Some(0),
+            "the root header stays at the top for {target}"
+        );
+    }
+}
+
+/// Spec 0398 S2: a search whose hit is below the fold scrolls the minimum
+/// that brings the hit's line on screen — it lands on the pane's last
+/// row, not the first (no over-scroll, no centering).
+#[test]
+fn a_search_scrolls_minimally_to_an_offscreen_hit() {
+    let mut app = tall_first_field_app();
+    // Short pane; show the tall grid unfolded so `generation` (/3) sits
+    // well below the bottom, then search it.
+    app.main_area = Rect::new(0, 0, 50, 6);
+    app.set_script(script_of(
+        "steps:\n- text: t\n  node: /\n  fold: [\"/1 Z\"]\n  search: /3\n",
+    ));
+    let (hit_line, _, _, _) = app.search_current_cell().expect("the search is current");
+    let row = app
+        .visible_row_of_line(hit_line)
+        .expect("the hit line is drawn");
+    assert_eq!(
+        app.terminal_row_of(row),
+        app.main_area.height as isize - 1,
+        "the off-screen hit is brought onto the last row, not over-scrolled"
     );
 }
 

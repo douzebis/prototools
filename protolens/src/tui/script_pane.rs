@@ -210,18 +210,6 @@ impl App {
         // index through every helper below for no measurable gain.
         let step: Step = state.script.steps[state.current].clone();
 
-        // Spec 0397 S5: the view the reader is looking at *before* this
-        // step runs is the baseline the step's lazy focus decides
-        // against. `script_reset` and the view directives below
-        // (`wire:`, `search:`, `node:`) each nudge the scroll as a side
-        // effect of their own — `set_wire_span` re-anchors the cursor's
-        // row, a search pans its hit into view. Captured here and handed
-        // to `script_focus`, so its "already visible?" test (S2) asks
-        // whether the step's node fits the view the reader had, not the
-        // one these side effects happened to leave. One lazy rule, in
-        // `script_focus`, covering every directive that perturbs scroll.
-        let baseline_scroll = self.scroll;
-
         self.script_reset();
         let mut errors = Vec::new();
         // Spec 0356 S8: mode switches applied before all view directives so
@@ -232,21 +220,51 @@ impl App {
         if let Some(mode) = step.set_heat_cues {
             self.heat_cues = mode;
         }
-        // Spec 0366: execute position-sensitive directives in YAML key order.
+        // Spec 0398 S1/S4: each position-sensitive directive is applied,
+        // then reveals its own target, in YAML key order (spec 0366). The
+        // reveals are lazy and minimal (S2), each from the scroll the
+        // previous one left, so the step is framed by its last directive
+        // without a separate end-of-step focus pass.
         for directive in &step.directives {
             match directive {
-                Directive::Node(pos) => self.script_apply_cursor(pos, &mut errors),
-                Directive::Fold(entries) => self.script_apply_folds(entries, &mut errors),
-                Directive::Wire(wire) => self.script_apply_wire(wire, &mut errors),
-                Directive::SelectLine => self.script_apply_select_line(),
-                Directive::SelectNode => self.script_apply_select_node(),
-                Directive::SelectLines { from, to } => {
-                    self.script_apply_select_lines(from, to, &mut errors)
+                Directive::Node(pos) => {
+                    self.script_apply_cursor(pos, &mut errors);
+                    // Spec 0398 S3: reveal the node's own visible subtree,
+                    // not its ancestors — the spec 0279 climb is gone.
+                    self.script_reveal_node(self.cursor);
                 }
-                Directive::Search(pat) => self.script_apply_search(pat, &mut errors),
+                Directive::Fold(entries) => self.script_apply_folds(entries, &mut errors),
+                Directive::Wire(wire) => {
+                    // `show_wire_span` → `set_wire_span` re-anchors the
+                    // caret's drawn row as a side effect of toggling the
+                    // bytes on (its interactive-`w` behavior, spec 0398
+                    // N2). That is not this directive's reveal, so undo it
+                    // and let the lazy reveal frame the span instead —
+                    // otherwise, when the span is already visible, the
+                    // re-anchor's shift leaks through as a spurious scroll.
+                    let before = self.scroll;
+                    self.script_apply_wire(wire, &mut errors);
+                    self.scroll = before;
+                    self.script_reveal_wire();
+                }
+                Directive::SelectLine => {
+                    self.script_apply_select_line();
+                    self.script_reveal_selection();
+                }
+                Directive::SelectNode => {
+                    self.script_apply_select_node();
+                    self.script_reveal_selection();
+                }
+                Directive::SelectLines { from, to } => {
+                    self.script_apply_select_lines(from, to, &mut errors);
+                    self.script_reveal_selection();
+                }
+                Directive::Search(pat) => {
+                    self.script_apply_search(pat, &mut errors);
+                    self.script_reveal_search();
+                }
             }
         }
-        self.script_focus(&step, baseline_scroll);
         self.pan_to_caret();
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
@@ -701,93 +719,92 @@ impl App {
     /// the final scroll is decided, for every view directive at once: a
     /// step that lands on a node the reader can already see does not
     /// scroll, whichever directive moved the cursor there.
-    fn script_focus(&mut self, step: &Step, baseline: super::PaneScroll) {
-        if !step.has_node() || self.tree.is_empty() {
+    /// Spec 0398 S2: bring the visible-row range `first..=last` on screen,
+    /// lazily and minimally. The one reveal rule every directive hands its
+    /// own target to (S3): a `node:` its visible subtree, a `select_*:`
+    /// its span, a `search:` its matched text.
+    ///
+    /// - already fully inside the viewport → do nothing;
+    /// - off screen but it fits → scroll the minimum that shows it
+    ///   (spec 0242 S7: minimum movement, no centering);
+    /// - taller than the pane → put its first row at the top.
+    ///
+    /// The extent is measured in terminal rows, because a wire row makes
+    /// its document row two terminal rows tall — the same unit the scroll
+    /// is kept in (spec 0230).
+    fn script_reveal_rows(&mut self, first: usize, last: usize) {
+        let pane = self.main_area.height as isize;
+        if pane <= 0 {
             return;
         }
-        let pane = self.main_area.height as usize;
-        if pane == 0 {
-            return;
-        }
-        self.scroll = baseline;
         let heights = self.row_heights();
-        // `extent` is `None` for a node drawn nowhere — a folded-away
-        // ancestor cannot be aimed at, and the climb stops below it.
-        let extent = |app: &Self, idx: usize| {
-            let row = app.visible_row_of_line(app.absolute_start(idx))?;
-            let rows = app.tree[idx].lines_visible as usize;
-            Some((row, heights.offset(row + rows) - heights.offset(row)))
-        };
-        let mut node = self.cursor;
-        let mut top = match extent(self, node) {
-            Some((row, _)) => row,
-            None => return,
-        };
-        let mut bottom = top + self.tree[node].lines_visible as usize;
-
-        // Spec 0397 S6: a `select_lines:` range is the thing the step
-        // shows, not just the cursor node at its head — so the extent the
-        // rules below measure reaches down to the last visible line of
-        // the selection. The range is contiguous and the cursor sits on
-        // its first node, so `top` already marks its start; only `bottom`
-        // needs to grow. With it, S2 holds the scroll only when the whole
-        // range is on screen, and the climb scrolls to reveal the whole
-        // range rather than stopping at its first cell.
-        if let Some((_, _, hi_line, _)) = self.selection_span() {
-            if let Some(row) = self.visible_row_of_line(hi_line) {
-                bottom = bottom.max(row + 1);
-            }
-        }
-
-        // Spec 0397 S2: if the step's node is already fully on screen —
-        // its visible subtree, a `select_lines:` range's lower end, and,
-        // when a wire panel is open, its wire rows included (all folded
-        // into `bottom`/`heights`) — leave the scroll where it is. That
-        // is what the user asked for the byte-selection steps: hold the
-        // view when the selected cells already show, scroll only to bring
-        // a hidden one on. The climb below re-anchors the view to
-        // the top of a fitting ancestor, which on a node deep inside a
-        // tall subtree (a cell in a large grid) scrolls the subtree's
-        // own head off the top for no reason. Only scroll when something
-        // the step shows is off screen.
+        let top = heights.offset(first) as isize;
+        // `last` is inclusive; its bottom edge is the top of the row after.
+        let bottom = heights.offset(last + 1) as isize;
         let scroll_top = self.scroll_top();
-        let node_top = heights.offset(top) as isize;
-        let node_bottom = heights.offset(bottom) as isize;
-        if node_top >= scroll_top && node_bottom <= scroll_top + pane as isize {
-            return;
+        if top >= scroll_top && bottom <= scroll_top + pane {
+            return; // already fully visible
         }
+        if bottom - top > pane {
+            self.set_scroll_top(top); // too tall: top-align
+        } else if top < scroll_top {
+            self.set_scroll_top(top); // above the viewport: bring its top on
+        } else {
+            self.set_scroll_top(bottom - pane); // below: bring its bottom on
+        }
+    }
 
-        // Spec 0397 S3: when the node itself (subtree + wire) is taller
-        // than the pane, no climb and no caption can fit above it. Put
-        // the node's own first line at the top of the viewport and stop:
-        // reaching out to an ancestor would only push that first line
-        // off the top.
-        if node_bottom - node_top > pane as isize {
-            self.set_scroll_top(node_top);
-            return;
-        }
+    /// Spec 0398 S3: the visible-row extent of node `idx` — its header row
+    /// through the last row of its *visible* (fold-aware) subtree. `None`
+    /// when the node is drawn nowhere (a folded-away ancestor).
+    fn script_node_extent(&self, idx: usize) -> Option<(usize, usize)> {
+        let first = self.visible_row_of_line(self.absolute_start(idx))?;
+        let rows = self.tree[idx].lines_visible as usize;
+        Some((first, first + rows.saturating_sub(1)))
+    }
 
-        while let Some(parent) = self.parent(node) {
-            match extent(self, parent) {
-                Some((row, height)) if height <= pane => {
-                    top = row;
-                    bottom = row + self.tree[parent].lines_visible as usize;
-                }
-                // Too tall, or not drawn: nothing above it is shorter,
-                // so this is as far out as the view can open.
-                _ => break,
-            }
-            node = parent;
+    /// Reveal `idx`'s own visible subtree (spec 0398 S3, `node:`).
+    fn script_reveal_node(&mut self, idx: usize) {
+        if let Some((first, last)) = self.script_node_extent(idx) {
+            self.script_reveal_rows(first, last);
         }
-        // The caption, when there is one, is the sibling above.
-        if let Some(prev) = self.prev_sibling(node) {
-            if let Some((row, _)) = extent(self, prev) {
-                if heights.offset(bottom) - heights.offset(row) <= pane {
-                    top = row;
-                }
+    }
+
+    /// Reveal the current selection span (spec 0398 S3, `select_*:`).
+    fn script_reveal_selection(&mut self) {
+        if let Some((lo_line, _, hi_line, _)) = self.selection_span() {
+            if let (Some(first), Some(last)) = (
+                self.visible_row_of_line(lo_line),
+                self.visible_row_of_line(hi_line),
+            ) {
+                self.script_reveal_rows(first.min(last), first.max(last));
             }
         }
-        self.set_scroll_top(heights.offset(top) as isize);
+    }
+
+    /// Reveal the current search hit's matched text (spec 0398 S3,
+    /// `search:`). The hit is reported as a single document line, which is
+    /// the matched line; a one-line path match therefore has a one-line
+    /// extent and scrolls nothing when it is already on screen.
+    fn script_reveal_search(&mut self) {
+        if let Some((line, _, _, _)) = self.search_current_cell() {
+            if let Some(row) = self.visible_row_of_line(line) {
+                self.script_reveal_rows(row, row);
+            }
+        }
+    }
+
+    /// Reveal the open wire span (spec 0398 S3, `wire_*:`). `set_wire_span`
+    /// has already toggled the bytes on and re-anchored the caret's own
+    /// drawn row for the interactive `w` gesture (spec 0398 N2 leaves that
+    /// alone); this then frames the span itself, lazily, so a `wire:` that
+    /// is the step's last directive shows its whole span rather than
+    /// whatever the re-anchor left. `wire_rows()` already spans the byte
+    /// rows, which are two terminal rows tall in `row_heights`.
+    fn script_reveal_wire(&mut self) {
+        if let Some(rows) = self.wire_rows() {
+            self.script_reveal_rows(rows.start, rows.end.saturating_sub(1));
+        }
     }
 
     fn script_apply_wire(&mut self, wire: &Wire, errors: &mut Vec<String>) {
