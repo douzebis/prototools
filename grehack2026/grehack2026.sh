@@ -119,6 +119,7 @@ hexdump -v -C capture/000001-request.pb | view
 
 splash "ENTER PROTOSCAN"
 protoscan life-client
+
 # \
 # There they are: protoscan found two FileDescriptorProtos embedded in         \
 # the client — the game's own grehack/life/v1/life.proto, and the              \
@@ -296,6 +297,7 @@ ls -lh eve/server.log
 
 # Our usual first try on an unknown blob:
 protoc --decode_raw < eve/server.log
+
 # \
 # protoc gives up on the whole file. Let's see what protolens makes of         \
 # it, with only the schema we recovered from the client:                       \

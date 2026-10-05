@@ -46,6 +46,9 @@ A rehearsal of `grehack2026.sh` surfaced several rough edges:
   shells, as it did in the dev-shell.
 - **G5.** The Eve section shows the capability live before dissecting it,
   and does not name the smuggled payload until protolens reveals it.
+- **G6.** A command whose output the audience is meant to read is
+  followed by an empty-command pause, so the reader's attention rests on
+  the output before the narration continues.
 
 ## Non-goals
 
@@ -93,6 +96,18 @@ A rehearsal of `grehack2026.sh` surfaced several rough edges:
     reveals it (G5). Section 2b's header renders within 80 columns
     (spec 0388's banner width), unlike a longer title.
 
+- **S6. An empty-command pause after a read-this command (G6).** A blank
+  line in the deck is one steppable entry with nothing to run: the
+  presenter advances past an empty prompt with Enter, leaving the
+  command's output on screen with a bare prompt below it. The deck
+  carries one such blank after each command whose output the audience
+  reads before the narration resumes — `protoscan`, `prototext
+  list-schemas`, the `ls` listings, `protoc --decode_raw`, the `tail` of
+  `tap.log`. A pager command (`view`, `view_textproto`, interactive
+  `protolens`) gets none: the pager already holds focus until the
+  presenter quits it. Exactly one blank, never two in a row, so there is
+  one Enter to press, not two.
+
 ## Alternatives considered
 
 ### Duplicate the nvim init.lua into the teleprompt wrapper
@@ -118,9 +133,13 @@ and slow each transition. A one-line boxed banner is enough to say
    `proto` and `hlexists("protoKeyword")`.
 4. `bash -n grehack2026.sh`; every banner continuation ends at display
    column 80; headers render within 80 columns.
-5. A dry run of the deck in the grehack2026 demo shell: the splash
-   banners appear, `view` is colored, and the Eve section reads in two
-   parts with no payload named before protolens.
+5. The deck's loader (teleprompt's read loop) turns a blank line into
+   one empty command entry, and the deck has exactly one after each
+   read-this command and none after a pager (G6).
+6. A dry run of the deck in the grehack2026 demo shell: the splash
+   banners appear, `view` is colored, the Eve section reads in two
+   parts with no payload named before protolens, and each read-this
+   command is followed by an empty prompt.
 
 ## Measured outcome
 
@@ -133,5 +152,9 @@ Measured 2026-10-05 on the development machine.
   `XDG_CONFIG_HOME=…-teleprompt-nvim-config`, whose `nvim/init.lua`
   carries the desert theme and proto keywords. Headless nvim under it
   reports filetype `proto` with `protoKeyword` highlighting present.
-- Not done: test plan item 5, a full dry run in the demo shell, which
+- S6/G6: the loader yields one entry per blank line (confirmed by
+  replaying teleprompt's read loop on a two-command script with a blank
+  between: three entries, the middle one empty). The deck has one blank
+  after each read-this command, none doubled, and none after a pager.
+- Not done: test plan item 6, a full dry run in the demo shell, which
   needs a terminal.
