@@ -69,10 +69,6 @@ clear && header "0. The cast"
 
 # \
 #                                                                              \
-# This window is Alice's control tower. When Bob's or Eve's window must        \
-# act, it says so, with the exact keys.                                        \
-#                                                                              \
-#                                                                              \
 # Goal: from the wire alone — the stream's structure, its contents, then       \
 # what it hides.                                                               \
 #                                                                              \
