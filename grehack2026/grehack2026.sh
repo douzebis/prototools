@@ -246,18 +246,7 @@ protolens --descriptor-set life.desc eve/server.log \
 # A schema reverse-crafted from a truncated, type-less blob — Eve's own log.   \
 
 
-clear && header "5. Anomalies"
-
-# \
-#                                                                              \
-# Not every anomaly is accidental: fingerprints, covert channels, data         \
-# below the app layer. protolens annotates every category:                     \
-
-protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
-  --script beats/anomalies
-
-
-clear && header "6. Takeaways"
+clear && header "5. Takeaways"
 
 # \
 #                                                                              \
@@ -278,3 +267,14 @@ clear && header "6. Takeaways"
 # https://github.com/ThalesGroup/prototools — pull requests welcome 🙂
 
 # Thank you 👋
+
+
+clear && header "Annex: anomalies"
+
+# \
+#                                                                              \
+# Not every anomaly is accidental: fingerprints, covert channels, data         \
+# below the app layer. protolens annotates every category:                     \
+
+protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
+  --script beats/anomalies
