@@ -94,10 +94,12 @@ ls -lrt capture | head
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
 # \
+#                                                                              \
 # Opaque. Protobuf self-describes only field numbers and wire types.           \
 # To read values: the schema — descriptor set + root type.                     \
 
 # \
+#                                                                              \
 # gRPC clients usually embed their own descriptor set.                         \
 # protoscan scans any blob for embedded descriptors:                           \
 
@@ -111,10 +113,12 @@ hexdump -v -C capture/000001-request.pb | view
 protoscan life-client
 
 # \
+#                                                                              \
 # Two FileDescriptorProtos in the client: the game's life.proto, and the       \
 # standard descriptor.proto.                                                   \
 
 # \
+#                                                                              \
 # reproto extracts and decompiles them — a reusable schema DB:                 \
 
 # \
@@ -127,6 +131,7 @@ protoscan life-client
 reproto -I life-client --schema-db-out life.desc
 
 # \
+#                                                                              \
 # Not just extraction: it decompiles, indexes, and scores for inference.       \
 
 ls -lhd life.desc life/* \
@@ -139,10 +144,12 @@ ls -lhd life.desc life/* \
 # Browse one decompiled .proto — it reads like hand-written source:
 view life/proto/grehack/life/v1/life.proto
 # \
+#                                                                              \
 # A faithful .proto rebuilt from the binary alone — messages, enums,           \
 # fields, nesting, packages. No original source needed.                        \
 
 # \
+#                                                                              \
 # With a corpus, prototext infers a capture's type by scoring it:              \
 
 # \
@@ -155,14 +162,8 @@ view life/proto/grehack/life/v1/life.proto
 prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
 
 # \
-# Decode one capture. The baseline, protoc — works, but spartan:               \
-
-protoc --descriptor_set_in=life.desc \
-       --decode=grehack.life.v1.StepRequest < capture/000001-request.pb \
-  | view_textproto
-
-# \
-# protolens: wire-level detail, scoring, navigation.                           \
+#                                                                              \
+# Read one capture with protolens: wire-level detail, scoring, navigation.     \
 
 # \
 #                                                                              \
@@ -176,6 +177,7 @@ protolens --descriptor-set life.desc capture/000001-request.pb \
 
 
 # \
+#                                                                              \
 # Schema recovery reaches the source: `v` jumps to the type's .proto.          \
 
 
@@ -209,11 +211,13 @@ clear && header "3. Hidden bits"
 prototext is-canonical capture/*.pb || echo Some messages have anomalies
 
 # \
+#                                                                              \
 # Which ones carry anomalies:                                                  \
 
 prototext is-canonical capture/*.pb | grep -v canonical
 
 # \
+#                                                                              \
 # A closer look:                                                               \
 
 protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
@@ -228,26 +232,26 @@ protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 clear && header "4. No schema"
 
 # \
+#                                                                              \
 # Eve's server left a file in her directory all along. What is it?             \
 
 ls -lh eve/server.log
 
-# Our usual first try on an unknown blob:
-protoc --decode_raw < eve/server.log
-
 # \
-# protoc gives up on the whole file. protolens, with only the recovered        \
-# client schema:                                                               \
+#                                                                              \
+# An unknown blob. Try the one schema we have — the client's — against it:     \
 
 protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
 # \
+#                                                                              \
 # A schema reverse-crafted from a truncated, type-less blob — Eve's own log.   \
 
 
 clear && header "5. Anomalies"
 
 # \
+#                                                                              \
 # Not every anomaly is accidental: fingerprints, covert channels, data         \
 # below the app layer. protolens annotates every category:                     \
 
@@ -258,14 +262,17 @@ protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
 clear && header "6. Takeaways"
 
 # \
+#                                                                              \
 # 1. Descriptors usually hide in the binary. protoscan finds them,             \
 #    reproto gives the .proto back.                                            \
 
 # \
+#                                                                              \
 # 2. A corpus types a message it has never seen, piece by piece, from the      \
 #    messages it does know. That's what heat cues are for.                     \
 
 # \
+#                                                                              \
 # 3. What a decoder normalizes away is evidence — a shadowed value, a          \
 #    padding bit, a truncated tail. prototools surfaces it, back to bytes.     \
 
