@@ -49,8 +49,9 @@ clear && header "0. The cast"
 
 # \
 #                                                                              \
-# Alice 🕵️ — the investigator. Taps the wire between Bob and Eve.              \
-# Has the capture and the client binary, nothing else.                         \
+# Alice 🕵️ — the investigator. Bob, idly curious whether his game only         \
+# plays Life, asks her to audit the traffic. She has his client binary and     \
+# her own tap of the wire — nothing from the server.                           \
 #                                                                              \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
@@ -72,7 +73,7 @@ clear && header "0. The cast"
 # act, it says so, with the exact keys.                                        \
 #                                                                              \
 #                                                                              \
-# Goal: an unknown protobuf stream → its structure, its contents, then         \
+# Goal: from the wire alone — the stream's structure, its contents, then       \
 # what it hides.                                                               \
 #                                                                              \
 
@@ -163,15 +164,16 @@ protolens --descriptor-set life.desc capture/000001-request.pb \
 
 # \
 #                                                                              \
-# Schema recovery reaches the source: `v` jumps to the type's .proto.          \
+# Alice can now read every message in the clear. But is the server only        \
+# playing Life?                                                                \
 
 
 clear && header "2. Eve is spying"
 
 # \
 #                                                                              \
-# Claim: Eve's server is no innocent Life server.                              \
-# Watch her window — the grid plays on, but she's about to do more.            \
+# A look behind the curtain — what Alice cannot see. Watch Eve's window:       \
+# the grid plays on, but she's about to do more.                               \
 
 # \
 #                                                                              \
@@ -182,16 +184,17 @@ clear && header "2. Eve is spying"
 #        ls ~/.ssh                                                             \
 #        id                                                                    \
 #                                                                              \
-# Those commands ran on Bob's machine. Eve's "Life server" is a remote         \
-# shell, hidden inside an ordinary game.                                       \
+# Those commands ran on Bob's machine: Eve's "Life server" is a remote         \
+# shell, hidden in an ordinary game. Alice saw none of this — she has only     \
+# the wire. Can she find it there?                                             \
 
 
 clear && header "3. Hidden bits"
 
 # \
 #                                                                              \
-# A hidden channel — Alice must find it on the wire. Look for oddly            \
-# encoded messages. prototext has `is-canonical`:                              \
+# She can. A covert channel has to bend the encoding — so Alice hunts          \
+# non-canonical protobufs. prototext has `is-canonical`:                       \
 
 # \
 #                                                                              \
@@ -217,15 +220,16 @@ protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 
 # \
 #                                                                              \
-# From the wire alone: Eve asked "whoami", Bob answered "experiment".          \
-# Commands ride the responses; answers ride home in the requests.              \
+# Alice has it, from the wire alone: Eve asked "whoami", Bob answered          \
+# "experiment". Commands ride the responses, answers the requests.             \
 
 
 clear && header "4. Eve's own log"
 
 # \
 #                                                                              \
-# Eve's server left a file in her directory all along. What is it?             \
+# With the wire evidence in hand, Eve's server is pulled — and it kept a       \
+# log. What is it?                                                             \
 
 ls -lh eve/server.log
 
@@ -236,9 +240,6 @@ ls -lh eve/server.log
 
 protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
-# \
-#                                                                              \
-# A schema reverse-crafted from a truncated, type-less blob — Eve's own log.   \
 
 
 clear && header "5. Takeaways"
