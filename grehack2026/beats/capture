@@ -9,7 +9,7 @@
 # (arrows / mouse / z / w / v). Advance each step with space or Enter.
 #
 # Invocation (from grehack2026.sh):
-#   protolens --descriptor-set life.desc capture/000001-response.pb \
+#   protolens --descriptor-set life.desc capture/000001-request.pb \
 #       --script beats/capture
 
 title: Reading one message with protolens
@@ -28,8 +28,8 @@ steps:
     node: /
 
   - text: |
-      Walk into it. A StepResponse has two top-level fields: `grid`, a
-      nested Grid message, and `generation`, a scalar.
+      Walk into it. A StepRequest has three top-level fields: `grid` and
+      `rules`, both nested messages, and `generation`, a scalar.
 
       👋 Press space to step into the grid.
     node: /1
@@ -49,7 +49,7 @@ steps:
       the reconstructed .proto source — the SourceCodeInfo reproto
       synthesized, resolved against the proto/ stub beside life.desc.
 
-      👋 Press `v` on `grid` or a `cells` enum, then come back.
+      👋 Press `v` on `grid`, `rules`, or a `cells` enum, then come back.
     node: /1
 
   - text: |

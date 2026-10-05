@@ -191,7 +191,7 @@ protoc --descriptor_set_in=life.desc \
 # ######################################################################       \
 #                                                                              \
 
-protolens --descriptor-set life.desc capture/000001-response.pb \
+protolens --descriptor-set life.desc capture/000001-request.pb \
     --script beats/capture # \
 
 
