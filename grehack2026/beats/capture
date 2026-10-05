@@ -25,22 +25,32 @@ steps:
       - arrow keys / mouse to move
       - `z` or the triangles to fold / unfold a message
       - hover over the root type for its full name and score
+    node: /
 
   - text: |
-      Press `w` on a field to drop to wire level: the raw bytes, the
-      tag, the wire type, the varint groups.
+      Walk into it. A StepResponse has two top-level fields: `grid`, a
+      nested Grid message, and `generation`, a scalar.
 
-      👋 Press `w` on a scalar field, then `w` again to close it.
+      👋 Press space to step into the grid.
+    node: /1
 
   - text: |
-      Now move onto a field whose type is a named message or enum (not a
-      bare scalar), and press `v`.
+      Inside, a Grid is rows of cells. Drop to wire level anywhere with
+      `w`: the raw bytes, the tag, the wire type, the varint groups.
+
+      👋 Press `w` on a field, then `w` again to close it.
+    node: /1/1
+
+  - text: |
+      On a field whose type is a named message or enum (not a bare
+      scalar), press `v`.
 
       protolens hands off to Neovim, opened at that type's declaration in
       the reconstructed .proto source — the SourceCodeInfo reproto
       synthesized, resolved against the proto/ stub beside life.desc.
 
-      👋 Press `v`, look at the declaration, then come back.
+      👋 Press `v` on `grid` or a `cells` enum, then come back.
+    node: /1
 
   - text: |
       That is the whole loop: a type recovered from the binary, a message
@@ -49,3 +59,4 @@ steps:
       it, and back.
 
       👋 Type `:q` to quit protolens when you are done.
+    node: /
