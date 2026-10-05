@@ -88,6 +88,8 @@ impl App {
     /// instead of deleting.
     pub(super) fn open_command_line(&mut self, kind: CommandLineKind, prefill: String) {
         self.command_kind = kind;
+        // Spec 0392 S4: a new prompt starts without a walk.
+        self.command_browse = None;
         self.command_cursor = prefill.chars().count();
         self.command_buffer = Some(prefill);
         // Spec 0235 S6: a `/`/`?` prompt remembers where it was opened
@@ -157,20 +159,24 @@ impl App {
                 // ring, and `Ctrl-v` is what every other single-line
                 // field on the user's screen answers to.
                 KeyCode::Char('v') if ctrl => self.paste_from_clipboard(),
-                // readline's `previous-history`/`next-history`, aliasing
-                // the plain `Up`/`Down` below — and carrying that arm's
-                // guard with them, so that like it they stay unbound at
-                // a `:` prompt (spec 0246 S14/N1) rather than silently
-                // browsing a history it does not have.
+                // readline's `previous-history`/`next-history`: the same
+                // walk as the plain `Up`/`Down` below, but over every
+                // entry, ignoring the typed prefix (spec 0392 S5).
                 KeyCode::Char('p')
                     if ctrl && matches!(self.command_kind, CommandLineKind::Search { .. }) =>
                 {
-                    self.browse_search_history(true)
+                    self.browse_search_history(true, false)
                 }
                 KeyCode::Char('n')
                     if ctrl && matches!(self.command_kind, CommandLineKind::Search { .. }) =>
                 {
-                    self.browse_search_history(false)
+                    self.browse_search_history(false, false)
+                }
+                KeyCode::Char('p') if ctrl && self.command_kind == CommandLineKind::Command => {
+                    self.browse_command_history(true, false)
+                }
+                KeyCode::Char('n') if ctrl && self.command_kind == CommandLineKind::Command => {
+                    self.browse_command_history(false, false)
                 }
                 _ => {}
             }
@@ -197,7 +203,13 @@ impl App {
                 let buf = self.command_buffer.take().unwrap_or_default();
                 self.command_cursor = 0;
                 match self.command_kind {
-                    CommandLineKind::Command => self.run_command(&buf),
+                    // Spec 0392 S1: recorded before it runs, so that a
+                    // command that fails is remembered too.
+                    CommandLineKind::Command => {
+                        self.command_browse = None;
+                        self.push_command_history(&buf);
+                        self.run_command(&buf)
+                    }
                     // Vim convention: `/`/`?` confirmed with an empty
                     // pattern re-uses the last active pattern, searching
                     // in the newly chosen direction (which may differ
@@ -291,13 +303,19 @@ impl App {
             {
                 self.step_find_match(true);
             }
-            // Spec 0246 S14: the search history. Unbound at a `:` prompt
-            // (N1), where these fall through to the catch-all below.
+            // Spec 0246 S14, spec 0392 S4/S5: the prompt's history,
+            // filtered by the prefix typed before the walk began.
             KeyCode::Up if matches!(self.command_kind, CommandLineKind::Search { .. }) => {
-                self.browse_search_history(true)
+                self.browse_search_history(true, true)
             }
             KeyCode::Down if matches!(self.command_kind, CommandLineKind::Search { .. }) => {
-                self.browse_search_history(false)
+                self.browse_search_history(false, true)
+            }
+            KeyCode::Up if self.command_kind == CommandLineKind::Command => {
+                self.browse_command_history(true, true)
+            }
+            KeyCode::Down if self.command_kind == CommandLineKind::Command => {
+                self.browse_command_history(false, true)
             }
             KeyCode::Left => self.command_cursor = self.command_cursor.saturating_sub(1),
             KeyCode::Right => {

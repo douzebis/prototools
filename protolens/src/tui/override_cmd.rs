@@ -19,7 +19,7 @@
 
 use super::*;
 
-use crate::override_pane::{OverrideKind, OverrideOrigin};
+use crate::override_pane::{OverrideEntry, OverrideKind, OverrideOrigin};
 use crate::tui::tiered::Tier;
 
 /// The three origin shapes `<origin>` accepts, named in every parse
@@ -228,72 +228,70 @@ impl App {
         } else {
             None
         };
+        // The management pane pre-fills a stored entry's own line — the
+        // one `override_line_for_entry` states, which spec 0392 S2 also
+        // records for a selection-pane commit.
+        if let Some(entry) = &entry {
+            let buf = self.override_line_for_entry(entry);
+            self.open_command_line(CommandLineKind::Command, buf);
+            return;
+        }
 
-        // The node the pre-fill describes: the highlighted entry's first
-        // affected node when editing an entry, else the selection pane's
-        // target (which is the cursor when it was opened from the main
-        // pane). An entry whose origin currently matches nothing still
-        // gets a line — it just falls back for the schema-derived name.
-        let from_manage = entry.is_some();
-        // Spec 0390 S7: an entry's explicit cardinality, which the line
-        // must carry so that `o`-then-`Enter` keeps it.
-        let stored_cardinality = entry.as_ref().and_then(|e| e.cardinality);
-        let (origin, r#type, entry_name) = match entry {
-            Some(entry) => (entry.origin, entry.r#type, entry.name),
-            None => {
-                let idx = self.override_cmd_subject();
-                if !self.can_override(idx) {
-                    self.message = "cannot override: not a message/group or length-delimited field"
-                        .to_string();
-                    return;
-                }
-                // Spec 0321 S1: the origin the pane's own status line is
-                // projecting (spec 0309 S4) — pinned kind if `z`/`Z` set
-                // one, else spec 0308's widest-first ladder. This branch
-                // is reached only from the selection pane, and the pane
-                // must not describe its subject one way in the status
-                // line and another in the line `o` opens.
-                //
-                // This supersedes spec 0237 S4, which took the covering
-                // entry's origin. Because the ladder is *widest*-first,
-                // a node covered by an `fqdn:field` entry still projects
-                // that entry's own origin, so S4's `o`-then-`Enter`
-                // no-op survives where it was aimed; a node covered by a
-                // narrower entry now widens, exactly as `t`-then-`Enter`
-                // already does. `z`/`Z` is how a reader asks for the
-                // narrow one, and the status line shows which is in
-                // force before either key is pressed.
-                //
-                // The fallback matches the status line's (spec 0309 S4)
-                // so that the two still agree when nothing projects.
-                let origin =
-                    self.projected_override_origin()
-                        .unwrap_or_else(|_| OverrideOrigin::Path {
-                            path: self.positional_path(idx),
-                        });
-                // The name follows the origin, not the node: the origin
-                // decides which entry this line describes, which may no
-                // longer be the one covering `idx`.
-                let entry_name = self
-                    .overrides
-                    .entries()
-                    .iter()
-                    .find(|e| e.origin == origin)
-                    .and_then(|e| e.name.clone());
-                // Spec 0348 S3 (revised): --as is always the currently
-                // highlighted candidate in the selection pane. That is
-                // what the user is looking at and what Enter would
-                // commit. Fall back to effective_type only when the
-                // highlight sits on the `none` sentinel (meaning the
-                // user has not navigated away from raw).
-                let highlighted = self
-                    .override_candidates
-                    .get(self.override_highlight)
-                    .map(|(fqdn, _)| fqdn.clone())
-                    .filter(|f| f != crate::decode::NONE_KEYWORD);
-                let effective = highlighted.or_else(|| self.effective_type(idx));
-                (origin, effective, entry_name)
+        // The selection pane's target (which is the cursor when it was
+        // opened from the main pane) is the node the pre-fill describes.
+        let (origin, r#type, entry_name) = {
+            let idx = self.override_cmd_subject();
+            if !self.can_override(idx) {
+                self.message =
+                    "cannot override: not a message/group or length-delimited field".to_string();
+                return;
             }
+            // Spec 0321 S1: the origin the pane's own status line is
+            // projecting (spec 0309 S4) — pinned kind if `z`/`Z` set
+            // one, else spec 0308's widest-first ladder. This branch
+            // is reached only from the selection pane, and the pane
+            // must not describe its subject one way in the status
+            // line and another in the line `o` opens.
+            //
+            // This supersedes spec 0237 S4, which took the covering
+            // entry's origin. Because the ladder is *widest*-first,
+            // a node covered by an `fqdn:field` entry still projects
+            // that entry's own origin, so S4's `o`-then-`Enter`
+            // no-op survives where it was aimed; a node covered by a
+            // narrower entry now widens, exactly as `t`-then-`Enter`
+            // already does. `z`/`Z` is how a reader asks for the
+            // narrow one, and the status line shows which is in
+            // force before either key is pressed.
+            //
+            // The fallback matches the status line's (spec 0309 S4)
+            // so that the two still agree when nothing projects.
+            let origin =
+                self.projected_override_origin()
+                    .unwrap_or_else(|_| OverrideOrigin::Path {
+                        path: self.positional_path(idx),
+                    });
+            // The name follows the origin, not the node: the origin
+            // decides which entry this line describes, which may no
+            // longer be the one covering `idx`.
+            let entry_name = self
+                .overrides
+                .entries()
+                .iter()
+                .find(|e| e.origin == origin)
+                .and_then(|e| e.name.clone());
+            // Spec 0348 S3 (revised): --as is always the currently
+            // highlighted candidate in the selection pane. That is
+            // what the user is looking at and what Enter would
+            // commit. Fall back to effective_type only when the
+            // highlight sits on the `none` sentinel (meaning the
+            // user has not navigated away from raw).
+            let highlighted = self
+                .override_candidates
+                .get(self.override_highlight)
+                .map(|(fqdn, _)| fqdn.clone())
+                .filter(|f| f != crate::decode::NONE_KEYWORD);
+            let effective = highlighted.or_else(|| self.effective_type(idx));
+            (origin, effective, entry_name)
         };
         let node = self.origin_subject_node(&origin);
 
@@ -303,32 +301,41 @@ impl App {
             buf.push_str(" --as ");
             buf.push_str(r#type);
         }
-        // Spec 0348 §S3: prefill --cardinality only from the selection pane.
-        // The management pane pre-fills a stored entry; adding --cardinality
-        // there would silently change entries that were stored without
-        // one, breaking the o-then-Enter no-op invariant (spec 0236 S6).
-        //
-        // Spec 0390 S7: except an explicit one. `:override` stores the
-        // absence of `--cardinality` as `None`, so leaving an explicit
-        // value off the line would make `o`-then-`Enter` clear it.
-        if !from_manage {
-            let card = self.field_cardinality(node);
-            buf.push_str(" --cardinality ");
-            buf.push_str(cardinality_str(card));
-        } else if let Some(card) = stored_cardinality {
-            buf.push_str(" --cardinality ");
-            buf.push_str(cardinality_str(card));
-        }
+        // Spec 0348 §S3: the selection pane pre-fills the cardinality in
+        // effect. (The management pane's line, `override_line_for_entry`,
+        // carries one only when the entry stores it — spec 0390 S7.)
+        let card = self.field_cardinality(node);
+        buf.push_str(" --cardinality ");
+        buf.push_str(cardinality_str(card));
         // Spec 0360 S5: when a type is highlighted, prepend its
         // snake-case last leg as derivation (0).
-        let type_derived = if from_manage {
-            None
-        } else {
-            r#type.as_deref().map(Self::fqdn_last_leg_to_snake)
-        };
+        let type_derived = r#type.as_deref().map(Self::fqdn_last_leg_to_snake);
         buf.push_str(" --field-name ");
         buf.push_str(&self.display_name_for(node, entry_name, type_derived));
         self.open_command_line(CommandLineKind::Command, buf);
+    }
+
+    /// The `:override` line that states `entry` as it is stored (spec 0236
+    /// S6, 0390 S7, 0392 S2): its origin, `--as` unless raw,
+    /// `--cardinality` only when explicit, and `--field-name`. Running it
+    /// re-creates the entry, and on the same document is a no-op. The
+    /// management pane's `o` pre-fills it; a selection-pane commit records
+    /// it in the command history.
+    pub(super) fn override_line_for_entry(&self, entry: &OverrideEntry) -> String {
+        let node = self.origin_subject_node(&entry.origin);
+        let mut buf = String::from("override ");
+        buf.push_str(&entry.origin.label());
+        if let Some(r#type) = &entry.r#type {
+            buf.push_str(" --as ");
+            buf.push_str(r#type);
+        }
+        if let Some(card) = entry.cardinality {
+            buf.push_str(" --cardinality ");
+            buf.push_str(cardinality_str(card));
+        }
+        buf.push_str(" --field-name ");
+        buf.push_str(&self.display_name_for(node, entry.name.clone(), None));
+        buf
     }
 
     /// The node `:override` speaks about when the line names no origin:

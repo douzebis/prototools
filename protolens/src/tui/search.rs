@@ -105,11 +105,6 @@ impl SearchScope {
     }
 }
 
-/// Spec 0246 S13: how many committed patterns `Up` can reach. vim's
-/// default `'history'`; the entries are short strings and no
-/// measurement stands behind the number.
-const SEARCH_HISTORY_MAX: usize = 50;
-
 /// One candidate: a document line in the main pane, a list index in the
 /// two side panes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,15 +139,6 @@ impl RowBound {
             Self::Starts { lo, hi } => start >= lo && start < hi,
         }
     }
-}
-
-/// Spec 0246 S14: an open prompt's walk back through `search_history`.
-pub(super) struct SearchBrowse {
-    /// Which entry the buffer is showing.
-    index: usize,
-    /// What the user had typed before the first `Up`, restored by
-    /// `Down` past the newest entry.
-    draft: String,
 }
 
 /// Spec 0235 S2: what a sweep found.
@@ -1790,34 +1776,41 @@ impl App {
             self.search_history.remove(i);
         }
         self.search_history.push(pattern.to_string());
-        if self.search_history.len() > SEARCH_HISTORY_MAX {
+        if self.search_history.len() > super::history::HISTORY_MAX {
             self.search_history.remove(0);
         }
     }
 
-    /// Spec 0246 S14/S15: `Up` (`back`) and `Down` through
-    /// `search_history`.
+    /// Spec 0246 S14/S15, spec 0392 S5: `Up`/`Ctrl-P` (`back`) and
+    /// `Down`/`Ctrl-N` through `search_history`. `filtered` is
+    /// `Up`/`Down`: only patterns starting with the walk's draft count.
     ///
     /// Neither end wraps, and neither reports why it did nothing: a
     /// prompt row is the pattern's, not a place for a message.
-    pub(super) fn browse_search_history(&mut self, back: bool) {
-        let next = match (&self.search_browse, back) {
-            (None, true) if self.search_history.is_empty() => return,
-            (None, true) => Some(self.search_history.len() - 1),
-            (None, false) => return,
-            (Some(b), true) if b.index == 0 => return,
-            (Some(b), true) => Some(b.index - 1),
+    pub(super) fn browse_search_history(&mut self, back: bool, filtered: bool) {
+        use super::history::{history_step, live_browse, HistoryBrowse, HistoryStep};
+        let current = self.command_buffer.clone().unwrap_or_default();
+        let browse = live_browse(self.search_browse.take(), &current);
+        let (from, draft) = match &browse {
+            Some(b) => (Some(b.index), b.draft.clone()),
+            None => (None, current),
+        };
+        let (text, next) = match history_step(&self.search_history, from, back, &draft, filtered) {
+            HistoryStep::Stay => {
+                self.search_browse = browse;
+                return;
+            }
+            HistoryStep::Show(index) => {
+                let shown = self.search_history[index].clone();
+                let next = HistoryBrowse {
+                    index,
+                    draft,
+                    shown: shown.clone(),
+                };
+                (shown, Some(next))
+            }
             // Past the newest entry is back to the user's own text.
-            (Some(b), false) if b.index + 1 >= self.search_history.len() => None,
-            (Some(b), false) => Some(b.index + 1),
-        };
-        let draft = match self.search_browse.take() {
-            Some(b) => b.draft,
-            None => self.command_buffer.clone().unwrap_or_default(),
-        };
-        let text = match next {
-            Some(i) => self.search_history[i].clone(),
-            None => draft.clone(),
+            HistoryStep::Restore => (draft, None),
         };
         self.command_cursor = text.chars().count();
         self.command_buffer = Some(text);
@@ -1825,7 +1818,7 @@ impl App {
         // restarts from the prompt's origin like any edit — and since
         // that clears the browse (S16), the new state is set after it.
         self.restart_search_sweep();
-        self.search_browse = next.map(|index| SearchBrowse { index, draft });
+        self.search_browse = next;
     }
 
     /// Spec 0235 S7: any change to the pattern replaces the sweep —

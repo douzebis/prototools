@@ -1684,18 +1684,19 @@ fn ctrl_p_and_ctrl_n_alias_the_history_arrows() {
 /// Spec 0246 test-plan item 9 (S14). The draft is stashed, not
 /// discarded: `Down` past the newest entry gives back what was typed.
 /// `Down` when no browse is under way does nothing at all — there is no
-/// "future" to walk into.
+/// "future" to walk into. Since spec 0392 S5, `Up` visits only entries
+/// starting with the draft, so the history holds one that does.
 #[test]
 fn down_past_the_newest_history_entry_restores_what_was_typed() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.term_width = 120;
 
-    commit_search_by_key(&mut app, "alpha");
+    commit_search_by_key(&mut app, "beta");
 
     type_keys(&mut app, "/be");
     press(&mut app, KeyCode::Up);
-    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
 
     press(&mut app, KeyCode::Down);
     assert_eq!(app.command_buffer.as_deref(), Some("be"));
@@ -1707,8 +1708,10 @@ fn down_past_the_newest_history_entry_restores_what_was_typed() {
 
 /// Spec 0246 test-plan item 10 (S16). Editing a recalled entry ends the
 /// browse, so the edited text is the user's own again: `Down` no longer
-/// answers, and the next `Up` starts a fresh walk whose stash is the
-/// edit rather than the empty buffer the first one saw.
+/// answers, and the next walk starts fresh, its stash the edit rather
+/// than the empty buffer the first one saw. That walk uses `Ctrl-P`/
+/// `Ctrl-N`: since spec 0392 S5, `Up` would filter on the edit, `betax`,
+/// which no entry starts with.
 #[test]
 fn editing_after_a_history_recall_ends_the_browse() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
@@ -1726,9 +1729,9 @@ fn editing_after_a_history_recall_ends_the_browse() {
     press(&mut app, KeyCode::Down);
     assert_eq!(app.command_buffer.as_deref(), Some("betax"));
 
-    press(&mut app, KeyCode::Up);
+    press_ctrl(&mut app, KeyCode::Char('p'));
     assert_eq!(app.command_buffer.as_deref(), Some("beta"));
-    press(&mut app, KeyCode::Down);
+    press_ctrl(&mut app, KeyCode::Char('n'));
     assert_eq!(app.command_buffer.as_deref(), Some("betax"));
 }
 
@@ -1979,23 +1982,6 @@ fn ctrl_right_at_a_colon_prompt_does_not_rotate() {
     press_ctrl(&mut app, KeyCode::Left);
     assert_eq!(app.command_cursor, 0);
     assert!(app.search_sweep.is_none());
-}
-
-/// Spec 0246 N1, the other half of test-plan item 20: no `:` history.
-#[test]
-fn up_at_a_colon_prompt_is_still_inert() {
-    let mut app = sibling_leaves_app(&["alpha: 1"]);
-    app.splash = false;
-    app.term_width = 120;
-
-    commit_search_by_key(&mut app, "alpha");
-
-    press(&mut app, KeyCode::Char(':'));
-    type_keys(&mut app, "q");
-    press(&mut app, KeyCode::Up);
-    assert_eq!(app.command_buffer.as_deref(), Some("q"));
-    press(&mut app, KeyCode::Down);
-    assert_eq!(app.command_buffer.as_deref(), Some("q"));
 }
 
 /// Spec 0235 test-plan item 23 (S1). The `memchr2` prefilter is guarded

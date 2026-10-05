@@ -336,6 +336,13 @@ impl App {
                     .entries()
                     .iter()
                     .position(|e| e.origin == origin && e.r#type == new_fqdn);
+                // Spec 0392 S2: the commit is recorded as the `:override`
+                // line that states the entry it made, as if typed — the
+                // line the management pane's `o` would pre-fill for it.
+                if let Some(entry) = target_highlight.map(|i| self.overrides.entries()[i].clone()) {
+                    let line = self.override_line_for_entry(&entry);
+                    self.push_command_history(&line);
+                }
                 let returning_to_manage = self.override_opened_from_manage;
                 self.close_override();
                 if returning_to_manage {

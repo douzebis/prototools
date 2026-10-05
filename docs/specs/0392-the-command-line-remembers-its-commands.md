@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0392 — the command line remembers its commands
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-04
 App: protolens
 Refs: docs/specs/0246-the-search-prompt-browses-history-and-rotates-matches.md
       (the search history this mirrors: S12–S16; and N1, which left the
@@ -180,4 +181,26 @@ reverse neither. vim keeps them apart for the same reason.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-04.
+
+- The walk through a history is shared by both kinds of prompt
+  (`tui/history.rs`: `history_step`, `HistoryBrowse`). The search
+  prompts' own browse was rewritten onto it, and the command line uses
+  it for `command_history`.
+- An edit is detected by comparing the prompt with the line the walk
+  last showed (`HistoryBrowse::shown`), not on each editing path. So
+  typing, pasting and Tab completion all end a walk, while moving the
+  cursor does not, as at the search prompts.
+- S2 is implemented by `override_line_for_entry`, extracted from the
+  management pane's `o`, which now uses it too. The tests covering `o`
+  pass unchanged.
+- Two spec 0246 tests asserted unfiltered `Up` and were adapted, keeping
+  their point. `down_past_the_newest_history_entry_restores_what_was_typed`
+  now has a history entry that starts with the draft.
+  `editing_after_a_history_recall_ends_the_browse` starts its second
+  walk with `Ctrl-P`/`Ctrl-N`. `up_at_a_colon_prompt_is_still_inert` is
+  removed: test 4 replaces it.
+- The test plan's items 1–10 are 16 new tests, all passing. All 1305
+  protolens tests pass locally; clippy and `cargo fmt --check` are
+  clean. The Nix sandbox test run (`nix-build -A rust-tests`) passes in
+  full: all 34 test binaries.

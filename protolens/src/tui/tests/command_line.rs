@@ -1070,3 +1070,207 @@ fn tab_completion_does_not_double_a_slash_when_cursor_precedes_one() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ── Spec 0392: the command line's history ─────────────────────────────────
+
+fn key(app: &mut App, code: KeyCode) {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+fn ctrl_key(app: &mut App, c: char) {
+    app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        key(app, KeyCode::Char(c));
+    }
+}
+
+/// Open `:`, type `line`, and run it with Enter.
+fn run_line(app: &mut App, line: &str) {
+    key(app, KeyCode::Char(':'));
+    type_text(app, line);
+    key(app, KeyCode::Enter);
+    assert!(app.command_buffer.is_none(), "Enter must close the prompt");
+}
+
+fn history_app() -> App {
+    let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
+    app.splash = false;
+    app.term_width = 120;
+    app
+}
+
+/// Spec 0392 test plan 1 (S1, S3): a run line is recorded, trimmed; an
+/// empty one is not.
+#[test]
+fn a_run_command_is_recorded_and_an_empty_line_is_not() {
+    let mut app = history_app();
+    run_line(&mut app, "  nosuch-a  ");
+    assert_eq!(app.command_history, vec!["nosuch-a".to_string()]);
+    run_line(&mut app, "   ");
+    assert_eq!(app.command_history, vec!["nosuch-a".to_string()]);
+}
+
+/// Spec 0392 test plan 2 (S1): a command that fails is recorded too, so
+/// the typo can be recalled and fixed.
+#[test]
+fn a_failed_command_is_recorded() {
+    let mut app = history_app();
+    run_line(&mut app, "exprot x");
+    assert!(!app.message.is_empty(), "the unknown command must report");
+    assert_eq!(
+        app.command_history.last().map(String::as_str),
+        Some("exprot x")
+    );
+}
+
+/// Spec 0392 test plan 3 (S3): a repeat moves to the end, and the history
+/// keeps fifty entries, dropping the oldest.
+#[test]
+fn a_repeated_command_moves_to_the_end_and_the_history_keeps_fifty() {
+    let mut app = history_app();
+    run_line(&mut app, "nosuch-a");
+    run_line(&mut app, "nosuch-b");
+    run_line(&mut app, "nosuch-a");
+    assert_eq!(app.command_history, vec!["nosuch-b", "nosuch-a"]);
+    for i in 0..60 {
+        app.push_command_history(&format!("line-{i}"));
+    }
+    assert_eq!(app.command_history.len(), 50);
+    assert_eq!(
+        app.command_history.first().map(String::as_str),
+        Some("line-10")
+    );
+    assert_eq!(
+        app.command_history.last().map(String::as_str),
+        Some("line-59")
+    );
+}
+
+/// Spec 0392 test plan 4 (S4): `Up` recalls the newest command, `Down`
+/// past it gives back the draft, and `Ctrl-P`/`Ctrl-N` walk the same way.
+/// This replaces spec 0246's `up_at_a_colon_prompt_is_still_inert`.
+#[test]
+fn up_recalls_the_newest_command_and_down_restores_the_draft() {
+    let mut app = history_app();
+    run_line(&mut app, "nosuch-a");
+    run_line(&mut app, "nosuch-b");
+
+    key(&mut app, KeyCode::Char(':'));
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-b"));
+    assert_eq!(app.command_cursor, "nosuch-b".len());
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-a"));
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-a"), "no wrap");
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some(""), "the empty draft");
+
+    ctrl_key(&mut app, 'p');
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-b"));
+    ctrl_key(&mut app, 'n');
+    assert_eq!(app.command_buffer.as_deref(), Some(""));
+}
+
+/// Spec 0392 test plan 5 (S4): an edit ends the walk; the next `Up`
+/// starts again from the newest entry, with the edit as its draft.
+#[test]
+fn an_edit_ends_the_command_browse() {
+    let mut app = history_app();
+    run_line(&mut app, "nosuch-a");
+    run_line(&mut app, "nosuch-b");
+
+    key(&mut app, KeyCode::Char(':'));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-a"));
+    key(&mut app, KeyCode::Backspace);
+    // A fresh walk, filtered on the edit "nosuch-": the newest first.
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-b"));
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("nosuch-"));
+}
+
+/// Spec 0392 test plan 6 (S5): `Up`/`Down` filter by the prefix typed
+/// before the walk, which stays fixed while browsing; `Ctrl-P` does not
+/// filter; and both pairs share one position.
+#[test]
+fn up_filters_by_the_typed_prefix_and_ctrl_p_does_not() {
+    let mut app = history_app();
+    for line in ["over-1", "help-x", "over-2", "nosuch"] {
+        run_line(&mut app, line);
+    }
+
+    key(&mut app, KeyCode::Char(':'));
+    type_text(&mut app, "ov");
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("over-2"));
+    // The prefix is still "ov", not the recalled "over-2".
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("over-1"));
+    key(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.command_buffer.as_deref(),
+        Some("over-1"),
+        "no older match"
+    );
+    // One position: Ctrl-N from over-1 is the next entry of any kind.
+    ctrl_key(&mut app, 'n');
+    assert_eq!(app.command_buffer.as_deref(), Some("help-x"));
+    // Down, filtered again, skips to the next "ov" entry, then the draft.
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("over-2"));
+    key(&mut app, KeyCode::Down);
+    assert_eq!(app.command_buffer.as_deref(), Some("ov"));
+}
+
+/// Spec 0392 S5: a prefix nothing starts with moves nowhere, and starts
+/// no walk.
+#[test]
+fn a_prefix_nothing_starts_with_leaves_the_line_as_typed() {
+    let mut app = history_app();
+    run_line(&mut app, "nosuch-a");
+    key(&mut app, KeyCode::Char(':'));
+    type_text(&mut app, "zz");
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("zz"));
+    assert!(app.command_browse.is_none());
+}
+
+/// Spec 0392 test plan 6, at a search prompt (S5): the search history
+/// gains the same filter.
+#[test]
+fn the_search_history_filters_by_the_typed_prefix_too() {
+    let mut app = history_app();
+    for pattern in ["alpha", "beta", "alp"] {
+        key(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, pattern);
+        key(&mut app, KeyCode::Enter);
+    }
+    key(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "al");
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alp"));
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.command_buffer.as_deref(), Some("alpha"));
+    ctrl_key(&mut app, 'n');
+    assert_eq!(app.command_buffer.as_deref(), Some("beta"));
+}
+
+/// Spec 0392 test plan 9 (G3): the two histories are separate.
+#[test]
+fn search_and_command_histories_are_separate() {
+    let mut app = history_app();
+    key(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "alpha");
+    key(&mut app, KeyCode::Enter);
+    run_line(&mut app, "nosuch-a");
+    assert_eq!(app.command_history, vec!["nosuch-a".to_string()]);
+    assert!(!app.search_history.contains(&"nosuch-a".to_string()));
+    assert!(!app.command_history.contains(&"alpha".to_string()));
+}

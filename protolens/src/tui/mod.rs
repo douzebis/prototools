@@ -2045,7 +2045,14 @@ pub struct App {
     /// Spec 0246 S14: how far `Up`/`Down` have walked back into
     /// `search_history`, and the text they displaced. `None` when the
     /// buffer is the user's own typing.
-    search_browse: Option<search::SearchBrowse>,
+    search_browse: Option<history::HistoryBrowse>,
+    /// Spec 0392 S3: every command line run at the `:` prompt, oldest
+    /// first, trimmed and without repeats. Separate from
+    /// `search_history` (G3).
+    command_history: Vec<String>,
+    /// Spec 0392 S4: the `:` prompt's walk through `command_history`, as
+    /// `search_browse` is the search prompts'.
+    command_browse: Option<history::HistoryBrowse>,
     /// Spec 0235 S15: whether search matches are drawn. On while a
     /// `Search` prompt is open, and stays on after a commit and after
     /// `n`/`N`; `Esc` clears it, inside the prompt and outside it.
@@ -2485,6 +2492,8 @@ impl App {
             search_origin: None,
             search_history: Vec::new(),
             search_browse: None,
+            command_history: Vec::new(),
+            command_browse: None,
             search_highlight: false,
             search_dirty: false,
             search_center: false,
@@ -2733,6 +2742,7 @@ mod event;
 pub(crate) mod heat_cue;
 mod heat_worker;
 mod help_text;
+mod history;
 mod key_dispatch;
 mod lines;
 mod manage_pane;

@@ -1972,3 +1972,52 @@ fn a_cardinality_only_override_rerenders_the_node() {
         header(&app)
     );
 }
+
+/// Spec 0392 test plan 7 (S1): a line pre-filled by a shortcut — here the
+/// management pane's `o` — is recorded once run with Enter.
+#[test]
+fn a_prefilled_command_is_recorded_once_run() {
+    let (mut app, _, entry_idx) = inner_override_in_manage_pane(" --cardinality repeated");
+    let expected = app.override_line_for_entry(&app.overrides.entries()[entry_idx].clone());
+    press(&mut app, 'o');
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.command_buffer.is_none(), "Enter must run the command");
+    assert_eq!(app.command_history.last(), Some(&expected));
+    assert!(expected.contains("--cardinality repeated"), "{expected}");
+}
+
+/// Spec 0392 test plan 8 (S2): committing in the selection pane records
+/// the `:override` line for the entry it made; recalling and running that
+/// line on the same document changes nothing.
+#[test]
+fn committing_in_the_selection_pane_records_its_override_line() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.cursor = inner_idx;
+    press(&mut app, 't');
+    assert!(app.override_target.is_some(), "the selection pane opened");
+    app.override_sort = SortMode::Lexicographic;
+    app.recompute_override_candidates();
+    app.override_highlight = app
+        .override_candidates
+        .iter()
+        .position(|(f, _)| f == "test.Inner")
+        .expect("test.Inner must be a candidate");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.override_target.is_none(), "the commit closed the pane");
+
+    let line = app
+        .command_history
+        .last()
+        .cloned()
+        .expect("the commit must be recorded");
+    assert!(line.starts_with("override "), "{line}");
+    assert!(line.contains("--as test.Inner"), "{line}");
+    let entries_before = app.overrides.entries().to_vec();
+
+    // Recall it at the `:` prompt and run it: a no-op on this document.
+    press(&mut app, ':');
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.command_buffer.as_deref(), Some(line.as_str()));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.overrides.entries(), &entries_before[..]);
+}
