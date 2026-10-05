@@ -16,6 +16,7 @@ use complete::{
 
 pub mod complete;
 pub mod inputs;
+pub mod is_canonical;
 pub mod run;
 
 /// `LazyPool` lives in `prototext-schema` so that `protolens` can share it
@@ -332,6 +333,36 @@ pub enum Command {
         /// turn it off for a corpus whose writers ignore the declaration.
         #[arg(long = "no-packing-penalty", help_heading = "Advanced options")]
         no_packing_penalty: bool,
+
+        /// Input files, glob patterns, or directories (recursive).
+        /// When absent, reads from stdin.
+        #[arg(
+            value_name = "PATH",
+            add = ArgValueCompleter::new(complete_input_paths),
+        )]
+        paths: Vec<String>,
+    },
+    /// Report, per file, whether the blob is canonically encoded (spec 0396):
+    /// a `canonical`/`anomalous` verdict and, when anomalous, each anomaly
+    /// kind and its count. Exit 0 if all files are canonical, 1 if any is
+    /// anomalous, 2 on an operational error.
+    #[command(name = "is-canonical")]
+    IsCanonical {
+        /// Decode as this fully-qualified message type. Without it, the type
+        /// is inferred when a DB-backed descriptor is present, else the blob
+        /// is read raw (wire-level anomalies only).
+        #[arg(
+            short = 't',
+            long = "type",
+            value_name = "NAME",
+            add = ArgValueCompleter::new(complete_type_names),
+        )]
+        r#type: Option<String>,
+
+        /// Treat PATH arguments as raw binary protobuf; skip #@ prototext
+        /// auto-detection on the input files.
+        #[arg(long = "assume-binary")]
+        assume_binary: bool,
 
         /// Input files, glob patterns, or directories (recursive).
         /// When absent, reads from stdin.

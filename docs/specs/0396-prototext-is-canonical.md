@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0396 — prototext is-canonical, and a single capture in the demo
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-05
 App: prototext, grehack2026 (teleprompt deck)
 Refs: docs/specs/0384-smuggle-through-plain-varint-fields.md (the covert
       channel is a wire-level non-canonicity — overhang bytes on varints);
@@ -207,4 +208,27 @@ the signal, not a re-encode.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-05 on the development machine.
+
+- `is-canonical` is a subcommand (`prototext/src/lib.rs`), dispatched to
+  `run_is_canonical` (`run.rs`), which renders each file with annotations
+  on and counts the `#@` keywords (`is_canonical.rs`). The keyword→label
+  map and the counting are unit-tested (4 tests, including that
+  `val_ohb: N` counts as `val_ohb`, not a bare `N`, and that kinds print
+  in table order).
+- Exit codes verified by hand: a canonical blob exits 0; an overhang or
+  truncated blob exits 1 with the right label; a glob is 0 iff all
+  canonical; a missing path prints `error:` and exits 2.
+- End to end on a real capture (schema-free): of twelve files, the one
+  response that smuggled `whoami` is `anomalous` with `overhanging bytes
+  in values: 28`; the rest are `canonical`. The presenter reads that
+  filename and opens it in protolens.
+- The deck's section is rewritten to the single capture: one `life-tap`,
+  `prototext is-canonical capture/*.pb`, then protolens on the flagged
+  file via an editable `NNNNNN` placeholder. `--paused` and the fixed
+  numbering are gone from it.
+- `cargo fmt --check` and clippy are clean on prototext. The four
+  `prototext/tests/e2e.rs` failures seen locally are the stale-local-WKT
+  issue (version 6 vs 7), unrelated to this change; the Nix sandbox
+  regenerates the graph and they pass there.
+- Not done: a dry run of the deck in the demo shell (needs a terminal).

@@ -618,6 +618,19 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
                 &paths,
             )
         }
+
+        // ── is-canonical ────────────────────────────────────────────────────────
+        Command::IsCanonical {
+            r#type,
+            assume_binary,
+            paths,
+        } => run_is_canonical(
+            &mut desc_ctx,
+            r#type.as_deref(),
+            assume_binary,
+            &cli.input_root,
+            &paths,
+        ),
     }
 }
 
@@ -1271,6 +1284,136 @@ fn run_score(
     io::stdout()
         .write_all(yaml.as_bytes())
         .map_err(|e| format!("writing stdout: {}", e))
+}
+
+/// `prototext is-canonical` (spec 0396): a per-file canonical/anomalous
+/// verdict with per-kind counts, and an exit status (0 all canonical, 1 any
+/// anomalous, 2 operational error).
+///
+/// Type resolution follows `decode` (spec 0396 S4): an explicit `--type`,
+/// else inference when a DB-backed descriptor is present, else raw — raw
+/// being enough for the wire-level anomalies and needing no schema.
+fn run_is_canonical(
+    desc_ctx: &mut DescriptorContext,
+    type_name: Option<&str>,
+    assume_binary: bool,
+    input_root: &Option<PathBuf>,
+    paths: &[String],
+) -> Result<(), String> {
+    use crate::is_canonical::FileReport;
+
+    let base = input_root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Render with annotations on and a type in force when there is one.
+    let opts = |assume_binary: bool| RenderOpts {
+        assume_binary,
+        include_annotations: true,
+        ..RenderOpts::default()
+    };
+
+    // One descriptor for every file: an explicit --type, else inference is
+    // per-file (it depends on the bytes), else None (raw).
+    let fixed_desc = match type_name {
+        Some(t) => Some(resolve_root_desc(desc_ctx, t.trim_start_matches('.'))?),
+        None => None,
+    };
+    // Inference runs per file (it depends on the bytes), only when no
+    // --type was given and a DB-backed descriptor is present.
+    let infer = type_name.is_none() && desc_ctx.graph.is_some();
+    let scoring_opts = ScoringOpts {
+        end_undeclared: true,
+        ..Default::default()
+    };
+
+    let render_one = |desc_ctx: &mut DescriptorContext, data: &[u8]| -> Result<String, String> {
+        // Per-file inferred type, when inference is in play. The graph is
+        // borrowed only to score; the lookup then goes through the pool.
+        let inferred = if infer {
+            let lookup = desc_ctx.graph.as_ref().and_then(|g| {
+                match infer_type(data, g, &scoring_opts, MinScore::default()) {
+                    Ok(InferOutcome::Unique(t)) => Some(t.fqdn.trim_start_matches('.').to_string()),
+                    // Ambiguous, below threshold, or an error: fall back to raw,
+                    // the honest answer when no single type is clear.
+                    _ => None,
+                }
+            });
+            lookup.and_then(|l| {
+                if let Some(lazy) = &mut desc_ctx.lazy {
+                    let _ = lazy.get_message(&l);
+                }
+                desc_ctx.pool().get_message_by_name(&l)
+            })
+        } else {
+            None
+        };
+        let desc = fixed_desc.as_ref().or(inferred.as_ref());
+        let guard = install_loaders(desc_ctx);
+        let rendered =
+            render_as_text(data, desc, opts(assume_binary)).map_err(|e| format!("rendering: {e}"));
+        drop(guard);
+        clear_any_loader();
+        rendered.map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
+
+    let mut any_anomalous = false;
+
+    if paths.is_empty() {
+        use std::io::Read;
+        let mut data = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut data)
+            .map_err(|e| format!("reading stdin: {e}"))?;
+        let annotated = match render_one(desc_ctx, &data) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
+        };
+        let report = FileReport::from_annotated("<stdin>".into(), &annotated);
+        println!("{}", report.render());
+        any_anomalous = report.anomalous();
+    } else {
+        // Expand directly (not via expand_all_paths, which exits 1): an
+        // unreadable or missing path is an operational error, exit 2 (S5).
+        let mut all_files: Vec<InputFile> = Vec::new();
+        for raw in paths {
+            match expand_path(raw, &base) {
+                Ok(files) => all_files.extend(files),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        for f in &all_files {
+            let path = f.abs.display().to_string();
+            let data = match std::fs::read(&f.abs) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: reading '{path}': {e}");
+                    std::process::exit(2);
+                }
+            };
+            let annotated = match render_one(desc_ctx, &data) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("error: {path}: {e}");
+                    std::process::exit(2);
+                }
+            };
+            let report = FileReport::from_annotated(path, &annotated);
+            println!("{}", report.render());
+            any_anomalous |= report.anomalous();
+        }
+    }
+
+    if any_anomalous {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 // ── inference failure reporter ────────────────────────────────────────────────

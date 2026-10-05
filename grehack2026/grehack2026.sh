@@ -41,9 +41,9 @@ clear && header "0. The cast"
 
 # \
 #                                                                              \
-# 👉 Eve's window (eve/) — Eve starts her server:                              \
+# 👉 In Eve's window (eve/) — Eve starts her server:                           \
 #        life-server                                                           \
-# 👉 Bob's window (bob/) — Bob starts his client:                              \
+# 👉 In Bob's window (bob/) — Bob starts his client:                           \
 #        life-client                                                           \
 #                                                                              \
 #                                                                              \
@@ -94,10 +94,9 @@ clear && header "1. On the wire"
 
 rm -rf capture
 sudo -v && (life-tap -q &)
-
 # \
 #                                                                              \
-# 👉 Bob's window — play the game of life, then pause it:                      \
+# 👉 In Bob's window — play the game of life, then pause it:                   \
 
 ls -lrt capture | head
 
@@ -113,36 +112,35 @@ hexdump -v -C capture/000001-request.pb | view
 # descriptor set in binary format.                                             \
 # Our first prototool, protoscan, scans any blob for embedded descriptors:     \
 
-protoscan life-client # \
+# \
 #                                                                              \
 # ######################################################################       \
 # #                          Enters protoscan                          #       \
 # ######################################################################       \
-#
+#                                                                              \
+protoscan life-client
 
 # \
 # There they are: protoscan found two FileDescriptorProtos embedded in         \
 # the client — the game's own grehack/life/v1/life.proto, and the              \
-# well-known google/protobuf/descriptor.proto. With --proto_out DIR it         \
-# would extract them to disk.                                                  \
+# standard google/protobuf/descriptor.proto.                                   \
 
 # \
-# Let's process those descriptors with our second prototool, reproto, so       \
-# we can read them in the clear and enable type inference:                     \
+# Let's extract and decompile those descriptors with our second prototool,     \
+# reproto, so we can read them in the clear and use them for rendering the     \
+# capture files.                                                               \
 
 reproto -I life-client --schema-db-out life.desc # \
 #                                                                              \
 # ######################################################################       \
 # #                           Enters reproto                           #       \
 # ######################################################################       \
-#
-
-
-clear && header "1b. Schema DB"
+#                                                                              \
+# reproto -I life-client --schema-db-out life.desc
 
 # \
-# reproto does not just repack the descriptors — it extracts, indexes,         \
-# and decompiles them. Let's see what it wrote beside life.desc:               \
+# reproto does not just extract the descriptors — it decompiles, indexes,      \
+# and processes them for type inference. Let's see what we have:               \
 
 ls -lhd life.desc life/* \
 # reproto delivered 💪:                                                        \
@@ -168,7 +166,8 @@ prototext --descriptor-set life.desc list-schemas capture/000001-response.pb # \
 # ######################################################################       \
 # #                          Enters prototext                          #       \
 # ######################################################################       \
-#
+#                                                                              \
+# prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
 
 # \
 # Let's decode a capture. First the baseline tool, protoc — it works, but      \
@@ -207,13 +206,12 @@ clear && header "2. Eve is spying"
 
 # \
 #                                                                              \
-# 👉 Bob's window — start the client (running, no --paused):                   \
-#        life-client                                                           \
+# 👉 In Bob's window — resume the game                                         \
 
 # \
 #                                                                              \
-# 👉 Eve's window — Eve types shell commands on her server's stdin, and        \
-#    a few Life steps later their output appears back on her screen:           \
+# 👉 In Eve's window — Eve types shell commands on her server's stdin, and     \
+#    a their output appears back on her screen:                                \
 #        ls ~/.ssh                                                             \
 #        id                                                                    \
 #                                                                              \
@@ -228,45 +226,38 @@ clear && header "2. Eve is spying"
 # it. She takes one clean capture of a single exchange.                        \
 
 
-clear && header "2b. Hidden bits"
+clear && header "3. Hidden bits"
 
 # \
 #                                                                              \
-# 👉 Eve's window — queue one command for the next response:                   \
-#        whoami                                                                \
+# The channel exists; Alice has to find it on the wire. She does not           \
+# control Eve, so she cannot choose which message carries contraband —         \
+# she takes one capture and looks for the message that is encoded oddly.       \
+
+# \
+#                                                                              \
+# 👉 Bob's window — resume the game for a few steps, then pause it.            \
+#    (Eve may or may not be typing; Alice does not know.)                      \
 
 rm -rf capture
 sudo -v && (life-tap -q &)
-
-# \
-#                                                                              \
-# 👉 Bob's window — start a paused client and step it twice:                   \
-#        life-client --paused                                                  \
-#    Press n, then n again. Two steps: two requests, two responses.            \
-#    Then Ctrl-C quits the client.                                             \
-
 life-tap --stop
 tail -n 3 capture/tap.log
 
 # \
 #                                                                              \
-# Alice decodes the captured request with protoc — the schema-faithful         \
-# decoder — and nothing unusual surfaces:                                      \
+# A well-formed protobuf has one canonical encoding. prototext checks          \
+# each captured message against that — no schema needed:                       \
 
-protoc --descriptor_set_in=life.desc \
-       --decode=grehack.life.v1.StepRequest < capture/000002-request.pb \
-  | view_textproto
+prototext is-canonical capture/*.pb
 
 # \
 #                                                                              \
-# A perfectly ordinary message. Whatever Eve is doing, it survives a           \
-# schema-faithful decode untouched — so it must hide below the values.         \
+# Most are canonical. One or two are not: "overhanging bytes in values"        \
+# — spurious padding on varints that a normal encoder never emits. That        \
+# is where something is hidden. Open one of the flagged captures:              \
 
-# \
-#                                                                              \
-# The same capture, through protolens:                                         \
-
-protolens --descriptor-set life.desc capture/000002-request.pb \
+protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
   --script beats/smuggle
 
 # \
@@ -292,13 +283,12 @@ protolens --descriptor-set life.desc capture/000002-request.pb \
 
 # \
 #                                                                              \
-# There it is, end to end: Eve asked "whoami", and Bob's machine               \
-# answered "experiment" — the exact exchange, recovered from the wire          \
-# alone. The server drives the channel, hidden inside the responses;           \
-# the answers ride home inside the requests.                                   \
+# There it is, recovered from the wire alone: Eve asked "whoami", and          \
+# Bob's machine answered "experiment". The server drives the channel,          \
+# hidden inside the responses; the answers ride home inside the requests.      \
 
 
-clear && header "3. No schema"
+clear && header "4. No schema"
 
 # \
 # Eve's server has been leaving a file in her directory all along.             \
@@ -327,7 +317,7 @@ protolens --descriptor-set life.desc eve/server.log \
 # is set, it reads "whoami" or "experiment". Eve logs her own contraband.      \
 
 
-clear && header "4. Anomalies"
+clear && header "5. Anomalies"
 
 # \
 # Not every protobuf anomaly is accidental. Some are fingerprints, some        \
@@ -338,7 +328,7 @@ protolens --type google.protobuf.FileDescriptorSet anomalies.pb \
   --script beats/anomalies
 
 
-clear && header "5. Takeaways"
+clear && header "6. Takeaways"
 
 # \
 # 1. Descriptors are usually hiding in the binary itself. You rarely have      \

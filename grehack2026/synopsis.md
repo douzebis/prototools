@@ -74,14 +74,14 @@ Two parts (spec 0395). First the capability, live, with no tap; then one control
 
 ## 2b. Hidden bits
 
-- One controlled capture:
-  1. Eve types `whoami` (queued for the next response).
-  2. The tap starts.
-  3. Bob runs `life-client --paused`, presses `n` twice (`000001-response.pb` carries `whoami`; `000002-request.pb` carries the reply), then quits the client.
-  4. `life-tap --stop`, then `tail -n 3 capture/tap.log`.
-- `protoc --decode` on `000002-request.pb` shows a perfectly ordinary message: the channel preserves every value, so a schema-faithful decode shows nothing — it must hide below the values.
-- `protolens … capture/000002-request.pb --script beats/smuggle` flags the fields that do not sit the way the schema expects. At wire level (`w`), a VARINT is base-128, in little-endian 7-bit groups, and the high bit of each byte means "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, with the value unchanged.
-- Read across the fields, the bits group into bytes, and the bytes are ASCII: the request gives `experiment` (the client trims the output's ends, so no newline), the response `whoami`. The reveal lands here: Eve asked `whoami`, Bob's machine answered `experiment`, recovered from the wire alone.
+A single capture (spec 0396). Alice does not control Eve, so which message carries contraband is not knowable in advance — she captures, then finds the odd one.
+
+- One capture: Bob resumes the game for a few steps and pauses it (Eve may or may not be typing); `life-tap --stop`; `tail -n 3 capture/tap.log`.
+- `prototext is-canonical capture/*.pb` — no schema needed. Most files are `canonical`; one or two are `anomalous`, with `overhanging bytes in values: N` (spurious varint padding a normal encoder never emits).
+- The presenter opens one flagged capture in protolens, editing the `NNNNNN` placeholder in the preloaded `protolens … capture/NNNNNN-request.pb --script beats/smuggle` to that file.
+- At wire level (`w`), a VARINT is base-128, little-endian 7-bit groups, the high bit "another byte follows". The trick is a spurious continuation byte: one hidden bit per field, value unchanged.
+- The hidden bits group into bytes, ASCII: `experiment` on the request side (the client trims the output's ends, so no newline), `whoami` on the response side. The reveal lands here — recovered from the wire alone, with no schema.
+- Spec 0393's second capture, `life-client --paused` and the fixed `000001`/`000002` numbering are gone (spec 0396 G4).
 
 ## 3. No schema
 
@@ -116,3 +116,4 @@ Then a pointer to <https://github.com/ThalesGroup/prototools>.
 - `docs/specs/0391-every-log-entry-is-a-capture.md`: one log entry type, `Capture`, with the contraband field.
 - `docs/specs/0393-only-dumpcap-runs-as-root.md`: the tap in the background, only `dumpcap` as root, `life-tap -q`, and `life-client --paused`.
 - `docs/specs/0395-the-teleprompt-deck-reads-more-easily.md`: splash banners, spacing, `| view` on the hexdump, syntax-colored `view`, and the two-part Eve section.
+- `docs/specs/0396-prototext-is-canonical.md`: `prototext is-canonical`, and the single-capture section 2.
