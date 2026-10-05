@@ -629,6 +629,26 @@ fn a_paste_inserts_one_line_at_the_caret() {
     assert_eq!(app.command_cursor, 4);
 }
 
+/// Every option a command's parser acts on is completed too: spec 0348
+/// added `--cardinality` to `:override`'s parser, and `:export` has always
+/// accepted `--node` (its own pre-fills use it), but neither was in
+/// `command_flags`, so Tab could not complete them.
+#[test]
+fn tab_completes_cardinality_and_node() {
+    let (mut app, _, _) = type_as_fixture();
+    app.handle_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE));
+    for (typed, completed) in [
+        ("override --c", "override --cardinality"),
+        ("export --n", "export --node"),
+    ] {
+        app.command_buffer = Some(typed.to_string());
+        app.command_cursor = typed.chars().count();
+        app.completion = None;
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.command_buffer.as_deref(), Some(completed));
+    }
+}
+
 /// Spec 0236 S22: a token beginning with `-` completes against the
 /// command's own option list, the way a shell's completion does —
 /// checked before any value completer, since no value the command line
