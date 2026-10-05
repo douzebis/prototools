@@ -118,6 +118,7 @@ hexdump -v -C capture/000001-request.pb | view
 # #                          Enters protoscan                          #       \
 # ######################################################################       \
 #                                                                              \
+
 protoscan life-client
 
 # \
@@ -130,13 +131,14 @@ protoscan life-client
 # reproto, so we can read them in the clear and use them for rendering the     \
 # capture files.                                                               \
 
-reproto -I life-client --schema-db-out life.desc # \
+# \
 #                                                                              \
 # ######################################################################       \
 # #                           Enters reproto                           #       \
 # ######################################################################       \
 #                                                                              \
-# reproto -I life-client --schema-db-out life.desc
+
+reproto -I life-client --schema-db-out life.desc
 
 # \
 # reproto does not just extract the descriptors — it decompiles, indexes,      \
@@ -161,13 +163,14 @@ view life/proto/grehack/life/v1/life.proto
 # Now that we have a corpus, our third prototool, prototext, can infer         \
 # the type of a capture by scoring it against the DB:                          \
 
-prototext --descriptor-set life.desc list-schemas capture/000001-response.pb # \
+# \
 #                                                                              \
 # ######################################################################       \
 # #                          Enters prototext                          #       \
 # ######################################################################       \
 #                                                                              \
-# prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
+
+prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
 
 # \
 # Let's decode a capture. First the baseline tool, protoc — it works, but      \
@@ -181,12 +184,17 @@ protoc --descriptor_set_in=life.desc \
 # Then the better view: our fourth prototool, protolens — more                 \
 # convenient, and it shows wire-level detail, scoring, and navigation:         \
 
-protolens --descriptor-set life.desc capture/000001-response.pb --script beats/capture # \
+# \
 #                                                                              \
 # ######################################################################       \
 # #                          Enters protolens                          #       \
 # ######################################################################       \
-#
+#                                                                              \
+
+protolens --descriptor-set life.desc capture/000001-response.pb \
+    --script beats/capture # \
+
+
 # \
 # On a field whose type is a named message or enum, v hands off to Neovim,     \
 # opened at that type's declaration in the reconstructed .proto — thanks       \
@@ -207,8 +215,6 @@ clear && header "2. Eve is spying"
 # \
 #                                                                              \
 # 👉 In Bob's window — resume the game                                         \
-
-# \
 #                                                                              \
 # 👉 In Eve's window — Eve types shell commands on her server's stdin, and     \
 #    a their output appears back on her screen:                                \
@@ -218,74 +224,39 @@ clear && header "2. Eve is spying"
 # Those commands ran on Bob's machine. Eve's "Life server" is a remote         \
 # shell, hidden inside an ordinary-looking game.                               \
 
-# \
-#                                                                              \
-# 👉 Bob's window — Ctrl-C quits the client.                                   \
-#                                                                              \
-# So the channel exists. Now Alice, who only has the wire, has to find         \
-# it. She takes one clean capture of a single exchange.                        \
-
 
 clear && header "3. Hidden bits"
 
 # \
 #                                                                              \
-# The channel exists; Alice has to find it on the wire. She does not           \
-# control Eve, so she cannot choose which message carries contraband —         \
-# she takes one capture and looks for the message that is encoded oddly.       \
+# A hidden channel exists; Alice has to find it on the wire.                   \
+# She looks for messages that could be encoded oddly.                          \
+#
+# prototext has a command for just that: `is-canonical`                        \
+
+prototext is-canonical capture/*.pb || echo Some messages have anomalies
 
 # \
-#                                                                              \
-# 👉 Bob's window — resume the game for a few steps, then pause it.            \
-#    (Eve may or may not be typing; Alice does not know.)                      \
+# Let's spot which protobufs have anomalies                                    \
 
-rm -rf capture
-sudo -v && (life-tap -q &)
-life-tap --stop
-tail -n 3 capture/tap.log
+prototext is-canonical capture/*.pb | grep -v canonical
 
 # \
-#                                                                              \
-# A well-formed protobuf has one canonical encoding. prototext checks          \
-# each captured message against that — no schema needed:                       \
+# Let's have a closer look...                                                  \
 
-prototext is-canonical capture/*.pb
-
-# \
-#                                                                              \
-# Most are canonical. One or two are not: "overhanging bytes in values"        \
-# — spurious padding on varints that a normal encoder never emits. That        \
-# is where something is hidden. Open one of the flagged captures:              \
-
-protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
+protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
   --script beats/smuggle
 
 # \
 #                                                                              \
-# protolens flags the fields that do not sit the way the schema expects.       \
-#                                                                              \
-# At wire level, a VARINT is base-128: little-endian groups, the high bit      \
-# a continuation flag. The trick is a spurious continuation bit — one          \
-# hidden bit per field, with the decoded value unchanged.                      \
+# The beat walks the wire: the spurious continuation bytes, the hidden         \
+# bits, and the ASCII they spell.                                              \
 
 # \
 #                                                                              \
-# Read those hidden bits across the fields, group them into bytes, and         \
-# they are ASCII:                                                              \
-
-# \
-#                                                                              \
-#   01100101 01111000 01110000 ... 01101110 01110100                           \
-#      e        x        p     ...    n        t      → experiment             \
-#                                                                              \
-#   01110111 01101000 01101111 01100001 01101101 01101001                      \
-#      w        h        o        a        m        i      → whoami            \
-
-# \
-#                                                                              \
-# There it is, recovered from the wire alone: Eve asked "whoami", and          \
-# Bob's machine answered "experiment". The server drives the channel,          \
-# hidden inside the responses; the answers ride home inside the requests.      \
+# Recovered from the wire alone: Eve asked "whoami", Bob's machine             \
+# answered "experiment". The server drives the channel, hidden in the          \
+# responses; the answers ride home in the requests.                            \
 
 
 clear && header "4. No schema"

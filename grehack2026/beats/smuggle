@@ -2,43 +2,66 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Reminder-only beat for demo step 2: the covert channel reveal.
+# Beat for demo step "Hidden bits": the covert channel reveal (spec 0396).
 #
-# This beat never drives protolens — it only paces the presenter and shows
-# short reminders (and the byte -> ASCII table) in the script pane. The
-# presenter navigates by hand. Advance each step with space or Enter.
+# Drives protolens through one captured *response* that carries "whoami" in
+# the hidden channel. The bits ride on the grid's `cells` varints; with a
+# grid of at least 20x20, the first row's cells 1 and 2 are the start of the
+# `w` (01110111) — cell 1 canonical, cell 2 the first spurious continuation
+# byte. The beat opens on the whole message, then shows the two contiguous
+# cells side by side at the wire level, highlighting each in turn, and
+# finally decodes the hidden bits. Advance with space or Enter; the
+# presenter may also move by hand.
 #
-# Invocation (from grehack2026.sh):
-#   protolens --descriptor-set life.desc capture/000002-request.pb \
+# Invocation (from grehack2026.sh), on the flagged response capture:
+#   protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 #       --script beats/smuggle
 
-title: Finding the smuggled bits
+title: The smuggled bits
 
 steps:
   - text: |
-      Same kind of message, but protolens now shows amber flags: fields
-      that do not sit the way the schema expects.
+      One captured response, in full. protolens flags fields that do not
+      sit the way the schema expects — spurious padding on varints.
 
-      protoc saw nothing here — the payload is value-preserving.
+      protoc saw nothing: the padding does not change the decoded value.
 
-      👋 Move onto a flagged field.
-
-  - text: |
-      Press `w` to open the wire level on that field.
-
-      A VARINT is base-128: little-endian 7-bit groups, and the high bit
-      of each byte is a continuation bit — 1 means "another byte follows".
-
-      👋 Look at the continuation bits on the flagged field.
+      👋 Press space to step onto the first two cells.
+    node: /
 
   - text: |
-      The trick: a spurious continuation bit. An extra byte is appended
-      whose only job is to carry one hidden bit; the decoded value does
-      not change, so a schema-faithful decoder never notices.
+      The grid is just cells. Here are the first row's first two cells,
+      at the wire level (`w`). The first — highlighted — is a plain,
+      minimal varint: nothing hidden.
 
-      One hidden bit per field. Read them in order across the message.
+      👋 Press space.
+    node: /1/1/1
+    wire_lines:
+      from: /1/1/1
+      to: /1/1/2
+    search: /1/1/1
 
-      👋 Press space to step.
+  - text: |
+      The second cell — now highlighted — decodes to the same value, but
+      the wire shows an extra byte: a continuation byte (high bit set)
+      then a zero. Legal, non-minimal, and that extra byte carries one
+      hidden bit.
+
+      👋 Press space.
+    node: /1/1/2
+    wire_lines:
+      from: /1/1/1
+      to: /1/1/2
+    search: /1/1/2
+
+  - text: |
+      One hidden bit per cell: 1 where the varint is padded, 0 where it
+      is minimal. Read them in order across the grid.
+
+      A VARINT is base-128 — little-endian 7-bit groups, high bit a
+      continuation flag — so the padding is invisible to any decoder.
+
+      👋 Press space.
 
   - text: |
       The bits group into bytes, and the bytes are lowercase ASCII:
@@ -54,23 +77,15 @@ steps:
          h    104  01101000       q    113  01110001       z    122  01111010
          i    105  01101001       r    114  01110010
 
-      👋 Press space to step.
+      👋 Press space.
 
   - text: |
-      Worked example — the request side:
-
-        01100101 01111000 01110000 ... 01101110 01110100
-           e        x        p     ...    n        t      → experiment
-
-      and the response side:
+      The cells we just read start the first byte:
 
         01110111 01101000 01101111 01100001 01101101 01101001
            w        h        o        a        m        i      → whoami
 
-      👋 Press space to step.
-
-  - text: |
-      End to end: Eve asked `whoami`, Bob's machine answered `experiment`.
-      The server drives a channel hidden inside ordinary Life messages.
+      This is a response, so it carries Eve's command. The matching
+      request carries Bob's answer, "experiment", the same way.
 
       👋 Type `:q` to quit protolens.
