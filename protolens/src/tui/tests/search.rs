@@ -3249,3 +3249,29 @@ fn no_match_crosses_two_help_lines() {
     assert_eq!(app.help_highlight, 0, "{}", app.message);
     assert!(app.message.is_empty(), "{}", app.message);
 }
+
+/// Spec 0397: a path match tints the whole line, not a single cell. `/3`
+/// names the scalar `a: 42` row; `search_current_cell`'s width spans the
+/// whole content (`a: 42` → 5 cells), not the old width 1.
+#[test]
+fn a_path_match_highlights_the_whole_line() {
+    let (mut app, ..) = packed_run_with_tail_fixture();
+    app.splash = false;
+    app.term_width = 120;
+
+    app.set_cursor(app.first_node);
+    app.run_search(SearchScope::Main, SearchDir::Forward, "/3");
+    settle_sweep(&mut app);
+    let (line, _column, width, on_path) = app
+        .search_current_cell()
+        .expect("the path match is current");
+    assert!(on_path, "a `/3` match is a path match");
+    let text = &app.document_lines()[line];
+    let indent = text.len() - text.trim_start().len();
+    let content_width = text.trim_end().chars().count() - indent;
+    assert_eq!(
+        width, content_width,
+        "the whole line's content is tinted, not one cell (line {line:?}: {text:?})"
+    );
+    assert!(width > 1, "and it is more than the old single cell");
+}

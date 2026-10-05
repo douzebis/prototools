@@ -644,6 +644,32 @@ impl App {
             None => return,
         };
         let mut bottom = top + self.tree[node].lines_visible as usize;
+
+        // Spec 0397 S2: if the step's node is already fully on screen —
+        // its visible subtree and, when a wire panel is open, its wire
+        // rows included (both are already folded into `heights`) — leave
+        // the scroll where it is. The climb below re-anchors the view to
+        // the top of a fitting ancestor, which on a node deep inside a
+        // tall subtree (a cell in a large grid) scrolls the subtree's
+        // own head off the top for no reason. Only scroll when something
+        // the step shows is off screen.
+        let scroll_top = self.scroll_top();
+        let node_top = heights.offset(top) as isize;
+        let node_bottom = heights.offset(bottom) as isize;
+        if node_top >= scroll_top && node_bottom <= scroll_top + pane as isize {
+            return;
+        }
+
+        // Spec 0397 S3: when the node itself (subtree + wire) is taller
+        // than the pane, no climb and no caption can fit above it. Put
+        // the node's own first line at the top of the viewport and stop:
+        // reaching out to an ancestor would only push that first line
+        // off the top.
+        if node_bottom - node_top > pane as isize {
+            self.set_scroll_top(node_top);
+            return;
+        }
+
         while let Some(parent) = self.parent(node) {
             match extent(self, parent) {
                 Some((row, height)) if height <= pane => {

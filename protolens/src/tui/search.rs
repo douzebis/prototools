@@ -666,15 +666,23 @@ impl App {
                     if pos.line_in_node != 0 {
                         return None;
                     }
-                    let text = self.line_text_at(pos, sweep.offset);
+                    let raw = self.line_text_at(pos, sweep.offset);
+                    // `line_in_node == 0` here, so the row is the node's
+                    // own first line and carries its owner's transforms.
+                    let text = self.line_display_text(&raw, Some(pos.node));
                     let indent = text.len() - text.trim_start().len();
-                    drop(text);
                     // The stop sits where its caret lands, so a bound
                     // that has already passed that offset excludes it
                     // and a full cycle still visits it once.
                     if !bound.admits(indent) {
                         return None;
                     }
+                    // Spec 0397: a path match tints the whole line, from
+                    // its first non-blank to its last, not a single cell
+                    // — the row *is* what the path names.
+                    let trimmed = text.trim_end();
+                    let width = trimmed[indent..].chars().count();
+                    let column = text[..indent].chars().count();
                     self.write_path_segments(&mut sweep.path, pos.node);
                     return sweep
                         .pattern
@@ -682,8 +690,8 @@ impl App {
                         .then_some(SweepHit {
                             at,
                             start: indent,
-                            column: indent,
-                            width: 1,
+                            column,
+                            width: width.max(1),
                             on_path: true,
                             end: None,
                         });

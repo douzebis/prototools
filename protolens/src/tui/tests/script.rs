@@ -1214,3 +1214,52 @@ fn step_directive_heat_cues_bad_value_is_load_error() {
         "invalid heat_cues value must be a parse error"
     );
 }
+
+/// Spec 0397 S2: a step whose node is already fully on screen does not
+/// scroll. Step 1 aims at `/3/1`, deep in the last item, which scrolls
+/// the view down; step 2 aims at `/3`, which that view already shows in
+/// full — so the scroll must not move.
+#[test]
+fn a_step_does_not_scroll_when_its_node_is_already_visible() {
+    let (mut app, _) = repeated_message_fixture();
+    // Tall enough that the whole document (root + three 3-line items)
+    // does not fit, so step 1 genuinely scrolls, yet `/3` fits with room.
+    app.main_area = Rect::new(0, 0, 40, 7);
+    app.set_script(script_of(
+        "steps:\n- text: deep in the last item\n  node: /3/1\n\
+         - text: the last item itself\n  node: /3\n",
+    ));
+    // Step 1.
+    assert_eq!(app.positional_path(app.cursor), "/3/1");
+    let after_step1 = app.scroll_top();
+
+    // Step 2: /3 is already fully visible in step 1's view.
+    app.script_advance(true);
+    assert_eq!(app.positional_path(app.cursor), "/3");
+    assert_eq!(
+        app.scroll_top(),
+        after_step1,
+        "an already-visible node leaves the scroll untouched"
+    );
+}
+
+/// Spec 0397 S3: a step whose node is taller than the pane puts the
+/// node's own first line at the top of the viewport — no climb, no
+/// caption, which would only push that line off the top.
+#[test]
+fn a_step_too_tall_to_fit_opens_on_its_own_first_line() {
+    let (mut app, _) = repeated_message_fixture();
+    // The root (ten lines) cannot fit a four-row pane.
+    app.main_area = Rect::new(0, 0, 40, 4);
+    app.set_script(script_of("steps:\n- text: the whole message\n  node: /\n"));
+
+    assert_eq!(app.positional_path(app.cursor), "/");
+    let top = app
+        .visible_row_of_line(app.absolute_start(app.cursor))
+        .expect("the root is on screen");
+    assert_eq!(
+        app.terminal_row_of(top),
+        0,
+        "the too-tall node's first line opens the pane"
+    );
+}
