@@ -62,12 +62,18 @@ A rehearsal of `grehack2026.sh` surfaced several rough edges:
 - **S1. `| view` on the opening hexdump (G1).** `hexdump -v -C
   capture/000001-request.pb | view`.
 
-- **S2. A `splash` helper (G2).** `bin/teleprompt` gains `splash TEXT`:
-  a small boxed banner in bright cyan, set apart from the blue narration
-  and the large `header` title by its box and color. The deck calls it
-  once before each tool's first use: `ENTER PROTOSCAN`, `ENTER REPROTO`,
-  `ENTER PROTOTEXT`, `ENTER PROTOLENS`. Only the first use of each tool
-  is announced.
+- **S2. An inline banner on each tool's first command (G2).** The marker
+  is a framed box written as a trailing `#`-comment on the command line
+  itself: `protoscan life-client # \` followed by the banner's
+  `\`-continued comment lines. Because it is a shell comment, `eval` runs
+  only the command; the banner is display-only, shown with the command in
+  one step, above its output. It appears for the first use of each tool:
+  "Enters protoscan", "Enters reproto", "Enters prototext", "Enters
+  protolens". The box is drawn in the deck, each line re-padded to display
+  column 80 like any narration line. (An earlier version used a separate
+  `splash TEXT` helper in `bin/teleprompt`; the inline form ties the
+  announcement to the command as one beat, with no extra Enter, so the
+  helper was dropped. Decided with the user, 2026-10-05.)
 
 - **S3. Spacing (G3).** Banner blocks carry blank narration lines (a
   `#` line padded to width, no text) between distinct thoughts, so the
@@ -120,13 +126,21 @@ config, is one source the dev-shell can later share.
 ### A `header`-style SVG banner for each tool
 
 `header` renders a large image; one per tool would dominate the window
-and slow each transition. A one-line boxed banner is enough to say
-"now this tool".
+and slow each transition. A framed text box is enough to say "now this
+tool".
+
+### A separate `splash TEXT` command before the command
+
+A `splash` helper on its own line would render a distinct cyan box, but
+it is its own step — an extra Enter and an extra screen before the
+command. The inline comment banner shows the announcement and the
+command together, one Enter, which paces better.
 
 ## Test plan
 
-1. `bin/teleprompt`: `splash "ENTER PROTOSCAN"` draws a box whose top
-   and bottom borders match the text width.
+1. The inline banner is display-only: loading and `eval`-ing
+   `protoscan life-client # \` + banner runs only `protoscan
+   life-client` (the rest is a shell comment).
 2. `nix-build -A teleprompt`: the wrapper sets `XDG_CONFIG_HOME` to a
    config dir holding `nvim/init.lua`.
 3. Under that config, `nvim --headless -R x.proto` reports filetype
@@ -136,8 +150,7 @@ and slow each transition. A one-line boxed banner is enough to say
 5. The deck's loader (teleprompt's read loop) turns a blank line into
    one empty command entry, and the deck has exactly one after each
    read-this command and none after a pager (G6).
-6. A dry run of the deck in the grehack2026 demo shell: the splash
-   banners appear, `view` is colored, the Eve section reads in two
+6. A dry run of the deck in the grehack2026 demo shell: the tool banners appear, `view` is colored, the Eve section reads in two
    parts with no payload named before protolens, and each read-this
    command is followed by an empty prompt.
 
@@ -147,7 +160,9 @@ Measured 2026-10-05 on the development machine.
 
 - S1–S3, S5: `bash -n` passes; every banner continuation is at display
   column 80; the deck's headers all render at ≤80 columns (the new
-  "2b. Hidden bits" is 79). `splash` draws a correct box.
+  "2b. Hidden bits" is 79). Replaying teleprompt's loader on the
+  `protoscan` banner shows `eval` runs only `protoscan life-client`, the
+  banner being a comment.
 - S4: `nix-build -A teleprompt` wraps with
   `XDG_CONFIG_HOME=…-teleprompt-nvim-config`, whose `nvim/init.lua`
   carries the desert theme and proto keywords. Headless nvim under it

@@ -1,6 +1,6 @@
 clear && header "Why prototools"
-
 # \
+#                                                                              \
 #                                                                              \
 # At S3NS we operate a Trusted Partner Cloud (TPC). Google ships us its        \
 # software update packages, and before any of them reaches production we       \
@@ -17,9 +17,10 @@ clear && header "Why prototools"
 # The scenario is made up; the tools and their features are real.              \
 #                                                                              \
 
-clear && header "0. The cast"
 
+clear && header "0. The cast"
 # \
+#                                                                              \
 #                                                                              \
 # Meet Bob 🙂, the player. He runs a Game of Life client and thinks he         \
 # is just playing.                                                             \
@@ -37,6 +38,7 @@ clear && header "0. The cast"
 #                                                                              \
 #                                                                              \
 
+
 # \
 #                                                                              \
 # 👉 Eve's window (eve/) — Eve starts her server:                              \
@@ -48,6 +50,7 @@ clear && header "0. The cast"
 # On screen it is an ordinary Game of Life: the grid steps, nothing looks      \
 # amiss.                                                                       \
 #                                                                              \
+
 
 # \
 #                                                                              \
@@ -68,6 +71,7 @@ clear && header "0. The cast"
 #                                                                              \
 #                                                                              \
 
+
 # \
 #                                                                              \
 # This window is Alice's control tower. The analysis runs here; when           \
@@ -82,29 +86,20 @@ clear && header "0. The cast"
 
 
 clear && header "1. On the wire"
-
 # \
 #                                                                              \
 # Alice starts her tap, in the background. Only its capture needs root,        \
 # so she types her password once. The tap prints one line per message,         \
 # and saves each message in capture/.                                          \
 
-# \
-#                                                                              \
-# 👉 Bob's window — Ctrl-C quits the client, so the capture starts quiet.      \
-
 rm -rf capture
 sudo -v && (life-tap -q &)
 
 # \
 #                                                                              \
-# 👉 Bob's window — start a paused client, and step it by hand:                \
-#        life-client --paused                                                  \
-#    Press n three times: three Life steps, each a request and a               \
-#    response. Then Ctrl-C quits the client.                                   \
+# 👉 Bob's window — play the game of life, then pause it:                      \
 
-life-tap --stop
-tail -n 3 capture/tap.log
+ls -lrt capture | head
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
@@ -114,11 +109,16 @@ hexdump -v -C capture/000001-request.pb | view
 # root type.                                                                   \
 
 # \
-# Where would a schema come from? The client binary carries its own. Our       \
-# first prototool, protoscan, scans any blob for embedded descriptors:         \
+# As is usual with gRPC applications, the client binary carries its own        \
+# descriptor set in binary format.                                             \
+# Our first prototool, protoscan, scans any blob for embedded descriptors:     \
 
-splash "ENTER PROTOSCAN"
-protoscan life-client
+protoscan life-client # \
+#                                                                              \
+# ######################################################################       \
+# #                          Enters protoscan                          #       \
+# ######################################################################       \
+#
 
 # \
 # There they are: protoscan found two FileDescriptorProtos embedded in         \
@@ -130,8 +130,12 @@ protoscan life-client
 # Let's process those descriptors with our second prototool, reproto, so       \
 # we can read them in the clear and enable type inference:                     \
 
-splash "ENTER REPROTO"
-reproto -I life-client --schema-db-out life.desc
+reproto -I life-client --schema-db-out life.desc # \
+#                                                                              \
+# ######################################################################       \
+# #                           Enters reproto                           #       \
+# ######################################################################       \
+#
 
 
 clear && header "1b. Schema DB"
@@ -159,8 +163,12 @@ view life/proto/grehack/life/v1/life.proto
 # Now that we have a corpus, our third prototool, prototext, can infer         \
 # the type of a capture by scoring it against the DB:                          \
 
-splash "ENTER PROTOTEXT"
-prototext --descriptor-set life.desc list-schemas capture/000001-response.pb
+prototext --descriptor-set life.desc list-schemas capture/000001-response.pb # \
+#                                                                              \
+# ######################################################################       \
+# #                          Enters prototext                          #       \
+# ######################################################################       \
+#
 
 # \
 # Let's decode a capture. First the baseline tool, protoc — it works, but      \
@@ -174,9 +182,12 @@ protoc --descriptor_set_in=life.desc \
 # Then the better view: our fourth prototool, protolens — more                 \
 # convenient, and it shows wire-level detail, scoring, and navigation:         \
 
-splash "ENTER PROTOLENS"
-protolens --descriptor-set life.desc capture/000001-response.pb \
-  --script beats/capture
+protolens --descriptor-set life.desc capture/000001-response.pb --script beats/capture # \
+#                                                                              \
+# ######################################################################       \
+# #                          Enters protolens                          #       \
+# ######################################################################       \
+#
 # \
 # On a field whose type is a named message or enum, v hands off to Neovim,     \
 # opened at that type's declaration in the reconstructed .proto — thanks       \
