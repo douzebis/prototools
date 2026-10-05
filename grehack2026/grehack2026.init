@@ -30,7 +30,7 @@ unset _init_dir _client _wrapped
 header "prototools"
 
 echo "
-            [1;94mGreHack 2026
+            [1;94mGreHack 2026
 
 
             Dissecting protobuf:
@@ -45,7 +45,7 @@ echo "
             Frederic Ruget
             Senior Cloud Architect, S3NS
             fred@s3ns.io
-[0m
+[0m
 
 
 "
