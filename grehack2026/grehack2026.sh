@@ -46,7 +46,7 @@ clear && header "0. The cast"
 # amiss.                                                                       \
 #                                                                              \
 
-
+clear
 # \
 #                                                                              \
 # Alice 🕵️ — the investigator. Bob, idly curious whether his game only         \
@@ -174,8 +174,8 @@ clear && header "2. Eve is spying"
 #                                                                              \
 # 👉 In Eve's window — Eve types shell commands on her server's stdin, and     \
 #    their output appears back on her screen:                                  \
-#        ls ~/.ssh                                                             \
-#        id                                                                    \
+#        pwd                                                                   \
+#        whoami                                                                \
 #                                                                              \
 # Those commands ran on Bob's machine: Eve's "Life server" is a remote         \
 # shell, hidden in an ordinary game. Alice saw none of this — she has only     \
@@ -202,7 +202,7 @@ prototext is-canonical capture/*.pb || echo Some messages have anomalies
 #                                                                              \
 # Which ones carry anomalies:                                                  \
 
-prototext is-canonical capture/*.pb | grep -v canonical
+prototext is-canonical capture/*.pb | grep anomalous
 
 # \
 #                                                                              \
@@ -210,6 +210,8 @@ prototext is-canonical capture/*.pb | grep -v canonical
 
 protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
   --script beats/smuggle
+
+protolens --descriptor-set life.desc capture/NNNNNN-request.pb
 
 # \
 #                                                                              \
@@ -241,21 +243,22 @@ clear && header "5. Takeaways"
 #                                                                              \
 # 1. Descriptors usually hide in the binary. protoscan finds them,             \
 #    reproto gives the .proto back.                                            \
-
-# \
+#                                                                              \
 #                                                                              \
 # 2. A corpus types a message it has never seen, piece by piece, from the      \
 #    messages it does know. That's what heat cues are for.                     \
-
-# \
+#                                                                              \
 #                                                                              \
 # 3. What a decoder normalizes away is evidence — a shadowed value, a          \
 #    padding bit, a truncated tail. prototools surfaces it, back to bytes.     \
+#                                                                              \
 
 
 # https://github.com/ThalesGroup/prototools — pull requests welcome 🙂
 
 # Thank you 👋
+
+
 
 
 clear && header "Annex: anomalies"
