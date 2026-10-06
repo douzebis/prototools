@@ -24,7 +24,7 @@ steps:
       One captured response, in full. protolens flags fields that do not
       sit the way the schema expects — spurious padding on varints.
 
-      stardard tools see nothing: the padding does not change the decoded value.
+      standard tools see nothing: the padding does not change the decoded value.
 
       👋 Press space to step onto the first two cells.
     node: /
