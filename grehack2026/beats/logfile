@@ -21,7 +21,7 @@ steps:
       matches, so the root is a generic `message`. Walk the recovery:
 
       1. Fold to depth 1 (`1`), then `G` to the end — the tail is flagged
-         TRUNCATED. That is why protoc --decode_raw choked on the whole
+         TRUNCATED. A standard tool like protoc would have choked on the whole
          file.
 
       2. Fold to depth 2 (`2`), turn on heat cues (`i`), and hover: inside

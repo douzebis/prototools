@@ -23,13 +23,12 @@ steps:
       The capture, opened against life.desc.
 
       protolens renders it as textproto, enriched with annotations
-      (press `a` to hide / show them), and it inferred the type:
-      StepRequest.
+      and it inferred the type: StepRequest.
 
-      👋 Reminders — try these by hand:
       - arrow keys / mouse to move
       - `z` or the triangles to fold / unfold a message
       - hover over the root type for its full name and score
+      👋 Press space.
     node: /
 
   - text: |

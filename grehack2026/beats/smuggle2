@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Beat for demo step "Hidden bits": the answer riding home (spec 0396).
+#
+# The companion to beats/smuggle. That beat decoded "whoami" out of a
+# captured *response*; this one is the matching *request*, carrying Bob's
+# answer "experiment" through the same padded-varint channel. A single
+# step: the mechanism is already understood, so this just shows the
+# decryption. Advance (to quit) with space or Enter.
+#
+# Invocation (from grehack2026.sh), on the matching request capture:
+#   protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
+#       --script beats/smuggle2
+
+title: The answer rides home
+
+steps:
+  - text: |
+      The matching request, carrying the answer the same way: one hidden
+      bit per cell, read across the grid, grouped into bytes.
+
+        01100101 01111000 01110000 01100101 01110010
+           e        x        p        e        r
+        01101001 01101101 01100101 01101110 01110100
+           i        m        e        n        t      → experiment
+
+      Eve asked "whoami" in the response; Bob's machine answered
+      "experiment" in the request. Neither touched the decoded Life game.
+
+      👋 Type `:q` to quit protolens.
+    node: /

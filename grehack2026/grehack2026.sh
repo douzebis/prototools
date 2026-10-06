@@ -5,11 +5,12 @@ clear && header "Why prototools"
 # At S3NS we run a Trusted Partner Cloud: we audit Google's update             \
 # packages before production.                                                  \
 #                                                                              \
-# Protobuf is everywhere inside them — and opaque on the wire.                 \
+# Protobufs are everywhere inside them — and opaque on the wire.               \
+# They efficiently encode data as binary and require a "schema" for decoding.  \
 #                                                                              \
 # prototools dissects protobufs, even with no schema.                          \
 #                                                                              \
-# A toy cyber-investigation: scenario made up, tools real.                     \
+# The demo: prototools in action -> a toy cyber-investigation.                 \
 #                                                                              \
 
 
@@ -42,9 +43,6 @@ clear && header "0. The cast"
 #        life-client                                                           \
 #                                                                              \
 #                                                                              \
-# On screen it is an ordinary Game of Life: the grid steps, nothing looks      \
-# amiss.                                                                       \
-#                                                                              \
 
 clear
 # \
@@ -69,16 +67,16 @@ clear
 
 # \
 #                                                                              \
-# Goal: from the wire alone — the stream's structure, its contents, then       \
-# what it hides.                                                               \
+# Goal: understand the stream's structure, its contents, then what it hides    \
 #                                                                              \
 
 
 clear && header "1. On the wire"
 # \
 #                                                                              \
-# Alice starts her tap in the background. Only the capture needs root —        \
-# password once. One line per message; each saved in capture/.                 \
+# Alice starts her tap in the background.                                      \
+# One capture per message; each saved in capture/.                             \
+
 
 sudo -v && (life-tap -q &)
 
@@ -101,6 +99,7 @@ hexdump -v -C capture/000001-request.pb | view
 # ######################################################################       \
 #                                                                              \
 
+
 protoscan life-client
 
 # \
@@ -110,7 +109,7 @@ protoscan life-client
 
 # \
 #                                                                              \
-# reproto extracts and decompiles them — a reusable schema DB:                 \
+# reproto extracts them — a reusable schema DB:                                \
 
 # \
 #                                                                              \
@@ -119,11 +118,12 @@ protoscan life-client
 # ######################################################################       \
 #                                                                              \
 
+
 reproto -I life-client --schema-db-out life.desc
 
 # \
 #                                                                              \
-# Not just extraction: it decompiles, indexes, and scores for inference.       \
+# Not just extraction: it decompiles, and analyzes for type inference.         \
 
 ls -lhd life.desc life/* \
 # reproto delivered 💪:                                                        \
@@ -132,17 +132,17 @@ ls -lhd life.desc life/* \
 # - life/proto/:        all decompiled .proto source files                     \
 # - life/index.rkyv:    the fast-access index                                  \
 
+
 # Browse one decompiled .proto — it reads like hand-written source:
-view life/proto/grehack/life/v1/life.proto
-# \
+view life/proto/grehack/life/v1/life.proto # \
 #                                                                              \
-# A faithful .proto rebuilt from the binary alone — messages, enums,           \
-# fields, nesting, packages. No original source needed.                        \
+# A faithful .proto rebuilt from the life-client binary alone — messages,      \
+# enums, fields, nesting, packages. No original source needed.                 \
 
 # \
 #                                                                              \
-# Read a capture with protolens — it infers the type and shows wire-level      \
-# detail, scoring, navigation:                                                 \
+# Read a capture with protolens and a descriptor set — it infers the type      \
+# and shows wire-level detail, scoring, navigation:                            \
 
 # \
 #                                                                              \
@@ -150,6 +150,7 @@ view life/proto/grehack/life/v1/life.proto
 # #                          Enters protolens                          #       \
 # ######################################################################       \
 #                                                                              \
+
 
 protolens --descriptor-set life.desc capture/000001-request.pb \
     --script beats/capture
@@ -177,6 +178,9 @@ clear && header "2. Eve is spying"
 #        pwd                                                                   \
 #        whoami                                                                \
 #                                                                              \
+
+# \
+#                                                                              \
 # Those commands ran on Bob's machine: Eve's "Life server" is a remote         \
 # shell, hidden in an ordinary game. Alice saw none of this — she has only     \
 # the wire. Can she find it there?                                             \
@@ -196,22 +200,18 @@ clear && header "3. Hidden bits"
 # ######################################################################       \
 #                                                                              \
 
+
 prototext is-canonical capture/*.pb || echo Some messages have anomalies
 
-# \
-#                                                                              \
-# Which ones carry anomalies:                                                  \
-
+# Which ones carry anomalies:
 prototext is-canonical capture/*.pb | grep anomalous
 
-# \
-#                                                                              \
-# A closer look:                                                               \
-
+# A closer look:
 protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
   --script beats/smuggle
 
-protolens --descriptor-set life.desc capture/NNNNNN-request.pb
+protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
+  --script beats/smuggle2
 
 # \
 #                                                                              \
@@ -230,8 +230,9 @@ ls -lh eve/server.log
 
 # \
 #                                                                              \
-# We have no schema for Eve's server. All we hold is the client's — try it     \
-# as an ersatz against the blob:                                               \
+# We have no descriptor set for Eve's server. All we hold is the client's —    \
+# try it as an ersatz against the blob:                                        \
+
 
 protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
