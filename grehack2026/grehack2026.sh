@@ -206,16 +206,16 @@ prototext is-canonical capture/*.pb || echo Some messages have anomalies
 # Which ones carry anomalies:
 prototext is-canonical capture/*.pb | grep anomalous
 
-# protoc decodes the flagged message cleanly — blind to the padding:
+# protoc decodes the flagged messages cleanly — blind to the anomalies:
 protoc --descriptor_set_in=life.desc \
-       --decode=grehack.life.v1.StepResponse < capture/NNNNNN-response.pb \
+       --decode=grehack.life.v1.StepResponse < capture/000000-response.pb \
   | view_textproto
 
 # A closer look, with protolens:
-protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
+protolens --descriptor-set life.desc capture/000000-response.pb \
   --script beats/smuggle
 
-protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
+protolens --descriptor-set life.desc capture/000000-request.pb \
   --script beats/smuggle2
 
 # \
