@@ -6,9 +6,13 @@
 #
 # The companion to beats/smuggle. That beat decoded "whoami" out of a
 # captured *response*; this one is the matching *request*, carrying Bob's
-# answer "experiment" through the same padded-varint channel. A single
-# step: the mechanism is already understood, so this just shows the
-# decryption. Advance (to quit) with space or Enter.
+# answer "experiment" through the same padded-varint channel, from row 1,
+# cell 1 (the grid is the request's field 1 too). The mechanism is already
+# understood, so there are no wire-level steps: one step per letter for the
+# first six letters, e x p e r i — 48 bits, all in row 1 as long as the
+# grid is at least 48 cells wide (Bob's window at least 96 columns) — then
+# the reassembled word, whose last four letters spill past that point and
+# are read the same way. Advance with space or Enter.
 #
 # Step text is written for a 120-column line (spec 0400).
 #
@@ -20,16 +24,98 @@ title: The answer rides home
 
 steps:
   - text: |
-      The matching request, carrying the answer the same way: one
-      hidden bit per cell, read across the grid, grouped into bytes.
+      The client's next request carries the command's output back the same way, from the first cell.
+      The first eight cells → 01100101 → e.
 
-        01100101 01111000 01110000 01100101 01110010
-           e        x        p        e        r
-        01101001 01101101 01100101 01101110 01110100
-           i        m        e        n        t      → experiment
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
 
-      Eve asked "whoami" in the response; Bob's machine answered
-      "experiment" in the request. Neither touched the decoded Life game.
+      👋 Press space.
+    node: /1/1/1
+    select_lines:
+      from: /1/1/1
+      to: /1/1/8
+
+  - text: |
+      The next eight cells → 01111000 → x.
+
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
+
+      👋 Press space.
+    node: /1/1/9
+    select_lines:
+      from: /1/1/9
+      to: /1/1/16
+
+  - text: |
+      The next eight → 01110000 → p.
+
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
+
+      👋 Press space.
+    node: /1/1/17
+    select_lines:
+      from: /1/1/17
+      to: /1/1/24
+
+  - text: |
+      The next eight → 01100101 → e.
+
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
+
+      👋 Press space.
+    node: /1/1/25
+    select_lines:
+      from: /1/1/25
+      to: /1/1/32
+
+  - text: |
+      The next eight → 01110010 → r.
+
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
+
+      👋 Press space.
+    node: /1/1/33
+    select_lines:
+      from: /1/1/33
+      to: /1/1/40
+
+  - text: |
+      The next eight → 01101001 → i.
+
+        a 01100001    b 01100010    c 01100011    d 01100100    e 01100101    f 01100110    g 01100111
+        h 01101000    i 01101001    j 01101010    k 01101011    l 01101100    m 01101101    n 01101110
+        o 01101111    p 01110000    q 01110001    r 01110010    s 01110011    t 01110100    u 01110101
+        v 01110110    w 01110111    x 01111000    y 01111001    z 01111010
+
+      👋 Press space.
+    node: /1/1/41
+    select_lines:
+      from: /1/1/41
+      to: /1/1/48
+
+  - text: |
+      The remaining cells, read the same way, finish the word:
+
+        01100101 01111000 01110000 01100101 01110010 01101001 01101101 01100101 01101110 01110100
+           e        x        p        e        r        i        m        e        n        t      → experiment
+
+      Eve asked "whoami" in the response; Bob's machine answered "experiment" in the request.
+      Neither touched the decoded Life game.
 
       👋 Type `:q` to quit protolens.
     node: /
