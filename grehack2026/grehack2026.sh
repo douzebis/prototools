@@ -43,7 +43,7 @@ clear && header "Protobuf in a nutshell"
 #                                                                              \
 
 
-clear && header "0. The cast"
+clear && header "0. The cast" && picture images/characters.jpeg
 # \
 #                                                                              \
 #                                                                              \
@@ -55,6 +55,9 @@ clear && header "0. The cast"
 #                                                                              \
 # Alice 🕵️ — Bob's friend, savvy with cyber security.                          \
 #                                                                              \
+
+clear && picture images/playing.jpeg
+# \
 #                                                                              \
 # Bob plays the Game of Life with software Eve provides: his client asks       \
 # her server for each next generation over gRPC — one pair of protobuf         \
@@ -80,13 +83,17 @@ clear && header "0. The cast"
 #                                                                              \
 #                                                                              \
 
-clear
+
+clear && header "1. On the wire"
 # \
 #                                                                              \
 # Bob, idly curious whether his game only plays Life, asks Alice to audit      \
 # the traffic. She has his client binary and her own tap of the wire —         \
 # nothing from the server.                                                     \
 #                                                                              \
+
+clear && picture images/tapping.jpeg
+# \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
 #    │     Bob      │ ───────────┬─────────────▶ │     Eve      │              \
@@ -98,10 +105,7 @@ clear
 #              │   life-tap ──▶ capture/*.pb ──▶ prototools    │               \
 #              └───────────────────────────────────────────────┘               \
 #                                                                              \
-#                                                                              \
 
-
-clear && header "1. On the wire"
 # \
 #                                                                              \
 # Alice starts her tap in the background.                                      \
@@ -176,7 +180,7 @@ protolens --descriptor-set life.desc capture/000001-request.pb \
 # playing Life?                                                                \
 
 
-clear && header "2. Eve is spying"
+clear && header "2. Eve is spying" && picture images/spying.jpeg
 
 # \
 #                                                                              \
@@ -240,7 +244,7 @@ protolens --descriptor-set life.desc capture/000000-request.pb \
 # "experiment". Commands ride the responses, answers the requests.             \
 
 
-clear && header "4. Eve's own log"
+clear && header "4. Eve's own log" && picture images/seizing.jpeg
 
 # \
 #                                                                              \
