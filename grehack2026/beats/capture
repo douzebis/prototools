@@ -12,6 +12,8 @@
 # still runs the interactive gestures (`w`, `v`, `z`, `a`) live. Advance
 # with space or Enter.
 #
+# Step text is written for a 120-column line (spec 0400).
+#
 # Invocation (from grehack2026.sh):
 #   protolens --descriptor-set life.desc capture/000001-request.pb \
 #       --script beats/capture
@@ -22,8 +24,7 @@ steps:
   - text: |
       The capture, opened against life.desc.
 
-      protolens renders it as textproto, enriched with annotations
-      and it inferred the type: StepRequest.
+      protolens renders it as textproto, enriched with annotations and it inferred the type: StepRequest.
 
       - arrow keys / mouse to move
       - `z` or the triangles to fold / unfold a message
@@ -32,17 +33,15 @@ steps:
     node: /
 
   - text: |
-      Fully expanded. A StepRequest has three top-level fields — the first,
-      highlighted, is `grid`: a Grid message, rows of cells, and most of
-      what is on screen.
+      Fully expanded. A StepRequest has three top-level fields — the first, highlighted,
+      is `grid`: a Grid message, rows of cells, and most of what is on screen.
 
       👋 Press space.
     node: /
     search: /1
 
   - text: |
-      `grid` folds down one level — its rows collapse to a single line
-      each, the whole grid now a short block.
+      `grid` folds down one level — its rows collapse to a single line each, the whole grid now a short block.
 
       👋 Press space.
     node: /
@@ -50,8 +49,7 @@ steps:
     search: /1
 
   - text: |
-      And fully: `grid` is now one line. The three top-level fields fit on
-      screen together.
+      And fully: `grid` is now one line. The three top-level fields fit on screen together.
 
       👋 Press space.
     node: /
@@ -59,8 +57,7 @@ steps:
     search: /1
 
   - text: |
-      The second field is `rules` — another nested message, with the birth
-      and survival ranges.
+      The second field is `rules` — another nested message, with the birth and survival ranges.
 
       👋 Press space.
     node: /
@@ -68,9 +65,8 @@ steps:
     search: /2
 
   - text: |
-      The third is `generation` — a scalar `uint64`, sitting just below
-      `rules`. Drop to wire level with `w`: the raw bytes, the tag, the
-      wire type, the varint groups.
+      The third is `generation` — a scalar `uint64`, sitting just below `rules`. Drop
+      to wire level with `w`: the raw bytes, the tag, the wire type, the varint groups.
 
       👋 Press `w` on `generation`, then `w` again to close it.
     node: /
@@ -78,12 +74,10 @@ steps:
     search: /3
 
   - text: |
-      On a field whose type is a named message or enum (not a bare
-      scalar), press `v`.
+      On a field whose type is a named message or enum (not a bare scalar), press `v`.
 
-      protolens hands off to Neovim, opened at that type's declaration in
-      the reconstructed .proto source — the SourceCodeInfo reproto
-      synthesized, resolved against the proto/ stub beside life.desc.
+      protolens hands off to Neovim, opened at that type's declaration in the reconstructed .proto source —
+      the SourceCodeInfo reproto synthesized, resolved against the proto/ stub beside life.desc.
 
       👋 Press `v` on `grid` or `rules`, look at the declaration, come back.
     node: /
@@ -91,10 +85,8 @@ steps:
     search: /1
 
   - text: |
-      That is the whole loop: a type recovered from the binary, a message
-      read in the clear, the wire underneath one keystroke away — and from
-      a byte on the wire to the line of reconstructed source that defines
-      it, and back.
+      That is the whole loop: a type recovered from the binary, a message read in the clear, the wire underneath one
+      keystroke away — and from a byte on the wire to the line of reconstructed source that defines it, and back.
 
       👋 Type `:q` to quit protolens when you are done.
     node: /

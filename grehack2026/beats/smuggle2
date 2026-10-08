@@ -10,6 +10,8 @@
 # step: the mechanism is already understood, so this just shows the
 # decryption. Advance (to quit) with space or Enter.
 #
+# Step text is written for a 120-column line (spec 0400).
+#
 # Invocation (from grehack2026.sh), on the matching request capture:
 #   protolens --descriptor-set life.desc capture/NNNNNN-request.pb \
 #       --script beats/smuggle2
@@ -18,8 +20,8 @@ title: The answer rides home
 
 steps:
   - text: |
-      The matching request, carrying the answer the same way: one hidden
-      bit per cell, read across the grid, grouped into bytes.
+      The matching request, carrying the answer the same way: one
+      hidden bit per cell, read across the grid, grouped into bytes.
 
         01100101 01111000 01110000 01100101 01110010
            e        x        p        e        r

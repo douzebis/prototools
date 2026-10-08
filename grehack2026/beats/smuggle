@@ -13,6 +13,8 @@
 # finally decodes the hidden bits. Advance with space or Enter; the
 # presenter may also move by hand.
 #
+# Step text is written for a 120-column line (spec 0400).
+#
 # Invocation (from grehack2026.sh), on the flagged response capture:
 #   protolens --descriptor-set life.desc capture/NNNNNN-response.pb \
 #       --script beats/smuggle
@@ -21,8 +23,8 @@ title: The smuggled bits
 
 steps:
   - text: |
-      One captured response, in full. protolens flags fields that do not
-      sit the way the schema expects — spurious padding on varints.
+      One captured response, in full. protolens flags fields that do
+      not sit the way the schema expects — spurious padding on varints.
 
       standard tools see nothing: the padding does not change the decoded value.
 
@@ -30,9 +32,8 @@ steps:
     node: /
 
   - text: |
-      The grid is just cells. Here are the first row's first two cells,
-      at the wire level (`w`). The first — highlighted — is a plain,
-      minimal varint: nothing hidden.
+      The grid is just cells. Here are the first row's first two cells, at the wire
+      level (`w`). The first — highlighted — is a plain, minimal varint: nothing hidden.
 
       👋 Press space.
     node: /1/1/1
@@ -42,10 +43,8 @@ steps:
     search: /1/1/1
 
   - text: |
-      The second cell — now highlighted — decodes to the same value, but
-      the wire shows an extra byte: a continuation byte (high bit set)
-      then a zero. Legal, non-minimal, and that extra byte carries one
-      hidden bit.
+      The second cell — now highlighted — decodes to the same value, but the wire shows an extra byte: a
+      continuation byte (high bit set) then a zero. Legal, non-minimal, and that extra byte carries one hidden bit.
 
       👋 Press space.
     node: /1/1/2
@@ -95,7 +94,6 @@ steps:
         01110111 01101000 01101111 01100001 01101101 01101001
            w        h        o        a        m        i      → whoami
 
-      This is a response, so it carries Eve's command. The matching
-      request carries Bob's answer, "experiment", the same way.
+      This is a response, so it carries Eve's command. The matching request carries Bob's answer, "experiment", the same way.
 
       👋 Type `:q` to quit protolens.

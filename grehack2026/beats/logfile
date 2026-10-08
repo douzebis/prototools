@@ -9,6 +9,8 @@
 # crafting a schema for an unknown blob from the fields the corpus does
 # know. Advance (to quit) with space or Enter.
 #
+# Step text is written for a 120-column line (spec 0400).
+#
 # Invocation (from grehack2026.sh):
 #   protolens --descriptor-set life.desc eve/server.log \
 #       --script beats/logfile
@@ -20,29 +22,22 @@ steps:
       eve/server.log, opened against life.desc — no known root type
       matches, so the root is a generic `message`. Walk the recovery:
 
-      1. Fold to depth 1 (`1`), then `G` to the end — the tail is flagged
-         TRUNCATED. A standard tool like protoc would have choked on the whole
-         file.
+      1. Fold to depth 1 (`1`), then `G` to the end — the tail is flagged TRUNCATED.
+         A standard tool like protoc would have choked on the whole file.
 
-      2. Fold to depth 2 (`2`), turn on heat cues (`i`), and hover: inside
-         each entry the corpus recognizes the game's own StepRequest and
-         StepResponse.
+      2. Fold to depth 2 (`2`), turn on heat cues (`i`), and hover: inside each
+         entry the corpus recognizes the game's own StepRequest and StepResponse.
 
-      3. Every top-level entry is the same field, 42 — our captures. Pin
-         its type: on the field, `t` then `o` prefills an `override ...
-         --as-new Capture`; tailor the name, Enter. Now the entries read
-         as a repeated Capture.
+      3. Every top-level entry is the same field, 42 — our captures. Pin its type: on the field, `t` then `o` prefills
+         an `override ... --as-new Capture`; tailor the name, Enter. Now the entries read as a repeated Capture.
 
-      4. Find the `generation` field and name it the same way: `t`, `o`
-         for a prefilled override, tailor, Enter.
+      4. Find the `generation` field and name it the same way: `t`, `o` for a prefilled override, tailor, Enter.
 
-      5. Go to the non-canonical fields — the strings the client's schema
-         never declared. Where one is set it reads "whoami" or
-         "experiment": Eve's contraband. Name that field `contraband` with
-         `t`, `o` again.
+      5. Go to the non-canonical fields — the strings the client's schema never declared. Where one is set it
+         reads "whoami" or "experiment": Eve's contraband. Name that field `contraband` with `t`, `o` again.
 
-      All done: a schema reverse-crafted from a truncated, type-less blob,
-      and Eve's covert channel read straight out of her own log.
+      All done: a schema reverse-crafted from a truncated, type-less
+      blob, and Eve's covert channel read straight out of her own log.
 
       👋 Type `:q` to quit protolens.
     node: /
