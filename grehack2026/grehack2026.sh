@@ -5,15 +5,41 @@ clear && header "Why prototools"
 # \
 #                                                                              \
 #                                                                              \
-# At S3NS we run a Trusted Partner Cloud: we audit Google's update             \
-# packages before production.                                                  \
+# At S3NS we run a Trusted Partner Cloud: we audit Google's software           \
+# updates before they reach production.                                        \
 #                                                                              \
-# Protobufs are everywhere inside them — and opaque on the wire.               \
-# They efficiently encode data as binary and require a "schema" for decoding.  \
+# Inside them, protobuf is everywhere — and it is opaque: the bytes alone      \
+# don't say what they mean.                                                    \
 #                                                                              \
-# prototools dissects protobufs, even with no schema.                          \
+# So we built prototools, to dissect protobufs even when nobody hands us       \
+# the schema.                                                                  \
 #                                                                              \
-# The demo: prototools in action -> a toy cyber-investigation.                 \
+# First, what a protobuf does — and doesn't — tell you.                        \
+#                                                                              \
+
+
+clear && header "Protobuf in a nutshell"
+# \
+#                                                                              \
+# • Compact binary encoding of structured data — Google's lingua franca:       \
+#   RPCs (gRPC), configs, logs, archives.                                      \
+#                                                                              \
+# • Not self-describing: the bytes carry field numbers and wire types,         \
+#   nothing more. No names, no types — a length-delimited field may be a       \
+#   string, raw bytes, or a nested message.                                    \
+#                                                                              \
+# • Decoding needs the schema: a descriptor set (compiled .proto files)        \
+#   plus the root message type. Neither travels with the data.                 \
+#                                                                              \
+# • Generated code usually embeds its descriptors, for reflection — but        \
+#   lite builds strip them. Nothing guarantees they are there.                 \
+#                                                                              \
+# • Decoders are lenient: many encodings decode to the same value, and         \
+#   unknown fields pass through silently.                                      \
+#                                                                              \
+# To read a protobuf you didn't write: recover its schema, and watch what      \
+# the decoder lets through. Here is prototools doing both, in a toy            \
+# cyber-investigation.                                                         \
 #                                                                              \
 
 
@@ -253,16 +279,18 @@ clear && header "5. Takeaways"
 
 # \
 #                                                                              \
-# 1. Descriptors usually hide in the binary. protoscan finds them,             \
-#    reproto gives the .proto back.                                            \
+# No schema at hand  → descriptors usually hide in the binary: protoscan       \
+#                      finds them, reproto gives the .proto back.              \
 #                                                                              \
+# No root type       → a corpus types even a message it has never seen,        \
+#                      piece by piece: protolens's heat cues.                  \
 #                                                                              \
-# 2. A corpus types a message it has never seen, piece by piece, from the      \
-#    messages it does know. That's what heat cues are for.                     \
+# Lenient decoders   → what a decoder normalizes away is evidence — a          \
+#                      padding bit, a shadowed value. is-canonical and         \
+#                      protolens surface it.                                   \
 #                                                                              \
-#                                                                              \
-# 3. What a decoder normalizes away is evidence — a shadowed value, a          \
-#    padding bit, a truncated tail. prototools surfaces it, back to bytes.     \
+# Damaged blob       → protolens reads up to the damage; protoc rejects        \
+#                      the whole file.                                         \
 #                                                                              \
 
 
