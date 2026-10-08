@@ -1,20 +1,11 @@
-# Reset the demo workspace: remove everything a previous run generated.
-# capture/ is Alice's tap output; life.desc and life/ are what reproto
-# rebuilds; eve/server.log is Eve's truncated log. All are repopulated by
-# the demo script itself. Sourced by teleprompt at startup unless --no-init.
+# Set up the demo workspace. Sourced by teleprompt at startup unless
+# --no-init.
 #
-# The crate lived in life/ before spec 0388 moved it to game/: in a checkout
-# that old, life/ is source, not reproto output, so nothing is removed.
+# Removing what a previous run generated (capture/, life.desc, life/,
+# eve/server.log) is not done here: it is the deck's first step, so the
+# presenter can skip it and keep those artifacts (spec 0399).
 
 _init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -e "${_init_dir}/life/Cargo.toml" ]; then
-  echo "grehack2026.init: ${_init_dir}/life holds the crate, not reproto's" \
-       "output; nothing removed (spec 0388 S3)" >&2
-else
-  rm -rf "${_init_dir}/capture" \
-         "${_init_dir}/life.desc" "${_init_dir}/life" \
-         "${_init_dir}/eve/server.log"
-fi
 
 # Alice's copy of the client binary, for protoscan and reproto (spec 0388
 # S3). On a Nix PATH, life-client is a wrapper script; the binary, with its
