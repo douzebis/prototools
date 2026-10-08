@@ -114,15 +114,12 @@ sudo -v && (life-tap -q &)
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
-# \
-#                                                                              \
-# Opaque. Protobuf self-describes only field numbers and wire types.           \
-# To read values: the schema — descriptor set + root type.                     \
 
 # \
 #                                                                              \
-# gRPC clients usually embed their own descriptor set.                         \
-# protoscan scans any blob for embedded descriptors:                           \
+# Opaque, as promised: field numbers and wire types, nothing more.             \
+#                                                                              \
+
 
 # \
 #                                                                              \
@@ -132,6 +129,7 @@ hexdump -v -C capture/000001-request.pb | view
 #                                                                              \
 
 
+# The client likely embeds its descriptors. protoscan finds them:
 protoscan life-client
 
 # \
