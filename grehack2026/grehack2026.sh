@@ -1,5 +1,5 @@
 # Remove the artifacts of a previous run (skip this step to keep them):
-rm -rf capture life.desc life eve/server.log
+[ -e capture/tap.pid ] && life-tap --stop; rm -rf capture life.desc life eve/server.log
 
 clear && header "Why prototools"
 # \

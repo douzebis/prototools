@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0399 — the tap stops when the teleprompt quits
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-08
 App: teleprompt (bin/teleprompt), grehack2026
 Refs: docs/specs/0393-only-dumpcap-runs-as-root.md (the tap runs as the
       user and owns its sudo'd dumpcap; `life-tap --stop`);
@@ -159,4 +160,23 @@ running the deck through its first section; after each case,
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured 2026-10-08 on the development machine, without a terminal: the
+teleprompt itself needs one, so its exit-hook block was exercised
+verbatim in a scratch script, and the S3/S4 command strings against the
+real `life-tap --stop` with a stand-in tap (a process that writes
+`tap.pid` and removes it on SIGTERM, as the tap does).
+
+- S1/S2: on a normal end, SIGTERM and SIGHUP, the hooks run in
+  registration order, a failing hook does not stop the next, then
+  `stty sane`; exit codes 0, 143, 129. Stopped (SIGSTOP), nothing runs;
+  continued and ended, the hooks run once. With no hook registered (the
+  grpconf2026 init registers none), only `stty sane` runs.
+- S3: the init's hook, built with a capture path containing a space,
+  stops the stand-in tap and its `tap.pid` is gone; with no tap it prints
+  nothing.
+- S4: the deck's first step stops the stand-in tap, then removes
+  `capture/`, `life.desc`, `life/` and `eve/server.log`; with no tap it
+  prints nothing and still removes them.
+
+**Not yet measured:** the manual test plan (items 1–8) on a real
+terminal with a real tap, including N3. To be run at the next rehearsal.

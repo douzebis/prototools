@@ -7,6 +7,13 @@
 
 _init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Spec 0399 S3: when the teleprompt quits, stop the tap the deck started.
+# The deck runs from here, so its `life-tap -q` writes to ./capture. The
+# pid-file test keeps a session that started no tap quiet.
+printf -v _capture '%q' "${_init_dir}/capture"
+teleprompt_at_exit "[ -e ${_capture}/tap.pid ] && life-tap --out ${_capture} --stop"
+unset _capture
+
 # Alice's copy of the client binary, for protoscan and reproto (spec 0388
 # S3). On a Nix PATH, life-client is a wrapper script; the binary, with its
 # embedded descriptors, is the .life-client-wrapped beside it.

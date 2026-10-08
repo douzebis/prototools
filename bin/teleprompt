@@ -68,7 +68,28 @@ done
 CONFIG_FILE="$1"
 [[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] [--no-splash] [--init <file>] [--no-init] <commands_file>"; exit 1; }
 
-trap 'stty sane' EXIT
+# ---------------------------------------------------------------------------
+# Exit hooks (spec 0399 S1): commands an init or a deck registers with
+# `teleprompt_at_exit CMD`, run in order when teleprompt quits, each with
+# its failure ignored, before the terminal is restored. A hook rather than
+# the caller's own `trap … EXIT`: bash keeps one EXIT trap per shell, and
+# replacing it would drop the `stty sane`.
+# ---------------------------------------------------------------------------
+_tp_exit_hooks=()
+teleprompt_at_exit() { _tp_exit_hooks+=("$1"); }
+_tp_on_exit() {
+    local hook
+    for hook in "${_tp_exit_hooks[@]}"; do
+        eval "$hook" || true
+    done
+    stty sane
+}
+trap '_tp_on_exit' EXIT
+# Spec 0399 S2: Ctrl-D and Ctrl-C at the prompt end the loop, and so reach
+# the EXIT trap. A closed terminal (HUP) or a plain kill (TERM) must too;
+# the terminal may be gone, hence the redirections. Ctrl-Z only suspends.
+trap 'exec >/dev/null 2>&1; exit 129' HUP
+trap 'exec >/dev/null 2>&1; exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # Load commands, handling backslash line continuations
