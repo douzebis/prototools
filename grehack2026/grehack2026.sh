@@ -73,9 +73,7 @@ clear && header "0. The cast"
 #                                                                              \
 # 👉 In Eve's window (eve/) — Eve starts her server:                           \
 #        life-server                                                           \
-
-
-# \
+#                                                                              \
 #                                                                              \
 # 👉 In Bob's window (bob/) — Bob starts his client:                           \
 #        life-client                                                           \
@@ -206,8 +204,8 @@ clear && header "3. Hidden bits"
 
 # \
 #                                                                              \
-# She can. A covert channel has to bend the encoding — so Alice hunts          \
-# non-canonical protobufs. prototext has `is-canonical`:                       \
+# She can. A covert channel has to bend the encoding — so Alice                \
+# hunts non-canonical protobufs.                                               \
 
 
 # \
@@ -218,7 +216,8 @@ clear && header "3. Hidden bits"
 #                                                                              \
 
 
-prototext is-canonical capture/*.pb || echo Some messages have anomalies
+# prototext is-canonical checks every capture's encoding:
+prototext is-canonical capture/*.pb || red Some messages have anomalies
 
 # Which ones carry anomalies:
 prototext is-canonical capture/*.pb | grep anomalous

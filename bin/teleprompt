@@ -307,6 +307,8 @@ export -f header
 
 blue() { printf '\e[1;94m%s\e[0m\n' "$*"; }
 export -f blue
+red() { printf '\e[1;91m%s\e[0m\n' "$*"; }
+export -f red
 
 view() {
     if [[ $# -eq 0 ]]; then
