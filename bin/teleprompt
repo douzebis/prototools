@@ -310,6 +310,12 @@ export -f blue
 red() { printf '\e[1;91m%s\e[0m\n' "$*"; }
 export -f red
 
+# picture FILE [ROWS] — show an image, ROWS terminal rows tall (default 14),
+# its width following the image's aspect ratio. chafa, like `header`: kitty
+# graphics where the terminal speaks them, character art elsewhere.
+picture() { chafa -s "x${2:-14}" "$1"; }
+export -f picture
+
 view() {
     if [[ $# -eq 0 ]]; then
         nvim -R -

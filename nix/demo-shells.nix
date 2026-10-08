@@ -76,9 +76,11 @@ in
   # wrapper) so that protolens's `v` jump-to-definition works when
   # protolens is run directly in the shell, not only through the deck: `v`
   # spawns a bare `nvim`, whose config then starts `buf lsp serve`.
+  # chafa likewise, so the deck's pictures (teleprompt's `picture`) can be
+  # previewed from the shell at the size the deck draws them.
   grehack2026-shell = pkgs.mkShell {
     name = "grehack2026";
-    packages = [ grehackRuntime pkgs.neovim buf ] ++ deckTools;
+    packages = [ grehackRuntime pkgs.neovim buf pkgs.chafa ] ++ deckTools;
     shellHook = ''
       ${notDevShell}
       export PROTOTEXT_DESCRIPTOR_SET="${wktSet}"
