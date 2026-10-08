@@ -114,7 +114,6 @@ sudo -v && (life-tap -q &)
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
-
 # \
 #                                                                              \
 # Opaque, as promised: field numbers and wire types, nothing more.             \
@@ -131,11 +130,9 @@ hexdump -v -C capture/000001-request.pb | view
 
 # The client likely embeds its descriptors. protoscan finds them:
 protoscan life-client
-
 # \
 #                                                                              \
-# Two FileDescriptorProtos in the client: the game's life.proto, and the       \
-# standard descriptor.proto.                                                   \
+# protoscan found the game's own schema, life.proto, inside the client.        \
 
 # \
 #                                                                              \
@@ -145,10 +142,11 @@ protoscan life-client
 #                                                                              \
 
 
-# reproto extracts them into a reusable schema DB:
+# reproto extracts it into a reusable schema DB:
 reproto -I life-client --schema-db-out life.desc
 
 ls -lhd life.desc life/* \
+#                                                                              \
 # Not just extraction — reproto delivered 💪:                                  \
 # - life.desc:          the descriptor set, ready to reuse                     \
 # - life/hopcroft.rkyv: the scoring graph, for type inference                  \
@@ -157,15 +155,7 @@ ls -lhd life.desc life/* \
 
 
 # Browse one decompiled .proto — it reads like hand-written source:
-view life/proto/grehack/life/v1/life.proto # \
-#                                                                              \
-# A faithful .proto rebuilt from the life-client binary alone — messages,      \
-# enums, fields, nesting, packages. No original source needed.                 \
-
-# \
-#                                                                              \
-# Read a capture with protolens and a descriptor set — it infers the type      \
-# and shows wire-level detail, scoring, navigation:                            \
+view life/proto/grehack/life/v1/life.proto
 
 # \
 #                                                                              \
@@ -175,6 +165,7 @@ view life/proto/grehack/life/v1/life.proto # \
 #                                                                              \
 
 
+# We have the descriptors, not the root type — protolens infers it:
 protolens --descriptor-set life.desc capture/000001-request.pb \
     --script beats/capture
 
