@@ -27,6 +27,9 @@ clear && header "0. The cast"
 # Eve 👩 — the server admin. Keep an eye on her.                               \
 #                                                                              \
 #                                                                              \
+# Alice 🕵️ — Bob's friend, savvy with cyber security.                          \
+#                                                                              \
+#                                                                              \
 # Bob plays the Game of Life with software Eve provides: his client asks       \
 # her server for each next generation over gRPC — one pair of protobuf         \
 # messages per step.                                                           \
@@ -44,6 +47,10 @@ clear && header "0. The cast"
 #                                                                              \
 # 👉 In Eve's window (eve/) — Eve starts her server:                           \
 #        life-server                                                           \
+
+
+# \
+#                                                                              \
 # 👉 In Bob's window (bob/) — Bob starts his client:                           \
 #        life-client                                                           \
 #                                                                              \
@@ -52,9 +59,9 @@ clear && header "0. The cast"
 clear
 # \
 #                                                                              \
-# Alice 🕵️ — the investigator. Bob, idly curious whether his game only         \
-# plays Life, asks her to audit the traffic. She has his client binary and     \
-# her own tap of the wire — nothing from the server.                           \
+# Bob, idly curious whether his game only plays Life, asks Alice to audit      \
+# the traffic. She has his client binary and her own tap of the wire —         \
+# nothing from the server.                                                     \
 #                                                                              \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
@@ -67,12 +74,6 @@ clear
 #              │   life-tap ──▶ capture/*.pb ──▶ prototools    │               \
 #              └───────────────────────────────────────────────┘               \
 #                                                                              \
-#                                                                              \
-
-
-# \
-#                                                                              \
-# Goal: understand the stream's structure, its contents, then what it hides    \
 #                                                                              \
 
 
