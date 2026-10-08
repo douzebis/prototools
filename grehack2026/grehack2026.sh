@@ -21,13 +21,15 @@ clear && header "0. The cast"
 # \
 #                                                                              \
 #                                                                              \
-# Bob 🙂 — the player. Runs a Game of Life client, thinks he's just            \
-# playing.                                                                     \
+# Bob 🙂 — the player. Thinks he's just playing.                               \
 #                                                                              \
 #                                                                              \
-# Eve 👩 — the server admin. Her server steps the Life grid for Bob.           \
-# Keep an eye on her.                                                          \
+# Eve 👩 — the server admin. Keep an eye on her.                               \
 #                                                                              \
+#                                                                              \
+# Bob plays the Game of Life with software Eve provides: his client asks       \
+# her server for each next generation over gRPC — one pair of protobuf         \
+# messages per step.                                                           \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
 #    │     Bob      │ ─────────────────────────▶ │     Eve      │              \
