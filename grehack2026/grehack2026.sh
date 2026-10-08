@@ -139,28 +139,21 @@ protoscan life-client
 
 # \
 #                                                                              \
-# reproto extracts them — a reusable schema DB:                                \
-
-# \
-#                                                                              \
 # ######################################################################       \
 # #                           Enters reproto                           #       \
 # ######################################################################       \
 #                                                                              \
 
 
+# reproto extracts them into a reusable schema DB:
 reproto -I life-client --schema-db-out life.desc
 
-# \
-#                                                                              \
-# Not just extraction: it decompiles, and analyzes for type inference.         \
-
 ls -lhd life.desc life/* \
-# reproto delivered 💪:                                                        \
-# - life.desc:          the extracted descriptor set (the reusable schema DB)  \
-# - life/hopcroft.rkyv: the type-inference scoring graph                       \
-# - life/proto/:        all decompiled .proto source files                     \
+# Not just extraction — reproto delivered 💪:                                  \
+# - life.desc:          the descriptor set, ready to reuse                     \
+# - life/hopcroft.rkyv: the scoring graph, for type inference                  \
 # - life/index.rkyv:    the fast-access index                                  \
+# - life/proto/:        the decompiled .proto sources                          \
 
 
 # Browse one decompiled .proto — it reads like hand-written source:
