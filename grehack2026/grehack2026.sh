@@ -134,6 +134,7 @@ protoscan life-client
 #                                                                              \
 # protoscan found the game's own schema, life.proto, inside the client.        \
 
+
 # \
 #                                                                              \
 # ######################################################################       \
@@ -156,6 +157,7 @@ ls -lhd life.desc life/* \
 
 # Browse one decompiled .proto — it reads like hand-written source:
 view life/proto/grehack/life/v1/life.proto
+
 
 # \
 #                                                                              \
@@ -206,6 +208,7 @@ clear && header "3. Hidden bits"
 #                                                                              \
 # She can. A covert channel has to bend the encoding — so Alice hunts          \
 # non-canonical protobufs. prototext has `is-canonical`:                       \
+
 
 # \
 #                                                                              \
