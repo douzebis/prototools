@@ -8,7 +8,7 @@
 #
 # Source pipeline:
 #
-#   ./reproto/  ──[builtins.path]──▶  reprotoSrc
+#   ./reproto/  ──[lib.fileset]──▶  reprotoSrc   (src/, pyproject.toml, patch/)
 #                                          │
 #                                 [pkgs.runCommand]
 #                                          │
@@ -17,7 +17,7 @@
 #                                          │
 #                           ┌──────────────┼──────────────┐
 #                           ▼              ▼              ▼
-#                       reprotoBare    reproto      reprotoTests …
+#                        wktRkyv        reproto      reprotoTests …
 
 { pkgs
 , pythonPkgs
@@ -38,23 +38,26 @@ let
   # reproto source pipeline
   # ---------------------------------------------------------------------------
 
-  # reprotoSrc — filtered snapshot of the ./reproto working-tree directory.
-  # Uses builtins.path (an eval-time store import, not a build derivation).
-  # Unstable files (.pb outputs, __pycache__, result symlinks) are excluded
-  # to keep the store hash stable across unrelated working-tree changes.
-  reprotoSrc = builtins.path {
-    name   = "reproto-src";
-    path   = ../reproto;
-    filter = path: type:
-      let
-        base       = baseNameOf (toString path);
-        skipPb     = type == "regular" && pkgs.lib.hasSuffix ".pb" base
-                     && !(pkgs.lib.hasSuffix ".golden.pb" base);
-        skipCache  = base == "__pycache__";
-        skipResult = pkgs.lib.hasPrefix "result" base;
-      in
-        !skipPb && !skipCache && !skipResult;
-  };
+  # reprotoSrc — what the reproto package is built from: src/,
+  # pyproject.toml and patch/ (spec 0401 S7). README.md and
+  # tree-sitter-textproto/ are left out, so editing them rebuilds nothing:
+  # reprotoSrcFull feeds wktRkyv, whose graph wkt-prebuilt-check compares.
+  # The .pb descriptors patch_reproto.sh writes into a working tree (the
+  # dev-shell's codegen hook) are left out too, the committed .golden.pb
+  # fixtures kept, and so are __pycache__ files.
+  reprotoSrc =
+    let
+      fs   = pkgs.lib.fileset;
+      root = ../reproto;
+      generated = fs.fileFilter (f:
+        (f.hasExt "pb" && !(pkgs.lib.hasSuffix ".golden.pb" f.name))
+        || f.hasExt "pyc") (root + "/src");
+    in fs.toSource {
+      inherit root;
+      fileset = fs.difference
+        (fs.unions [ (root + "/src") (root + "/pyproject.toml") (root + "/patch") ])
+        generated;
+    };
 
   # Wrap treeSitterTextproto (a bare .so store path) as a minimal Python
   # package so it can appear in propagatedBuildInputs and propagates
@@ -72,7 +75,7 @@ let
     '';
   };
 
-  # Common Python dependencies for reproto (used by both reprotoBare and reproto).
+  # Common Python dependencies for reproto.
   # reprotoPropagatedDeps: runtime deps only (no test tools, no codec).
   # tree-sitter and tree-sitter-language-pack are runtime deps because
   # split_fdps.py imports them at module load time (top-level imports).
@@ -94,13 +97,12 @@ let
   # Python dependency set for the wktRkyv derivation: everything reproto
   # needs to run `--schema-db-out`, and nothing more.
   #
-  # fdpScanLib must NOT appear here. It embeds the freshly generated WKT
-  # scoring graph (spec 0239 S1, nix/rust.nix's _fdpScanLibExt), so it
-  # depends on wktRkyv; wktRkyv depending back on it is an eval-time
-  # infinite recursion. reproto does import fdp_scan_lib since spec 0243
-  # (-I on a blob), but only from inside that branch, never at module
-  # load — so reprotoBare, which is what builds wktRkyv, still runs
-  # without it. It is attached to the final reproto package instead.
+  # fdpScanLib is not needed here. reproto imports fdp_scan_lib only for
+  # -I on a blob (spec 0243), from inside that branch, never at module
+  # load, so wktRkyv runs without it; it is attached to the final reproto
+  # package instead. (It used to be banned outright: fdp_scan_lib embedded
+  # the freshly generated graph, so it depended on wktRkyv. It now embeds
+  # the committed one, spec 0401 S2, and the ban is history.)
   wktRkyvDeps = reprotoPropagatedDeps ++ [
     prototextCodec
     prototextGraphLib
@@ -113,32 +115,13 @@ let
   # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
   reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib ];
 
-  # Bootstrap package — installs reproto without running tests.
-  # Provides bin/reproto and carries the patch scripts for the codegen stage.
-  reprotoBare = pythonPkgs.buildPythonPackage {
-    pname   = "reproto-bare";
-    version = "0.1.0";
-    src     = reprotoSrc;
-    pyproject = true;
-
-    nativeBuildInputs = [ pythonPkgs.setuptools pythonPkgs.wheel ];
-    propagatedBuildInputs = reprotoPropagatedDeps;
-
-    doCheck = false;
-
-    postInstall = ''
-      mkdir -p $out/patch
-      cp -r ${reprotoSrc}/patch/* $out/patch/
-    '';
-  };
-
   # reprotoSrcFull — enriched source tree: copies reprotoSrc, seeds well-known
   # .proto sources from pkgs.protobuf, then runs patch_reproto.sh to compile
-  # fixture .proto files into .pb descriptors.
+  # fixture .proto files into .pb descriptors. The script needs only protoc,
+  # so it runs straight from the source (spec 0401 S6).
   # "Full" signals that this is the complete, ready-for-buildPythonPackage tree.
   reprotoSrcFull = pkgs.runCommand "reproto-src-full" {
     buildInputs = [
-      reprotoBare
       pkgs.protobuf        # provides protoc and well-known .proto includes
     ];
   } ''
@@ -151,7 +134,7 @@ let
     cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
        $out/src/resources/google/protobuf/
 
-    bash ${reprotoBare}/patch/patch_reproto.sh "${reprotoBare}" "$out"
+    bash ${reprotoSrc}/patch/patch_reproto.sh "$out"
   '';
 
   # Final reproto package — built from the codegen output, with tests.
@@ -173,10 +156,10 @@ let
       prototextGraphLib  # reproto --schema-db-out imports scoring_graph_lib
       # reproto -I <blob> imports fdp_scan_lib to expand the blob (spec
       # 0243 S10). It belongs here and NOT in reprotoPropagatedDeps, for
-      # the reason spelled out on wktRkyvDeps above: fdpScanLib depends
-      # on wktRkyv, which is built by reprotoBare, so the shared list
-      # would close an eval-time recursion. reproto.load defers the
-      # import into the blob branch, so reprotoBare never needs it.
+      # the reason spelled out on wktRkyvDeps above: the shared list is
+      # what wktRkyv runs reproto with, and wktRkyv's graph is what
+      # wkt-prebuilt-check compares. reproto.load defers the import into
+      # the blob branch, so wktRkyv never needs it.
       fdpScanLib
     ];
 
@@ -295,8 +278,8 @@ let
   #
   # fdp_scan_lib is here even though it is banned from
   # reprotoPropagatedDeps (see the comment there).  The ban exists so
-  # that reprotoBare's closure stays free of the WKT graph reproto is
-  # itself used to build; pythonLint is a leaf nothing builds from, so
+  # that wktRkyv's inputs stay free of the WKT graph reproto is itself
+  # used to build; pythonLint is a leaf nothing builds from, so
   # depending on the extension closes no cycle.  It has to be listed:
   # load.py's import of it is deferred to inside the function (spec 0243
   # S10) for that same eval-recursion reason, but pyright resolves
@@ -639,7 +622,6 @@ in {
   inherit
     reprotoSrc
     reprotoSrcFull
-    reprotoBare
     reprotoPropagatedDeps
     wktRkyvDeps
     reprotoTestDeps

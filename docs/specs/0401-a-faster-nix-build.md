@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0401 — a faster Nix build
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-09
 App: build (default.nix, nix/*, .github/workflows/)
 Refs: docs/specs/0402-a-nixpkgs-friendly-build.md (the conventions
         this must stay compatible with — it builds on the same
@@ -153,12 +154,15 @@ Why it takes so long:
   `src/`, `pyproject.toml` and `patch/` only. Check every Rust source
   fileset the same way: a Markdown file must not invalidate a Rust
   derivation.
-- **S8. No LTO for tests.** A Cargo profile, `ci-test` (release
-  without LTO, `codegen-units = 16`), is used by `rustTests` and
-  clippy. It has its own deps cache, built in parallel with the
-  release one.
-  - Adopt it only if test plan item 4 shows at least a 40 % gain on
-    `rustTests`. Otherwise drop this clause.
+- **S8. No LTO for tests.** `rustTests` builds with the workspace's
+  existing `quick` profile: release codegen, no LTO, 16 codegen units.
+  That is exactly the `ci-test` profile this clause first described, so
+  it is reused rather than duplicated. It has its own dependency cache,
+  `depsCacheTests`, which runs only cargo's test pass and is built in
+  parallel with the release one. Clippy stays on `depsCache`, since it
+  only checks and never links.
+  - The clause was conditional on a ≥ 40 % gain on `rustTests`. It
+    measured −82 % (Measured outcome), so it stays.
 - **S9. CI in one build.** `nix.yml` keeps `rust-fmt` as a fast first
   step, then runs a single `nix-build -A ci`. The separate clippy step
   goes away.
@@ -216,4 +220,52 @@ Why it takes so long:
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured on 2026-10-09, on the same 12-core VM as Background, from the
+store's registration times (`nix path-info --json`). The scenario is the
+common one: `depsCache` cached, every Rust source rebuilt. It is forced by
+a one-line comment in `prototext-core/src/lib.rs`, reverted afterwards.
+That probe also rebuilt the `life` and `bobapp` crates, which competed for
+the CPU.
+
+| | Before (Background) | S1–S7 | S1–S8 |
+|---|---|---|---|
+| `rustTests` | 10.3 min | 1,093 s | **195 s** |
+| release build(s) | 2 × 6.5 min | `workspaceBuild` 829 s | **457 s** |
+| `rustClippy` | in parallel | 624 s | **108 s** |
+| `ci` finished after | ~20 min path | 1,093 s | **577 s** (381 s of it is `depsCacheTests`, built once per `Cargo.lock`) |
+| image finished after | waited for the tests | 1,091 s | **707 s** |
+| wall, `ci` + image | — | 1,110 s | **721 s** |
+
+- **S1–S7 alone were not enough.** Tests, clippy and the workspace build
+  all start once `depsCache` exists. With every one of them at
+  `codegen-units = 1` + LTO and `NIX_BUILD_CORES` = 12 on 12 cores, they
+  starved each other, and the tests got slower than the baseline. S8
+  removed most of the tests' CPU, and the other two sped up with it.
+- **The critical path is now the release build:** `workspaceBuild` (7.6
+  min), the extensions, reproto, then the googleapis database (3.6 min)
+  for the image. The tests are off it (G3).
+- **G5 (a halved cold path) is reached for the common case,** with
+  `depsCache` cached: about 10 min against about 20. A fully cold build
+  adds `depsCache` (about 6 min, alongside `depsCacheTests`); that was
+  not measured end to end.
+- **G1:** one release build. `ci` holds 6 crane derivations instead of 10:
+  two dependency caches, fmt, clippy, tests, and `workspaceBuild`.
+- **G2, S3 (test plan 2, 3):** `wkt-prebuilt-check` passes on the
+  committed copy. In a scratch worktree, `GRAPH_VERSION` 7 → 8 was taken
+  through:
+  - `nix-build -A wkt-rkyv` built with no manual bootstrap;
+  - the check failed and printed the refresh;
+  - after that `cp`, the version byte read `08` and the check passed.
+
+  The prebuilt README's bootstrap procedure is deleted.
+- **G4 (test plan 5):** with everything built, `nix-build --dry-run`
+  plans:
+  - nothing for an edit to `reproto/README.md` or `prototext/README.md`;
+  - for an edit to reproto's Python source, only Python derivations,
+    `wkt-rkyv`, its check, the googleapis DB and the image layers. No
+    Rust.
+- **Test plan 7:** `ci`, the image, the PyPI wheels and the crates.io
+  bundle all build. The image's closure check passes.
+- **Not done:**
+  - the CI cache check (item 8);
+  - a CI timing of S9, which needs a push.

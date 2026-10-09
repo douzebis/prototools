@@ -42,7 +42,6 @@
 , protolens
 , reproto
 , reprotoSrc        # filtered reproto source (builtins.path)
-, reprotoBare       # bootstrap reproto package
 , reprotoTestDeps   # full Python dep list for the dev-shell
 , treeSitterTextproto
 , treeSitterTextprotoRustLib
@@ -320,8 +319,7 @@ RUFFEOF
           mkdir -p "$PWD/reproto/src/resources/google/protobuf"
           cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
              "$PWD/reproto/src/resources/google/protobuf/"
-          bash "$PWD/reproto/patch/patch_reproto.sh" \
-            "${reprotoBare}" "$PWD/reproto"
+          bash "$PWD/reproto/patch/patch_reproto.sh" "$PWD/reproto"
         else
           echo "[hook] codegen: already done — skipping"
         fi

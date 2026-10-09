@@ -9,10 +9,9 @@
 # Generates binary .pb descriptor files from the well-known-type .proto sources.
 #
 # Usage:
-#   ./patch_reproto.sh <bare_reproto_path> <out>
+#   ./patch_reproto.sh <out>
 #
 # Arguments:
-#   bare_reproto_path  Path to the installed reproto package (provides bin/reproto).
 #   out                Path to a writable copy of the reproto/ package root.
 #                      (i.e. the directory containing src/ and patch/)
 #
@@ -25,12 +24,11 @@ set -euo pipefail
 
 source "$(dirname "$0")/lib_proto_helpers.sh"
 
-if [ "$#" -ne 2 ]; then
-    die "Usage: $0 <bare_reproto_path> <out>"
+if [ "$#" -ne 1 ]; then
+    die "Usage: $0 <out>"
 fi
 
-bare_reproto="$1"
-out="$2"
+out="$1"
 
 [ -d "$out" ] || die "Output directory not found: $out"
 

@@ -28,7 +28,6 @@ jobs:
           # Re-enable once there's a working installer path for Intel
           # Macs, or drop this target for good.
           # - os: macos-15-intel
-          #   skip-clippy: true
           #   ci-target: ci-no-clippy
     steps:
       - uses: actions/checkout@v6
@@ -44,11 +43,11 @@ jobs:
       - name: Check formatting (rustfmt)
         run: nix-build -A rust-fmt
 
-      - name: Check lints (clippy)
-        if: ${{ !matrix.skip-clippy }}
-        run: nix-build -A rust-clippy
-
-      - name: Run CI targets (tests, build, reproto tests, python lint)
+      # One build for the rest, clippy included (ci-no-clippy where it is
+      # known to fail), so Nix runs clippy and the tests side by side rather
+      # than one step after the other (spec 0401 S9). rustfmt stays first:
+      # it fails fast and needs nothing compiled.
+      - name: Run CI targets (clippy, tests, build, reproto tests, python lint)
         run: nix-build -A ${{ matrix.ci-target || 'ci' }}
 
       - name: Build PyPI wheels

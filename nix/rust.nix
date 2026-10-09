@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-# nix/rust.nix — Crane derivations: dep cache, fmt, clippy, tests, prototext
-#                binary, and the three PyO3 extensions via makePyo3Extension.
+# nix/rust.nix — Crane derivations: dep cache, fmt, clippy, tests, the one
+#                release build of the workspace, and what ships from it.
 #
-# Pipeline diagram:
+# Pipeline diagram (spec 0401):
 #
 #   src (Rust sources, fixtures/)
 #     │
@@ -15,13 +15,18 @@
 #     │                                                                    │
 #     ├──[cargoClippy, cargoArtifacts=depsCache]──▶  rustClippy            │
 #     │                                                                    │
-#     ├──[cargoTest, cargoArtifacts=depsCache]──▶  rustTests               │
+#     ├──[cargoTest, profile quick]──▶  rustTests  (a ci leaf)              │
 #     │                                                                    │
-#     ├──[buildPackage, cargoArtifacts=depsCache]──▶  prototextBare ──▶  prototext
-#     │                                                                    │
-#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextCodec    │
-#     ├──[makePyo3Extension, cargoArtifacts=rustTests]──▶  fdpScanLib         │
-#     └──[makePyo3Extension, cargoArtifacts=rustTests]──▶  prototextGraphLib
+#     └──[buildPackage, cargoArtifacts=depsCache]──▶  workspaceBuild
+#            │  one `cargo build --release --workspace --features prebuilt-wkt`
+#            ├──▶  prototext            (copied out, completions, man page)
+#            ├──▶  protolensUnwrapped  ──▶  protolens, protolensLean
+#            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (.so + .pyi)
+#
+# Every shipped crate embeds the WKT scoring graph committed under
+# prototext/wkt/prebuilt/ (S2); default.nix's wkt-prebuilt-check keeps that
+# copy equal to what the code generates (S3). Nothing here waits for the
+# tests (S4).
 
 { pkgs
 , crane
@@ -32,7 +37,6 @@
 , depsSrc
 , workspaceSrc
 , protoPatchPhase
-, wktRkyv ? null   # store path to wkt.rkyv; null for bare/bootstrap builds
 , treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
@@ -48,30 +52,17 @@ let
   # sandbox can compile prototext_codec_lib without a separate dep cache.
   workspaceArgs = "--no-default-features --workspace";
 
-  # Same, plus prototext's `prebuilt-wkt`, for every workspace-wide build that
-  # runs at or before the bootstrap.
+  # Same, plus prototext's `prebuilt-wkt`: every build embeds the WKT scoring
+  # graph committed under prototext/wkt/prebuilt/ (spec 0401 S2).
   #
-  # fdp_scan_lib embeds prototext's WKT scoring graph (spec 0239 S1), so it
-  # depends on prototext with default features, and Cargo unifies `wkt-db`
-  # on for the whole `--workspace` build. prototext's build.rs then wants a
-  # graph, and without WKT_RKYV it tries to generate one by running reproto.
-  #
-  # rustTests cannot have that graph, because it is upstream of it:
-  #
-  #   wktRkyv → reprotoSrcFull → reprotoBare → prototextGraphLib → rustTests
-  #
-  # (reproto --schema-db-out imports prototext_graph_lib to write hopcroft
-  # .rkyv; see nix/python.nix.) Handing rustTests a WKT_RKYV would close that
-  # loop. prototextBare, rustClippy and protolens are not in the loop, but
-  # pointing them at wktRkyv would serialize behind the bootstrap what runs
-  # in parallel with it today.
-  #
-  # `prebuilt-wkt` sidesteps both with the copy committed to git under
-  # prototext/wkt/prebuilt/, which is what nixpkgs already builds against.
-  # None of these four ships a graph — they consume it as a compile-time
-  # blob and throw it away. The one stage that ships one is _fdpScanLibExt,
-  # and that one gets the freshly generated graph.
-  bootstrapArgs = "${workspaceArgs} --features prebuilt-wkt";
+  # fdp_scan_lib depends on prototext with default features (`wkt-db`), and
+  # Cargo unifies features over `--workspace`, so with `prebuilt-wkt` added
+  # every crate that embeds a graph, fdp_scan_lib included, embeds the
+  # committed one. Without it, prototext's build.rs would run reproto to
+  # generate a graph, and reproto needs the extensions built here: a cycle.
+  # The committed copy breaks it, and default.nix's wkt-prebuilt-check fails
+  # `ci` when the copy no longer matches what the code generates (S3).
+  prebuiltArgs = "${workspaceArgs} --features prebuilt-wkt";
 
   # ---------------------------------------------------------------------------
   # Base argument sets — hierarchic composition.
@@ -139,18 +130,38 @@ let
     src                  = workspaceSrc;
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
-    cargoExtraArgs       = bootstrapArgs;
+    cargoExtraArgs       = prebuiltArgs;
     cargoClippyExtraArgs = "-- -D warnings";
   });
 
   # ---------------------------------------------------------------------------
-  # Tests — workspace-wide, reusing depsCache.
+  # Tests — workspace-wide, reusing depsCache. A leaf of `ci`: nothing builds
+  # from them (spec 0401 S4), so a package never waits for the suite, and a
+  # failing test fails `ci` without blocking the packages.
   # ---------------------------------------------------------------------------
+  #
+  # The `quick` profile (Cargo.toml): release codegen without LTO and with 16
+  # codegen units (spec 0401 S8). The tests compile in a third of the time,
+  # and leave the cores to workspaceBuild and clippy, which run alongside;
+  # with `release` the three LTO builds starved each other. It needs its own
+  # dependency cache, since a profile is part of every artifact's identity.
+  depsCacheTests = crane.buildDepsOnly (protocArgs // {
+    src             = workspaceSrc;
+    pname           = "prototools-deps-tests";
+    CARGO_PROFILE   = "quick";
+    cargoExtraArgs  = workspaceArgs;
+    # Only what cargoTest compiles: no check or build pass.
+    cargoCheckCommand = "true";
+    cargoBuildCommand = "true";
+    patchPhase      = "runHook prePatch; runHook postPatch";
+  });
+
   rustTests = crane.cargoTest (protocArgs // {
     src            = workspaceSrc;
     pname          = "prototools-tests";
-    cargoArtifacts = depsCache;
-    cargoExtraArgs = bootstrapArgs;
+    CARGO_PROFILE  = "quick";
+    cargoArtifacts = depsCacheTests;
+    cargoExtraArgs = prebuiltArgs;
     # Tell supports_rgb() that RGB is available so color-sensitive tests
     # exercise the RGB code path in the sandbox (no real terminal there).
     COLORTERM      = "truecolor";
@@ -186,81 +197,99 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # prototextBare — prototext without the embedded WKT scoring graph.
-  # Used by reproto as a build-time dependency, breaking the circular dep:
-  #   prototext-full → wktRkyv → reproto → prototextBare
+  # The three PyO3 extensions, as workspaceBuild installs them.
   #
-  # Single cargo build --workspace invocation — identical flags to depsCache,
-  # so Cargo reuses all external-dep artifacts without recompiling anything.
-  # (A scoped -p prototext invocation would compute different profile unit_for
-  # hashes for external deps, invalidating depsCache fingerprints and forcing
-  # a full external-dep recompile — see constant-rebuilds in Crane FAQ.)
-  #
-  # We bypass installFromCargoBuildLogHook (doNotPostBuildInstallCargoBinaries)
-  # and install prototext binaries directly by name in installPhaseCommand,
-  # the same pattern used by the PyO3 extensions.
+  #   crateName    — Cargo package name, e.g. "prototext_codec_lib"
+  #   crateDir     — the crate directory, relative to the workspace root; the
+  #                  stub generator runs with it as CARGO_MANIFEST_DIR
+  #   libName      — cdylib base name (Cargo [[lib]] name); lib<libName>.so
+  #   pyiName      — the name pyo3-stub-gen gives the .pyi (= pyproject
+  #                  [project] name), e.g. "prototext_codec"
+  #   postBuildBin — the stub-generator binary target
   # ---------------------------------------------------------------------------
-  prototextBare = crane.buildPackage (protocArgs // {
-    src                              = workspaceSrc;
-    pname                            = "prototext-bare";
-    cargoArtifacts                   = depsCache;
-    nativeBuildInputs                = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-    doCheck                          = false;
-    doInstallCargoArtifacts          = true;
-    postInstall                      = prototextPostInstall;
-    meta                             = prototextMeta;
-    buildPhaseCargoCommand           = "cargoWithProfile build ${bootstrapArgs}";
+  pyo3Extensions = {
+    prototextCodec = {
+      crateName = "prototext_codec_lib"; crateDir = "prototext-pyo3";
+      libName = "prototext_codec_lib";   pyiName  = "prototext_codec";
+      postBuildBin = "prototext_post_build";
+    };
+    fdpScan = {
+      crateName = "fdp_scan_lib";        crateDir = "fdp-scan-pyo3";
+      libName = "fdp_scan_lib";          pyiName  = "fdp_scan";
+      postBuildBin = "fdp_scan_post_build";
+    };
+    prototextGraph = {
+      crateName = "prototext_graph_lib"; crateDir = "prototext-graph-pyo3";
+      libName = "prototext_graph_lib";   pyiName  = "prototext_graph";
+      postBuildBin = "prototext_graph_post_build";
+    };
+  };
+
+  # lib<libName>.so on Linux, .dylib on Darwin; installed as <libName>.so,
+  # the name Python imports.
+  libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
+
+  # ---------------------------------------------------------------------------
+  # workspaceBuild — the one release build of the workspace (spec 0401 S1).
+  #
+  # A single `cargo build --workspace` with depsCache's flags plus
+  # prebuilt-wkt, so Cargo reuses every external-dependency artifact. (A
+  # scoped -p invocation computes different unit hashes for the external
+  # deps and recompiles them — see constant-rebuilds in the Crane FAQ; the
+  # former per-extension builds paid that, about a minute each.) It builds
+  # every binary and every cdylib, the stub generators included, so
+  # everything that ships is copied out of it:
+  #
+  #   $out/bin/{prototext,prototext-gen-man,protolens}
+  #   $out/ext/<libName>/<libName>.{so,pyi}
+  #
+  # The stub generators run here, with CARGO_MANIFEST_DIR set so
+  # pyo3-stub-gen finds pyproject.toml and writes the .pyi beside it (the
+  # NotPresent panic of spec 0038 was a missing CARGO_MANIFEST_DIR).
+  #
+  # doInstallCargoArtifacts = false: nothing builds on top of it, and an
+  # installed target.tar.zst (with `.prev` pointing at depsCache and the
+  # vendored registry) would enter the closure of whatever copies from it
+  # (spec 0374 S2). Crane's postInstall hook strips the vendored sources'
+  # store paths rustc embeds as panic locations, for the same reason.
+  # ---------------------------------------------------------------------------
+  workspaceBuild = crane.buildPackage (protocArgs // {
+    src                                = workspaceSrc;
+    pname                              = "prototools-workspace";
+    cargoArtifacts                     = depsCache;
+    doCheck                            = false;
+    doInstallCargoArtifacts            = false;
+    buildPhaseCargoCommand             = "cargoWithProfile build ${prebuiltArgs}";
     doNotPostBuildInstallCargoBinaries = true;
-    installPhaseCommand              = ''
+    installPhaseCommand                = ''
       mkdir -p $out/bin
-      cp target/release/prototext $out/bin/
-      cp target/release/prototext-gen-man $out/bin/
-    '';
+      cp target/release/prototext target/release/prototext-gen-man \
+         target/release/protolens $out/bin/
+    '' + pkgs.lib.concatMapStrings (e: ''
+      CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./target/release/${e.postBuildBin}
+      mkdir -p $out/ext/${e.libName}
+      cp target/release/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
+      cp ${e.crateDir}/${e.pyiName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
+    '') (builtins.attrValues pyo3Extensions);
   });
 
   # ---------------------------------------------------------------------------
-  # prototext (full) — with embedded WKT scoring graph (feature wkt-db).
-  # When wktRkyv is non-null (Nix build), WKT_RKYV and WKT_INDEX point at
-  # the pre-built files so build.rs skips the reproto invocation.
-  # When wktRkyv is null (bare/bootstrap), falls back to prototextBare.
-  #
-  # Same single-invocation pattern as prototextBare: cargo build --workspace
-  # with wkt-db feature enabled reuses all prototextBare artifacts.
+  # prototext — the binary, copied out of workspaceBuild, with its shell
+  # completions and man page. It embeds the committed WKT graph (S2).
   # ---------------------------------------------------------------------------
-  prototext =
-    if wktRkyv != null then
-      crane.buildPackage (protocArgs // {
-        src                              = workspaceSrc;
-        pname                            = "prototext";
-        cargoArtifacts                   = prototextBare;
-        nativeBuildInputs                = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-        doCheck                          = false;
-        WKT_RKYV                         = "${wktRkyv}/wkt.rkyv";
-        WKT_INDEX                        = "${wktRkyv}/wkt_index.rkyv";
-        postInstall                      = prototextPostInstall;
-        meta                             = prototextMeta;
-        buildPhaseCargoCommand           = "cargoWithProfile build ${workspaceArgs} --features wkt-db";
-        doNotPostBuildInstallCargoBinaries = true;
-        installPhaseCommand              = ''
-          mkdir -p $out/bin
-          cp target/release/prototext $out/bin/
-          cp target/release/prototext-gen-man $out/bin/
-        '';
-      })
-    else
-      prototextBare;
+  prototext = pkgs.runCommand "prototext-${commonArgs.version}" {
+    nativeBuildInputs = [ pkgs.installShellFiles ];
+    meta              = prototextMeta;
+  } ''
+    mkdir -p $out/bin
+    cp ${workspaceBuild}/bin/prototext ${workspaceBuild}/bin/prototext-gen-man $out/bin/
+    ${prototextPostInstall}
+  '';
 
   # ---------------------------------------------------------------------------
   # protolens — interactive TUI to decode/navigate/extract a binary protobuf.
-  # No wkt-db/prebuilt-wkt split needed (unlike prototext): protolens always
-  # requires an explicit --descriptor-set (spec 0111 v1, no embedded-WKT
-  # fallback), so there is only one build variant. protolens depends only on
-  # prototext-core (no build.rs of its own) and prototext-graph, but the
-  # single-Cargo-workspace `cargoWithProfile build ${workspaceArgs}` builds
-  # the whole workspace regardless (see prototextBare's own comment above on
-  # why a scoped -p invocation would break the depsCache fingerprint), so
-  # protocArgs/protoPatchPhase (needed by prototext's own build.rs) are still
-  # required here too.
+  # It always takes an explicit --descriptor-set (spec 0111 v1, no embedded
+  # WKT fallback). Its binary comes out of workspaceBuild with the others.
   # ---------------------------------------------------------------------------
   protolensPostInstall = ''
     installShellCompletion --cmd protolens \
@@ -288,30 +317,17 @@ let
     platforms   = platforms.unix;
   };
 
-  # The compiled binary, its completions, man page and Neovim config — built
-  # once, and wrapped below as many ways as needed (spec 0374 S2/G7).
-  #
-  # doInstallCargoArtifacts = false: nothing consumes protolens's cargo cache
-  # (unlike prototextBare's, which prototext reuses), and installing it put
-  # `target.tar.zst` (and `.prev`, pointing at depsCache and so at the
-  # vendored crate registry, winapi crates included) into every install's
-  # closure: 292 MiB of build inputs (spec 0374 S2).
-  protolensUnwrapped = crane.buildPackage (protocArgs // {
-    src                                = workspaceSrc;
-    pname                              = "protolens-unwrapped";
-    cargoArtifacts                     = depsCache;
-    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
-    doCheck                            = false;
-    doInstallCargoArtifacts            = false;
-    postInstall                        = protolensPostInstall;
-    meta                               = protolensMeta;
-    buildPhaseCargoCommand             = "cargoWithProfile build ${bootstrapArgs}";
-    doNotPostBuildInstallCargoBinaries = true;
-    installPhaseCommand                = ''
-      mkdir -p $out/bin
-      cp target/release/protolens $out/bin/
-    '';
-  });
+  # The binary, its completions, man page and Neovim config — copied out of
+  # workspaceBuild once, and wrapped below as many ways as needed (spec 0374
+  # S2/G7; spec 0401 S1).
+  protolensUnwrapped = pkgs.runCommand "protolens-unwrapped-${commonArgs.version}" {
+    nativeBuildInputs = [ pkgs.installShellFiles ];
+    meta              = protolensMeta;
+  } ''
+    mkdir -p $out/bin
+    cp ${workspaceBuild}/bin/protolens $out/bin/
+    ${protolensPostInstall}
+  '';
 
   # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime dependency,
   # not merely a dev-shell convenience — bundle a pinned Neovim and `buf`
@@ -320,7 +336,7 @@ let
   # different Neovim costs a shell script, not a Rust build.
   bufFull = buf;
   wrapProtolens = { neovim, buf ? bufFull, name ? "protolens" }:
-    pkgs.runCommand "${name}-${protolensUnwrapped.version}" {
+    pkgs.runCommand "${name}-${commonArgs.version}" {
       nativeBuildInputs = [ pkgs.makeWrapper ];
       meta              = protolensMeta;
     } ''
@@ -368,143 +384,31 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # makePyo3Extension — shared helper for the three PyO3 extensions.
+  # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, prototext_graph_lib.
   #
-  # Each PyO3 extension follows the same pattern:
-  #   1. Crane buildPackage compiles --lib and --bin <crate>_post_build in one
-  #      invocation (avoids a second full compilation — see S9 in spec 0066).
-  #   2. postBuild runs the already-compiled stub generator directly with
-  #      CARGO_MANIFEST_DIR set, writing <libName>.pyi into the crate dir.
-  #      (The NotPresent panic in spec 0038 was caused by missing
-  #      CARGO_MANIFEST_DIR, not by dynamic linking; pyo3-stub-gen uses
-  #      the inventory crate's static constructors, not dynamic .so loading.)
-  #   3. installPhase copies the .so and .pyi into $out/artifacts/.
-  #   4. A buildPythonPackage wrapper copies the artifacts into the
-  #      pyproject source tree and installs the wheel.
-  #
-  # Parameters:
-  #   crateName    — Cargo package name, e.g. "prototext_codec_lib"
-  #   crateDir     — Nix path to the crate directory, e.g. ./prototext-pyo3
-  #                  (base name used as CARGO_MANIFEST_DIR)
-  #   pyDir        — Nix path to Python package source, e.g. ./prototext-pyo3
-  #   libName      — cdylib base name (from Cargo [[lib]] name), e.g.
-  #                  "prototext_codec_lib" (produces lib<libName>.{so,dylib})
-  #   pyiName      — name used by pyo3-stub-gen for the .pyi file (= pyproject
-  #                  [project] name), e.g. "prototext_codec" (from pyproject.toml)
-  #   postBuildBin — name of the stub-generator binary target, e.g.
-  #                  "prototext_post_build" (may differ from crateName)
-  #   extraAttrs   — merged into the Crane derivation; used to hand
-  #                  fdp_scan_lib the WKT graph it embeds (see _fdpScanLibExt)
-  #
-  # Returns: an attrset { pkg, artifacts } where:
-  #   pkg       — the installable buildPythonPackage derivation
-  #   artifacts — store path to the $out/artifacts directory of the Crane build
-  #               (exposes the .so and .pyi for use by pyright/pythonLint)
+  # Each is a buildPythonPackage that copies its .so and .pyi, built by
+  # workspaceBuild (S1), into the pyproject source tree beside __init__.py,
+  # where hatchling picks them up. `artifacts` exposes the same directory to
+  # pyright (pythonLint) and the PyPI wheels.
   # ---------------------------------------------------------------------------
-  makePyo3Extension = { crateName, crateDir, pyDir, libName, pyiName, postBuildBin
-                      , extraAttrs ? {} }:
+  makePyo3Extension = e:
     let
-      # libExt is resolved at Nix eval time to a literal string "so" or
-      # "dylib" — it looks like a bash assignment but is a Nix interpolation.
-      libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
-      # crateDirName is the bare directory name used in shell commands.
-      crateDirName = baseNameOf (toString crateDir);
-      ext = crane.buildPackage (protocArgs // {
-        src            = workspaceSrc;
-        pname          = "${crateName}-extension";
-        cargoExtraArgs = "-p ${crateName} --lib";
-        doCheck        = false;
-        cargoArtifacts = rustTests;
-        # Build both the cdylib and the stub-generator binary in one invocation
-        # to avoid a redundant recompile of the crate (S9).
-        # The custom buildPhaseCargoCommand replaces Crane's default; we must
-        # set doNotPostBuildInstallCargoBinaries so Crane's
-        # installFromCargoBuildLogHook does not fail looking for the build log.
-        buildPhaseCargoCommand = "cargo build --release -p ${crateName} --lib --bin ${postBuildBin}";
-        doNotPostBuildInstallCargoBinaries = true;
-        # Clear stale fingerprints so the pyo3 build script re-runs here.
-        preBuild = "rm -f target/release/.fingerprint/${crateName}-*/invoked.timestamp";
-        installPhase = ''
-          # Run the stub generator with CARGO_MANIFEST_DIR set so pyo3-stub-gen
-          # can locate pyproject.toml and write the .pyi stub next to it.
-          # pyo3-stub-gen names the .pyi file after the pyproject [project] name
-          # (pyiName), not after the Rust cdylib name (libName).
-          # (The NotPresent panic in spec 0038 was caused by CARGO_MANIFEST_DIR
-          # being absent, not by a dynamic linking issue.)
-          CARGO_MANIFEST_DIR="$PWD/${crateDirName}" ./target/release/${postBuildBin}
-
-          mkdir -p $out/artifacts
-          # Rename lib<libName>.{so,dylib} → <libName>.so (drops the lib prefix)
-          # so the Python import `from .<libName> import ...` resolves correctly.
-          cp target/release/lib${libName}.${libExt} $out/artifacts/${libName}.so
-          # Rename <pyiName>.pyi → <libName>.pyi to match Python import name.
-          cp ${crateDirName}/${pyiName}.pyi $out/artifacts/${libName}.pyi
-
-          # Crane strips the vendored crate sources' store paths (embedded by
-          # rustc as panic locations) in a postInstall hook. Without it every
-          # closure holding this extension keeps the whole vendored registry,
-          # winapi crates included (spec 0374 S2).
-          runHook postInstall
-        '';
-      } // extraAttrs);
+      artifacts = "${workspaceBuild}/ext/${e.libName}";
       pkg = pythonPkgs.buildPythonPackage {
-        pname     = crateName;
+        pname     = e.crateName;
         version   = "0.1.0";
         format    = "pyproject";
-        src       = pyDir;
-        buildInputs = [ pythonPkgs.hatchling ext ];
-        # Copy .so and .pyi into the package subdirectory (<libName>/) where
-        # hatchling expects them (alongside __init__.py).
+        src       = ../. + "/${e.crateDir}";
+        buildInputs = [ pythonPkgs.hatchling ];
         patchPhase = ''
-          cp ${ext}/artifacts/${libName}.* ${libName}/
+          cp ${artifacts}/${e.libName}.* ${e.libName}/
         '';
       };
-    in { inherit pkg; artifacts = "${ext}/artifacts"; };
+    in { inherit pkg artifacts; };
 
-  # ---------------------------------------------------------------------------
-  # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, prototext_graph_lib
-  # ---------------------------------------------------------------------------
-
-  _prototextCodecExt = makePyo3Extension {
-    crateName    = "prototext_codec_lib";
-    crateDir     = ../prototext-pyo3;
-    pyDir        = ../prototext-pyo3;
-    libName      = "prototext_codec_lib";
-    pyiName      = "prototext_codec";
-    postBuildBin = "prototext_post_build";
-  };
-
-  _fdpScanLibExt = makePyo3Extension {
-    crateName    = "fdp_scan_lib";
-    crateDir     = ../fdp-scan-pyo3;
-    pyDir        = ../fdp-scan-pyo3;
-    libName      = "fdp_scan_lib";
-    pyiName      = "fdp_scan";
-    postBuildBin = "fdp_scan_post_build";
-    # This is the one stage that *ships* a WKT graph: fdp_scan_lib embeds
-    # prototext's for protoscan's Policy::Scan walk (spec 0239 S1). It gets
-    # the freshly generated one, not the git-committed prebuilt the
-    # bootstrap builds against, so that a wkt/SOURCES edit cannot leave
-    # protoscan scoring against a stale schema.
-    #
-    # Deliberate cost: this stage builds with prototext's default features
-    # (wkt-db, no prebuilt-wkt), which does not match bootstrapArgs, so
-    # prototext recompiles here — measured ~29 s wall, in a leaf derivation
-    # Nix runs in parallel with the other two extensions.
-    extraAttrs = {
-      WKT_RKYV  = "${wktRkyv}/wkt.rkyv";
-      WKT_INDEX = "${wktRkyv}/wkt_index.rkyv";
-    };
-  };
-
-  _prototextGraphLibExt = makePyo3Extension {
-    crateName    = "prototext_graph_lib";
-    crateDir     = ../prototext-graph-pyo3;
-    pyDir        = ../prototext-graph-pyo3;
-    libName      = "prototext_graph_lib";
-    pyiName      = "prototext_graph";
-    postBuildBin = "prototext_graph_post_build";
-  };
+  _prototextCodecExt    = makePyo3Extension pyo3Extensions.prototextCodec;
+  _fdpScanLibExt        = makePyo3Extension pyo3Extensions.fdpScan;
+  _prototextGraphLibExt = makePyo3Extension pyo3Extensions.prototextGraph;
 
   prototextCodec     = _prototextCodecExt.pkg;
   fdpScanLib         = _fdpScanLibExt.pkg;
@@ -517,7 +421,7 @@ in {
     rustFmt
     rustClippy
     rustTests
-    prototextBare
+    workspaceBuild
     prototext
     protolens
     protolensUnwrapped

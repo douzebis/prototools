@@ -178,4 +178,11 @@ fn main() {
     println!("cargo:rerun-if-changed=fixtures/schemas/knife.proto");
     println!("cargo:rerun-if-changed=fixtures/schemas/enum_collision.proto");
     println!("cargo:rerun-if-changed=fixtures/schemas/message_set.proto");
+    // The graph build_wkt_graph copies, under `prebuilt-wkt` or from
+    // WKT_RKYV/WKT_INDEX: a refreshed copy must reach the binary outside
+    // Nix too (spec 0401 S5).
+    println!("cargo:rerun-if-changed=wkt/prebuilt/wkt.rkyv");
+    println!("cargo:rerun-if-changed=wkt/prebuilt/wkt_index.rkyv");
+    println!("cargo:rerun-if-env-changed=WKT_RKYV");
+    println!("cargo:rerun-if-env-changed=WKT_INDEX");
 }
