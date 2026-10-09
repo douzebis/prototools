@@ -2,42 +2,173 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Reminder-only beat for demo step 4: the truncated log, no root type.
+# Beat for demo step 4: Eve's truncated log, no root type of its own.
 #
-# A single step: the script pane summarizes the whole operation and the
-# presenter drives protolens by hand (fold, G, i, o, t, /). Reverse-
-# crafting a schema for an unknown blob from the fields the corpus does
-# know. Advance (to quit) with space or Enter.
+# Reverse-crafts a schema for the log from the fields the client's corpus
+# does know. Each step says what to do and lets the presenter do it; an
+# `advance_when` predicate moves on once it is done. Each step re-declares
+# the view the previous action left (folds, caret, heat cues), so the
+# transition does not move anything on screen. The first override — the
+# synthetic `Capture` type — is pre-filled; the others are made by hand
+# (`t` to open the override pane, `o` to pre-fill the command from it).
+#
+# What it relies on, true of any log the demo produces: entry 1 is a
+# request and entry 2 a response (the server logs both, in order); the cut
+# entry at the end is the only one flagged TRUNCATED_BYTES; Eve smuggled
+# `whoami` at some point. Which entry carries it varies, hence the text
+# search ("whoami") rather than a path.
 #
 # Step text is written for a 120-column line (spec 0400).
 #
 # Invocation (from grehack2026.sh):
 #   protolens --descriptor-set life.desc eve/server.log \
 #       --script beats/logfile
+#
+# Re-pin (must print nothing):
+#   protolens --descriptor-set life.desc eve/server.log \
+#       --script beats/logfile script | grep 'error:'
 
 title: A blob with no schema
 
 steps:
   - text: |
-      eve/server.log, opened against life.desc — no known root type
-      matches, so the root is a generic `message`. Walk the recovery:
+      eve/server.log, opened against the client's life.desc. No known type fits the log as a whole: instead of a type
+      name, protolens shows a generic `message`.
 
-      1. Fold to depth 1 (`1`), then `G` to the end — the tail is flagged TRUNCATED.
-         A standard tool like protoc would have choked on the whole file.
-
-      2. Fold to depth 2 (`2`), turn on heat cues (`i`), and hover: inside each
-         entry the corpus recognizes the game's own StepRequest and StepResponse.
-
-      3. Every top-level entry is the same field, 42 — our captures. Pin its type: on the field, `t` then `o` prefills
-         an `override ... --as-new Capture`; tailor the name, Enter. Now the entries read as a repeated Capture.
-
-      4. Find the `generation` field and name it the same way: `t`, `o` for a prefilled override, tailor, Enter.
-
-      5. Go to the non-canonical fields — the strings the client's schema never declared. Where one is set it
-         reads "whoami" or "experiment": Eve's contraband. Name that field `contraband` with `t`, `o` again.
-
-      All done: a schema reverse-crafted from a truncated, type-less
-      blob, and Eve's covert channel read straight out of her own log.
-
-      👋 Type `:q` to quit protolens.
+      👋 Press `1` to fold it, so its top-level messages fit on screen.
     node: /
+    select_line: true
+    advance_when:
+      - not:
+        - visible: /1/1
+
+  - text: |
+      Hundreds of top-level messages, all with field number 42 — one per message Eve's server saw.
+
+      👋 Press `G` to go to the end, then `k` to step onto the last one.
+    fold: ["/ 1"]
+    node: /
+    select_line: true
+    advance_when:
+      - caret: TRUNCATED_BYTES
+
+  - text: |
+      The last one is not a message like the others: protolens could not decode it, and shows its raw bytes.
+
+      👋 Press `Ctrl-E` to go to the end of the line: flagged TRUNCATED, the server was cut off mid-write.
+         A standard decoder rejects the whole file for these last bytes; protolens reads up to them.
+         Then press `Ctrl-A` to come back to its start, `gg` to go back to the top, and `2` to look one level deeper.
+    fold: ["/ 1"]
+    node: /
+    search: '^ *42:.*TRUNCATED'
+    select_line: true
+    advance_when:
+      - visible: /1/1
+
+  - text: |
+      Every field 42 has the same shape. What are they? The client's corpus may recognize what is inside.
+
+      👋 Press `i` to turn on the heat cues: how well the corpus can type each message.
+    fold: ["/ 2"]
+    node: /
+    select_line: true
+    advance_when:
+      - heat_cues: findings
+
+  - text: |
+      Hover over the heat cue at the end of the first message's field 1: a StepRequest. The second message's field 2:
+      a StepResponse. A request, then its response — these are captures of the game's traffic, one per message.
+
+      👋 Press space.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /1/1
+    select_line: true
+
+  - text: |
+      Let's say so: name the field `capture`, and give it a type of its own, a synthetic `Capture`.
+
+      👋 Press Enter to commit the prefilled override.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /
+    search: "42 [{]  #@ message"
+    command: override /:42 --as-new Capture --cardinality repeated --field-name capture
+    advance_when:
+      - type: /1 Capture
+
+  - text: |
+      👍 Every field 42 is now a `capture`. Now pin what is inside: field 1 of the first capture is a StepRequest.
+
+      👋 Double-click the heat cue, and choose StepRequest.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /1/1
+    select_line: true
+    advance_when:
+      - type: /1/1 grehack.life.v1.StepRequest
+
+  - text: |
+      👍 And the second capture, field 2: its answer, a StepResponse. Requests and responses, in turn.
+
+      👋 Double-click the heat cue, and choose StepResponse.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /2/1
+    select_line: true
+    advance_when:
+      - type: /2/1 grehack.life.v1.StepResponse
+
+  - text: |
+      Field 3, a counter that climbs by one every two captures: the generation.
+
+      👋 Press `t`, then `o`; in the prefilled override, rename the field: `--field-name generation`. Press Enter.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /1/2
+    select_line: true
+    advance_when:
+      - field_name: /1/2 generation
+
+  - text: |
+      From the wire, we know Eve sent `whoami` to Bob's machine. Did her own log keep a trace of it?
+
+      👋 Search for it: `/whoami`.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /
+    search: /1/2
+    select_line: true
+    advance_when:
+      - caret: '"whoami"'
+
+  - text: |
+      There it is — in a field 666 the client's schema has never heard of. Eve logs her own contraband.
+
+      👋 Press `t`, then `o`; in the prefilled override, rename the field: `--field-name contraband`. Press Enter.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: '"whoami"'
+    select_line: true
+    advance_when:
+      - field_name: '"whoami" contraband'
+
+  - text: |
+      The log now looks fully typed: captures, requests, responses, generations, contraband. Let's save our work.
+
+      👋 Press `s` to save the overrides, then Enter.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: '"whoami"'
+    select_line: true
+    advance_when:
+      - file_exists: eve/server.yaml
+
+  - text: |
+      All done: a schema reverse-crafted from a truncated, type-less blob, saved in eve/server.yaml.
+
+      👋 Press Enter to quit.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: '"whoami"'
+    command: quit
