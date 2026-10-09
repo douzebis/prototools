@@ -342,7 +342,14 @@ let
   # no compilation: `wrapNeovimUnstable` only wraps the shared neovim-unwrapped.
   # (`pkgs.neovim.override { waylandSupport = false; }` does not evaluate: the
   # argument belongs to wrapNeovimUnstable, not to the `neovim` package.)
+  #
+  # wrapRc = false: the default wrapper exports VIMINIT pointing at a generated
+  # (here empty) init.lua, and with VIMINIT set Neovim never reads
+  # $XDG_CONFIG_HOME/nvim/init.lua — which is how teleprompt's config (desert
+  # theme, proto/textproto syntax, spec 0395) gets loaded. protolens passes its
+  # own config explicitly and is unaffected.
   neovimLean = pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
+    wrapRc         = false;
     waylandSupport = false;
     withRuby       = false;
     withPython3    = false;

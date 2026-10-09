@@ -330,6 +330,19 @@ without=$(echo "$svg" | FONTCONFIG_FILE=/nonexistent chafa -f symbols -c none -s
 [ "$with" != "$without" ] || { echo "same output without the teleprompt's fonts"; exit 1; }
 EOF
 
+# The deck's `view`/`view_proto` Neovim reads the teleprompt's config from
+# XDG_CONFIG_HOME: desert, and proto keywords highlighted (spec 0395). A
+# wrapper exporting VIMINIT would skip it silently.
+check "the teleprompt's Neovim loads its config (spec 0395)" <<'EOF'
+set -e
+eval "$(grep -o "export XDG_CONFIG_HOME=.*" "$(readlink -f "$(command -v teleprompt)")")"
+echo 'message Foo { optional string a = 1; }' > /tmp/t.proto
+out=$(timeout 30 nvim --headless /tmp/t.proto \
+  +'lua io.stdout:write(vim.g.colors_name or "none", " ", vim.fn.synIDattr(vim.fn.synID(1, 1, 1), "name"), "\n")' \
+  +'qa!' 2>&1)
+[ "$out" = "desert protoKeyword" ] || { echo "got: $out"; exit 1; }
+EOF
+
 check "kitty's terminfo (spec 0403 S10)" <<'EOF'
 set -e
 TERM=xterm-kitty tput colors >/dev/null
