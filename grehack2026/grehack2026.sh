@@ -43,20 +43,17 @@ clear && header "Protobuf in a nutshell"
 #                                                                              \
 
 
-clear && header "0. The cast" && picture images/characters.jpeg
+clear && header "0. The cast" && picture images/characters.jpeg 22
 # \
-#                                                                              \
 #                                                                              \
 # Bob 🙂 — the player. Thinks he's just playing.                               \
 #                                                                              \
-#                                                                              \
 # Eve 👩 — the server admin. Keep an eye on her.                               \
-#                                                                              \
 #                                                                              \
 # Alice 🕵️ — Bob's friend, savvy with cyber security.                          \
 #                                                                              \
 
-clear && picture images/playing.jpeg
+clear && picture images/playing.jpeg 22
 # \
 #                                                                              \
 # Bob plays the Game of Life with software Eve provides: his client asks       \
@@ -77,10 +74,8 @@ clear && picture images/playing.jpeg
 # 👉 In Eve's window (eve/) — Eve starts her server:                           \
 #        life-server                                                           \
 #                                                                              \
-#                                                                              \
 # 👉 In Bob's window (bob/) — Bob starts his client:                           \
 #        life-client                                                           \
-#                                                                              \
 #                                                                              \
 
 
@@ -92,7 +87,7 @@ clear && header "1. On the wire"
 # nothing from the server.                                                     \
 #                                                                              \
 
-clear && picture images/tapping.jpeg
+clear && picture images/tapping.jpeg 22
 # \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
@@ -105,6 +100,7 @@ clear && picture images/tapping.jpeg
 #              │   life-tap ──▶ capture/*.pb ──▶ prototools    │               \
 #              └───────────────────────────────────────────────┘               \
 #                                                                              \
+
 
 # \
 #                                                                              \
@@ -180,7 +176,7 @@ protolens --descriptor-set life.desc capture/000001-request.pb \
 # playing Life?                                                                \
 
 
-clear && header "2. Eve is spying" && picture images/spying.jpeg
+clear && header "2. Eve is spying" && picture images/spying.jpeg 22
 
 # \
 #                                                                              \
@@ -204,7 +200,7 @@ clear && header "2. Eve is spying" && picture images/spying.jpeg
 # the wire. Can she find it there?                                             \
 
 
-clear && header "3. Hidden bits"
+clear && header "3. Hidden bits" && picture images/dissecting.jpeg 22
 
 # \
 #                                                                              \
@@ -244,7 +240,7 @@ protolens --descriptor-set life.desc capture/000000-request.pb \
 # "experiment". Commands ride the responses, answers the requests.             \
 
 
-clear && header "4. Eve's own log" && picture images/seizing.jpeg
+clear && header "4. Eve's own log" && picture images/seizing.jpeg 22
 
 # \
 #                                                                              \
@@ -263,7 +259,7 @@ protolens --descriptor-set life.desc eve/server.log \
   --script beats/logfile
 
 
-clear && header "5. Takeaways"
+clear && header "5. Takeaways" && picture images/takeaways.jpeg 22
 
 # \
 #                                                                              \
@@ -281,6 +277,8 @@ clear && header "5. Takeaways"
 #                      the whole file.                                         \
 #                                                                              \
 
+
+clear && picture images/goodbye.jpeg 22
 
 # https://github.com/ThalesGroup/prototools — pull requests welcome 🙂
 

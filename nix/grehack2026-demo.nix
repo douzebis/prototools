@@ -73,7 +73,8 @@ let
       (deckSrc + "/grehack2026.init")
       (deckSrc + "/anomalies.pb")
       (deckSrc + "/beats")
-      (lib.fileset.fileFilter (f: f.hasExt "jpeg") (deckSrc + "/images"))
+      (lib.fileset.fileFilter (f: f.hasExt "jpeg" || f.name == "s3ns.svg")
+        (deckSrc + "/images"))
       (deckSrc + "/eve/.gitkeep")
       (deckSrc + "/bob/.gitkeep")
     ];

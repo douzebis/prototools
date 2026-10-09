@@ -23,12 +23,21 @@ _wrapped="$(dirname "${_client}")/.life-client-wrapped"
 rm -f "${_init_dir}/life-client"
 cp "${_client}" "${_init_dir}/life-client"
 chmod u+w "${_init_dir}/life-client"
+# The waiting screen, up while the audience settles: the S3NS logo alone,
+# filling the screen, until Enter. chafa draws the SVG itself; s3ns.svg
+# carries explicit width and height for it, without which its loader draws
+# the logo clipped. One row is left for the cursor.
+clear
+chafa --align mid,mid -s "$(tput cols)x$(( $(tput lines) - 1 ))" \
+    "${_init_dir}/images/s3ns.svg"
+read -rs _ </dev/tty
+clear
 unset _init_dir _client _wrapped
 
 header "prototools"
 
 echo "
-            [1;94mS3NS Seminar - October 2026
+            [1;94mGreHack 2026
 
 
             Dissecting protobuf:
@@ -39,7 +48,16 @@ echo "
             A live demo of prototools
             https://github.com/ThalesGroup/prototools
 
+
+            Frédéric RUGET
+            fred@s3ns.io
+
 [0m
 
 
 "
+
+# The title slide stays up until Enter too; then the deck starts on a clean
+# screen.
+read -rs _ </dev/tty
+clear

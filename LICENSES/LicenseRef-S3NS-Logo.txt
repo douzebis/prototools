@@ -1,0 +1,6 @@
+The S3NS logo is a trademark of THALES CLOUD SECURISE SAS (S3NS).
+
+All rights reserved. It is included in this repository, with permission,
+only to be shown in the GreHack 2026 talk material. No license to use,
+copy, modify or distribute the logo is granted by the license of this
+repository or by any other license in it.
