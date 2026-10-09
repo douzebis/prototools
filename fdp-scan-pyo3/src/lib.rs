@@ -263,6 +263,12 @@ fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     None
 }
 
+// The unit tests are this library compiled as a test binary, which runs
+// Python and so links libpython; the extension itself does not. See build.rs
+// (spec 0402 S6).
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/libpython.rs"));
+
 #[cfg(test)]
 mod tests {
     use super::*;

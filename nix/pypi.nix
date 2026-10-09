@@ -110,7 +110,8 @@ EOF
   # ---------------------------------------------------------------------------
   makeBinaryWheel = { pkgName, version, libName, artifacts, initPy }:
     pkgs.runCommand "${pkgName}-whl" {
-      buildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
+      strictDeps = true;
+      nativeBuildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
     } ''
       set -euo pipefail
       WORK=$(mktemp -d)
@@ -140,7 +141,8 @@ EOF
   # ---------------------------------------------------------------------------
   makePureWheel = { pkgName, version, src, pkgDir }:
     pkgs.runCommand "${pkgName}-whl" {
-      buildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
+      strictDeps = true;
+      nativeBuildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
     } ''
       set -euo pipefail
       WORK=$(mktemp -d)
@@ -157,8 +159,13 @@ EOF
       zip -r "$out/$WHL" "${pkgDir}" "$DI"
     '';
 
+
+  # Spec 0402 S3: each wheel's version from its own pyproject.toml.
+  versionOf = dir: (pkgs.lib.importTOML (dir + "/pyproject.toml")).project.version;
+
 in pkgs.runCommand "prototools-pypi" {
-  buildInputs = [ pkgs.zip ];
+  strictDeps = true;
+  nativeBuildInputs = [ pkgs.zip ];
 } ''
   set -euo pipefail
   mkdir -p "$out"
@@ -166,7 +173,7 @@ in pkgs.runCommand "prototools-pypi" {
   # Copy all wheels from the individual per-package derivations.
   cp ${makeBinaryWheel {
     pkgName   = "prototext-graph";
-    version   = "0.2.1";
+    version   = versionOf ../prototext-graph-pyo3;
     libName   = "prototext_graph_lib";
     artifacts = prototextGraphExtensionArtifacts;
     initPy    = ../prototext-graph-pyo3/prototext_graph_lib/__init__.py;
@@ -174,7 +181,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "prototext-codec";
-    version   = "0.2.1";
+    version   = versionOf ../prototext-pyo3;
     libName   = "prototext_codec_lib";
     artifacts = prototextExtensionArtifacts;
     initPy    = ../prototext-pyo3/prototext_codec_lib/__init__.py;
@@ -182,7 +189,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "fdp-scan";
-    version   = "0.2.1";
+    version   = versionOf ../fdp-scan-pyo3;
     libName   = "fdp_scan_lib";
     artifacts = fdpScanExtensionArtifacts;
     initPy    = ../fdp-scan-pyo3/fdp_scan_lib/__init__.py;
@@ -190,14 +197,14 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makePureWheel {
     pkgName = "prototext-reproto";
-    version = "0.2.1";
+    version = versionOf ../reproto;
     src     = reprotoSrcFull;
     pkgDir  = "reproto";
   }}/*.whl "$out/"
 
   cp ${makePureWheel {
     pkgName = "protoscan";
-    version = "0.2.1";
+    version = versionOf ../protoscan;
     src     = ../protoscan;
     pkgDir  = "protoscan";
   }}/*.whl "$out/"

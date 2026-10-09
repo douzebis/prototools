@@ -6,6 +6,12 @@
 //
 // Exposes functions and one opaque handle class to Python.
 
+// `cargo test` links this library as its own test binary, which runs
+// Python and so links libpython; the extension itself does not. See build.rs
+// (spec 0402 S6).
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/libpython.rs"));
+
 use prototext_core::schema::SchemaError;
 use prototext_core::{schema, serialize};
 

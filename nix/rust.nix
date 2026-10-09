@@ -33,10 +33,9 @@
 , pythonPkgs
 , pythonBin
 , pythonExecutable
-, pyo3Rustflags
 , depsSrc
 , workspaceSrc
-, protoPatchPhase
+, protoPostPatch
 , treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
@@ -68,10 +67,11 @@ let
   # Base argument sets — hierarchic composition.
   #
   # commonArgs: base for ALL Crane derivations (Rust + pyo3).
-  #   Carries PYO3_PYTHON and RUSTFLAGS globally so that a single depsCache
-  #   covers the whole workspace including prototext_codec_lib.
+  #   Carries PYO3_PYTHON, which the pyo3 crates' build scripts read to find
+  #   the interpreter and the libpython they link per target (spec 0402 S6),
+  #   so that a single depsCache covers the whole workspace.
   #
-  # protocArgs: extends commonArgs with pkgs.protobuf + protoPatchPhase.
+  # protocArgs: extends commonArgs with pkgs.protobuf + protoPostPatch.
   #   Used by ALL derivations including depsCache, so the sandbox environment
   #   is identical everywhere and Cargo fingerprints are stable across the chain.
   #   (buildDepsOnly stubs build.rs so protoc is never actually invoked there.)
@@ -79,21 +79,33 @@ let
   # Crane builds in release mode by default via configureCargoCommonVarsHook.
   # All cargo build invocations in the shellHook must pass --release explicitly.
   # ---------------------------------------------------------------------------
+  # Spec 0402 S3: versions come from the manifests, read at evaluation
+  # time (lib.importTOML reads a source file; it is not
+  # import-from-derivation). No version literal lives in nix/.
+  cargoVersion = dir: (pkgs.lib.importTOML (../. + "/${dir}/Cargo.toml")).package.version;
+  pyprojectVersion = dir: (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project.version;
+  prototextVersion = cargoVersion "prototext";
+  protolensVersion = cargoVersion "protolens";
+
   # commonArgs omits src — each derivation sets its own focused src.
+  # The crane derivations build the whole workspace, prototext's release.
   commonArgs = {
     pname             = "prototools";
-    version           = "0.1.4";
+    version           = prototextVersion;
     strictDeps        = true;
+    # Python twice, as strictDeps distinguishes (spec 0402 S6): the
+    # interpreter pyo3's build scripts run, and the libpython the stub
+    # generators and tests link.
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
+    buildInputs       = [ pythonBin ];
     env.PYO3_PYTHON   = pythonExecutable;
     env.TREE_SITTER_TEXTPROTO_LIB_DIR     = "${treeSitterTextprotoRustLib}/lib";
     env.TREE_SITTER_TEXTPROTO_QUERIES_DIR = "${treeSitterTextprotoRustLib}/queries";
-    RUSTFLAGS         = pyo3Rustflags;
   };
 
   protocArgs = commonArgs // {
     nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
-    patchPhase        = protoPatchPhase;
+    postPatch         = protoPostPatch;
   };
 
   # ---------------------------------------------------------------------------
@@ -102,15 +114,15 @@ let
   # all consumers. buildDepsOnly stubs build.rs so protoc is never invoked, but
   # having protobuf present prevents fingerprint mismatches that would force
   # external deps to recompile in every downstream derivation.
-  # No patchPhase needed: dummy build.rs never calls protoc.
+  # No protoc run: dummy build.rs never calls it.
   # ---------------------------------------------------------------------------
   depsCache = crane.buildDepsOnly (protocArgs // {
     src            = workspaceSrc;
     pname          = "prototools-deps";
     cargoExtraArgs = workspaceArgs;
-    # patchPhase must not run: buildDepsOnly uses dummy sources so proto
-    # fixtures are absent and protoc would fail. Override it away.
-    patchPhase     = "runHook prePatch; runHook postPatch";
+    # The fixtures' protoc runs must not: buildDepsOnly uses dummy sources,
+    # so the .proto files are absent and protoc would fail.
+    postPatch      = "";
   });
 
   # ---------------------------------------------------------------------------
@@ -153,7 +165,7 @@ let
     # Only what cargoTest compiles: no check or build pass.
     cargoCheckCommand = "true";
     cargoBuildCommand = "true";
-    patchPhase      = "runHook prePatch; runHook postPatch";
+    postPatch       = "";
   });
 
   rustTests = crane.cargoTest (protocArgs // {
@@ -164,11 +176,13 @@ let
     cargoExtraArgs = prebuiltArgs;
     # Tell supports_rgb() that RGB is available so color-sensitive tests
     # exercise the RGB code path in the sandbox (no real terminal there).
-    COLORTERM      = "truecolor";
+    # Extends commonArgs' env (`//` is shallow: a bare `env.COLORTERM`
+    # here would replace the whole set, PYO3_PYTHON included).
+    env            = protocArgs.env // { COLORTERM = "truecolor"; };
   });
 
   # Common postInstall for both prototext variants.
-  prototextPostInstall = ''
+  prototextPostInstall = whenRunnable ''
     # Install shell completions.
     installShellCompletion --cmd prototext \
       --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
@@ -179,21 +193,29 @@ let
 
     # Generate and install man page.
     $out/bin/prototext-gen-man $out/share/man/man1
+
+    # Spec 0402 S8: the binary says the version Nix calls it (what
+    # versionCheckHook checks, for a derivation without its phase).
+    $out/bin/prototext --version | grep -qF ${prototextVersion}
   '';
 
-  prototextMeta = with pkgs.lib; {
-    description  = "Command-line tool for Protocol Buffer messages (prototext binary)";
+  # Spec 0402 S4: what every installable output's meta shares.
+  metaCommon = with pkgs.lib; {
+    homepage    = "https://github.com/douzebis/prototools";
+    license     = licenses.mit;
+    maintainers = with maintainers; [ douzebis ];
+    platforms   = platforms.unix;
+  };
+
+  prototextMeta = with pkgs.lib; metaCommon // {
+    description  = "Lossless converter between binary protobuf and enhanced textproto";
     longDescription = ''
       prototools is a collection of CLI utilities for working with Protocol
       Buffer messages.  The first tool, prototext, converts between binary
       protobuf wire format and protoc-style enhanced textproto, with lossless
       round-trip by default.
     '';
-    homepage    = "https://github.com/douzebis/prototools";
-    license     = licenses.mit;
-    maintainers = with maintainers; [ ];  # add: douzebis once registered
     mainProgram = "prototext";
-    platforms   = platforms.unix;
   };
 
   # ---------------------------------------------------------------------------
@@ -209,16 +231,19 @@ let
   # ---------------------------------------------------------------------------
   pyo3Extensions = {
     prototextCodec = {
+      description = "Python bindings to prototext's lossless protobuf codec";
       crateName = "prototext_codec_lib"; crateDir = "prototext-pyo3";
       libName = "prototext_codec_lib";   pyiName  = "prototext_codec";
       postBuildBin = "prototext_post_build";
     };
     fdpScan = {
+      description = "Python bindings to the scan for protobuf descriptors embedded in binaries";
       crateName = "fdp_scan_lib";        crateDir = "fdp-scan-pyo3";
       libName = "fdp_scan_lib";          pyiName  = "fdp_scan";
       postBuildBin = "fdp_scan_post_build";
     };
     prototextGraph = {
+      description = "Python bindings to the prototools scoring graph builder";
       crateName = "prototext_graph_lib"; crateDir = "prototext-graph-pyo3";
       libName = "prototext_graph_lib";   pyiName  = "prototext_graph";
       postBuildBin = "prototext_graph_post_build";
@@ -228,6 +253,16 @@ let
   # lib<libName>.so on Linux, .dylib on Darwin; installed as <libName>.so,
   # the name Python imports.
   libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
+
+  # Spec 0402 S7: cross-safe. Cargo writes a cross build under the target
+  # triple's own directory, and a binary built for another platform cannot
+  # be run to generate completions, man pages or stubs.
+  profileDir =
+    if pkgs.stdenv.buildPlatform == pkgs.stdenv.hostPlatform
+    then "target/release"
+    else "target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release";
+  canRun = pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform;
+  whenRunnable = pkgs.lib.optionalString canRun;
 
   # ---------------------------------------------------------------------------
   # workspaceBuild — the one release build of the workspace (spec 0401 S1).
@@ -263,23 +298,30 @@ let
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin
-      cp target/release/prototext target/release/prototext-gen-man \
-         target/release/protolens $out/bin/
+      cp ${profileDir}/prototext ${profileDir}/prototext-gen-man \
+         ${profileDir}/protolens $out/bin/
     '' + pkgs.lib.concatMapStrings (e: ''
-      CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./target/release/${e.postBuildBin}
       mkdir -p $out/ext/${e.libName}
-      cp target/release/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
+      cp ${profileDir}/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
+    '' + (if canRun then ''
+      CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./${profileDir}/${e.postBuildBin}
       cp ${e.crateDir}/${e.pyiName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
-    '') (builtins.attrValues pyo3Extensions);
+    '' else ''
+      # Cross: the stub generator cannot run here; the committed stub
+      # (kept in sync by the generator on every native build) stands in.
+      cp ${e.crateDir}/${e.libName}/${e.libName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
+    '')) (builtins.attrValues pyo3Extensions);
   });
 
   # ---------------------------------------------------------------------------
   # prototext — the binary, copied out of workspaceBuild, with its shell
   # completions and man page. It embeds the committed WKT graph (S2).
   # ---------------------------------------------------------------------------
-  prototext = pkgs.runCommand "prototext-${commonArgs.version}" {
+  prototext = pkgs.runCommand "prototext-${prototextVersion}" {
     nativeBuildInputs = [ pkgs.installShellFiles ];
     meta              = prototextMeta;
+    # Spec 0402 S8: where nixpkgs looks for a package's tests.
+    passthru.tests    = { inherit rustTests; };
   } ''
     mkdir -p $out/bin
     cp ${workspaceBuild}/bin/prototext ${workspaceBuild}/bin/prototext-gen-man $out/bin/
@@ -291,7 +333,7 @@ let
   # It always takes an explicit --descriptor-set (spec 0111 v1, no embedded
   # WKT fallback). Its binary comes out of workspaceBuild with the others.
   # ---------------------------------------------------------------------------
-  protolensPostInstall = ''
+  protolensPostInstall = whenRunnable ''
     installShellCompletion --cmd protolens \
       --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens | sed \
         -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
@@ -302,27 +344,27 @@ let
     # Generate and install man page (spec 0228 S11), from the real binary.
     PROTOLENS_GEN_MAN=$out/share/man/man1 $out/bin/protolens
 
+    # Spec 0402 S8, as for prototext.
+    $out/bin/protolens --version | grep -qF ${protolensVersion}
+  '' + ''
     # spec 0145 G5: a minimal Neovim config wiring `.proto` filetype/syntax
     # and `buf lsp serve` navigation, loaded via `-u` by the wrapper below.
     install -Dm444 ${../protolens/nvim/init.lua} \
       "$out/share/protolens/nvim/init.lua"
   '';
 
-  protolensMeta = with pkgs.lib; {
+  protolensMeta = metaCommon // {
     description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf";
-    homepage    = "https://github.com/douzebis/prototools";
-    license     = licenses.mit;
-    maintainers = with maintainers; [ ];  # add: douzebis once registered
     mainProgram = "protolens";
-    platforms   = platforms.unix;
   };
 
   # The binary, its completions, man page and Neovim config — copied out of
   # workspaceBuild once, and wrapped below as many ways as needed (spec 0374
   # S2/G7; spec 0401 S1).
-  protolensUnwrapped = pkgs.runCommand "protolens-unwrapped-${commonArgs.version}" {
+  protolensUnwrapped = pkgs.runCommand "protolens-unwrapped-${protolensVersion}" {
     nativeBuildInputs = [ pkgs.installShellFiles ];
     meta              = protolensMeta;
+    passthru.tests    = { inherit rustTests; };
   } ''
     mkdir -p $out/bin
     cp ${workspaceBuild}/bin/protolens $out/bin/
@@ -336,7 +378,7 @@ let
   # different Neovim costs a shell script, not a Rust build.
   bufFull = buf;
   wrapProtolens = { neovim, buf ? bufFull, name ? "protolens" }:
-    pkgs.runCommand "${name}-${commonArgs.version}" {
+    pkgs.runCommand "${name}-${protolensVersion}" {
       nativeBuildInputs = [ pkgs.makeWrapper ];
       meta              = protolensMeta;
     } ''
@@ -396,13 +438,17 @@ let
       artifacts = "${workspaceBuild}/ext/${e.libName}";
       pkg = pythonPkgs.buildPythonPackage {
         pname     = e.crateName;
-        version   = "0.1.0";
-        format    = "pyproject";
+        version   = pyprojectVersion e.crateDir;
+        # Spec 0402 S5: pyproject = true with build-system, not the
+        # deprecated `format`; the install check imports the extension.
+        pyproject = true;
+        build-system = [ pythonPkgs.hatchling ];
         src       = ../. + "/${e.crateDir}";
-        buildInputs = [ pythonPkgs.hatchling ];
-        patchPhase = ''
+        pythonImportsCheck = [ e.libName ];
+        postPatch = ''
           cp ${artifacts}/${e.libName}.* ${e.libName}/
         '';
+        meta = metaCommon // { inherit (e) description; };
       };
     in { inherit pkg artifacts; };
 
@@ -416,6 +462,8 @@ let
 
 in {
   inherit
+    metaCommon
+    pyprojectVersion
     commonArgs
     depsCache
     rustFmt

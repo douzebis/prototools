@@ -7,6 +7,12 @@
 //! Exposes `build_graph(scoring_graphs: list[str], emit_yaml: bool = False, emit_initial_yaml: bool = False) -> tuple[bytes, str | None, str | None]`
 //! to Python.
 
+// `cargo test` links this library as its own test binary, which runs
+// Python and so links libpython; the extension itself does not. See build.rs
+// (spec 0402 S6).
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/libpython.rs"));
+
 use std::collections::HashMap;
 
 use pyo3::exceptions::PyRuntimeError;

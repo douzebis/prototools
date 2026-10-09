@@ -20,6 +20,7 @@
 #                        wktRkyv        reproto      reprotoTests …
 
 { pkgs
+, metaCommon        # nix/rust.nix: homepage, license, maintainers, platforms
 , pythonPkgs
 , pythonBin
 , prototext
@@ -33,6 +34,15 @@
 }:
 
 let
+  # Spec 0402 S3: versions from the manifests (see nix/rust.nix).
+  pyprojectVersion = dir: (pkgs.lib.importTOML (dir + "/pyproject.toml")).project.version;
+  reprotoVersion   = pyprojectVersion ../reproto;
+  protoscanVersion = pyprojectVersion ../protoscan;
+  # Spec 0402 S7: what runs a freshly installed script runs only where the
+  # host's binaries can run.
+  whenRunnable = pkgs.lib.optionalString
+    (pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform);
+
 
   # ---------------------------------------------------------------------------
   # reproto source pipeline
@@ -64,8 +74,12 @@ let
   # correctly to consumers.  The .so is installed directly into site-packages.
   treeSitterTextprotoPkg = pythonPkgs.buildPythonPackage {
     pname   = "textproto";
-    version = "0.1.0";
-    format  = "other";
+    # The grammar has no manifest of its own: it ships inside reproto.
+    version = reprotoVersion;
+    meta = metaCommon // {
+      description = "Tree-sitter grammar for textproto, as a Python binding";
+    };
+    pyproject = false;
     src     = treeSitterTextproto;
     installPhase = ''
       site="$out/lib/${pythonPkgs.python.libPrefix}/site-packages"
@@ -88,7 +102,6 @@ let
     pythonPkgs.pyyaml
     pythonPkgs.rapidfuzz
     pythonPkgs.rich
-    pythonPkgs.types-protobuf
     pythonPkgs.tree-sitter
     pythonPkgs.tree-sitter-language-pack
     treeSitterTextprotoPkg
@@ -113,7 +126,9 @@ let
   # Full Python dependency set for running the reproto test suite and for the
   # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
   # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
-  reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib ];
+  # types-protobuf is typing stubs, for pyright: lint and dev-shell only,
+  # never a runtime dependency (spec 0402 S5).
+  reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib pythonPkgs.types-protobuf ];
 
   # reprotoSrcFull — enriched source tree: copies reprotoSrc, seeds well-known
   # .proto sources from pkgs.protobuf, then runs patch_reproto.sh to compile
@@ -121,7 +136,8 @@ let
   # so it runs straight from the source (spec 0401 S6).
   # "Full" signals that this is the complete, ready-for-buildPythonPackage tree.
   reprotoSrcFull = pkgs.runCommand "reproto-src-full" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       pkgs.protobuf        # provides protoc and well-known .proto includes
     ];
   } ''
@@ -140,18 +156,20 @@ let
   # Final reproto package — built from the codegen output, with tests.
   reproto = pythonPkgs.buildPythonPackage {
     pname   = "reproto";
-    version = "0.1.0";
+    version = reprotoVersion;
+    meta = metaCommon // {
+      description = "Reconstruct .proto sources and schema databases from protobuf descriptors";
+      mainProgram = "reproto";
+    };
     src     = reprotoSrcFull;
     pyproject = true;
 
-    nativeBuildInputs = [
-      pythonPkgs.setuptools
-      pythonPkgs.wheel
-      pythonPkgs.pytest
-      pythonPkgs."pytest-xdist"
-      pkgs.installShellFiles
-    ];
-    propagatedBuildInputs = reprotoPropagatedDeps ++ [
+    # Spec 0402 S5: build-system, dependencies, and checks as nixpkgs
+    # spells them. The test suite runs in reprotoTests (ci), not here;
+    # the install check is the import of the package.
+    build-system = [ pythonPkgs.setuptools ];
+    nativeBuildInputs = [ pkgs.installShellFiles ];
+    dependencies = reprotoPropagatedDeps ++ [
       prototextCodec   # reproto.load imports prototext_codec_lib at module load time
       prototextGraphLib  # reproto --schema-db-out imports scoring_graph_lib
       # reproto -I <blob> imports fdp_scan_lib to expand the blob (spec
@@ -164,11 +182,18 @@ let
     ];
 
     doCheck = false;
+    doInstallCheck = true;
+    pythonImportsCheck = [ "reproto" ];
+    # Spec 0402 S8: `reproto --version` says the version Nix calls it
+    # (meta.mainProgram names the program).
+    nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
+    passthru.tests = { inherit reprotoTests; };
 
     postInstall = ''
       installShellCompletion --cmd reproto \
         --bash ${reprotoSrc}/src/reproto/completions.sh
 
+    '' + whenRunnable ''
       # Generate and install man page.
       $out/bin/reproto-gen-man $out/share/man/man1
     '';
@@ -177,7 +202,8 @@ let
   # Tests run separately so that the installable reproto package has doCheck = false
   # (avoiding pytest during nix-shell) while ci still enforces test passage.
   reprotoTests = pkgs.runCommand "reproto-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       pkgs.protobuf
       pkgs.buf
       prototext
@@ -195,24 +221,31 @@ let
 
   protoscan = pythonPkgs.buildPythonPackage {
     pname   = "protoscan";
-    version = "0.1.0";
+    version = protoscanVersion;
+    meta = metaCommon // {
+      description = "Find the protobuf descriptors embedded in binaries";
+      mainProgram = "protoscan";
+    };
     src     = ../protoscan;
     pyproject = true;
 
-    nativeBuildInputs = [
-      pythonPkgs.setuptools
-      pythonPkgs.wheel
-      pkgs.installShellFiles
-    ];
-    propagatedBuildInputs = [
+    # Spec 0402 S5, as for reproto. A library as well as a CLI:
+    # protoscanTests imports it through python.withPackages.
+    build-system = [ pythonPkgs.setuptools ];
+    nativeBuildInputs = [ pkgs.installShellFiles ];
+    dependencies = [
       pythonPkgs.click
       pythonPkgs.protobuf
       fdpScanLib
     ];
 
     doCheck = false;
+    doInstallCheck = true;
+    pythonImportsCheck = [ "protoscan" ];
+    # Spec 0402 S8. No version check: protoscan has no --version.
+    passthru.tests = { inherit protoscanTests; };
 
-    postInstall = ''
+    postInstall = whenRunnable ''
       installShellCompletion --cmd protoscan \
         --bash <(_PROTOSCAN_COMPLETE=bash_source $out/bin/protoscan)
 
@@ -223,7 +256,8 @@ let
   # Tests run separately so that the installable protoscan package has doCheck = false
   # (avoiding pytest during nix-shell) while ci still enforces test passage.
   protoscanTests = pkgs.runCommand "protoscan-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       (pythonPkgs.python.withPackages (_: [
         protoscan
         pythonPkgs.pytest
@@ -240,7 +274,8 @@ let
   # override needed; the installed package is already on the Python path via
   # withPackages).
   fdpScanTests = pkgs.runCommand "fdp-scan-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       (pythonPkgs.python.withPackages (_: [
         fdpScanLib
         pythonPkgs.protobuf
@@ -255,7 +290,8 @@ let
 
   # Tests for prototext_codec_lib — run against the installed extension.
   prototextCodecTests = pkgs.runCommand "prototext-codec-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       (pythonPkgs.python.withPackages (_: [
         prototextCodec
         pythonPkgs.protobuf
@@ -287,10 +323,12 @@ let
   # from it.
   # ---------------------------------------------------------------------------
   pythonLint = pkgs.runCommand "python-lint" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       pkgs.pyright
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
         pythonPkgs.pytest
+        pythonPkgs.types-protobuf
       ]))
     ];
   } ''
@@ -334,7 +372,8 @@ EOF
   # Python ruff check — style and correctness linting for the reproto package.
   # ---------------------------------------------------------------------------
   pythonRuff = pkgs.runCommand "python-ruff" {
-    buildInputs = [ pythonPkgs.ruff ];
+    strictDeps = true;
+    nativeBuildInputs = [ pythonPkgs.ruff ];
   } ''
     set -euo pipefail
     echo "--- ruff ---"
@@ -367,7 +406,8 @@ EOF
   # Pure function of corpus + protoc; cached independently of the DB build so
   # that changes to reproto/instantiation logic don't force a recompile.
   googleapisPbs = pkgs.runCommand "googleapis-pbs" {
-    buildInputs = [ pkgs.protobuf ];
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.protobuf ];
   } ''
     set -euo pipefail
     mkdir -p "$out"
@@ -411,7 +451,8 @@ EOF
   # Cheap enough for `ci`: two small protoc runs over a handful of files.
   # Pulls in corpusGoogleapis but not googleapisPbs or googleapisDb.
   bobappDescOf = variant: entryPoints: pkgs.runCommand "${variant}-desc" {
-    buildInputs = [ pkgs.protobuf ];
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.protobuf ];
   } ''
     set -euo pipefail
     mkdir -p "$out"
@@ -444,7 +485,8 @@ EOF
   # Depends on googleapisPbs (single multi-FDP FDS) so proto compilation is
   # not repeated when reproto or instantiation logic changes.
   googleapisDb = pkgs.runCommand "googleapis-db" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       prototext
       reproto
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps))
@@ -525,7 +567,8 @@ print('\n'.join(lines[:$N_EXTRA]))
   '';
 
   googleapisTests = pkgs.runCommand "googleapis-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       prototext
       reproto
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
@@ -555,7 +598,8 @@ print('\n'.join(lines[:$N_EXTRA]))
   };
 
   customDb = pkgs.runCommand "custom-db" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       pkgs.protobuf
       reproto
     ];
@@ -605,7 +649,8 @@ print('\n'.join(lines[:$N_EXTRA]))
   '';
 
   customTests = pkgs.runCommand "custom-tests" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       prototext
       reproto
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))

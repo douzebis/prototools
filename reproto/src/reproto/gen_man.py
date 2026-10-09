@@ -46,7 +46,7 @@ def _render(cmd: click.Command) -> str:
     # Determine version lazily
     import importlib.metadata
     try:
-        version = importlib.metadata.version('reproto')
+        version = importlib.metadata.version('prototext-reproto')
     except importlib.metadata.PackageNotFoundError:
         version = 'dev'
 

@@ -15,7 +15,7 @@ from .lib.console import rprint
 
 try:
     from importlib.metadata import version as _pkg_version
-    _reproto_version = _pkg_version('reproto')
+    _reproto_version = _pkg_version('prototext-reproto')
 except Exception:
     _reproto_version = 'dev'
 from click.shell_completion import CompletionItem

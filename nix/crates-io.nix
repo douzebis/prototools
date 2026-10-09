@@ -28,8 +28,8 @@
 { pkgs
 , crane
 , workspaceSrc
-, commonArgs    # from nix/rust.nix — carries PYO3_PYTHON, RUSTFLAGS, etc.
-, protoPatchPhase
+, commonArgs    # from nix/rust.nix — carries PYO3_PYTHON, etc.
+, protoPostPatch
 }:
 
 let
@@ -39,14 +39,15 @@ let
 
 in pkgs.stdenv.mkDerivation (commonArgs // {
   pname   = "prototools-crates-io";
-  version = "0.2.0";
+  # Spec 0402 S3: prototext's release, the crate the bundle is named for.
+  version = (pkgs.lib.importTOML ../prototext/Cargo.toml).package.version;
   src     = workspaceSrc;
 
   nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
     pkgs.protobuf
     crane.configureCargoVendoredDepsHook
   ];
-  patchPhase     = protoPatchPhase;
+  postPatch      = protoPostPatch;
   cargoVendorDir = vendoredDeps;
 
   # HOME and CARGO_HOME must be writable before configureCargoVendoredDepsHook

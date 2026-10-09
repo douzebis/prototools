@@ -8,7 +8,7 @@
 # All build logic lives in nix/rust.nix, nix/python.nix, nix/shells.nix.
 # This file:
 #   1. Pins nixpkgs and crane.
-#   2. Defines shared inputs (depsSrc, workspaceSrc, pythonBin, pyo3Rustflags, protoPatchPhase).
+#   2. Defines shared inputs (depsSrc, workspaceSrc, pythonBin, protoPostPatch).
 #   3. Imports the three sub-files and wires their outputs together.
 #   4. Assembles the ci and full-tests targets.
 #   5. Exposes all public attributes.
@@ -41,10 +41,13 @@
 }:
 
 let
-  crane = pkgs.callPackage (pkgs.fetchgit {
-    url    = "https://github.com/ipetkov/crane.git";
-    rev    = "80ceeec0dc94ef967c371dcdc56adb280328f591";
-    sha256 = "sha256-e1idZdpnnHWuosI3KsBgAgrhMR05T2oqskXCmNzGPq0=";
+  # Fetched at evaluation time, not built (spec 0402 S1): a `fetchgit`
+  # derivation imported by `callPackage` is import-from-derivation, which
+  # nixpkgs forbids and which stalls evaluation on a build. CI evaluates
+  # `ci` with IFD disallowed so it cannot come back.
+  crane = pkgs.callPackage (builtins.fetchTarball {
+    url    = "https://github.com/ipetkov/crane/archive/80ceeec0dc94ef967c371dcdc56adb280328f591.tar.gz";
+    sha256 = "1b9yqvf9ihj5n8m6lkrr3lqy22h2c302ldy2lap7b737v9jrsn3v";
   }) { inherit pkgs; };
 
   # ---------------------------------------------------------------------------
@@ -143,12 +146,12 @@ let
   # even for unused members.  Per-crate isolation would require splitting the
   # Cargo workspace.  See spec 0078 for details.
 
-  # patchPhase shared by all Crane derivations that compile prototext.
+  # The postPatch shared by all Crane derivations that compile prototext.
   # Compiles the three .proto schemas into fixtures/prebuilt/ using protoc so
   # that build.rs can copy them into $OUT_DIR without needing protox.
-  protoPatchPhase = ''
-    runHook prePatch
-
+  # A postPatch, not a whole patchPhase (spec 0402 S7): the standard phase,
+  # with its hooks and `patches`, still runs around it.
+  protoPostPatch = ''
     mkdir -p prototext/fixtures/prebuilt
 
     protoc \
@@ -170,21 +173,18 @@ let
       --descriptor_set_out=prototext/fixtures/prebuilt/message_set.pb \
       --proto_path=prototext/fixtures/schemas \
       message_set.proto
-
-    runHook postPatch
   '';
 
   # ---------------------------------------------------------------------------
-  # Python interpreter — defined early because pyo3Rustflags references it.
+  # Python interpreter.
   # ---------------------------------------------------------------------------
   pythonBin        = pythonPkgs.python;
   pythonExecutable = "${pythonBin}/bin/python";
 
-  # RUSTFLAGS for linking against CPython.  Set globally in commonArgs so that
-  # all Crane derivations carry the same value — keeping Cargo fingerprints
-  # consistent across the single shared depsCache.  Also exported in the
-  # shellHook so that manual `cargo build -p prototext_codec_lib` aligns.
-  pyo3Rustflags = "-L ${pythonBin}/lib -lpython${pythonPkgs.python.pythonVersion}";
+  # No RUSTFLAGS for libpython (spec 0402 S6): each pyo3 crate's build.rs
+  # links it into its own stub generator and tests only, so the Python
+  # extensions themselves never link it. PYO3_PYTHON (nix/rust.nix) is all
+  # those build scripts need to find it.
 
   # ---------------------------------------------------------------------------
   # tree-sitter-textproto — plain C Python extension for the textproto grammar,
@@ -224,7 +224,11 @@ let
   treeSitterTextproto = pkgs.stdenv.mkDerivation {
     name        = "tree-sitter-textproto";
     src         = ./reproto/tree-sitter-textproto;
-    buildInputs = [ pythonBin ];
+    # Python twice, as strictDeps distinguishes (spec 0402 S6): the
+    # python3-config tool, and the headers the extension compiles against.
+    strictDeps        = true;
+    nativeBuildInputs = [ pythonBin ];
+    buildInputs       = [ pythonBin ];
     buildPhase  = ''
       $CC -shared -fPIC \
         -o textproto$(python3-config --extension-suffix) \
@@ -317,12 +321,13 @@ let
   # ---------------------------------------------------------------------------
 
   rust = import ./nix/rust.nix {
-    inherit pkgs crane pythonPkgs pythonBin pythonExecutable pyo3Rustflags
-            depsSrc workspaceSrc protoPatchPhase treeSitterTextprotoRustLib buf;
+    inherit pkgs crane pythonPkgs pythonBin pythonExecutable
+            depsSrc workspaceSrc protoPostPatch treeSitterTextprotoRustLib buf;
   };
 
   python = import ./nix/python.nix {
     inherit pkgs pythonPkgs pythonBin treeSitterTextproto;
+    inherit (rust) metaCommon;
     prototext = rust.prototext;
     inherit (rust) prototextCodec fdpScanLib prototextGraphLib
                    prototextExtensionArtifacts prototextGraphExtensionArtifacts
@@ -330,7 +335,7 @@ let
   };
 
   cratesIo = import ./nix/crates-io.nix {
-    inherit pkgs crane workspaceSrc protoPatchPhase;
+    inherit pkgs crane workspaceSrc protoPostPatch;
     inherit (rust) commonArgs;
   };
 
@@ -350,7 +355,8 @@ let
   # below fails `ci` when the two differ (S3). wktDb takes its schema DB
   # (wkt-db.desc, proto/) from here.
   wktRkyv = pkgs.runCommand "wkt-rkyv" {
-    buildInputs = [
+    strictDeps = true;
+    nativeBuildInputs = [
       pkgs.protobuf
       (pythonPkgs.python.withPackages (_: python.wktRkyvDeps))
     ];
@@ -425,7 +431,11 @@ let
     touch $out
   '';
 
-  wktDb = pkgs.runCommand "wkt-db" { } ''
+  wktDb = pkgs.runCommand "wkt-db" {
+    meta = rust.metaCommon // {
+      description = "Well-known protobuf types as a prototools schema database";
+    };
+  } ''
     set -euo pipefail
     install -Dm444 ${wktRkyv}/wkt-db.desc "$out/share/prototools/wkt.desc"
     cp -r ${wktRkyv}/wkt-db "$out/share/prototools/wkt"
@@ -437,7 +447,7 @@ let
   '';
 
   shells = import ./nix/shells.nix {
-    inherit pkgs pythonPkgs pythonBin pythonExecutable pyo3Rustflags treeSitterTextproto
+    inherit pkgs pythonPkgs pythonBin pythonExecutable treeSitterTextproto
             treeSitterTextprotoRustLib buf;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoTestDeps reproto protoscan;

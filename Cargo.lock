@@ -718,6 +718,7 @@ dependencies = [
  "prototext",
  "prototext-graph",
  "pyo3",
+ "pyo3-build-config",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
  "workspace-hack",
@@ -1957,6 +1958,7 @@ version = "0.2.1"
 dependencies = [
  "prototext-core",
  "pyo3",
+ "pyo3-build-config",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
  "workspace-hack",
@@ -1968,6 +1970,7 @@ version = "0.2.1"
 dependencies = [
  "prototext-graph",
  "pyo3",
+ "pyo3-build-config",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
  "workspace-hack",

@@ -19,7 +19,7 @@
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
-#               _hook_rust       — exports RUSTFLAGS, TREE_SITTER_TEXTPROTO_*;
+#               _hook_rust       — exports TREE_SITTER_TEXTPROTO_*;
 #                                  writes rust-toolchain.toml; rustup toolchain
 #                                  install
 #               _hook_cargo      — cargo build --release -p prototext / -p
@@ -35,7 +35,6 @@
 , pythonPkgs
 , pythonBin
 , pythonExecutable
-, pyo3Rustflags
 , repoRoot          # toString ./.  — used for NIXSHELL_REPO and PATH
 , rustcVersion      # pkgs.rustc.unwrapped.version
 , prototext
@@ -274,7 +273,7 @@ RUFFEOF
 
       _hook_protos() {
         # Compile prototext fixture .pb descriptors into
-        # prototext/fixtures/prebuilt/, mirroring what protoPatchPhase does in
+        # prototext/fixtures/prebuilt/, mirroring what protoPostPatch does in
         # default.nix.  The list must stay in step with that phase and with
         # prototext/build.rs's fallback, which copies all four unconditionally.
         #
@@ -384,13 +383,11 @@ RUFFEOF
       }
 
       _hook_rust() {
-        echo "[hook] rust: RUSTFLAGS, TREE_SITTER_TEXTPROTO_*, rust-toolchain.toml, rustup install"
-        # RUSTFLAGS is set globally in commonArgs (Nix build) so that all Crane
-        # derivations share a single fingerprint.  Export the same value here
-        # so that manual `cargo build -p prototext_codec_lib` in the shell aligns.
+        echo "[hook] rust: TREE_SITTER_TEXTPROTO_*, rust-toolchain.toml, rustup install"
+        # No RUSTFLAGS: libpython is linked per target by the pyo3 crates'
+        # build.rs (spec 0402 S6), in the shell as in the Nix build.
         # TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR mirror commonArgs.env so
         # that manual `cargo build -p protolens` aligns too (spec 0116 §7).
-        export RUSTFLAGS="${pyo3Rustflags}"
         export TREE_SITTER_TEXTPROTO_LIB_DIR="${treeSitterTextprotoRustLib}/lib"
         export TREE_SITTER_TEXTPROTO_QUERIES_DIR="${treeSitterTextprotoRustLib}/queries"
 

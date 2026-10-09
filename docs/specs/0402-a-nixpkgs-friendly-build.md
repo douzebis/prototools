@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0402 — a nixpkgs-friendly build
 
-Status: draft
+Status: implemented in part (S1, S3–S8); S2 waits for the nixpkgs pin bump, S9–S10 for a decision to submit to nixpkgs
+Implemented in: 2026-10-09
 App: build (default.nix, nix/*, nixpkgs/pkgs/)
 Refs: docs/specs/0401-a-faster-nix-build.md (the speed work this must
         not undo — committed WKT graph, crane's artifact chain),
@@ -182,4 +183,88 @@ Already conformant, kept as is:
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-09: S1 and S3–S8. Deferred by decision: S2, which
+needs the main pin moved to 26.05 (not before GreHack), and S9–S10, which
+wait until the project is submitted to nixpkgs.
+
+- **S1:** crane is fetched with `builtins.fetchTarball`. Every top-level
+  attribute evaluates with `--option allow-import-from-derivation false`:
+  `ci`, `full-tests`, the image, the three shells, `pypi`, `crates-io`,
+  `bobapp`. `nix.yml` checks it first, in seconds.
+- **S3:** no version literal is left in `nix/`. Each package reads its
+  version from its own `Cargo.toml` or `pyproject.toml`; the names went
+  from `prototext-0.1.4`, `protolens-0.1.4`, `reproto-0.1.0` to `0.2.1`,
+  `0.1.0`, `0.2.1`. The textproto grammar has no manifest and takes
+  reproto's version, since it ships inside reproto.
+- **S4:** every installable output has `meta`, with
+  `maintainers = [ douzebis ]` (already in the pinned nixpkgs). The
+  tree-sitter derivations are build intermediates and have none.
+- **S5:** `pyproject = true`, `build-system`, `dependencies`;
+  `types-protobuf` moved to the lint and dev environments;
+  `pythonImportsCheck` on every Python package.
+  - **Not done as written:** reproto and protoscan stay
+    `buildPythonPackage`, not `buildPythonApplication`, because
+    `protoscanTests` imports protoscan through `python.withPackages`,
+    which an application would not join. Both install their commands
+    anyway. `toPythonApplication` belongs to the upstream draft (S9).
+- **S6, strictDeps:** set on every derivation with inputs: 17
+  `runCommand`s and the textproto C extension, their tools moved to
+  `nativeBuildInputs`.
+- **S6, libpython:** the global `RUSTFLAGS = -lpython3.13` is gone, from
+  the Nix build and from the dev-shell. Before, all three Python
+  extensions linked `libpython3.13.so`, which an extension must not, and
+  a PyPI wheel built from them carried the dependency. Each pyo3 crate
+  now has a `build.rs`:
+  - its stub generator binary links libpython through
+    `rustc-link-arg-bins`;
+  - its unit-test binary links it through a generated `#[link]`
+    attribute (`OUT_DIR/libpython.rs`) that `lib.rs` includes under
+    `#[cfg(test)]`, since unit tests are the library itself and no
+    per-target instruction reaches them. All three crates include it:
+    `cargo test --workspace` links a test binary for every library, even
+    one with no tests, and each pulls in pyo3's Python symbols;
+  - `pyo3_build_config::add_extension_module_link_args()` gives macOS
+    its `-undefined dynamic_lookup`.
+
+  Checked with `readelf`: the three `.so` no longer list libpython, the
+  three stub generators do. `fdp_scan_lib`'s unit tests link and pass,
+  and Python imports the extension.
+- **S7:**
+  - `protoPostPatch` is a `postPatch`, not a whole `patchPhase`, and so
+    is the extensions' artifact copy;
+  - `COLORTERM` moved under `env`, as
+    `env = protocArgs.env // { COLORTERM = …; }`. A bare
+    `env.COLORTERM` there replaced the whole inherited `env`, since `//`
+    is shallow, and the first build failed on the lost `PYO3_PYTHON` and
+    tree-sitter paths;
+  - completions, man pages, the stub generators and the version checks
+    run only when `buildPlatform.canExecute hostPlatform`; in a cross
+    build the committed `.pyi` stubs stand in;
+  - binaries are copied from `target/release`, or from
+    `target/<triple>/release` when cross.
+
+  Test plan 6: `prototext` and `workspace-build` evaluate under
+  `pkgsCross.aarch64-multiplatform`, and the cross `workspaceBuild` runs
+  none of the binary-running steps. Evaluated, not built.
+- **S8:**
+  - `passthru.tests` on prototext, protolens (`rustTests`), reproto
+    (`reprotoTests`) and protoscan (`protoscanTests`). The extensions'
+    tests are defined in `python.nix`, the extensions in `rust.nix`, so
+    they have none.
+  - Version checks: `versionCheckHook` on reproto; on prototext and
+    protolens, which are plain copies with no install-check phase, the
+    same check as one line in their guarded install step. protoscan has
+    no `--version`.
+  - **A bug the version check found:** installed reproto reported
+    `version dev`, because it looked its version up under the
+    distribution name `reproto` while its `pyproject.toml` calls it
+    `prototext-reproto`. Fixed in `cli.py`, `gen_man.py` and
+    `gen_man_instantiate.py`.
+- **Verified:**
+  - `nix-build -A ci -A grehack2026.image -A pypi -A crates-io` builds,
+    with the tests, pyright and ruff inside `ci`;
+  - the image passes the workshop smoke test;
+  - none of the three binary wheels in `pypi` links libpython
+    (`readelf`);
+  - rustfmt, clippy (the three pyo3 crates) and `reuse lint` are clean.
+

@@ -43,6 +43,11 @@ jobs:
         with:
           use-flakehub: "disabled"
 
+      # Spec 0402 S1: no import-from-derivation, which nixpkgs forbids and
+      # which would stall evaluation on a build. Seconds, so it goes first.
+      - name: Evaluate without import-from-derivation
+        run: nix-instantiate -A ${{ matrix.ci-target }} --option allow-import-from-derivation false > /dev/null
+
       - name: Check formatting (rustfmt)
         run: nix-build -A rust-fmt
 
