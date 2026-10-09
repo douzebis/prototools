@@ -506,3 +506,22 @@ from the repository's nixpkgs pin), and skopeo runs with
 built. S7's round trip is encode → decode → encode: `anomalies.pb` is
 authored in prototext, so the check is that the two binaries are the
 same.
+
+**First publication, `grehack2026-beta1` (2026-10-09, run 37952862085).**
+The tag built and smoke-tested both images, pushed them, joined them in an
+OCI index that carries the S11 description, and published the USB-key
+bundle as a pre-release with five assets (S12):
+- amd64 archive: 1,246 MiB;
+- arm64 archive: 1,280 MiB;
+- `load.sh`, `SHA256SUMS` and `SETUP.md`.
+
+`:grehack2026` and `:grehack2026-beta1` both resolve to amd64 and arm64,
+pulled anonymously. Image build steps took 23.4 min (amd64) and 15.0 min
+(arm64), after spec 0401, against 37.2 and 26.1 min on the run before it.
+
+S14 step 5 on arm64 passes: on a Mac M1, the published
+`:grehack2026-beta1` pulled and passed a manual smoke test. Still open
+for S14:
+- step 5 on an amd64 laptop;
+- whether the package page displays the description;
+- step 6, the USB keys, at the final tag.
