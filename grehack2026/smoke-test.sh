@@ -412,6 +412,24 @@ protolens --descriptor-set "$PROTOTEXT_WKT_SET" \
   --type google.protobuf.FileDescriptorSet anomalies.pb quit
 EOF
 
+# ── What the image says about itself (spec 0374 S11, S13) ────────────────────
+
+check "the image's README, and the anomalies' beside it (spec 0374 S13)" <<'EOF'
+set -e
+grep -q "GreHack 2026 workshop" /workshop/README.md
+grep -q "anomalies.pb" /workshop/README.md
+grep -q "every anomaly in one blob" /workshop/anomalies.md
+EOF
+
+label=$("$docker" image inspect --format \
+  '{{index .Config.Labels "org.opencontainers.image.description"}}' "$image")
+if grep -q "GreHack 2026 workshop" <<<"$label"; then
+  pass "description label (spec 0374 S11)"
+else
+  fail "description label (spec 0374 S11)"
+  printf '%s\n' "$label" | indent
+fi
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)

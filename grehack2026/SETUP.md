@@ -179,7 +179,7 @@ step, Down moves to the next one, F1 lists the keys, and Ctrl-D quits.
 `/workshop/anomalies.pb` holds one example of every anomaly prototools
 reports: every way an encoding can be non-canonical or invalid while a
 lenient decoder lets it through. A guided protolens script walks through
-them, and `/workshop/README.md` explains each one:
+them, and `/workshop/anomalies.md` explains each one:
 
 ```sh
 cd /workshop

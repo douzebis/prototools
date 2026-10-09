@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0374 — a workshop image for every laptop
 
-Status: implemented (S1–S9); amended 2026-10-09 with S10–S14, draft
+Status: implemented (S1–S13); S14 is the release procedure, run by hand
 Implemented in: 2026-09-30
 App: grehack2026, nix, CI
 Refs: .github/workflows/nix.yml (the x86-64 and arm64 runners this
@@ -313,7 +313,7 @@ rather than the plan.
   the index and the publication. Building arm64 locally through
   binfmt/QEMU is possible but not part of the process.
 
-### Amended 2026-10-09 (draft, not yet implemented)
+### Amended 2026-10-09 (implemented the same day)
 
 Two things a participant cannot get today without the repository at
 hand: an explanation on the image's registry page, and a download that
@@ -338,24 +338,39 @@ strict, is on one job and implied for the other.
   multi-architecture image GitHub reads the description from the index,
   not from the per-architecture images; the per-architecture images carry
   the same text as a label (`config.Labels`), so `docker inspect` shows it
-  too. Which publishing tool writes the index annotation (crane, at
-  `index append` or with a separate mutation) is settled at
-  implementation, checked against what the package page displays.
+  too. The text lives once, in `grehack2026/image-description.txt` (411
+  characters; GitHub shows up to 512), which the image's label and the
+  workflow both read.
+
+  The index is an OCI index, not the Docker manifest list
+  `--docker-empty-base` used to make: the registry page reads an OCI
+  index's annotations. `crane mutate --annotation` refuses an index ("not
+  yet supported", crane 0.20.6), so the workflow fetches the index's
+  JSON, adds the annotation, and puts it back with `crane edit manifest`.
+  This was checked against crane's own test registry (`crane registry
+  serve`). Whether the package page displays it is checked at the first
+  publication (S14).
 
 - **S12. A GitHub Release per `grehack2026-*` tag.** On a tag push (not on
   a dispatch, which publishes no version), the index job creates a GitHub
   Release named after the tag, with the USB-key bundle's files as assets:
   `prototools-workshop-amd64.tar`, `prototools-workshop-arm64.tar`,
-  `load.sh`, `SHA256SUMS` and `SETUP.md`. Its notes give the pull and run
-  commands (S8) and point at `SETUP.md`. Unlike a workflow artifact, a
+  `load.sh`, `SHA256SUMS` and `SETUP.md`. Its notes give the pull command,
+  explain `load.sh`, and link `SETUP.md` at the released revision. The
+  image is also tagged with the release's name, so a release names an
+  image that later pushes cannot move. Unlike a workflow artifact, a
   release asset does not expire and needs no sign-in. The job gains
-  `permissions: contents: write`.
+  `permissions: contents: write`, and repeats `packages: write`, since a
+  job's permissions replace the workflow's. Each archive is about 1.25
+  GiB, under GitHub's 2 GiB limit per asset.
 
 - **S13. A README inside the image.** `/workshop/README.md` explains the
   image itself — the tools, the game in three terminals (SETUP.md section
   4), where `/work` is — and points at `anomalies.pb` as the first thing
   to open. The anomalies fixture's own README, copied there today under
-  that name, moves to `/workshop/anomalies.md`.
+  that name, moves to `/workshop/anomalies.md`. The source is
+  `grehack2026/workshop-README.md`. It also names the two talks (specs
+  0403, 0404), which came after this amendment.
 
 - **S14. Releasing, by hand, in order.**
   1. Push a `grehack2026-*` tag to `origin` (douzebis/prototools).

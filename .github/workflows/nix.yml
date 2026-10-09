@@ -20,8 +20,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            ci-target: ci
           - os: ubuntu-24.04-arm
+            ci-target: ci
           - os: macos-15
+            ci-target: ci
           # macos-15-intel disabled: the Determinate Nix Installer no
           # longer supports macOS on Intel (see
           # https://github.com/DeterminateSystems/nix-src/issues/224).
@@ -48,7 +51,7 @@ jobs:
       # than one step after the other (spec 0401 S9). rustfmt stays first:
       # it fails fast and needs nothing compiled.
       - name: Run CI targets (clippy, tests, build, reproto tests, python lint)
-        run: nix-build -A ${{ matrix.ci-target || 'ci' }}
+        run: nix-build -A ${{ matrix.ci-target }}
 
       - name: Build PyPI wheels
         if: github.ref == 'refs/heads/main'

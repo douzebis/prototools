@@ -7,7 +7,11 @@ name: Workshop image
 # Spec 0374 S6: the GreHack 2026 workshop image. Each architecture is built
 # natively by Nix, smoke-tested and pushed as :<revision>-<arch>; then one
 # job joins them in an index, pushed as :<revision> and :grehack2026, and
-# assembles the USB-key bundle for offline loading.
+# assembles the USB-key bundle for offline loading. On a grehack2026-* tag,
+# that job also publishes the bundle as a GitHub Release (S12).
+#
+# Every job runs only in douzebis/prototools (S10): the ThalesGroup mirror's
+# build budget is strict, and a skipped job uses no runner minutes.
 
 on:
   workflow_dispatch:
@@ -84,7 +88,15 @@ jobs:
   index:
     name: Index and USB-key bundle
     needs: image
+    # Spec 0374 S10: its own guard, not only the skipped `needs` — an
+    # `if: always()` or a dropped `needs` would otherwise run it anywhere.
+    if: github.repository == 'douzebis/prototools'
     runs-on: ubuntu-latest
+    # A job's permissions replace the workflow's, so packages is repeated.
+    # contents: write is for the release (S12).
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v6
 
@@ -106,10 +118,22 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          crane index append --docker-empty-base \
+          # An OCI index, not a Docker manifest list: the registry page reads
+          # the description from an OCI index's annotations (S11).
+          crane index append \
             -m "$IMAGE:$GITHUB_SHA-amd64" \
             -m "$IMAGE:$GITHUB_SHA-arm64" \
             -t "$IMAGE:$GITHUB_SHA"
+          # Spec 0374 S11: the description, on the index itself. crane
+          # mutate refuses an index, so the JSON is edited and put back.
+          crane manifest "$IMAGE:$GITHUB_SHA" \
+            | python3 -c '
+          import json, sys
+          index = json.load(sys.stdin)
+          index["annotations"] = {"org.opencontainers.image.description":
+                                  open("grehack2026/image-description.txt").read()}
+          print(json.dumps(index))' \
+            | crane edit manifest "$IMAGE:$GITHUB_SHA"
           crane tag "$IMAGE:$GITHUB_SHA" grehack2026
 
       - name: Download the archives
@@ -139,3 +163,30 @@ jobs:
           name: usb-key
           path: usb-key/
           compression-level: 6
+
+      # Spec 0374 S12: a workflow artifact expires and needs a GitHub
+      # sign-in; a release asset does neither. Only for a tag: a dispatch
+      # publishes no version.
+      - name: Publish the bundle as a GitHub Release
+        if: startsWith(github.ref, 'refs/tags/grehack2026-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          The prototools workshop image for GreHack 2026, revision \`$GITHUB_SHA\`.
+
+          **Online:**
+
+              podman pull $IMAGE:$GITHUB_REF_NAME   # or :grehack2026, or docker pull
+
+          **Offline,** from these files (the USB-key bundle): put them in one
+          directory and run \`./load.sh\`, which picks the archive for your
+          laptop, checks it against \`SHA256SUMS\` and loads it.
+
+          How to run it, and what to do with it: [SETUP.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/grehack2026/SETUP.md).
+          EOF
+          crane tag "$IMAGE:$GITHUB_SHA" "$GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" usb-key/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

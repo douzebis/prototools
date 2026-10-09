@@ -150,7 +150,10 @@ let
       chmod 1777 tmp .${home} workshop work
       cp ${../tests/fixtures/anomalies.pb}     workshop/anomalies.pb
       cp ${../tests/fixtures/anomalies.script} workshop/anomalies.script
-      cp ${../tests/fixtures/README.md}        workshop/README.md
+      # Spec 0374 S13: the image's own README; the fixture's, which
+      # explains each anomaly, beside it as anomalies.md.
+      cp ${../grehack2026/workshop-README.md}  workshop/README.md
+      cp ${../tests/fixtures/README.md}        workshop/anomalies.md
       chmod 0666 workshop/*
 
       # The talk's material, writable: the deck writes capture/, life.desc,
@@ -187,6 +190,11 @@ let
         "org.opencontainers.image.title"    = "prototools-workshop";
         "org.opencontainers.image.source"   = "https://github.com/douzebis/prototools";
         "org.opencontainers.image.licenses" = "MIT";
+        # Spec 0374 S11: the same text the workflow writes on the index,
+        # which is what the registry page shows; here so `docker inspect`
+        # shows it too.
+        "org.opencontainers.image.description" =
+          builtins.readFile ../grehack2026/image-description.txt;
       } // lib.optionalAttrs (gitRevision != null) {
         "org.opencontainers.image.revision" = gitRevision;
       };
