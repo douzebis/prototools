@@ -1,5 +1,5 @@
 # Remove the artifacts of a previous run (skip this step to keep them):
-[ -e capture/tap.pid ] && life-tap --stop; rm -rf capture life.desc life eve/server.log
+[ -e capture/tap.pid ] && life-tap --stop; rm -rf capture life.desc life eve/server.log eve/server.yaml
 
 clear && header "Why prototools"
 # \
@@ -248,15 +248,15 @@ clear && header "4. Eve's own log" && picture images/seizing.jpeg
 
 # \
 #                                                                              \
-# With the wire evidence in hand, Eve's server is pulled — and it kept a       \
-# log. What is it?                                                             \
+# With the wire evidence in hand, Eve's server is pulled. No trace of the      \
+# life-server binary — but the server kept a log. What is it?                  \
 
 ls -lh eve/server.log
 
 # \
 #                                                                              \
-# We have no descriptor set for Eve's server. All we hold is the client's —    \
-# try it as an ersatz against the blob:                                        \
+# No server binary, so no server descriptors to recover. All we hold is the    \
+# client's descriptor set — try it as an ersatz against the blob:              \
 
 
 protolens --descriptor-set life.desc eve/server.log \
