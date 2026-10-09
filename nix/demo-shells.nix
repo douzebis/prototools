@@ -4,7 +4,7 @@
 
 # nix/demo-shells.nix — one shell per demo directory (spec 0394).
 #
-#   teleprompt         — bin/teleprompt, wrapped with what it calls
+#   teleprompt         — bin/teleprompt, wrapped (from nix/grehack2026-demo.nix)
 #   grehack2026-shell  — `cd grehack2026` (or eve/, bob/), then `nix-shell`
 #   grpconf2026-shell  — `cd grpconf2026`, then `nix-shell`
 #
@@ -14,7 +14,7 @@
 # NIXSHELL_REPO, so the post-edit lint hook does not take them for the
 # dev-shell.
 { pkgs
-, telepromptSrc     # ./bin/teleprompt, as a path: imported into the store
+, grehackDemo       # nix/grehack2026-demo.nix: teleprompt, demoTools, demoEnv
 , grehackRuntime    # grehack2026.runtime: the workshop image's tool set
 , prototext
 , protolensLean
@@ -24,39 +24,13 @@
 , googleapisDb
 , googleapisPbs
 , grpconfDemo
-, buf             # narrow-pinned buf, for the proto LSP in the nvim config
 }:
 
 let
-  # Neovim config for `view` / `view_textproto` / `view_proto`: desert theme,
-  # proto and textproto highlighting (spec 0395 fix). The dev-shell writes the
-  # same highlighting through _hook_nvim; the demo shells no longer run that
-  # hook (spec 0394), so teleprompt carries its own config under XDG_CONFIG_HOME.
-  telepromptNvimConfig = pkgs.runCommand "teleprompt-nvim-config" { } ''
-    mkdir -p $out/nvim
-    cp ${../nix/demo-nvim/init.lua} $out/nvim/init.lua
-  '';
+  inherit (grehackDemo) teleprompt demoTools demoEnv;
 
-  # bin/teleprompt calls python3 (its readline coprocess, which finds
-  # libreadline through TELEPROMPT_LIBREADLINE), magick and chafa (`header`),
-  # nvim (`view`, `view_textproto`, `view_proto`), and tput/stty. buf is on
-  # PATH for the proto LSP the nvim config starts.
-  teleprompt = pkgs.runCommand "teleprompt"
-    { nativeBuildInputs = [ pkgs.makeWrapper ]; }
-    ''
-      mkdir -p $out/bin
-      cp ${telepromptSrc} $out/bin/teleprompt
-      chmod +x $out/bin/teleprompt
-      patchShebangs $out/bin/teleprompt
-      wrapProgram $out/bin/teleprompt \
-        --prefix PATH : ${pkgs.lib.makeBinPath (with pkgs; [
-          bash python3 imagemagick chafa neovim ncurses coreutils
-        ]) + ":" + buf + "/bin"} \
-        --set TELEPROMPT_LIBREADLINE ${pkgs.readline}/lib/libreadline.so \
-        --set XDG_CONFIG_HOME ${telepromptNvimConfig}
-    '';
-
-  # What both decks call besides the prototools: protoc and hexdump.
+  # What the grpconf2026 deck calls besides the prototools: the teleprompt,
+  # protoc and hexdump.
   deckTools = [ teleprompt pkgs.protobuf pkgs.util-linux ];
 
   wktSet = "${wktDb}/share/prototools/wkt.desc";
@@ -70,20 +44,15 @@ in
 {
   inherit teleprompt;
 
-  # grehack2026/, eve/ and bob/ (spec 0394 S1).
-  #
-  # neovim and buf are on the shell PATH (not only inside teleprompt's own
-  # wrapper) so that protolens's `v` jump-to-definition works when
-  # protolens is run directly in the shell, not only through the deck: `v`
-  # spawns a bare `nvim`, whose config then starts `buf lsp serve`.
-  # chafa likewise, so the deck's pictures (teleprompt's `picture`) can be
-  # previewed from the shell at the size the deck draws them.
+  # grehack2026/, eve/ and bob/ (spec 0394 S1): the workshop image's tools
+  # and the talk's, the same set the image carries (spec 0403 S1).
   grehack2026-shell = pkgs.mkShell {
     name = "grehack2026";
-    packages = [ grehackRuntime pkgs.neovim buf pkgs.chafa ] ++ deckTools;
+    packages = [ grehackRuntime ] ++ demoTools;
     shellHook = ''
       ${notDevShell}
-      export PROTOTEXT_DESCRIPTOR_SET="${wktSet}"
+      ${pkgs.lib.toShellVars demoEnv}
+      export ${builtins.concatStringsSep " " (builtins.attrNames demoEnv)}
     '';
   };
 

@@ -24,6 +24,11 @@ Any OCI runtime works. We recommend:
 All of these are open source. Docker Desktop works too if you already have
 it.
 
+**Optional, recommended: kitty** (<https://sw.kovidgoyal.net/kitty/>), a
+terminal that shows pictures as images. The talk's deck (section 5) has a
+few; any other terminal shows them as character blocks. WezTerm, Ghostty
+and iTerm2 (macOS) show them as images too.
+
 Rootless Podman on Linux runs containers as you: root inside the container
 is your own user outside it, so nothing the container writes to your
 directory ends up owned by root.
@@ -113,6 +118,40 @@ tail -f /work/capture/tap.log                  # in a tmux pane
 docker exec -u 0 workshop life-tap --stop      # on the laptop, to stop it
 ```
 
+## 5. Replay the talk
+
+The talk's deck is in the image, in `/workshop/grehack2026`, with the
+pictures. It plays in three windows, as on stage: Alice's, where the deck
+runs; Eve's, for the server; and Bob's, for the client.
+
+The deck starts the tap itself, which captures as root: start the container
+as root, with either runtime.
+
+```sh
+podman run -it --rm --name workshop --user 0 --cap-add NET_RAW \
+    -e TERM -e COLORTERM -v "$PWD":/work \
+    ghcr.io/douzebis/prototools-workshop:grehack2026
+```
+
+(or the same with `docker`). Then:
+
+| Window | Command |
+|---|---|
+| Alice (the one `run` gave you) | `cd grehack2026 && teleprompt grehack2026.sh` |
+| Eve | `podman exec -it -w /workshop/grehack2026/eve workshop bash` |
+| Bob | `podman exec -it -w /workshop/grehack2026/bob workshop bash` |
+
+with `docker exec` in place of `podman exec` under Docker. Make Bob's window
+at least 96 columns wide, and Alice's at least 120.
+
+In the deck, Enter runs the current step, Down moves to the next one, F1
+lists the keys, and Ctrl-D quits (and stops the tap). The 👉 cues say what to
+type in Eve's and Bob's windows.
+
+The pictures show as images in kitty (section 1) in a plain `exec` window;
+inside a tmux pane they depend on tmux passing them through, which the
+image allows.
+
 ## If it does not start
 
 - **"exec format error" on a Mac:** the runtime cannot run the arm64 image.
@@ -122,7 +161,8 @@ docker exec -u 0 workshop life-tap --stop      # on the laptop, to stop it
   `docker load -i prototools-workshop-amd64.tar`, then the same `docker run`).
   It is slower, but works.
 - **The tap says it cannot capture:** the container was started without
-  `--cap-add NET_RAW`; start it again with it.
+  `--cap-add NET_RAW`; start it again with it. In the talk (section 5), the
+  tap also needs the container to run as root: `--user 0`.
 - **"permission denied" on the Docker socket (Linux):** see
   <https://docs.docker.com/engine/install/linux-postinstall/>, or use
   `sudo docker`.

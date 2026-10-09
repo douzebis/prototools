@@ -26,6 +26,7 @@
 , googleapisDb
 , googleapisPbs
 , mkClosureCheck
+, grehackDemo     # nix/grehack2026-demo.nix: the talk's tools and material
 , gitRevision ? null
 }:
 
@@ -82,6 +83,8 @@ let
       With Docker: docker exec, and -u 0 for the tap. Each stops with Ctrl-C.
       tmux is here too, for one window of panes.
 
+      The talk: cd grehack2026 && teleprompt grehack2026.sh   (SETUP.md, section 5)
+
       Schema databases: $PROTOTEXT_DESCRIPTOR_SET (well-known types, the default)
                         $PROTOTEXT_GOOGLEAPIS_SET (googleapis; pass it with --descriptor-set)
 
@@ -92,6 +95,13 @@ let
   # tmux for one window of panes (spec 0375 S8), without systemd's
   # libraries, which it links by default: 0.9 MiB compressed against 2.5.
   tmux = pkgs.tmux.override { withSystemd = false; };
+
+  # Kitty images from inside a tmux pane (spec 0403 S11): chafa wraps the
+  # kitty graphics protocol in tmux's passthrough, which tmux drops unless
+  # allowed.
+  tmuxConf = pkgs.writeTextDir "etc/tmux.conf" ''
+    set -g allow-passthrough on
+  '';
 
   # What goes into the image's root (symlinked from the store). The
   # googleapis databases are not here: they are referenced from `config.Env`
@@ -105,12 +115,12 @@ let
     pkgs.less
     pkgs.ncurses
     tmux
+    tmuxConf
     pkgs.cacert
     nss
     profile
-  ];
+  ] ++ grehackDemo.demoTools;   # the talk (spec 0403 S1)
 
-  wktSet        = "${wktDb}/share/prototools/wkt.desc";
   googleapisSet = "${googleapisDb}/googleapis.desc";
   googleapisPbs' = "${googleapisPbs}/googleapis.pb";
 
@@ -130,6 +140,12 @@ let
       cp ${../tests/fixtures/anomalies.script} workshop/anomalies.script
       cp ${../tests/fixtures/README.md}        workshop/README.md
       chmod 0666 workshop/*
+
+      # The talk's material, writable: the deck writes capture/, life.desc,
+      # life/ and eve/server.log next to itself (spec 0403 S7).
+      cp -r ${grehackDemo.deck} workshop/grehack2026
+      chmod -R u+w,a+rwX workshop/grehack2026
+      find workshop/grehack2026 -type d -exec chmod 1777 {} +
     '';
 
     config = {
@@ -141,12 +157,16 @@ let
         "PATH=/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
         "LANG=C.UTF-8"
-        # The tools read PROTOTEXT_DESCRIPTOR_SET (spec 0090). The googleapis
-        # pair are conveniences for people and scripts: no tool reads them.
-        "PROTOTEXT_DESCRIPTOR_SET=${wktSet}"
+        # ncurses reads only its own terminfo directory; kitty's (spec 0403
+        # S10) is linked into /share/terminfo with the image's contents.
+        "TERMINFO_DIRS=/share/terminfo"
+        # The googleapis pair are conveniences for people and scripts: no
+        # tool reads them.
         "PROTOTEXT_GOOGLEAPIS_SET=${googleapisSet}"
         "PROTOTEXT_GOOGLEAPIS_PBS=${googleapisPbs'}"
-      ];
+      # The tools read PROTOTEXT_DESCRIPTOR_SET (spec 0090), set the same way
+      # as in the demo shell (spec 0403 S9).
+      ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") grehackDemo.demoEnv;
       Labels = {
         "org.opencontainers.image.title"    = "prototools-workshop";
         "org.opencontainers.image.source"   = "https://github.com/douzebis/prototools";

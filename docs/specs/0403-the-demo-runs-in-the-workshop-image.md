@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0403 — the demo runs in the workshop image
 
-Status: draft
+Status: implemented (pending: test plan items 4 and 6)
+Implemented in: 2026-10-09
 App: grehack2026 (deck, init, SETUP.md), life-tap, teleprompt, nix
         (grehack2026.nix, demo-shells.nix)
 Refs: docs/specs/0374-a-workshop-image-for-every-laptop.md (the image
@@ -97,10 +98,13 @@ The rest of the demo breaks in the container in five places:
 
 ### One tool set
 
-- **S1. `demoTools`.** `nix/demo-shells.nix` defines one list,
+- **S1. `demoTools`.** `nix/grehack2026-demo.nix` defines one list,
   `demoTools`, of what the deck calls beyond the prototools: the
-  teleprompt, chafa, `util-linuxMinimal` (for `hexdump`) and
-  `kitty.terminfo`. Both of these use it:
+  teleprompt, chafa, the lean Neovim and buf, protoc,
+  `util-linuxMinimal` (for `hexdump`) and `kitty.terminfo`. It is its
+  own file because `demo-shells.nix` takes the image's runtime as an
+  input, so the image cannot take anything from it. Both of these use
+  it:
   - `grehack2026-shell`: `grehackRuntime ++ demoTools`;
   - the image: `contents` gains `demoTools`.
 - **S2. One teleprompt.**
@@ -112,9 +116,18 @@ The rest of the demo breaks in the container in five places:
     wrapper and is the same store path in both.
 - **S3. `header` without ImageMagick.**
   - chafa renders the SVG banner directly.
-  - The width measurement now done with `magick … -trim` uses
-    `TITLE_WIDTH` = 15 px per character (the existing fallback), or a
-    better estimate if the visual check finds one.
+  - The title's width, which places the right-hand chevrons, is summed
+    from a table of DejaVu Sans Bold advances at 28 px (`_TP_ADVANCES`
+    in `bin/teleprompt`, read from the font's hmtx table). It replaces
+    the `magick … -trim` measurement.
+  - The SVG carries `width`/`height` at four times its viewBox, so
+    librsvg rasterizes it sharp enough for kitty (ImageMagick rendered
+    it at 300 dpi).
+  - The wrapper sets `FONTCONFIG_FILE` to DejaVu Sans and Sans Bold
+    (1.5 MiB). The image has no `/etc/fonts`, and this makes the face
+    the same everywhere. A side effect: natively, today's banners came
+    out in the regular weight, because the host's fontconfig had no
+    DejaVu Sans Bold. The bundled font draws them truly bold.
   - ImageMagick leaves the wrapper, natively too.
   - **Gate:** before merging, compare each deck banner (`prototools`,
     the five section titles, `Annex`) old and new, side by side, in
@@ -134,8 +147,13 @@ The rest of the demo breaks in the container in five places:
      capture with `sudo -n dumpcap` as today;
   4. otherwise: fail before detaching, with `CAPTURE_HELP`.
 
-  The tap then reports `life-tap: tapping, pid N, writing to DIR` and
-  returns 0 once `tap.pid` exists. A backgrounded process cannot prompt
+  The tap is the same program, run again without `--detach`, in a
+  process group of its own so that a Ctrl-C does not reach it. Its
+  output goes to the terminal, as with `&`; its own "capturing" line
+  says it started. `--detach` returns 0 once `tap.pid` holds the
+  child's pid, or fails if the child exits first. The interactive
+  `sudo -v` also applies without `--detach`, whenever stdin is a
+  terminal. A backgrounded process cannot prompt
   for a password (`&` gets SIGTTIN on reading the terminal), which is
   why the deck has `sudo -v` on its own line today.
 - **S5. The deck's tap line.** It becomes, everywhere:
@@ -155,8 +173,8 @@ The rest of the demo breaks in the container in five places:
   - life-tap already gives its files to the owner of `/work`
     (`owner()`). Everything else the demo writes stays in `/workshop`.
   - Docker run as non-root still fails cleanly: S4 step 4 prints
-    `CAPTURE_HELP`, whose container line becomes
-    `docker run … --user 0`.
+    `CAPTURE_HELP`, whose container line now reads "as root: podman
+    runs as root already; with docker, run or exec with -u 0".
 
 ### The material in the image
 
@@ -181,14 +199,18 @@ The rest of the demo breaks in the container in five places:
     window.
   - The login banner (0374 S5) gets one line: "The talk:
     cd grehack2026 && teleprompt grehack2026.sh".
-- **S9. Same environment.** `PROTOTEXT_DESCRIPTOR_SET` and `LANG` are
-  set the same way in the image's `Env` and in the shell's
-  `shellHook`, from one Nix attrset that both read.
+- **S9. Same environment.** `PROTOTEXT_DESCRIPTOR_SET` is set the
+  same way in the image's `Env` and in the shell's `shellHook`, from
+  one Nix attrset (`demoEnv`) that both read. `LANG` and
+  `TERMINFO_DIRS` stay image-only: natively, the presenter's own
+  locale and terminal setup apply.
 
 ### Kitty
 
 - **S10. Terminfo.** `kitty.terminfo` is in `demoTools` (S1), so the
-  image has `xterm-kitty`.
+  image has `xterm-kitty` under `/share/terminfo`. ncurses reads only
+  its own directory, so the image's `Env` sets
+  `TERMINFO_DIRS=/share/terminfo`.
 - **S11. tmux passes kitty images through.** The image's tmux gets
   `set -g allow-passthrough on` in a system `tmux.conf`. Whether chafa
   then draws real images in a pane is in the test plan. If not, SETUP.md
@@ -255,4 +277,27 @@ The rest of the demo breaks in the container in five places:
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured on 2026-10-09, x86-64, Podman 5, on a local build.
+
+- **Size:** the image went from 1,150 to 1,239 MiB unpacked (+89 MiB,
+  228 store paths). The closure check passes, with no perl and no ruby.
+- **Smoke test:** 23 of 23 checks pass. The 5 new ones are:
+  - the talk's tools and material;
+  - the banners' font;
+  - kitty's terminfo;
+  - the deck's tap under `--detach`, then `--stop`, as root;
+  - no denied store path.
+- **Same configuration (item 5):** the demo shell and the image share
+  the `teleprompt`, Neovim, buf, protoc and kitty-terminfo store paths,
+  and all eight members of the runtime.
+- **The tap natively (item 3):** `--detach` with cached sudo
+  credentials detached, captured, and stopped cleanly. The prompt path
+  is not tested: this VM's sudo needs no password. It is covered by
+  the unit test of `credentials()` and needs a check on a machine
+  whose sudo asks.
+- **Banners (item 2), the S3 gate passed:** in kitty, the chafa-only
+  banners come out slightly larger than the ImageMagick ones and look
+  good, so they are kept. A PNG side by side also shows the chevrons
+  placed correctly by the width table.
+- **Not done:** the full rehearsals (item 4) and the kitty checks
+  (item 6), on Linux under Podman and on macOS under Colima.

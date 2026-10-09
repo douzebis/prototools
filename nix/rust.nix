@@ -516,6 +516,7 @@ in {
     protolensUnwrapped
     protolensLean
     neovimLean
+    bufLean
     prototextCodec
     fdpScanLib
     prototextGraphLib;

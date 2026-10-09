@@ -33,7 +33,7 @@ Options:
   --splash <file|name>  Show a splash screen at startup.
                         If <file> exists, its contents are printed.
                         Otherwise <name> is passed to header() and rendered
-                        as a styled SVG title via magick + chafa.
+                        as a styled SVG title via chafa.
                         Automatic: if <commands_file> has a sibling with the
                         same stem and a .splash extension, it is used when
                         --splash is not given.
@@ -266,7 +266,38 @@ show_help() {
 # ---------------------------------------------------------------------------
 # header NAME — render a section title using chafa (SVG leg only).
 # Exported so commands run via eval can call it directly.
+#
+# chafa rasterizes the SVG itself, through librsvg (spec 0403 S3): no
+# ImageMagick, so the same banner in the demo shell and the workshop image.
+# The title's width places the right-hand chevrons; it is summed from the
+# advances of DejaVu Sans Bold at 28 px, the face and size the SVG asks for
+# (FONTCONFIG_FILE, set by the Nix wrapper, provides exactly that face).
 # ---------------------------------------------------------------------------
+
+# DejaVu Sans Bold advances at 28 px, for ' ' (32) through '~' (126); 18 for
+# anything else, the table's mean. From the font's hmtx table (fontTools).
+_TP_ADVANCES=(10 13 15 23 19 28 24 9 13 13 15 23 11 12 11 10 19 19 19 19 19 19
+    19 19 19 19 11 11 23 23 23 16 28 22 21 21 23 19 19 23 23 10 10 22 18 28 23
+    24 21 24 22 20 19 23 22 31 22 20 20 13 10 13 23 14 14 19 20 17 20 19 12 20
+    20 10 10 19 10 29 20 19 20 20 14 17 13 20 18 26 18 18 16 20 10 20 23)
+export _TP_ADVANCES_STR="${_TP_ADVANCES[*]}"
+
+_tp_text_width() {
+    local -a adv
+    read -ra adv <<< "$_TP_ADVANCES_STR"
+    local s="$1" w=0 i code
+    for (( i = 0; i < ${#s}; i++ )); do
+        printf -v code '%d' "'${s:i:1}"
+        if (( code >= 32 && code <= 126 )); then
+            (( w += adv[code - 32] ))
+        else
+            (( w += 18 ))
+        fi
+    done
+    echo "$w"
+}
+export -f _tp_text_width
+
 header() {
     local TITLE="$1"
     local COLOR="${2:-#4d8fff}"
@@ -278,16 +309,16 @@ header() {
     shopt -u extglob
 
     local TW
-    TW=$(echo "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9999 40'>\
-<text x='0' y='32' font-family='DejaVu Sans' font-size='28' font-weight='bold'>${TITLE}</text></svg>" \
-        | magick -background none -density 96 svg:- -trim -format "%w" info: 2>/dev/null)
-    [[ -n "$TW" && "$TW" -gt 0 ]] 2>/dev/null || TW=$(( ${#TITLE} * 15 ))
+    TW=$(_tp_text_width "$TITLE")
 
     local TRANSLATE=$(( TW + 7 ))
     local VB_WIDTH=$(( TW + 63 ))
 
+    # width/height: four times the viewBox, so librsvg rasterizes it sharp
+    # enough for kitty's graphics (ImageMagick used 300 dpi).
     echo
     echo "<svg xmlns='http://www.w3.org/2000/svg' fill='none'
+         width='$(( VB_WIDTH * 4 ))' height='140'
          viewBox='12 22 ${VB_WIDTH} 35'>
       <path fill='#4580e8' d='M39.226 56.943 18.722 30.326c-1.54 1.985-4.89 6.395-6.09 7.92-1.201 1.524-.42 3.017.12 3.572l11.825 15.125z'/>
       <path fill='#d23935' d='m24.939 41.402 14.106-18.46H24.278l-7.984 10.6z'/>
@@ -299,7 +330,6 @@ header() {
         <path fill='#fbb53e' d='M56.062 38.484 41.955 56.943h14.767l7.984-10.6z'/>
       </g>
     </svg>" \
-        | magick -background transparent -density 300 svg:- png:- \
         | chafa -s "x${HEIGHT}" -
     echo
 }
@@ -388,10 +418,6 @@ trap 'COLUMNS=$(tput cols 2>/dev/null) || true' WINCH
 if [[ "${TERM:-}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
     _raw_yellow=$'\e[1;93m'
     _raw_reset=$'\e[0m'
-    if ! command -v magick &>/dev/null; then
-        printf '%s[teleprompt] warning: magick not found — header() will not render%s\n' \
-            "$_raw_yellow" "$_raw_reset"
-    fi
     if ! command -v chafa &>/dev/null; then
         printf '%s[teleprompt] warning: chafa not found — header() will not render%s\n' \
             "$_raw_yellow" "$_raw_reset"

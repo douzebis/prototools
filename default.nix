@@ -522,9 +522,18 @@ let
   # builds it, unit tests included, on both architectures.
   grehackLife = import ./grehack2026/game/default.nix { inherit pkgs crane; };
 
+  # What the GreHack 2026 talk needs beyond the prototools, defined once for
+  # the demo shell and the workshop image (spec 0403).
+  grehackDemo = import ./nix/grehack2026-demo.nix {
+    inherit pkgs wktDb;
+    telepromptSrc = ./bin/teleprompt;
+    deckSrc       = ./grehack2026;
+    inherit (rust) neovimLean bufLean;
+  };
+
   # The GreHack 2026 workshop image (spec 0374).
   grehack2026 = import ./nix/grehack2026.nix {
-    inherit pkgs wktDb mkClosureCheck gitRevision;
+    inherit pkgs wktDb mkClosureCheck gitRevision grehackDemo;
     life = grehackLife;
     inherit (rust) prototext protolensLean;
     inherit (python) reproto protoscan googleapisDb googleapisPbs;
@@ -534,8 +543,7 @@ let
   # grpconf2026/shell.nix select these. Built from Nix only, never from
   # target/release/.
   demoShells = import ./nix/demo-shells.nix {
-    inherit pkgs wktDb grpconfDemo buf;
-    telepromptSrc  = ./bin/teleprompt;
+    inherit pkgs wktDb grpconfDemo grehackDemo;
     grehackRuntime = grehack2026.runtime;
     inherit (rust) prototext protolensLean;
     inherit (python) reproto protoscan googleapisDb googleapisPbs;

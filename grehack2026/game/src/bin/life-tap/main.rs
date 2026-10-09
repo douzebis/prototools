@@ -27,10 +27,11 @@ use tracker::Tracker;
 
 const CAPTURE_HELP: &str = "\
 Capturing needs privilege, for dumpcap alone (spec 0393):
-  on a Linux machine          sudo -v, then life-tap as yourself: it runs
+  on a Linux machine          life-tap as yourself: it asks for your sudo
+                              password if sudo has none cached, runs
                               dumpcap with sudo -n, and tshark as you
-  in the workshop container   podman exec -it workshop life-tap
-                              docker exec -it -u 0 workshop life-tap
+  in the workshop container   as root: podman runs as root already; with
+                              docker, run or exec with -u 0
   on NixOS, without sudo      programs.wireshark.enable = true, and your
                               user in the wireshark group";
 
@@ -68,6 +69,11 @@ struct Args {
     /// per-message lines and the summary still print.
     #[arg(short, long)]
     quiet: bool,
+
+    /// Start the tap in the background and return once it is capturing.
+    /// Any password prompt happens first, in the foreground (spec 0403 S4).
+    #[arg(long, conflicts_with = "stop")]
+    detach: bool,
 }
 
 fn main() -> ExitCode {
@@ -79,6 +85,8 @@ fn main() -> ExitCode {
     };
     let result = if args.stop {
         stop(&out)
+    } else if args.detach {
+        detach(&out)
     } else {
         tap(&args, &out)
     };
@@ -225,9 +233,38 @@ fn choose_dumpcap(
     })
 }
 
+/// What to do about sudo's credentials (spec 0403 S4): nothing when they
+/// are cached; ask for them (`sudo -v`) when there is a terminal to ask on;
+/// otherwise fail, since a tap with none would fail later, half started.
+#[derive(Debug, PartialEq)]
+enum Credentials {
+    Cached,
+    Ask,
+    Missing,
+}
+
+fn credentials(cached: bool, terminal: bool) -> Credentials {
+    match (cached, terminal) {
+        (true, _) => Credentials::Cached,
+        (false, true) => Credentials::Ask,
+        (false, false) => Credentials::Missing,
+    }
+}
+
+fn sudo_cached() -> bool {
+    Command::new("sudo")
+        .args(["-n", "-v"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// The dumpcap to run (spec 0393 S1). In the `sudo` case, the credentials
-/// are checked here, without running anything (`sudo -n -v`), so that a
-/// tap with none fails before it creates a file or starts tshark.
+/// are settled here, before anything runs: checked (`sudo -n -v`), and
+/// asked for on the terminal when missing (spec 0403 S4), so that a tap
+/// with none fails before it creates a file or starts tshark.
 fn dumpcap() -> Result<Dumpcap, String> {
     let usable = Command::new(WRAPPER)
         .arg("-v")
@@ -239,14 +276,20 @@ fn dumpcap() -> Result<Dumpcap, String> {
     let root = unsafe { libc::geteuid() } == 0;
     let chosen = choose_dumpcap(usable, root, find_on_path("dumpcap"))?;
     if matches!(chosen, Dumpcap::Sudo(_)) {
-        let cached = Command::new("sudo")
-            .args(["-n", "-v"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if !cached {
+        // SAFETY: isatty only inspects the descriptor.
+        let terminal = unsafe { libc::isatty(0) } == 1;
+        let ready = match credentials(sudo_cached(), terminal) {
+            Credentials::Cached => true,
+            Credentials::Ask => {
+                eprintln!("life-tap: dumpcap captures as root, through sudo");
+                Command::new("sudo")
+                    .arg("-v")
+                    .status()
+                    .is_ok_and(|s| s.success())
+            }
+            Credentials::Missing => false,
+        };
+        if !ready {
             return Err(format!(
                 "capturing needs root: run `sudo -v` first, then start the tap again\n\n\
                  {CAPTURE_HELP}"
@@ -341,6 +384,45 @@ fn clock(epoch: f64) -> String {
         tm.tm_sec,
         (epoch.fract() * 1000.0) as u32
     )
+}
+
+// ── --detach ─────────────────────────────────────────────────────────────────
+
+/// Start the tap in the background (spec 0403 S4). Privilege is settled
+/// here, in the foreground, where a password prompt can read the terminal;
+/// the tap itself is this program again, with the same arguments (so the
+/// same `out`) but `--detach`, in a process
+/// group of its own so that a Ctrl-C in the terminal does not reach it.
+/// Its output still goes to the terminal, one line per message. Returns
+/// once the tap has written its pid, or with its error if it exits first.
+fn detach(out: &Path) -> Result<ExitCode, String> {
+    dumpcap()?;
+    let exe = std::env::current_exe().map_err(|e| format!("finding life-tap: {e}"))?;
+    let args: Vec<_> = std::env::args_os()
+        .skip(1)
+        .filter(|a| a != "--detach")
+        .collect();
+    let mut child = Command::new(exe)
+        .args(args)
+        .process_group(0)
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| starting("life-tap", &e))?;
+    let pid = child.id().to_string();
+    let pid_file = pid_file(out);
+    let started = Instant::now();
+    loop {
+        if fs::read_to_string(&pid_file).is_ok_and(|p| p.trim() == pid) {
+            return Ok(ExitCode::SUCCESS);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("the tap stopped as it started ({status})"));
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            return Err(format!("the tap {pid} did not start within 30 s"));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 // ── The tap ──────────────────────────────────────────────────────────────────
@@ -747,6 +829,21 @@ mod tests {
             root[0],
             "life-tap: the commands, to adapt in a root terminal of your own:"
         );
+    }
+
+    #[test]
+    fn missing_credentials_are_asked_for_only_on_a_terminal() {
+        assert_eq!(credentials(true, false), Credentials::Cached);
+        assert_eq!(credentials(true, true), Credentials::Cached);
+        assert_eq!(credentials(false, true), Credentials::Ask);
+        assert_eq!(credentials(false, false), Credentials::Missing);
+    }
+
+    #[test]
+    fn detach_is_an_option_but_not_with_stop() {
+        let args = Args::try_parse_from(["life-tap", "-q", "--detach"]).unwrap();
+        assert!(args.detach);
+        assert!(Args::try_parse_from(["life-tap", "--detach", "--stop"]).is_err());
     }
 
     #[test]

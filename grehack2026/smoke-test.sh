@@ -297,6 +297,58 @@ summary=$(grep "stopped:" /tmp/late.log)
   || { echo "want calls saved and some missed: $summary"; exit 1; }
 EOF
 
+# ── The talk (spec 0403) ─────────────────────────────────────────────────────
+
+check "the talk's tools and material (spec 0403 S1, S7)" <<'EOF'
+set -e
+for c in teleprompt chafa nvim buf protoc hexdump life-tap life-server \
+         life-client prototext protolens reproto protoscan; do
+  command -v "$c" >/dev/null || { echo "$c is not on PATH"; exit 1; }
+done
+teleprompt --help >/dev/null
+cd /workshop/grehack2026
+for f in grehack2026.sh grehack2026.init anomalies.pb beats/logfile \
+         images/characters.jpeg images/tapping.jpeg; do
+  [ -f "$f" ] || { echo "no $f"; exit 1; }
+done
+for d in . eve bob beats images; do
+  [ "$(stat -c %a "$d")" = 1777 ] || { echo "$d is not 1777"; exit 1; }
+done
+EOF
+
+# The banner's text comes from fontconfig, which only the teleprompt's
+# wrapper configures (S3): with its fonts, the title draws ink, in bold;
+# without, it falls back to whatever fontconfig finds, which differs.
+check "the banners have their font (spec 0403 S3)" <<'EOF'
+set -e
+eval "$(grep -o "export FONTCONFIG_FILE=.*" "$(command -v teleprompt)")"
+# White on black: `-c none` draws by luminance against a dark background.
+svg="<svg xmlns='http://www.w3.org/2000/svg' width='800' height='120' viewBox='0 0 200 30'><rect width='200' height='30' fill='#000'/><text x='0' y='25' font-family='DejaVu Sans' font-size='28' font-weight='bold' fill='#fff'>Title</text></svg>"
+with=$(echo "$svg" | chafa -f symbols -c none -s 40x5 - | tr -d ' \n')
+without=$(echo "$svg" | FONTCONFIG_FILE=/nonexistent chafa -f symbols -c none -s 40x5 - 2>/dev/null | tr -d ' \n')
+[ -n "$with" ] || { echo "no ink with the teleprompt's fonts"; exit 1; }
+[ "$with" != "$without" ] || { echo "same output without the teleprompt's fonts"; exit 1; }
+EOF
+
+check "kitty's terminfo (spec 0403 S10)" <<'EOF'
+set -e
+TERM=xterm-kitty tput colors >/dev/null
+EOF
+
+# The deck's own tap lines, as the container runs them (S5, S6).
+check "the deck's tap: --detach, then --stop (spec 0403 S4, S5)" --user 0 --cap-add NET_RAW <<'EOF'
+set -e
+cd /workshop/grehack2026
+life-server </dev/null >/dev/null 2>&1 &
+sleep 1
+life-tap -q --detach --out capture >/tmp/detach.log 2>&1
+[ -f capture/tap.pid ] || { echo "--detach returned before tap.pid"; cat /tmp/detach.log; exit 1; }
+sleep 2
+timeout 4 life-client --steps 3 --size 20x10 >/dev/null 2>&1 || true
+[ -e capture/tap.pid ] && life-tap --out capture --stop
+ls capture/000001-request.pb capture/000001-response.pb >/dev/null
+EOF
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)

@@ -1,5 +1,5 @@
 # Remove the artifacts of a previous run (skip this step to keep them):
-[ -e capture/tap.pid ] && life-tap --stop; rm -rf capture life.desc life eve/server.log eve/server.yaml
+[ -e capture/tap.pid ] && life-tap --out capture --stop; rm -rf capture life.desc life eve/server.log eve/server.yaml
 
 clear && header "Why prototools"
 # \
@@ -112,7 +112,7 @@ clear && picture images/tapping.jpeg
 # One capture per message; each saved in capture/.                             \
 
 
-sudo -v && (life-tap -q &)
+life-tap -q --detach --out capture
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
