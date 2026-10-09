@@ -217,8 +217,9 @@ struct Cli {
     #[arg(long = "no-packing-penalty")]
     no_packing_penalty: bool,
 
-    /// Rows for the script pane, overriding its computed share of the
-    /// terminal (spec 0271 S4).
+    /// Rows for the script pane, overriding its computed height: the
+    /// script's tallest step, at most a third of the terminal (spec 0400
+    /// S1).
     #[arg(long = "script-height", value_parser = clap::value_parser!(u16).range(1..))]
     script_height: Option<u16>,
 

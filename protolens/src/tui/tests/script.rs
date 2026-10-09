@@ -178,13 +178,14 @@ fn scrolling_the_pane_stops_at_the_steps_own_text() {
     }
     assert_eq!(scroll(&app), 2, "the last row of the step ends the pane");
 
-    // Half the width, so the same six lines wrap to more rows and the
-    // bound moves with them rather than with the line count.
+    // Spec 0400 S2: narrower than `three`, and still two rows of slack —
+    // lines are cut, not wrapped, so the bound follows the line count
+    // whatever the width.
     app.script_area = Rect::new(0, 0, 4, 4);
     for _ in 0..20 {
         app.script_scroll_by(true);
     }
-    assert_eq!(scroll(&app), 3, "`three` is the one word that takes two");
+    assert_eq!(scroll(&app), 2, "nothing wraps, so no row is added");
 }
 
 /// Spec 0271 test-plan item 5 / S12. Opened under a row budget, the
@@ -1496,5 +1497,144 @@ fn two_steps_sharing_a_wire_span_do_not_scroll_between_cells() {
         app.scroll_top(),
         after_step1,
         "an unchanged wire span with both cells visible must not scroll"
+    );
+}
+
+// -----------------------------------------------------------------
+// Spec 0400: the pane fits its script; lines are cut, not wrapped
+// -----------------------------------------------------------------
+
+/// `n` lines of commentary, as a YAML block scalar.
+fn text_of(n: usize) -> String {
+    let mut text = String::from("|\n");
+    for i in 0..n {
+        text.push_str(&format!("      line {i}\n"));
+    }
+    text
+}
+
+/// Spec 0400 test-plan item 1: one height for the whole script, the
+/// tallest step's, so the document does not move while stepping.
+#[test]
+fn the_pane_fits_the_tallest_step() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(&format!(
+        "steps:\n  - text: {}  - text: {}",
+        text_of(2),
+        text_of(5)
+    )));
+    assert_eq!(
+        app.script_rows(60),
+        5,
+        "the two-line step gets the five-line step's pane"
+    );
+    app.script_advance(true);
+    assert_eq!(app.script_rows(60), 5);
+}
+
+/// Spec 0400 test-plan item 2: never more than a third of the terminal,
+/// and a step taller than that pages before it advances.
+#[test]
+fn the_pane_is_capped_at_a_third() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(&format!(
+        "steps:\n  - text: {}  - text: {}",
+        text_of(40),
+        text_of(1)
+    )));
+    assert_eq!(app.script_rows(60), 20);
+    app.script_area = Rect::new(0, 0, 80, 20);
+    app.script_space();
+    let state = app.script.as_ref().expect("a script");
+    assert_eq!(state.current, 0, "space pages first");
+    assert_eq!(state.scroll, 20);
+}
+
+/// Spec 0400 test-plan item 3.
+#[test]
+fn script_height_still_overrides() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(&format!("steps:\n  - text: {}", text_of(9))));
+    app.script_height = Some(5);
+    assert_eq!(app.script_rows(60), 5);
+}
+
+/// Spec 0400 test-plan item 4: a line wider than the pane takes one row,
+/// says it is cut, and panning reaches its end.
+#[test]
+fn a_long_line_is_cut_not_wrapped() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (mut app, _) = repeated_message_fixture();
+    app.splash = false;
+    let long: String = (0..150)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect();
+    app.set_script(script_of(&format!("steps:\n  - text: \"{long}\"\n")));
+    assert_eq!(app.script_rows(30), 1, "one line, one row");
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let pane_row = |terminal: &Terminal<TestBackend>| -> String {
+        let buffer = terminal.backend().buffer();
+        (0..100u16)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect()
+    };
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let row = pane_row(&terminal);
+    assert_eq!(&row[..99], &long[..99], "drawn as written up to the edge");
+    assert!(row.ends_with('›'), "and marked as cut: {row:?}");
+
+    for _ in 0..10 {
+        app.script_pan(PAN_STEP, false);
+    }
+    assert_eq!(
+        app.script.as_ref().unwrap().hscroll,
+        50,
+        "clamped at the line's end"
+    );
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let row = pane_row(&terminal);
+    assert_eq!(row, long[50..], "panned to the end, which is not cut");
+}
+
+/// Spec 0400 test-plan item 5 (S3): Tab resumes navigation, so the pane
+/// comes back and the main pane shrinks — the step's reveal has to be
+/// measured against the shrunk pane, or its target lands below the
+/// bottom edge once the frame is drawn.
+#[test]
+fn a_reveal_uses_the_resumed_panes_main_pane() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut app = wide_sibling_scalars_app(60);
+    app.splash = false;
+    app.set_script(script_of(&format!(
+        "steps:\n  - text: {}    node: field_30\n",
+        text_of(10)
+    )));
+    let mut terminal = Terminal::new(TestBackend::new(120, 37)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // Navigation off: the pane is gone, the main pane is ten rows
+    // taller, and the reader is back at the top.
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    app.set_scroll_top(0);
+    let tall = app.main_area.height;
+
+    // Tab: the step is applied before the frame that brings the pane back.
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    let predicted = app.main_area.height;
+    assert_eq!(predicted, tall - 10, "measured against the coming frame");
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert_eq!(app.main_area.height, predicted, "which the frame confirms");
+
+    let row = app.terminal_row_of(app.absolute_start(app.cursor));
+    assert!(
+        (0..app.main_area.height as isize).contains(&row),
+        "the target is on screen: row {row} of {}",
+        app.main_area.height
     );
 }

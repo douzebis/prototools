@@ -604,6 +604,17 @@ impl App {
         // only active while navigation is on, unlike the old `space`
         // toggle which was unconditional. `PageDown`/`PageUp` fire the
         // same actions when the script pane has focus (S4).
+        // Spec 0400 S2: Alt-Left/Alt-Right pan the commentary while the
+        // script pane has focus (the click focus PageDown/PageUp use, spec
+        // 0355 S4), as they pan the main pane otherwise.
+        if self.script_focus
+            && self.script_active()
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            self.script_pan(PAN_STEP, key.code == KeyCode::Left);
+            return;
+        }
         if self.script.is_some() && !ctrl_or_alt(&key) {
             if key.code == KeyCode::Tab {
                 self.script_toggle();

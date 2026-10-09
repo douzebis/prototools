@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0400 — the script pane fits its script; text is laid out for 120 columns
 
-Status: draft
+Status: implemented (pending: test plan item 7, the rehearsal)
+Implemented in: 2026-10-09
 App: protolens (script pane), grehack2026 (beats)
 Refs: docs/specs/0271-a-script-walks-the-reader-through-the-blob.md (S4:
       the pane's height — 25% of the terminal, clamped to 3..=12 — and
@@ -75,10 +76,12 @@ rows than a wide terminal requires.
 - **S2. No wrap; the pane pans horizontally (G2).** The step's lines are
   drawn as written, cut at the pane's right edge. The pane keeps a
   horizontal offset, reset to 0 on every step change (like its vertical
-  scroll), bounded by its widest line minus the pane's width. While the
-  pointer is over the pane — the same focus PageUp/PageDown already use
-  there — Shift+wheel and the horizontal wheel pan it (spec 0127 G2's
-  gesture), and so do Alt-Left / Alt-Right. A line cut at the right edge
+  scroll), bounded by its widest line minus the pane's width. Shift+wheel and
+  the horizontal wheel pan it while the pointer is over the pane (spec
+  0127 G2's gesture, which follows the pointer in every pane), and
+  Alt-Left / Alt-Right pan it while the pane has focus — the click focus
+  PageUp/PageDown already use there (spec 0355 S4) — as they pan the
+  main pane otherwise. A line cut at the right edge
   shows `›` in the pane's last column, so the presenter sees that
   something is hidden.
 
@@ -158,5 +161,28 @@ not have. Left out (N1).
 
 ## Measured outcome
 
-Filled in at implementation. Already done ahead of it: S4's reflow of the
-four beats (widest line 119 columns; directives byte-identical to before).
+Implemented 2026-10-09.
+
+- **S1:** `script_rows` takes the tallest step's line count, capped at
+  `max(1, rows / 3)`; `PANE_PERCENT`, `PANE_MIN` and `PANE_MAX` are gone.
+- **S2:** the paragraph is no longer wrapped. `ScriptState.hscroll` is
+  passed to `Paragraph::scroll`, which pans wide characters correctly,
+  and a `›` is drawn over the last cell of each row that is cut.
+- **S3:** `App` records the terminal's height and the pane rows each
+  frame drew, and `script_apply` corrects `main_area.height` from them
+  before its directives. The prediction does nothing before the first
+  frame, and so it never affects a headless transcript.
+- **Tests (items 1–5):** five new tests in `tui/tests/script.rs`.
+  `scrolling_the_pane_stops_at_the_steps_own_text` lost its
+  wrap-dependent half: a narrower pane now keeps the same bound. Item 5
+  was checked against the code without S3, where the target was drawn
+  at row 30 of a 24-row main pane, the Background's case. The protolens
+  suite passes (1,321 tests), with clippy and rustfmt clean.
+- **Item 6:** after this session's edits to the beats, the widest line
+  is 112 columns (`smuggle`), and the tallest step is 9 lines
+  (`smuggle2`). So on the 37-row presentation terminal the pane is 9
+  rows, under the cap of 12.
+- **Not done:**
+  - the rehearsal (item 7);
+  - re-pinning the beats against fresh demo output. The generated files
+    were absent, and a walk cannot see the change: it draws no frame.

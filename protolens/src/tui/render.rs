@@ -2005,6 +2005,8 @@ impl App {
         // one, so the rule is the only thing left saying a script is
         // attached.
         let script_rows = self.script_rows(area.height);
+        self.term_height = area.height;
+        self.script_drawn_rows = script_rows;
         let separator_rows = self.script_separator_rows();
         let chunks = Layout::default()
             .direction(Direction::Vertical)

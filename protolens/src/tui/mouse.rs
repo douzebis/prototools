@@ -144,7 +144,11 @@ impl App {
             _ => (false, false),
         };
         if pan_left || pan_right {
-            if over_side {
+            if over_script {
+                // Spec 0400 S2: the commentary is not wrapped, so a line
+                // wider than the pane is reached by panning it.
+                self.script_pan(WHEEL_PAN_STEP, pan_left);
+            } else if over_side {
                 // Clamped on the right, same as the main pane's own
                 // `pan_right` below. The wheel always pans at
                 // `WHEEL_PAN_STEP`, unlike Ctrl-Left/Ctrl-Right's

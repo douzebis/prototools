@@ -1797,6 +1797,13 @@ pub struct App {
     /// basis for the override pane's minimum-width refusal (spec 0114
     /// §2), since `main_area`'s own width shrinks once the pane is open.
     term_width: u16,
+    /// Full terminal height (rows) as of the last `render()` call, and
+    /// how many of them that frame gave the script pane's commentary.
+    /// Spec 0400 S3: applying a step predicts the main pane's height in
+    /// the *coming* frame from these two, since the pane may change
+    /// height between frames (Tab resuming navigation).
+    term_height: u16,
+    script_drawn_rows: u16,
     /// Override pane's candidate-list visible row count as of the last
     /// `render_override_pane()` call — basis for `PageUp`/`PageDown`
     /// scrolling by a full page, mirroring `main_area` (used the same way
@@ -2440,6 +2447,8 @@ impl App {
             override_resistance: EdgeResistance::default(),
             last_override_highlight: None,
             term_width: 0,
+            term_height: 0,
+            script_drawn_rows: 0,
             override_list_height: 0,
             heat_caches: Arc::new(Mutex::new(heat_worker::HeatCaches::new(
                 heat_cue::HEAT_CACHE_MAX_ENTRIES,

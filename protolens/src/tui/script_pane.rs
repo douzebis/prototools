@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
@@ -32,14 +32,14 @@ use crate::script::{Directive, FoldEntry, Position, Predicate, Script, Step, Wir
 use crate::theme;
 use crate::tui::heat_cue::HeatCueMode;
 
-/// Spec 0271 S4: the script pane's share of the terminal, and the two
-/// absolute bounds on it.
-///
-/// Below `MIN` there is no room for a sentence; above `MAX` the blob —
-/// the thing being explained — stops dominating the screen.
-const PANE_PERCENT: u16 = 25;
-const PANE_MIN: u16 = 3;
-const PANE_MAX: u16 = 12;
+/// Spec 0400 S1: the pane is never taller than this share of the
+/// terminal — past a third, the blob, the thing being explained, stops
+/// dominating the screen.
+const PANE_MAX_DIVISOR: u16 = 3;
+
+/// Spec 0400 S2: what a line cut at the pane's right edge shows in the
+/// pane's last column, so the presenter sees that something is hidden.
+const CUT_MARKER: &str = "›";
 
 /// A loaded script and where the session is in it.
 pub(crate) struct ScriptState {
@@ -58,6 +58,10 @@ pub(crate) struct ScriptState {
     pub(super) active: bool,
     /// First line of the step's text drawn in the pane.
     pub(super) scroll: u16,
+    /// First display column drawn (spec 0400 S2): lines are not wrapped,
+    /// so what does not fit is reached by panning. Reset with `scroll` on
+    /// every step change.
+    pub(super) hscroll: u16,
     /// What the last application of a step could not do (spec 0271 S13),
     /// shown on the message row.
     pub(super) diagnostics: Vec<String>,
@@ -71,6 +75,7 @@ impl App {
             current: 0,
             active: true,
             scroll: 0,
+            hscroll: 0,
             diagnostics: Vec::new(),
         });
         // A script has its own first-frame story to tell; the splash
@@ -177,8 +182,9 @@ impl App {
     }
 
     /// The last row the commentary may be scrolled to: one paneful short
-    /// of the step's wrapped end, and zero when the step already fits
-    /// (2026-08-12).
+    /// of the step's end, and zero when the step already fits
+    /// (2026-08-12). Lines do not wrap (spec 0400 S2), so the step's end
+    /// is its line count.
     ///
     /// A step is a paragraph, not a document — panning past either end
     /// of it shows blank rows and loses the only thing the pane is for.
@@ -199,6 +205,55 @@ impl App {
         rows.saturating_sub(area.height)
     }
 
+    /// The last column the commentary may be panned to: the widest line
+    /// of the step, less the pane's width (spec 0400 S2).
+    fn script_max_hscroll(&self) -> u16 {
+        let Some(state) = self.script.as_ref() else {
+            return 0;
+        };
+        let widest = script_paragraph(state, Style::default()).line_width();
+        u16::try_from(widest)
+            .unwrap_or(u16::MAX)
+            .saturating_sub(self.script_area.width)
+    }
+
+    /// Spec 0400 S2: pan the commentary by `step` columns, clamped at both
+    /// ends. Shift+wheel and the horizontal wheel over the pane, and
+    /// Alt-Left/Alt-Right while it has focus.
+    pub(super) fn script_pan(&mut self, step: usize, left: bool) {
+        let max = self.script_max_hscroll();
+        let Some(state) = self.script.as_mut() else {
+            return;
+        };
+        let step = u16::try_from(step).unwrap_or(u16::MAX);
+        state.hscroll = if left {
+            state.hscroll.saturating_sub(step)
+        } else {
+            state.hscroll.saturating_add(step).min(max)
+        };
+    }
+
+    /// Spec 0400 S3: give `main_area` the height the coming frame will
+    /// give it, before a step's directives reveal their targets against
+    /// it.
+    ///
+    /// The last frame's height is right whenever the pane keeps its
+    /// height, which S1 guarantees while stepping. It is wrong when `Tab`
+    /// resumes navigation: that frame drew the pane at zero rows, so the
+    /// main pane was taller than the frame about to be drawn, and a target
+    /// revealed near its bottom would land below the new bottom edge.
+    /// Nothing to correct before the first frame, which has no height to
+    /// correct.
+    fn script_predict_main_height(&mut self) {
+        if self.term_height == 0 {
+            return;
+        }
+        let coming = self.script_rows(self.term_height);
+        self.main_area.height =
+            (self.main_area.height + self.script_drawn_rows).saturating_sub(coming);
+        self.script_drawn_rows = coming;
+    }
+
     /// Spec 0271 S6: put the session into the view the current step
     /// declares.
     pub(super) fn script_apply(&mut self) {
@@ -210,6 +265,7 @@ impl App {
         // index through every helper below for no measurable gain.
         let step: Step = state.script.steps[state.current].clone();
 
+        self.script_predict_main_height();
         self.script_reset();
         let mut errors = Vec::new();
         // Spec 0356 S8: mode switches applied before all view directives so
@@ -274,6 +330,7 @@ impl App {
 
         if let Some(state) = self.script.as_mut() {
             state.scroll = 0;
+            state.hscroll = 0;
             state.diagnostics = errors;
         }
         let diagnostics = self
@@ -950,22 +1007,39 @@ impl App {
     // Drawing
     // -----------------------------------------------------------------
 
-    /// Spec 0271 S4: how many rows the commentary takes, excluding its
+    /// Spec 0400 S1: how many rows the commentary takes, excluding its
     /// separator.
+    ///
+    /// As tall as the script's tallest step, and never taller than a third
+    /// of the terminal: one height for the whole script, so the document
+    /// does not jump while stepping. Lines do not wrap (S2), so a step's
+    /// height is its line count, whatever the terminal's width. A step
+    /// taller than the cap scrolls, and `space` pages through it before
+    /// advancing. `--script-height` overrides the computation.
     ///
     /// Zero when no script is loaded, and zero while navigation is off
     /// (amended 2026-08-10): commentary the reader has stepped out of is
-    /// a quarter of the screen spent on a paragraph about wherever the
-    /// script last was, which is not where the reader now is. The
-    /// separator stays — see [`Self::script_separator_rows`] — so the
-    /// script is still visibly there, and `space` brings the text back.
+    /// screen spent on a paragraph about wherever the script last was,
+    /// which is not where the reader now is. The separator stays — see
+    /// [`Self::script_separator_rows`] — so the script is still visibly
+    /// there, and `Tab` brings the text back.
     pub(super) fn script_rows(&self, total: u16) -> u16 {
-        if !self.script_active() {
+        let Some(state) = self.script.as_ref().filter(|s| s.active) else {
             return 0;
-        }
+        };
         match self.script_height {
             Some(rows) => rows.min(total.saturating_sub(2)),
-            None => (total * PANE_PERCENT / 100).clamp(PANE_MIN, PANE_MAX),
+            None => {
+                let tallest = state
+                    .script
+                    .steps
+                    .iter()
+                    .map(|step| step.text.lines().count())
+                    .max()
+                    .unwrap_or(0);
+                let tallest = u16::try_from(tallest).unwrap_or(u16::MAX);
+                tallest.min((total / PANE_MAX_DIVISOR).max(1))
+            }
         }
     }
 
@@ -989,9 +1063,29 @@ impl App {
         let Some(state) = self.script.as_ref() else {
             return;
         };
-        let pane =
-            script_paragraph(state, theme::script_pane_style(self.theme)).scroll((state.scroll, 0));
+        let style = theme::script_pane_style(self.theme);
+        let pane = script_paragraph(state, style).scroll((state.scroll, state.hscroll));
         frame.render_widget(pane, area);
+
+        // Spec 0400 S2: a line cut at the right edge says so in the
+        // pane's last column.
+        if area.width == 0 {
+            return;
+        }
+        let shown_to = usize::from(state.hscroll) + usize::from(area.width);
+        let lines = state.script.steps[state.current].text.lines();
+        for (row, line) in lines
+            .skip(usize::from(state.scroll))
+            .take(usize::from(area.height))
+            .enumerate()
+        {
+            if Line::raw(line).width() > shown_to {
+                let y = area.y + u16::try_from(row).unwrap_or(u16::MAX);
+                frame
+                    .buffer_mut()
+                    .set_string(area.x + area.width - 1, y, CUT_MARKER, style);
+            }
+        }
     }
 
     pub(super) fn render_script_separator(&self, frame: &mut Frame, area: Rect) {
@@ -1098,18 +1192,19 @@ fn unresolved(position: &Position) -> String {
     }
 }
 
-/// The current step's commentary, wrapped the way the pane draws it.
+/// The current step's commentary, the way the pane draws it: the
+/// author's lines as written, unwrapped (spec 0400 S2, N1).
 ///
-/// One construction shared by the renderer and [`App::script_max_scroll`]
-/// — the scroll bound is a fact about this exact paragraph, so deriving
-/// it from a differently-built one would be how the two drift apart.
+/// One construction shared by the renderer and the scroll bounds — they
+/// are facts about this exact paragraph, so deriving them from a
+/// differently-built one would be how the two drift apart.
 fn script_paragraph(state: &ScriptState, style: Style) -> Paragraph<'static> {
     let text: Vec<Line> = state.script.steps[state.current]
         .text
         .lines()
         .map(|l| Line::styled(l.to_string(), style))
         .collect();
-    Paragraph::new(text).style(style).wrap(Wrap { trim: false })
+    Paragraph::new(text).style(style)
 }
 
 /// Spec 0355 S7: the micro-help on the separator.
@@ -1161,6 +1256,7 @@ mod tests {
             current,
             active,
             scroll: 0,
+            hscroll: 0,
             diagnostics: Vec::new(),
         }
     }
