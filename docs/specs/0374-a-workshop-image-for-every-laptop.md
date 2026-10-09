@@ -6,13 +6,15 @@ SPDX-License-Identifier: MIT
 
 # 0374 — a workshop image for every laptop
 
-Status: implemented
+Status: implemented (S1–S9); amended 2026-10-09 with S10–S14, draft
 Implemented in: 2026-09-30
 App: grehack2026, nix, CI
 Refs: .github/workflows/nix.yml (the x86-64 and arm64 runners this
       builds on); default.nix `prototools` (the bundle the image
       carries); prototext/wkt/prebuilt/README.md (the committed WKT
-      graph the image embeds)
+      graph the image embeds); docs/specs/0375-a-game-of-life-to-spy-on.md
+      (what the image gained since: the game, the tap, wireshark-cli,
+      fortune, tmux, and the smoke checks that go with them)
 
 ## Background
 
@@ -311,6 +313,62 @@ rather than the plan.
   the index and the publication. Building arm64 locally through
   binfmt/QEMU is possible but not part of the process.
 
+### Amended 2026-10-09 (draft, not yet implemented)
+
+Two things a participant cannot get today without the repository at
+hand: an explanation on the image's registry page, and a download that
+outlives the workflow run. The USB-key bundle exists only as a workflow
+artifact, which GitHub deletes after its retention period (90 days by
+default) and serves only to signed-in users. And the guard that keeps the
+workflow from running in the ThalesGroup mirror, whose build budget is
+strict, is on one job and implied for the other.
+
+- **S10. The workflow runs only in douzebis/prototools.** Every job
+  carries `if: github.repository == 'douzebis/prototools'`. The image job
+  has it already; the index job is skipped today only because the job it
+  `needs` was, which a later edit (`if: always()`, a new job without
+  `needs`) would silently undo. In the ThalesGroup mirror a tag push or a
+  dispatch then starts a run whose jobs all skip, and a skipped job
+  consumes no runner minutes.
+
+- **S11. The registry page says how to run the image.** The index pushed
+  as `:<revision>` and `:grehack2026` carries the annotation
+  `org.opencontainers.image.description`: what the image is, the run
+  command from S8, and the URL of `grehack2026/SETUP.md` on GitHub. For a
+  multi-architecture image GitHub reads the description from the index,
+  not from the per-architecture images; the per-architecture images carry
+  the same text as a label (`config.Labels`), so `docker inspect` shows it
+  too. Which publishing tool writes the index annotation (crane, at
+  `index append` or with a separate mutation) is settled at
+  implementation, checked against what the package page displays.
+
+- **S12. A GitHub Release per `grehack2026-*` tag.** On a tag push (not on
+  a dispatch, which publishes no version), the index job creates a GitHub
+  Release named after the tag, with the USB-key bundle's files as assets:
+  `prototools-workshop-amd64.tar`, `prototools-workshop-arm64.tar`,
+  `load.sh`, `SHA256SUMS` and `SETUP.md`. Its notes give the pull and run
+  commands (S8) and point at `SETUP.md`. Unlike a workflow artifact, a
+  release asset does not expire and needs no sign-in. The job gains
+  `permissions: contents: write`.
+
+- **S13. A README inside the image.** `/workshop/README.md` explains the
+  image itself — the tools, the game in three terminals (SETUP.md section
+  4), where `/work` is — and points at `anomalies.pb` as the first thing
+  to open. The anomalies fixture's own README, copied there today under
+  that name, moves to `/workshop/anomalies.md`.
+
+- **S14. Releasing, by hand, in order.**
+  1. Push a `grehack2026-*` tag to `origin` (douzebis/prototools).
+  2. Wait for the workflow: both images built and smoke-tested, the
+     index pushed, the release created.
+  3. On the first publication only: switch the package to public in its
+     settings (S6).
+  4. Check that the index lists both platforms:
+     `crane manifest ghcr.io/douzebis/prototools-workshop:grehack2026`.
+  5. Pull and run the image on an amd64 machine and on an arm64 one (a
+     Mac), as a participant would, following `SETUP.md`.
+  6. Copy the release's assets to the USB keys.
+
 ## Alternatives considered
 
 ### A single `amd64` image, run under Rosetta on Macs
@@ -368,6 +426,14 @@ image like any other runtime.
    machine loads the matching archive, and rejects a corrupted one.
 
 ## Measured outcome
+
+**Re-measured 2026-10-09,** locally on x86-64 Linux, rootless Podman
+5.8.7, after spec 0375 added the game, the tap, wireshark-cli, fortune
+and tmux: `nix-build -A grehack2026.image` and
+`grehack2026.closureCheck` pass; the image is 1150 MiB unpacked, 180
+store paths (from 859 MiB and 122); `DOCKER=podman
+grehack2026/smoke-test.sh` passes all 18 checks (from nine). arm64 is
+still measured only by CI. S10–S14 are not implemented yet.
 
 Measured 2026-09-30, locally on x86-64 Linux (Docker 29.8.0).
 
