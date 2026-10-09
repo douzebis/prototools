@@ -186,7 +186,14 @@ jobs:
           How to run it, and what to do with it: [SETUP.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/grehack2026/SETUP.md).
           EOF
           crane tag "$IMAGE:$GITHUB_SHA" "$GITHUB_REF_NAME"
+          # A beta or a release candidate is published as a pre-release:
+          # GitHub labels it so, and does not show it as the latest.
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-beta*|*-rc*) prerelease=(--prerelease) ;;
+          esac
           gh release create "$GITHUB_REF_NAME" usb-key/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md
+            --notes-file notes.md \
+            "${prerelease[@]}"
