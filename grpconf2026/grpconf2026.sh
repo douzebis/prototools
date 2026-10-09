@@ -119,8 +119,7 @@ clear && header "4. Descriptors to the help"
 # Now that we have a corpus of schema descriptors, we can use it to infer      \
 # the type of the network capture, with our third prototool: prototext.        \
 
-prototext --descriptor-set alice/app.desc list-schemas bob/capture \
-  | bat -l yaml --style=plain
+prototext --descriptor-set alice/app.desc list-schemas bob/capture
 # \
 # Yes! prototext found one type matching the network capture:                  \
 #                                                                              \
@@ -226,9 +225,9 @@ reproto \
     --seed 'file:google/maps/places/v1/*.proto'
 
 # reproto extracted 34 files: the 18 places.v1 files plus their transitive deps:
-tree -P "*.pb" alice/places
+(shopt -s globstar; ls -1 alice/places/**/*.pb)
 # and decompiled them to equivalent .proto files:
-tree -P "*.proto" alice/places
+(shopt -s globstar; ls -1 alice/places/**/*.proto)
 # What's inside places_service.proto again?
 view alice/places/google/maps/places/v1/places_service.proto
 
@@ -236,8 +235,8 @@ view alice/places/google/maps/places/v1/places_service.proto
 # 2. We can also have reproto work on an incomplete FDS.                       \
 
 # For example, let's make a copy the binary descriptors we just extracted:
-rsync -a --include="*/" --include="*.pb" --exclude="*" \
-  alice/places/ alice/places-incomplete/
+mkdir -p alice/places-incomplete \
+  && (shopt -s globstar; cd alice/places && cp --parents **/*.pb ../places-incomplete/)
 # Now remove polyline.pb from the copy:
 rm alice/places-incomplete/google/maps/places/v1/polyline.pb
 # And remove the TravelMode definition from travel_mode.pb:

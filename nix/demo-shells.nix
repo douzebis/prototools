@@ -15,25 +15,23 @@
 # dev-shell.
 { pkgs
 , grehackDemo       # nix/grehack2026-demo.nix: teleprompt, demoTools, demoEnv
+, grpconfTalk       # nix/grpconf2026-demo.nix: demoTools, demoEnv, deck
 , grehackRuntime    # grehack2026.runtime: the workshop image's tool set
 , prototext
 , protolensLean
 , reproto
 , protoscan
 , wktDb
-, googleapisDb
-, googleapisPbs
-, grpconfDemo
 }:
 
 let
-  inherit (grehackDemo) teleprompt demoTools demoEnv;
+  inherit (grehackDemo) teleprompt;
 
-  # What the grpconf2026 deck calls besides the prototools: the teleprompt,
-  # protoc and hexdump.
-  deckTools = [ teleprompt pkgs.protobuf pkgs.util-linux ];
-
-  wktSet = "${wktDb}/share/prototools/wkt.desc";
+  # demoEnv as shellHook lines: assignments, then one export.
+  exportEnv = env: ''
+    ${pkgs.lib.toShellVars env}
+    export ${builtins.concatStringsSep " " (builtins.attrNames env)}
+  '';
 
   # Spec 0394 S4: not a development shell. nix-shell inherits the caller's
   # environment, so a demo shell entered from the dev-shell would otherwise
@@ -48,43 +46,40 @@ in
   # and the talk's, the same set the image carries (spec 0403 S1).
   grehack2026-shell = pkgs.mkShell {
     name = "grehack2026";
-    packages = [ grehackRuntime ] ++ demoTools;
+    packages = [ grehackRuntime ] ++ grehackDemo.demoTools;
     shellHook = ''
       ${notDevShell}
-      ${pkgs.lib.toShellVars demoEnv}
-      export ${builtins.concatStringsSep " " (builtins.attrNames demoEnv)}
+      ${exportEnv grehackDemo.demoEnv}
     '';
   };
 
-  # grpconf2026/ (spec 0394 S1, S5).
+  # grpconf2026/ (spec 0394 S1, S5): its tools, environment and bob/ from
+  # the same definition the workshop image uses (spec 0404 S1, S2).
   grpconf2026-shell = pkgs.mkShell {
     name = "grpconf2026";
-    packages = [ prototext protolensLean reproto protoscan wktDb ] ++ deckTools;
+    packages = [ prototext protolensLean reproto protoscan wktDb ]
+      ++ grpconfTalk.demoTools;
     shellHook = ''
       ${notDevShell}
-      export PROTOTEXT_DESCRIPTOR_SET="${wktSet}"
-      export PROTOTEXT_GOOGLEAPIS_SET="${googleapisDb}/googleapis.desc"
-      export PROTOTEXT_GOOGLEAPIS_PBS="${googleapisPbs}/googleapis.pb"
+      ${exportEnv grpconfTalk.demoEnv}
 
       # Spec 0394 S5 (from the dev-shell's former _hook_demo): populate
-      # bob/ and alice/ from the grpconf-demo derivation, writable, so the
+      # bob/ and alice/ from the deck's bob/ (spec 0404 S2), writable, so the
       # presenter has a working directory. Guarded by a sentinel recording
       # the store path that last populated bob/, so re-entering is free.
       # bob/ and alice/ are gitignored; beats/ is committed and untouched.
       _grpconf_stage() {
         local bob="$PWD/bob"
         local sentinel="$bob/.demo-source"
-        local demo="${grpconfDemo}"
+        local demo="${grpconfTalk.deck}/bob"
         if [[ "$(cat "$sentinel" 2>/dev/null)" == "$demo" ]]; then
           return
         fi
-        echo "grpconf2026: populating bob/ and alice/ from grpconf-demo"
+        echo "grpconf2026: populating bob/ and alice/ from the deck"
         rm -rf "$bob"
         mkdir -p "$bob" "$PWD/alice"
-        cp --no-preserve=mode "$demo/bin/bobapp" "$bob/app"
+        cp --no-preserve=mode "$demo/app" "$demo/logfile" "$demo/capture" "$bob/"
         chmod +x "$bob/app"
-        cp --no-preserve=mode "$demo/logfile" "$bob/logfile"
-        cp --no-preserve=mode "$demo/capture" "$bob/capture"
         echo "$demo" > "$sentinel"
       }
       if [[ "$(basename "$PWD")" == grpconf2026 ]]; then

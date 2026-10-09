@@ -27,6 +27,7 @@
 , googleapisPbs
 , mkClosureCheck
 , grehackDemo     # nix/grehack2026-demo.nix: the talk's tools and material
+, grpconfTalk     # nix/grpconf2026-demo.nix: the stretch-goal talk (spec 0404)
 , gitRevision ? null
 }:
 
@@ -73,7 +74,7 @@ let
       prototools — GreHack 2026 workshop
 
       Tools:     prototext  protolens  reproto  protoscan
-      Material:  /workshop   (try: protolens --type google.protobuf.FileDescriptorProto anomalies.pb)
+      Material:  /workshop
       Your files: /work, when started with -v "$PWD":/work
 
       The game of life, in three terminals (SETUP.md, section 4):
@@ -84,6 +85,11 @@ let
       tmux is here too, for one window of panes.
 
       The talk: cd grehack2026 && teleprompt grehack2026.sh   (SETUP.md, section 5)
+
+      Stretch goals (SETUP.md, section 6):
+        cd grpconf2026 && teleprompt grpconf2026.sh                the gRPConf talk
+        protolens --type google.protobuf.FileDescriptorProto \
+            anomalies.pb --script anomalies.script                the anomalies
 
       Schema databases: $PROTOTEXT_DESCRIPTOR_SET (well-known types, the default)
                         $PROTOTEXT_GOOGLEAPIS_SET (googleapis; pass it with --descriptor-set)
@@ -119,10 +125,16 @@ let
     pkgs.cacert
     nss
     profile
-  ] ++ grehackDemo.demoTools;   # the talk (spec 0403 S1)
+  ] ++ grehackDemo.demoTools    # the talk (spec 0403 S1)
+    ++ grpconfTalk.demoTools;   # the stretch-goal talk (spec 0404 S3)
 
-  googleapisSet = "${googleapisDb}/googleapis.desc";
-  googleapisPbs' = "${googleapisPbs}/googleapis.pb";
+  # Both talks' environments in one (spec 0404 S3). They must agree on the
+  # default descriptor set, or one talk would run against the wrong one.
+  demoEnv =
+    assert grehackDemo.demoEnv.PROTOTEXT_DESCRIPTOR_SET
+        == grpconfTalk.demoEnv.PROTOTEXT_DESCRIPTOR_SET;
+    grehackDemo.demoEnv // grpconfTalk.demoEnv;
+
 
   image = pkgs.dockerTools.streamLayeredImage {
     name = "prototools-workshop";
@@ -146,6 +158,13 @@ let
       cp -r ${grehackDemo.deck} workshop/grehack2026
       chmod -R u+w,a+rwX workshop/grehack2026
       find workshop/grehack2026 -type d -exec chmod 1777 {} +
+
+      # The stretch-goal talk, writable likewise: its init recreates alice/
+      # next to the deck (spec 0404 S3, S5).
+      cp -r ${grpconfTalk.deck} workshop/grpconf2026
+      chmod -R u+w,a+rwX workshop/grpconf2026
+      find workshop/grpconf2026 -type d -exec chmod 1777 {} +
+      chmod 0777 workshop/grpconf2026/bob/app
     '';
 
     config = {
@@ -160,13 +179,10 @@ let
         # ncurses reads only its own terminfo directory; kitty's (spec 0403
         # S10) is linked into /share/terminfo with the image's contents.
         "TERMINFO_DIRS=/share/terminfo"
-        # The googleapis pair are conveniences for people and scripts: no
-        # tool reads them.
-        "PROTOTEXT_GOOGLEAPIS_SET=${googleapisSet}"
-        "PROTOTEXT_GOOGLEAPIS_PBS=${googleapisPbs'}"
-      # The tools read PROTOTEXT_DESCRIPTOR_SET (spec 0090), set the same way
-      # as in the demo shell (spec 0403 S9).
-      ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") grehackDemo.demoEnv;
+      # The tools read PROTOTEXT_DESCRIPTOR_SET (spec 0090); the googleapis
+      # pair and PROTOTEXT_WKT_SET are for people and the decks. All set the
+      # same way as in the demo shells (specs 0403 S9, 0404 S1).
+      ] ++ lib.mapAttrsToList (n: v: "${n}=${v}") demoEnv;
       Labels = {
         "org.opencontainers.image.title"    = "prototools-workshop";
         "org.opencontainers.image.source"   = "https://github.com/douzebis/prototools";

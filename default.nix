@@ -444,7 +444,7 @@ let
   #
   # variant = "bobapp" matches the descriptor file bobapp.desc and the crate
   # binary name, so postInstall's rename is skipped (see demo/bobapp/default.nix).
-  # _hook_demo copies grpconfDemo's bin/bobapp to grpconf2026/bob/app.
+  # nix/grpconf2026-demo.nix stages it as the deck's bob/app (spec 0404).
   # ---------------------------------------------------------------------------
   bobappDemo = import ./demo/bobapp/default.nix {
     inherit pkgs crane;
@@ -466,7 +466,7 @@ let
   # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
   #
   # Build once:     nix-build -A grpconf-demo
-  # Populate stage: dev-shell's _hook_demo unpacks this into grpconf2026/bob/.
+  # Staged into grpconf2026/bob/ via grpconfTalk.deck (spec 0404 S1, S2).
   # ---------------------------------------------------------------------------
   grpconfDemo = pkgs.runCommand "grpconf-demo" { } ''
     set -euo pipefail
@@ -531,9 +531,19 @@ let
     inherit (rust) neovimLean bufLean;
   };
 
+  # The same for the gRPConf 2026 talk, which the image also carries as a
+  # stretch goal (spec 0404).
+  grpconfTalk = import ./nix/grpconf2026-demo.nix {
+    inherit pkgs wktDb grpconfDemo;
+    inherit (grehackDemo) teleprompt;
+    inherit (rust) neovimLean bufLean;
+    inherit (python) googleapisDb googleapisPbs;
+    deckSrc = ./grpconf2026;
+  };
+
   # The GreHack 2026 workshop image (spec 0374).
   grehack2026 = import ./nix/grehack2026.nix {
-    inherit pkgs wktDb mkClosureCheck gitRevision grehackDemo;
+    inherit pkgs wktDb mkClosureCheck gitRevision grehackDemo grpconfTalk;
     life = grehackLife;
     inherit (rust) prototext protolensLean;
     inherit (python) reproto protoscan googleapisDb googleapisPbs;
@@ -543,10 +553,10 @@ let
   # grpconf2026/shell.nix select these. Built from Nix only, never from
   # target/release/.
   demoShells = import ./nix/demo-shells.nix {
-    inherit pkgs wktDb grpconfDemo grehackDemo;
+    inherit pkgs wktDb grehackDemo grpconfTalk;
     grehackRuntime = grehack2026.runtime;
     inherit (rust) prototext protolensLean;
-    inherit (python) reproto protoscan googleapisDb googleapisPbs;
+    inherit (python) reproto protoscan;
   };
 
   # ---------------------------------------------------------------------------

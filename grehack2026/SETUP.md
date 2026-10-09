@@ -48,7 +48,7 @@ not carry it.
 
 ## 2. Get the workshop image
 
-At home, if you can (about 240 MB):
+At home, if you can (about 350 MB):
 
 ```sh
 podman pull ghcr.io/douzebis/prototools-workshop:grehack2026    # or docker pull
@@ -151,6 +151,43 @@ type in Eve's and Bob's windows.
 The pictures show as images in kitty (section 1) in a plain `exec` window;
 inside a tmux pane they depend on tmux passing them through, which the
 image allows.
+
+## 6. Stretch goals (optional)
+
+Two more things to explore if you finish early. Neither needs root or the
+network: they run in any container started as in section 3.
+
+### 6.1 The gRPConf 2026 talk
+
+The gRPConf 2026 talk on prototools, with a real-world corpus: Bob's
+app talks to Google Maps, and Alice has only the app binary, one captured
+request and a log. It shows where `protoc --decode` falls short, schema
+recovery from the binary with `protoscan` and `reproto`, type inference
+against the whole googleapis corpus (8,000 files), and a byte-exact
+re-encoding. Its annexes go further: performance, a `reproto` deep-dive, and
+the anomaly taxonomy.
+
+```sh
+cd /workshop/grpconf2026 && teleprompt grpconf2026.sh
+```
+
+It runs in one window, at least 120 columns wide. Enter runs the current
+step, Down moves to the next one, F1 lists the keys, and Ctrl-D quits.
+
+### 6.2 The anomalies study
+
+`/workshop/anomalies.pb` holds one example of every anomaly prototools
+reports: every way an encoding can be non-canonical or invalid while a
+lenient decoder lets it through. A guided protolens script walks through
+them, and `/workshop/README.md` explains each one:
+
+```sh
+cd /workshop
+protolens --type google.protobuf.FileDescriptorProto anomalies.pb \
+    --script anomalies.script
+```
+
+The gRPConf talk's annex C walks the same taxonomy, with a blob of its own.
 
 ## If it does not start
 

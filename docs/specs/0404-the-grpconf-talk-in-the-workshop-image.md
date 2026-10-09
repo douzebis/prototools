@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0404 — the gRPConf talk in the workshop image
 
-Status: draft
+Status: implemented (pending: test plan item 6, the rehearsals)
+Implemented in: 2026-10-09
 App: grpconf2026 (deck, init, beats), nix (demo-shells.nix, a new
         grpconf2026-demo.nix, grehack2026.nix), grehack2026/SETUP.md,
         grehack2026/smoke-test.sh
@@ -184,7 +185,9 @@ bash and coreutils.
           --script anomalies.script
       ```
     - `/workshop/README.md` explains each anomaly.
-    - The gRPConf deck's annex C opens the same file.
+    - The gRPConf deck's annex C walks the same taxonomy, with its own
+      blob: `grpconf2026/anomalies.pb`, a `FileDescriptorSet`, which
+      differs from the workshop's `FileDescriptorProto` blob.
 - **S8. The login banner.** Its existing `Material:` line, which suggests
   `anomalies.pb`, is replaced by two lines:
 
@@ -210,8 +213,8 @@ bash and coreutils.
   The image should not grow to spare an edit.
 - **Leave the annexes out of the image's copy.** Annexes B and C were
   never presented. But as a self-paced stretch goal, B (reproto on an
-  incomplete descriptor set) is a fair exercise, and C opens the same
-  `anomalies.pb` as stretch goal 6.2. They ship, with S4's
+  incomplete descriptor set) is a fair exercise, and C walks the same
+  taxonomy as stretch goal 6.2. They ship, with S4's
   replacements.
 - **`view -c "set ft=yaml"` in place of `bat`.** It would keep the
   colors but open an editor, which needs `:q`, for six lines of output.
@@ -250,4 +253,26 @@ bash and coreutils.
 
 ## Measured outcome
 
-Filled in at implementation.
+Measured on 2026-10-09, x86-64, Podman 5, on a local build.
+
+- **Size:** the image went from 1,240 to 1,246 MiB unpacked (+6 MiB:
+  `bobapp` and its two fixtures; everything else was already there).
+  The closure check passes.
+- **Smoke test:** 26 of 26 checks pass. The two new ones:
+  - **tools and material:** no `bat`, `tree` or `rsync`;
+    `PROTOTEXT_WKT_SET` set;
+  - **the pipeline, as uid 1000 with `--network none`:** reproto from
+    `bob/app`, the `capture` and `app.desc` beats walked with no
+    error, annex B's globstar `ls` and `cp --parents` (every `.pb`
+    copied), and annex C's protolens command.
+- **Native shell:** entered in a scratch `grpconf2026/`, it staged
+  `bob/` from the deck, exported `PROTOTEXT_WKT_SET`, and has the
+  teleprompt, nvim and protoc on PATH.
+- **Implementation choices:**
+  - The new argument of `demo-shells.nix` and of the image is named
+    `grpconfTalk`, since `grpconfDemo` already names the bobapp stage
+    in `default.nix`.
+  - The image's banner keeps a bare `Material:  /workshop` line above
+    the two stretch-goal lines.
+- **Not done:** the rehearsals (item 6), natively and in the container
+  as uid 1000.

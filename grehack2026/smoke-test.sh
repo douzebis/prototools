@@ -362,6 +362,56 @@ timeout 4 life-client --steps 3 --size 20x10 >/dev/null 2>&1 || true
 ls capture/000001-request.pb capture/000001-response.pb >/dev/null
 EOF
 
+# ── The stretch-goal talk: gRPConf 2026 (spec 0404) ──────────────────────────
+
+check "the gRPConf talk's tools and material (spec 0404 S1, S3, S4)" <<'EOF'
+set -e
+for c in teleprompt nvim buf protoc prototext protolens reproto protoscan; do
+  command -v "$c" >/dev/null || { echo "$c is not on PATH"; exit 1; }
+done
+for c in bat tree rsync; do
+  ! command -v "$c" >/dev/null || { echo "$c is in the image: the deck must not need it"; exit 1; }
+done
+cd /workshop/grpconf2026
+for f in grpconf2026.sh grpconf2026.init anomalies.pb anomalies.script \
+         beats/capture beats/app.desc beats/googleapis.desc \
+         bob/app bob/capture bob/logfile; do
+  [ -f "$f" ] || { echo "no $f"; exit 1; }
+done
+for d in . bob beats; do
+  [ "$(stat -c %a "$d")" = 1777 ] || { echo "$d is not 1777"; exit 1; }
+done
+[ -n "$PROTOTEXT_WKT_SET" ] && [ -f "$PROTOTEXT_WKT_SET" ] \
+  || { echo "PROTOTEXT_WKT_SET unset or missing"; exit 1; }
+EOF
+
+# The deck's own pipeline, as the default user, offline (S5, G2): schema
+# recovery from bob/app, the two beats that need nothing saved by hand,
+# annex B's bash-and-coreutils commands (S4), and annex C.
+check "the gRPConf talk's pipeline, as uid 1000, offline (spec 0404)" --network none <<'EOF'
+set -e
+cd /workshop/grpconf2026
+rm -rf alice && mkdir alice
+reproto --desc-root bob/app --schema-db-out alice/app.desc >/dev/null
+for walk in "alice/app.desc bob/capture beats/capture" \
+            "alice/app.desc bob/logfile beats/app.desc"; do
+  set -- $walk
+  out=$(protolens --descriptor-set "$1" "$2" --script "$3" script 2>&1)
+  ! grep -q "error:" <<<"$out" || { echo "$3:"; grep "error:" <<<"$out"; exit 1; }
+done
+reproto --desc-root "$PROTOTEXT_GOOGLEAPIS_SET" --proto-out alice/places \
+  --emit-binary --seed 'file:google/maps/places/v1/*.proto' >/dev/null
+pbs=$(shopt -s globstar; ls -1 alice/places/**/*.pb | wc -l)
+protos=$(shopt -s globstar; ls -1 alice/places/**/*.proto | wc -l)
+[ "$pbs" -gt 0 ] && [ "$pbs" = "$protos" ] || { echo "pb $pbs, proto $protos"; exit 1; }
+mkdir -p alice/places-incomplete \
+  && (shopt -s globstar; cd alice/places && cp --parents **/*.pb ../places-incomplete/)
+copied=$(shopt -s globstar; ls -1 alice/places-incomplete/**/*.pb | wc -l)
+[ "$copied" = "$pbs" ] || { echo "copied $copied of $pbs .pb files"; exit 1; }
+protolens --descriptor-set "$PROTOTEXT_WKT_SET" \
+  --type google.protobuf.FileDescriptorSet anomalies.pb quit
+EOF
+
 # ── The closure: no denied store path (S2), and the size ─────────────────────
 
 store=$("$docker" run --rm --entrypoint /bin/ls "$image" /nix/store)
