@@ -525,3 +525,26 @@ for S14:
 - step 5 on an amd64 laptop;
 - whether the package page displays the description;
 - step 6, the USB keys, at the final tag.
+
+**Second publication, `grehack2026-beta2` (2026-10-10, run 38034099973),
+on nixos-26.05 (spec 0402 S2).** Both images built, passed the smoke
+test and were pushed in 21m47s: image jobs of 16.5 min (amd64) and
+18.3 min (arm64), against 23.4 and 15.0 on 25.11. The pre-release
+carries the five assets:
+- amd64 archive: 1,327 MiB;
+- arm64 archive: 1,351 MiB;
+- `load.sh`, `SHA256SUMS` and `SETUP.md`.
+
+S14 step 5:
+- **arm64:** on a Mac M1 under Colima, the published image passes a
+  manual smoke test.
+- **amd64, on this x86-64 Linux machine with rootless Podman:**
+  - online: the image pulled from ghcr.io (amd64, revision `460a5ea`)
+    passes all 27 checks of `smoke-test.sh`;
+  - offline: the release's own files load with `load.sh`, the loaded
+    image passes the same 27 checks, and `load.sh` rejects the archive
+    with one byte appended (test plan 9, amd64).
+- **Not checked by hand:** the TUI's colors, mouse, resize and editor
+  key on an amd64 laptop (test plan 6), which need a real terminal.
+
+Still open for S14: step 6, the USB keys, at the final tag.
