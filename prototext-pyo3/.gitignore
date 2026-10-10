@@ -3,5 +3,5 @@
 # SPDX-License-Identifier: MIT
 
 # Auto-generated pyo3-stub-gen output — do not commit.
-prototext_codec.pyi
-prototext_codec.pyi.license
+/prototext_codec_lib.pyi
+/prototext_codec_lib.pyi.license

@@ -227,28 +227,31 @@ let
   #   crateName    — Cargo package name, e.g. "prototext_codec_lib"
   #   crateDir     — the crate directory, relative to the workspace root; the
   #                  stub generator runs with it as CARGO_MANIFEST_DIR
-  #   libName      — cdylib base name (Cargo [[lib]] name); lib<libName>.so
-  #   pyiName      — the name pyo3-stub-gen gives the .pyi (= pyproject
-  #                  [project] name), e.g. "prototext_codec"
+  #   libName      — cdylib base name (Cargo [[lib]] name); lib<libName>.so;
+  #                  also the Python module, and so the stub's name: each
+  #                  pyproject.toml names it in tool.maturin.module-name,
+  #                  which pyo3-stub-gen reads (without it, the generator
+  #                  falls back to the [project] name, and a stub refers to
+  #                  its own classes under that wrong module name)
   #   postBuildBin — the stub-generator binary target
   # ---------------------------------------------------------------------------
   pyo3Extensions = {
     prototextCodec = {
       description = "Python bindings to prototext's lossless protobuf codec";
       crateName = "prototext_codec_lib"; crateDir = "prototext-pyo3";
-      libName = "prototext_codec_lib";   pyiName  = "prototext_codec";
+      libName = "prototext_codec_lib";
       postBuildBin = "prototext_post_build";
     };
     fdpScan = {
       description = "Python bindings to the scan for protobuf descriptors embedded in binaries";
       crateName = "fdp_scan_lib";        crateDir = "fdp-scan-pyo3";
-      libName = "fdp_scan_lib";          pyiName  = "fdp_scan";
+      libName = "fdp_scan_lib";
       postBuildBin = "fdp_scan_post_build";
     };
     prototextGraph = {
       description = "Python bindings to the prototools scoring graph builder";
       crateName = "prototext_graph_lib"; crateDir = "prototext-graph-pyo3";
-      libName = "prototext_graph_lib";   pyiName  = "prototext_graph";
+      libName = "prototext_graph_lib";
       postBuildBin = "prototext_graph_post_build";
     };
   };
@@ -308,10 +311,17 @@ let
       cp ${profileDir}/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
     '' + (if canRun then ''
       CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./${profileDir}/${e.postBuildBin}
-      cp ${e.crateDir}/${e.pyiName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
+      # The committed stub is what a cross build ships: it must be what the
+      # generator writes.
+      if ! diff -u ${e.crateDir}/${e.libName}/${e.libName}.pyi ${e.crateDir}/${e.libName}.pyi >&2; then
+        echo "${e.crateDir}/${e.libName}/${e.libName}.pyi is stale (diff above). Refresh it with:" >&2
+        echo "  (cd ${e.crateDir} && CARGO_MANIFEST_DIR=\$PWD cargo run --release --bin ${e.postBuildBin}) && cp ${e.crateDir}/${e.libName}.pyi ${e.crateDir}/${e.libName}/" >&2
+        exit 1
+      fi
+      cp ${e.crateDir}/${e.libName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
     '' else ''
-      # Cross: the stub generator cannot run here; the committed stub
-      # (kept in sync by the generator on every native build) stands in.
+      # Cross: the stub generator cannot run here; the committed stub, which
+      # every native build compares with the generator's, stands in.
       cp ${e.crateDir}/${e.libName}/${e.libName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
     '')) (builtins.attrValues pyo3Extensions);
   });

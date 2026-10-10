@@ -20,3 +20,6 @@ packages = ["fdp_scan_lib"]
 
 [tool.pyo3-stub-gen]
 # pyo3-stub-gen writes fdp_scan_lib.pyi next to this file (i.e. fdp-scan-pyo3/).
+
+[tool.maturin]
+module-name = "fdp_scan_lib"

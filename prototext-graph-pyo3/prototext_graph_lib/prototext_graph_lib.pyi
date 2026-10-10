@@ -8,9 +8,9 @@ __all__ = [
     "build_graph",
 ]
 
-def build_fds_index(type_to_file: typing.Mapping[builtins.str, builtins.str], file_to_span: typing.Mapping[builtins.str, tuple[builtins.int, builtins.int]], dep_graph: typing.Mapping[builtins.str, typing.Sequence[builtins.str]]) -> bytes:
+def build_fds_index(type_to_file: typing.Mapping[builtins.str, builtins.str], file_to_span: typing.Mapping[builtins.str, tuple[builtins.int, builtins.int]], dep_graph: typing.Mapping[builtins.str, typing.Sequence[builtins.str]], ext_to_file: typing.Mapping[builtins.str, builtins.str]) -> bytes:
     r"""
-    Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 3).
+    Serialize an FdsIndex to rkyv bytes with the PTSGRAPH header (version 4).
     
     Parameters
     ----------
@@ -20,6 +20,8 @@ def build_fds_index(type_to_file: typing.Mapping[builtins.str, builtins.str], fi
         Proto file name → (start, end) byte offsets in the raw .pb file.
     dep_graph : dict[str, list[str]]
         Proto file name → list of direct import file names.
+    ext_to_file : dict[str, str]
+        "extendee_fqdn/field_number" → proto file name (spec 0100 §4).
     
     Returns
     -------

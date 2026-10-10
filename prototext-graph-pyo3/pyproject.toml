@@ -20,3 +20,6 @@ packages = ["prototext_graph_lib"]
 
 [tool.pyo3-stub-gen]
 # pyo3-stub-gen writes prototext_graph_lib.pyi next to this file (i.e. prototext-graph-pyo3/).
+
+[tool.maturin]
+module-name = "prototext_graph_lib"

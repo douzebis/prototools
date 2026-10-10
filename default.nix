@@ -82,6 +82,11 @@ let
     fileset = pkgs.lib.fileset.difference
       (pkgs.lib.fileset.unions [
         (crane.fileset.commonCargoSources ./.)
+        # The committed Python stubs: workspaceBuild compares the generator's
+        # output with them, and a cross build ships them.
+        ./prototext-pyo3/prototext_codec_lib/prototext_codec_lib.pyi
+        ./fdp-scan-pyo3/fdp_scan_lib/fdp_scan_lib.pyi
+        ./prototext-graph-pyo3/prototext_graph_lib/prototext_graph_lib.pyi
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
