@@ -26,6 +26,7 @@ members = [
     "prototext-graph-pyo3",
     "prototext-schema",
     "protolens",
+    "prototools-complete",
     "workspace-hack",
 ]
 

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototools-complete"
+version     = "0.1.0"
+edition     = "2021"
+description = "Bash completion for clap from the raw command line, shared by the prototools CLIs"
+license     = "MIT"
+repository  = "https://github.com/douzebis/prototools"
+keywords    = ["clap", "completion", "bash"]
+categories  = ["command-line-interface"]
+
+[dependencies]
+clap          = { version = "4.5" }
+clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
+shlex         = "1.3"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }

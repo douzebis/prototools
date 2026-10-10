@@ -445,8 +445,10 @@ fn main() -> ExitCode {
     // Dynamic shell completion — same model as Cargo/prototext. When
     // PROTOLENS_COMPLETE=<shell> is set, print the completion script and
     // exit.
+    // Bash completes from the raw command line (spec 0406).
     CompleteEnv::with_factory(Cli::command)
         .var("PROTOLENS_COMPLETE")
+        .shells(prototools_complete::shells())
         .complete();
 
     // Man page generation — same model, and before parsing for the same

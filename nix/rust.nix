@@ -185,9 +185,7 @@ let
   prototextPostInstall = whenRunnable ''
     # Install shell completions.
     installShellCompletion --cmd prototext \
-      --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext | sed \
-        -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
-        -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
+      --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext) \
       --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
       --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
 
@@ -335,9 +333,7 @@ let
   # ---------------------------------------------------------------------------
   protolensPostInstall = whenRunnable ''
     installShellCompletion --cmd protolens \
-      --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens | sed \
-        -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
-        -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|') \
+      --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens) \
       --zsh  <(PROTOLENS_COMPLETE=zsh  $out/bin/protolens) \
       --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
 

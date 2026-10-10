@@ -16,8 +16,10 @@ pub mod protocraft;
 fn main() {
     // Dynamic shell completion — same model as Cargo.
     // When PROTOTEXT_COMPLETE=<shell> is set, print the completion script and exit.
+    // Bash completes from the raw command line (spec 0406).
     CompleteEnv::with_factory(Cli::command)
         .var("PROTOTEXT_COMPLETE")
+        .shells(prototools_complete::shells())
         .complete();
 
     let cli = Cli::parse();

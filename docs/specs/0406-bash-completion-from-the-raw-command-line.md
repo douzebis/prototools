@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0406 — bash completion from the raw command line
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-10
 App: prototext, protolens (bash completion)
 Refs: docs/specs/0405-prototools-in-nixpkgs-one-small-pr-at-a-time.md
       (S3, which this spec replaces: the nixpkgs recipe installs the
@@ -121,8 +122,12 @@ full CLI parser and don't need the assistance of the shell."
   2. **Asks clap's engine,** `clap_complete::engine::complete(cmd,
      words, index_of_last_word, current_dir)`, which returns whole words,
      for example `--descriptor-set=data` for `--descriptor-set=da`. A
-     directory candidate gets a trailing `/`, except inside an open
-     quote, where readline adds it itself after closing the quote.
+     directory candidate gets a trailing `/`, which clap's engine does
+     not add. readline adds one itself only when the text it inserts is
+     a directory; after `a:` it inserts the `b` of `a:b` and finds no
+     `b`. Inside an open quote the `/` is dropped again, since readline
+     adds it after closing the quote. For `--opt=value` the value is
+     what is tested.
   3. **Keeps only what readline replaces.** readline replaces only its
      own word, `$2`. Inside an open quote that is the literal text after
      the quote; otherwise it is shell text, split by the rules of step 1.
@@ -239,4 +244,24 @@ once it is proven here, is a separate decision.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-10, in `prototools-complete/` (`src/lib.rs`), used by
+prototext and protolens through `CompleteEnv::shells`.
+
+- **S1, S2:** the script and completer as specified. One step was added
+  at implementation: clap's engine returns directories without a `/`
+  (`data`, `b`), so the completer appends it (step 2). The prototype's
+  stand-in had added it itself, which is why the prototype missed it:
+  `decode a:` gave `a:b ` instead of `a:b/` in the first run against the
+  real engine.
+- **S4:** both `sed` pipelines are gone from `nix/rust.nix`. The
+  installed `prototext.bash` is what `PROTOTEXT_COMPLETE=bash prototext`
+  prints.
+- **S6, unit tests:** 7, in `prototools-complete`, covering line
+  splitting, trimming and directory marking.
+- **S6, end to end:** `prototools-complete/tests/tab_completion.py`.
+  Every row of the test plan's table passes for both tools: 16 rows for
+  prototext, and 15 for protolens, which has no subcommand row.
+  - It runs in `ci` as `completionTests`, which needs `bashInteractive`
+    (stdenv's bash has no readline).
+  - The Nix sandbox provides a pseudo-terminal (`/dev/pts`), checked on
+    x86-64 Linux. macOS is first exercised by the CI's macos-15 job.

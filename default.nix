@@ -590,6 +590,7 @@ let
     treeSitterTextprotoHighlightTest
     wktDb wktPrebuiltCheck
     prototoolsClosureCheck
+    completionTests
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -604,7 +605,20 @@ let
     treeSitterTextprotoHighlightTest
     wktDb wktPrebuiltCheck
     prototoolsClosureCheck
+    completionTests
   ];
+
+  # Spec 0406 S6: press Tab in an interactive bash, on a pseudo-terminal
+  # (the sandbox provides one), and check the line, for prototext and
+  # protolens. bashInteractive: stdenv's bash has no readline.
+  completionTests = pkgs.runCommand "completion-tests" {
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.bashInteractive pkgs.python3 ];
+  } ''
+    mkdir bin
+    ln -s ${rust.prototext}/bin/prototext ${rust.protolens}/bin/protolens bin/
+    python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
+  '';
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.googleapisDb python.googleapisTests python.customDb python.customTests
