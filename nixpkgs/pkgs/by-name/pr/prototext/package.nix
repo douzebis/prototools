@@ -13,6 +13,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "prototext";
   version = "0.3.0";
 
+  __structuredAttrs = true;
+
   src = fetchFromGitHub {
     owner = "douzebis";
     repo = "prototools";
