@@ -4,11 +4,11 @@
 
 [package]
 name        = "prototools-complete"
-version     = "0.1.0"
+version.workspace    = true
 edition     = "2021"
 description = "Bash completion for clap from the raw command line, shared by the prototools CLIs"
 license     = "MIT"
-repository  = "https://github.com/douzebis/prototools"
+repository.workspace = true
 keywords    = ["clap", "completion", "bash"]
 categories  = ["command-line-interface"]
 

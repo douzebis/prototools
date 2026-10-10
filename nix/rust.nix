@@ -18,7 +18,7 @@
 #     ├──[cargoTest, profile quick]──▶  rustTests  (a ci leaf)              │
 #     │                                                                    │
 #     └──[buildPackage, cargoArtifacts=depsCache]──▶  workspaceBuild
-#            │  one `cargo build --release --workspace --features prebuilt-wkt`
+#            │  one `cargo build --release --workspace`
 #            ├──▶  prototext            (copied out, completions, man page)
 #            ├──▶  protolensUnwrapped  ──▶  protolens, protolensLean
 #            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (.so + .pyi)
@@ -35,7 +35,6 @@
 , pythonExecutable
 , depsSrc
 , workspaceSrc
-, protoPostPatch
 , treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
@@ -51,17 +50,12 @@ let
   # sandbox can compile prototext_codec_lib without a separate dep cache.
   workspaceArgs = "--no-default-features --workspace";
 
-  # Same, plus prototext's `prebuilt-wkt`: every build embeds the WKT scoring
-  # graph committed under prototext/wkt/prebuilt/ (spec 0401 S2).
-  #
-  # fdp_scan_lib depends on prototext with default features (`wkt-db`), and
-  # Cargo unifies features over `--workspace`, so with `prebuilt-wkt` added
-  # every crate that embeds a graph, fdp_scan_lib included, embeds the
-  # committed one. Without it, prototext's build.rs would run reproto to
-  # generate a graph, and reproto needs the extensions built here: a cycle.
-  # The committed copy breaks it, and default.nix's wkt-prebuilt-check fails
-  # `ci` when the copy no longer matches what the code generates (S3).
-  prebuiltArgs = "${workspaceArgs} --features prebuilt-wkt";
+  # Every build embeds the WKT scoring graph committed under
+  # prototext/wkt/prebuilt/, which prototext's build.rs copies with no feature
+  # flag (specs 0401 S2, 0405 S2). Before, it took `--features prebuilt-wkt`,
+  # and without it build.rs ran reproto, which needs the extensions built
+  # here: a cycle. default.nix's wkt-prebuilt-check fails `ci` when the copy
+  # no longer matches what the code generates.
 
   # ---------------------------------------------------------------------------
   # Base argument sets — hierarchic composition.
@@ -71,7 +65,7 @@ let
   #   the interpreter and the libpython they link per target (spec 0402 S6),
   #   so that a single depsCache covers the whole workspace.
   #
-  # protocArgs: extends commonArgs with pkgs.protobuf + protoPostPatch.
+  # protocArgs: extends commonArgs with pkgs.protobuf.
   #   Used by ALL derivations including depsCache, so the sandbox environment
   #   is identical everywhere and Cargo fingerprints are stable across the chain.
   #   (buildDepsOnly stubs build.rs so protoc is never actually invoked there.)
@@ -82,10 +76,15 @@ let
   # Spec 0402 S3: versions come from the manifests, read at evaluation
   # time (lib.importTOML reads a source file; it is not
   # import-from-derivation). No version literal lives in nix/.
-  cargoVersion = dir: (pkgs.lib.importTOML (../. + "/${dir}/Cargo.toml")).package.version;
-  pyprojectVersion = dir: (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project.version;
-  prototextVersion = cargoVersion "prototext";
-  protolensVersion = cargoVersion "protolens";
+  # One version for the whole workspace (spec 0405 S5): the crates inherit
+  # it, and each pyproject.toml must repeat it, or evaluation fails here.
+  workspaceVersion = (pkgs.lib.importTOML ../Cargo.toml).workspace.package.version;
+  pyprojectVersion = dir:
+    let v = (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project.version;
+    in if v == workspaceVersion then v
+       else throw "${dir}/pyproject.toml has version ${v}; the workspace is ${workspaceVersion} (Cargo.toml)";
+  prototextVersion = workspaceVersion;
+  protolensVersion = workspaceVersion;
 
   # commonArgs omits src — each derivation sets its own focused src.
   # The crane derivations build the whole workspace, prototext's release.
@@ -103,9 +102,10 @@ let
     env.TREE_SITTER_TEXTPROTO_QUERIES_DIR = "${treeSitterTextprotoRustLib}/queries";
   };
 
+  # protoc for prototext's roundtrip tests, which compare with it. The
+  # fixtures prototext's build.rs reads are committed (spec 0405 S1).
   protocArgs = commonArgs // {
     nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
-    postPatch         = protoPostPatch;
   };
 
   # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ let
     src                  = workspaceSrc;
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
-    cargoExtraArgs       = prebuiltArgs;
+    cargoExtraArgs       = workspaceArgs;
     cargoClippyExtraArgs = "-- -D warnings";
   });
 
@@ -173,7 +173,7 @@ let
     pname          = "prototools-tests";
     CARGO_PROFILE  = "quick";
     cargoArtifacts = depsCacheTests;
-    cargoExtraArgs = prebuiltArgs;
+    cargoExtraArgs = workspaceArgs;
     # Tell supports_rgb() that RGB is available so color-sensitive tests
     # exercise the RGB code path in the sandbox (no real terminal there).
     # Extends commonArgs' env (`//` is shallow: a bare `env.COLORTERM`
@@ -265,8 +265,8 @@ let
   # ---------------------------------------------------------------------------
   # workspaceBuild — the one release build of the workspace (spec 0401 S1).
   #
-  # A single `cargo build --workspace` with depsCache's flags plus
-  # prebuilt-wkt, so Cargo reuses every external-dependency artifact. (A
+  # A single `cargo build --workspace` with depsCache's flags, so Cargo
+  # reuses every external-dependency artifact. (A
   # scoped -p invocation computes different unit hashes for the external
   # deps and recompiles them — see constant-rebuilds in the Crane FAQ; the
   # former per-extension builds paid that, about a minute each.) It builds
@@ -292,7 +292,7 @@ let
     cargoArtifacts                     = depsCache;
     doCheck                            = false;
     doInstallCargoArtifacts            = false;
-    buildPhaseCargoCommand             = "cargoWithProfile build ${prebuiltArgs}";
+    buildPhaseCargoCommand             = "cargoWithProfile build ${workspaceArgs}";
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin
@@ -460,6 +460,7 @@ in {
   inherit
     metaCommon
     pyprojectVersion
+    workspaceVersion
     commonArgs
     depsCache
     rustFmt

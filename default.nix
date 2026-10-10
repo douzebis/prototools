@@ -8,7 +8,7 @@
 # All build logic lives in nix/rust.nix, nix/python.nix, nix/shells.nix.
 # This file:
 #   1. Pins nixpkgs and crane.
-#   2. Defines shared inputs (depsSrc, workspaceSrc, pythonBin, protoPostPatch).
+#   2. Defines shared inputs (depsSrc, workspaceSrc, pythonBin).
 #   3. Imports the three sub-files and wires their outputs together.
 #   4. Assembles the ci and full-tests targets.
 #   5. Exposes all public attributes.
@@ -110,10 +110,9 @@ let
         # 140 MB.  Every stage repopulation and every rehearsal rebuilt the
         # entire Rust world.
         # prototext/wkt/prebuilt/*.rkyv — the git-committed WKT scoring
-        # graph. `prototext/build.rs` copies it under `--features
-        # prebuilt-wkt`, which nix/rust.nix's bootstrapArgs now passes to
-        # every workspace-wide build (spec 0239 S2). Taken wholesale:
-        # fixtureFilter admits only .pb/.proto/.yaml/.license, not .rkyv.
+        # graph, which `prototext/build.rs` always copies (specs 0239 S2,
+        # 0405 S2). Taken wholesale: fixtureFilter admits only
+        # .pb/.proto/.yaml/.license, not .rkyv.
         ./prototext/wkt
         ./README.md
       ])
@@ -137,33 +136,39 @@ let
   # even for unused members.  Per-crate isolation would require splitting the
   # Cargo workspace.  See spec 0078 for details.
 
-  # The postPatch shared by all Crane derivations that compile prototext.
-  # Compiles the three .proto schemas into fixtures/prebuilt/ using protoc so
-  # that build.rs can copy them into $OUT_DIR without needing protox.
-  # A postPatch, not a whole patchPhase (spec 0402 S7): the standard phase,
-  # with its hooks and `patches`, still runs around it.
-  protoPostPatch = ''
-    mkdir -p prototext/fixtures/prebuilt
-
+  # prototext's four test descriptors, compiled with the pinned protoc. They
+  # are committed under prototext/fixtures/prebuilt/ (spec 0405 S1), so no
+  # build runs protoc for them; prototextFixturesCheck fails `ci` when the
+  # committed copies no longer match what this produces (a nixpkgs bump
+  # changes descriptor.pb as it changes the WKT graph).
+  prototextFixtures = pkgs.runCommand "prototext-fixtures" {
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.protobuf ];
+  } ''
+    mkdir -p $out
     protoc \
-      --descriptor_set_out=prototext/fixtures/prebuilt/descriptor.pb \
+      --descriptor_set_out=$out/descriptor.pb \
       --include_imports \
       ${pkgs.lib.concatStringsSep " \\\n      " wktSources}
+    for name in knife enum_collision message_set; do
+      protoc \
+        --descriptor_set_out=$out/$name.pb \
+        --proto_path=${./prototext/fixtures/schemas} \
+        $name.proto
+    done
+  '';
 
-    protoc \
-      --descriptor_set_out=prototext/fixtures/prebuilt/knife.pb \
-      --proto_path=prototext/fixtures/schemas \
-      knife.proto
-
-    protoc \
-      --descriptor_set_out=prototext/fixtures/prebuilt/enum_collision.pb \
-      --proto_path=prototext/fixtures/schemas \
-      enum_collision.proto
-
-    protoc \
-      --descriptor_set_out=prototext/fixtures/prebuilt/message_set.pb \
-      --proto_path=prototext/fixtures/schemas \
-      message_set.proto
+  prototextFixturesCheck = pkgs.runCommand "prototext-fixtures-check" { } ''
+    stale=0
+    for f in descriptor knife enum_collision message_set; do
+      cmp -s ${prototextFixtures}/$f.pb ${./prototext/fixtures/prebuilt}/$f.pb || stale=1
+    done
+    if [ "$stale" = 1 ]; then
+      echo "prototext/fixtures/prebuilt/ is stale. Refresh it with:" >&2
+      echo "  cp \$(nix-build -A prototext-fixtures)/*.pb prototext/fixtures/prebuilt/" >&2
+      exit 1
+    fi
+    touch $out
   '';
 
   # ---------------------------------------------------------------------------
@@ -313,12 +318,12 @@ let
 
   rust = import ./nix/rust.nix {
     inherit pkgs crane pythonPkgs pythonBin pythonExecutable
-            depsSrc workspaceSrc protoPostPatch treeSitterTextprotoRustLib buf;
+            depsSrc workspaceSrc treeSitterTextprotoRustLib buf;
   };
 
   python = import ./nix/python.nix {
     inherit pkgs pythonPkgs pythonBin treeSitterTextproto;
-    inherit (rust) metaCommon;
+    inherit (rust) metaCommon pyprojectVersion;
     prototext = rust.prototext;
     inherit (rust) prototextCodec fdpScanLib prototextGraphLib
                    prototextExtensionArtifacts prototextGraphExtensionArtifacts
@@ -326,12 +331,13 @@ let
   };
 
   cratesIo = import ./nix/crates-io.nix {
-    inherit pkgs crane workspaceSrc protoPostPatch;
+    inherit pkgs crane workspaceSrc;
     inherit (rust) commonArgs;
   };
 
   pypi = import ./nix/pypi.nix {
     inherit pkgs pythonPkgs workspaceSrc;
+    inherit (rust) pyprojectVersion;
     reprotoSrcFull = python.reprotoSrcFull;
     inherit (rust) prototextExtensionArtifacts
                    fdpScanExtensionArtifacts
@@ -588,9 +594,10 @@ let
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
-    wktDb wktPrebuiltCheck
+    wktDb wktPrebuiltCheck prototextFixturesCheck
     prototoolsClosureCheck
     completionTests
+    nixpkgsStaging nixpkgsStagingCheck
   ];
 
   # ci-no-clippy — same as ci but without rustClippy.
@@ -603,10 +610,48 @@ let
     python.reprotoTests python.protoscanTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest
-    wktDb wktPrebuiltCheck
+    wktDb wktPrebuiltCheck prototextFixturesCheck
     prototoolsClosureCheck
     completionTests
+    nixpkgsStaging nixpkgsStagingCheck
   ];
+
+  # ---------------------------------------------------------------------------
+  # nixpkgs staging (spec 0405 S6, S7): the files under nixpkgs/ are what a
+  # nixpkgs PR submits. nixpkgsStaging builds the prototext recipe from the
+  # local tree, as nixpkgs builds it from the tag: same callPackage, with src
+  # and the vendored dependencies taken from here, so no hash needs updating
+  # between releases.
+  # ---------------------------------------------------------------------------
+  stagedPrototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
+
+  nixpkgsStaging = (pkgs.callPackage stagedPrototext { }).overrideAttrs (old: {
+    version   = rust.workspaceVersion;
+    src       = workspaceSrc;
+    cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+  });
+
+  # nixfmt, and the version rule: the staged version equals the workspace's
+  # at a release; between releases the workspace carries X.Y.Z-dev and the
+  # staged version, the one nixpkgs ships, is older.
+  stagedVersion = (pkgs.callPackage stagedPrototext { }).version;
+  nextRelease = pkgs.lib.removeSuffix "-dev" rust.workspaceVersion;
+  stagedVersionOk =
+    if nextRelease != rust.workspaceVersion
+    then builtins.compareVersions stagedVersion nextRelease < 0
+    else stagedVersion == rust.workspaceVersion;
+  nixpkgsStagingCheck = pkgs.runCommand "nixpkgs-staging-check" {
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.nixfmt ];
+  } (''
+    nixfmt --check ${stagedPrototext}
+  '' + pkgs.lib.optionalString (!stagedVersionOk) ''
+    echo "nixpkgs/: staged prototext is ${stagedVersion}, which does not fit" \
+      "the workspace's ${rust.workspaceVersion} (equal at a release, older during development)" >&2
+    exit 1
+  '' + ''
+    touch $out
+  '');
 
   # Spec 0406 S6: press Tab in an interactive bash, on a pseudo-terminal
   # (the sandbox provides one), and check the line, for prototext and
@@ -664,6 +709,10 @@ in
   grpconf2026-shell    = demoShells.grpconf2026-shell;
   teleprompt           = demoShells.teleprompt;
   wkt-db               = wktDb;
+  prototext-fixtures   = prototextFixtures;
+  nixpkgs-staging      = nixpkgsStaging;
+  nixpkgs-staging-check = nixpkgsStagingCheck;
+  prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = python.protoscan;
   fdp-scan-lib         = rust.fdpScanLib;
   prototext-graph-lib  = rust.prototextGraphLib;

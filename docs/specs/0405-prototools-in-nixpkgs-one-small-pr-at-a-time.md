@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0405 — prototools in nixpkgs, one small PR at a time
 
-Status: draft
+Status: implemented in part (S1–S7, 2026-10-10); S8 waits for the v0.3.0 tag, S9 for PR 1
 App: nix packaging (prototext first; protoscan, reproto, protolens later)
 Refs: docs/specs/0406-bash-completion-from-the-raw-command-line.md
       (S3: done first, so the recipe installs completions unpatched);
@@ -342,4 +342,62 @@ build per package, for every derivation in `ci`.
 
 ## Measured outcome
 
-Filled in at implementation.
+S1–S7 implemented 2026-10-10.
+
+- **S1:**
+  - The four fixtures are committed, with `.license` sidecars, as MIT
+    under the author's name, like `prototext-core/fixtures/descriptor.pb`.
+  - `default.nix` builds them in `prototextFixtures`, and
+    `prototext-fixtures-check` (in `ci`) compares them with the committed
+    files.
+  - `protoPostPatch` and the dev-shell's `_hook_protos` are gone.
+  - The dev-shell's hook had compiled `descriptor.pb` differently from
+    the Nix build (`descriptor.proto` alone, not every WKT source with
+    `--include_imports`). The committed file is the Nix one.
+- **S2:**
+  - `prototext/build.rs` now only copies committed files, and the
+    `prebuilt-wkt` feature and `nix/rust.nix`'s `prebuiltArgs` are gone.
+  - The two environment-variable paths (`DESCRIPTOR_PB`…, `WKT_RKYV`…)
+    were set nowhere except the old staged draft, and went too, as did the
+    `protoc` + `reproto` branch.
+  - **`wkt-db` is kept, by decision:** nothing builds without it (the
+    pyo3 crates pull prototext's default features into every workspace
+    build), but it costs the recipe nothing, being a default feature.
+    Removing it is a separate cleanup.
+- **S3:** spec 0406.
+- **S4:** already true, so no code change.
+  - `prototext-gen-man` and protolens's man page are byte-identical
+    across `SOURCE_DATE_EPOCH` (unset, 0, 1700000000), the locale (C,
+    C.UTF-8) and `TZ`.
+  - The recipe sets no environment variable for them.
+- **S5:**
+  - `workspace.package` in `Cargo.toml` sets version 0.3.0 and the
+    repository, douzebis/prototools, by decision. Nine crates inherit the
+    version; `workspace-hack` keeps its own 0.1.0.
+  - The five `pyproject.toml` files say 0.3.0. `nix/rust.nix`'s
+    `pyprojectVersion` fails evaluation when one disagrees, which was
+    checked with a deliberate 0.2.9.
+  - `CHANGELOG.md` is new.
+  - The crates.io bundle and publish order include `prototools-complete`.
+    `cargo publish -p prototext` no longer needs `--allow-dirty`, since
+    its fixtures are tracked now.
+  - The tag is not pushed yet.
+- **S6:** the `prototools` symlinkJoin and the three python-modules are
+  deleted. `nixpkgs/pkgs/by-name/pr/prototext/package.nix` holds the
+  recipe, and `nixpkgs/README.md` gives the staging and release steps.
+  - **No protoc, no feature flags, no `sed`, no environment variables.**
+    The one addition to the sketch is `nativeCheckInputs = [ protobuf ]`,
+    so the roundtrip tests compare with protoc instead of skipping.
+  - `hash` and `cargoHash` are `lib.fakeHash` until `nix-update` fills
+    them at the tag (S8).
+- **S7:** `nixpkgs-staging` and `nixpkgs-staging-check` are in `ci`.
+  - `nixpkgs-staging` builds the recipe with nixpkgs's own
+    `buildRustPackage` in 167 s on x86-64 Linux. 93 tests pass with none
+    skipped, the version check passes on 0.3.0, and it installs bash, zsh
+    and fish completions and the man page.
+  - `nixpkgs-staging-check`: nixfmt and the version rule pass.
+- **Not done:**
+  - S8: the tag, the nixpkgs PR, the briefing;
+  - test plan 6, which is part of S8;
+  - test plan 8 (the internal package), which needs the commit on
+    ThalesGroup (C3).

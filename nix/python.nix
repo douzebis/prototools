@@ -21,6 +21,7 @@
 
 { pkgs
 , metaCommon        # nix/rust.nix: homepage, license, maintainers, platforms
+, pyprojectVersion  # nix/rust.nix: a pyproject.toml's version, checked (spec 0405 S5)
 , pythonPkgs
 , pythonBin
 , prototext
@@ -35,9 +36,8 @@
 
 let
   # Spec 0402 S3: versions from the manifests (see nix/rust.nix).
-  pyprojectVersion = dir: (pkgs.lib.importTOML (dir + "/pyproject.toml")).project.version;
-  reprotoVersion   = pyprojectVersion ../reproto;
-  protoscanVersion = pyprojectVersion ../protoscan;
+  reprotoVersion   = pyprojectVersion "reproto";
+  protoscanVersion = pyprojectVersion "protoscan";
   # Spec 0402 S7: what runs a freshly installed script runs only where the
   # host's binaries can run.
   whenRunnable = pkgs.lib.optionalString

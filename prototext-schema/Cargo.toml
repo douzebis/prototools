@@ -4,18 +4,18 @@
 
 [package]
 name        = "prototext-schema"
-version     = "0.1.0"
+version.workspace    = true
 edition     = "2021"
 description = "On-demand FileDescriptorProto loading from a mmapped descriptor set and its rkyv index"
 license     = "MIT"
-repository  = "https://github.com/ThalesGroup/prototools"
+repository.workspace = true
 
 [lib]
 name       = "prototext_schema"
 crate-type = ["rlib"]
 
 [dependencies]
-prototext-graph = { path = "../prototext-graph", version = "0.2.1" }
+prototext-graph = { path = "../prototext-graph", version = "0.3.0" }
 memmap2         = "0.9"
 rkyv            = { version = "0.8", features = ["little_endian"] }
 prost           = "0.14"

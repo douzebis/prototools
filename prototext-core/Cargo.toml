@@ -5,11 +5,11 @@
 
 [package]
 name        = "prototext-core"
-version     = "0.3.0"
+version.workspace    = true
 edition     = "2021"
 description = "Pure-Rust library for lossless protobuf ↔ enhanced-textproto conversion"
 license     = "MIT"
-repository  = "https://github.com/ThalesGroup/prototools"
+repository.workspace = true
 readme      = "../README.md"
 keywords    = ["protobuf", "proto", "textproto", "serialization"]
 categories  = ["encoding", "parser-implementations"]

@@ -5,7 +5,8 @@
 # nix/crates-io.nix — Package the publishable .crate tarballs.
 #
 # Produces $out/ with one tarball per publishable workspace crate:
-#   prototext-core, prototext-graph, prototext-schema, prototext
+#   prototext-core, prototext-graph, prototext-schema, prototools-complete,
+#   prototext
 # (that is also their dependency order, which publish.sh must follow —
 # see .github/workflows/nix.yml).
 #
@@ -29,7 +30,6 @@
 , crane
 , workspaceSrc
 , commonArgs    # from nix/rust.nix — carries PYO3_PYTHON, etc.
-, protoPostPatch
 }:
 
 let
@@ -40,14 +40,13 @@ let
 in pkgs.stdenv.mkDerivation (commonArgs // {
   pname   = "prototools-crates-io";
   # Spec 0402 S3: prototext's release, the crate the bundle is named for.
-  version = (pkgs.lib.importTOML ../prototext/Cargo.toml).package.version;
+  version = (pkgs.lib.importTOML ../Cargo.toml).workspace.package.version;
   src     = workspaceSrc;
 
   nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
     pkgs.protobuf
     crane.configureCargoVendoredDepsHook
   ];
-  postPatch      = protoPostPatch;
   cargoVendorDir = vendoredDeps;
 
   # HOME and CARGO_HOME must be writable before configureCargoVendoredDepsHook
@@ -68,6 +67,7 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
 prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }
 prototext-schema = { path = "$PWD/prototext-schema" }
+prototools-complete = { path = "$PWD/prototools-complete" }
 workspace-hack   = { path = "$PWD/workspace-hack" }
 EOF
   '';
@@ -77,6 +77,7 @@ EOF
     cargo package -p prototext-core   --no-verify
     cargo package -p prototext-graph  --no-verify
     cargo package -p prototext-schema --no-verify
+    cargo package -p prototools-complete --no-verify
     cargo package -p prototext        --no-verify
   '';
 
@@ -85,6 +86,7 @@ EOF
     cp target/package/prototext-core-*.crate   $out/
     cp target/package/prototext-graph-*.crate  $out/
     cp target/package/prototext-schema-*.crate $out/
+    cp target/package/prototools-complete-*.crate $out/
     cp target/package/prototext-*.crate        $out/
   '';
 

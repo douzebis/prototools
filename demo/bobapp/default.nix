@@ -50,6 +50,10 @@ let
       (crane.fileset.commonCargoSources (repoRoot + /demo/bobapp))
       # path dependencies
       (crane.fileset.commonCargoSources (repoRoot + /prototext-core))
+      # Their workspace root: prototext-core inherits its version from it
+      # (spec 0405 S5). Cargo reads it for the inherited fields only; its
+      # `exclude` keeps bobapp a separate project.
+      (repoRoot + /Cargo.toml)
       (crane.fileset.commonCargoSources (repoRoot + /workspace-hack))
     ];
   };

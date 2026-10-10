@@ -4,11 +4,11 @@
 
 [package]
 name        = "protolens"
-version     = "0.1.0"
+version.workspace    = true
 edition     = "2021"
 description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf"
 license     = "MIT"
-repository  = "https://github.com/ThalesGroup/prototools"
+repository.workspace = true
 
 [[bin]]
 name = "protolens"
@@ -16,12 +16,12 @@ path = "src/main.rs"
 
 [dependencies]
 prototext-core        = { workspace = true }
-prototext-graph       = { path = "../prototext-graph", version = "0.2.1" }
+prototext-graph       = { path = "../prototext-graph", version = "0.3.0" }
 prototext-schema      = { workspace = true }
 prost-reflect         = "0.16"
 clap                  = { version = "4.5", features = ["derive", "env"] }
 clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
-prototools-complete   = { version = "0.1", path = "../prototools-complete" }
+prototools-complete   = { version = "0.3.0", path = "../prototools-complete" }
 clap_mangen           = "0.2"
 memchr                = "2"
 # `unstable-rendered-line-info` is `Paragraph::line_count`, which is how

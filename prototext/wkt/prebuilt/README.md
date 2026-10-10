@@ -6,10 +6,11 @@ SPDX-License-Identifier: MIT
 
 # prototext/wkt/prebuilt
 
-The WKT scoring graph every build embeds, committed to git: the
-`prebuilt-wkt` feature copies it in (spec 0401 S2). The workspace build
-in `nix/rust.nix`, the crates.io package and the nixpkgs draft all build
-with it, so no build has to run reproto first.
+The WKT scoring graph every build embeds, committed to git: prototext's
+`build.rs` copies it in, with no feature flag and no tool to run (specs
+0401 S2, 0405 S2). The workspace build in `nix/rust.nix`, the crates.io
+package and the nixpkgs recipe all use it, so no build has to run reproto
+first.
 
 ## Files
 

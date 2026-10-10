@@ -43,6 +43,10 @@ let
       (repoRoot + /grehack2026/game/proto)
       # Path dependencies of life, and their own path dependencies.
       (crane.fileset.commonCargoSources (repoRoot + /prototext-core))
+      # Their workspace root: prototext-core inherits its version from it
+      # (spec 0405 S5). Cargo reads it for the inherited fields only; its
+      # `exclude` keeps this crate a separate project.
+      (repoRoot + /Cargo.toml)
       (crane.fileset.commonCargoSources (repoRoot + /workspace-hack))
     ];
   };

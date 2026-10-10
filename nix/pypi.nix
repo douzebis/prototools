@@ -16,6 +16,7 @@
 
 { pkgs
 , pythonPkgs
+, pyprojectVersion   # nix/rust.nix: a pyproject.toml's version, checked (spec 0405 S5)
 , workspaceSrc       # filtered Rust workspace source (for PyO3 .so files)
 , reprotoSrcFull     # enriched reproto source tree (from nix/python.nix)
 , prototextExtensionArtifacts       # $out/artifacts/ from prototext_codec ext
@@ -168,7 +169,7 @@ EOF
 
 
   # Spec 0402 S3: each wheel's version from its own pyproject.toml.
-  versionOf = dir: (pkgs.lib.importTOML (dir + "/pyproject.toml")).project.version;
+  versionOf = pyprojectVersion;
 
 in pkgs.runCommand "prototools-pypi" {
   strictDeps = true;
@@ -180,7 +181,7 @@ in pkgs.runCommand "prototools-pypi" {
   # Copy all wheels from the individual per-package derivations.
   cp ${makeBinaryWheel {
     pkgName   = "prototext-graph";
-    version   = versionOf ../prototext-graph-pyo3;
+    version   = versionOf "prototext-graph-pyo3";
     libName   = "prototext_graph_lib";
     artifacts = prototextGraphExtensionArtifacts;
     initPy    = ../prototext-graph-pyo3/prototext_graph_lib/__init__.py;
@@ -188,7 +189,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "prototext-codec";
-    version   = versionOf ../prototext-pyo3;
+    version   = versionOf "prototext-pyo3";
     libName   = "prototext_codec_lib";
     artifacts = prototextExtensionArtifacts;
     initPy    = ../prototext-pyo3/prototext_codec_lib/__init__.py;
@@ -196,7 +197,7 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makeBinaryWheel {
     pkgName   = "fdp-scan";
-    version   = versionOf ../fdp-scan-pyo3;
+    version   = versionOf "fdp-scan-pyo3";
     libName   = "fdp_scan_lib";
     artifacts = fdpScanExtensionArtifacts;
     initPy    = ../fdp-scan-pyo3/fdp_scan_lib/__init__.py;
@@ -204,14 +205,14 @@ in pkgs.runCommand "prototools-pypi" {
 
   cp ${makePureWheel {
     pkgName = "prototext-reproto";
-    version = versionOf ../reproto;
+    version = versionOf "reproto";
     src     = reprotoSrcFull;
     pkgDir  = "reproto";
   }}/*.whl "$out/"
 
   cp ${makePureWheel {
     pkgName = "protoscan";
-    version = versionOf ../protoscan;
+    version = versionOf "protoscan";
     src     = ../protoscan;
     pkgDir  = "protoscan";
   }}/*.whl "$out/"

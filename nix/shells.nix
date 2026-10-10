@@ -17,7 +17,6 @@
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
 #                                  PROTOTEXT_WKT_SET, PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
-#               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
 #               _hook_rust       — exports TREE_SITTER_TEXTPROTO_*;
 #                                  writes rust-toolchain.toml; rustup toolchain
@@ -269,44 +268,6 @@ exclude = [
   "docs/mockup",
 ]
 RUFFEOF
-      }
-
-      _hook_protos() {
-        # Compile prototext fixture .pb descriptors into
-        # prototext/fixtures/prebuilt/, mirroring what protoPostPatch does in
-        # default.nix.  The list must stay in step with that phase and with
-        # prototext/build.rs's fallback, which copies all four unconditionally.
-        #
-        # Each file is guarded on its own rather than behind a single
-        # descriptor.pb sentinel: with one sentinel, a fixture added after a
-        # working tree was first populated is never compiled there, and the
-        # failure surfaces far away as a build.rs panic ("failed to copy
-        # message_set.pb: No such file or directory").
-        local prebuilt="$PWD/prototext/fixtures/prebuilt"
-        local schemas="$PWD/prototext/fixtures/schemas"
-        local name missing=()
-        for name in descriptor knife enum_collision message_set; do
-          [[ -f "$prebuilt/$name.pb" ]] || missing+=("$name")
-        done
-        if (( ''${#missing[@]} == 0 )); then
-          echo "[hook] protos: already compiled — skipping"
-          return
-        fi
-        echo "[hook] protos: compiling ''${missing[*]}"
-        mkdir -p "$prebuilt"
-        for name in "''${missing[@]}"; do
-          if [[ $name == descriptor ]]; then
-            # Not in fixtures/schemas: protoc resolves it from its own include.
-            protoc \
-              --descriptor_set_out="$prebuilt/descriptor.pb" \
-              google/protobuf/descriptor.proto
-          else
-            protoc \
-              --descriptor_set_out="$prebuilt/$name.pb" \
-              --proto_path="$schemas" \
-              "$name.proto"
-          fi
-        done
       }
 
       _hook_codegen() {
@@ -579,7 +540,6 @@ LUAEOF
       # ── Run all hook steps in order ────────────────────────────────────────
       _hook_env
       _hook_python
-      _hook_protos
       _hook_codegen
       _hook_rust
       _hook_cargo
