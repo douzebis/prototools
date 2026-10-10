@@ -15,7 +15,7 @@ name       = "prototext_schema"
 crate-type = ["rlib"]
 
 [dependencies]
-prototext-graph = { path = "../prototext-graph", version = "0.3.0" }
+prototext-graph = { workspace = true }
 memmap2         = "0.9"
 rkyv            = { version = "0.8", features = ["little_endian"] }
 prost           = "0.14"

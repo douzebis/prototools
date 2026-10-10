@@ -79,10 +79,15 @@ let
   # One version for the whole workspace (spec 0405 S5): the crates inherit
   # it, and each pyproject.toml must repeat it, or evaluation fails here.
   workspaceVersion = (pkgs.lib.importTOML ../Cargo.toml).workspace.package.version;
+  #
+  # Between releases the workspace carries X.Y.Z-dev (nixpkgs/README.md),
+  # which Python spells X.Y.Z.dev0 (PEP 440): a "-" in a wheel's version
+  # would break its file name.
+  pythonVersion = builtins.replaceStrings [ "-dev" ] [ ".dev0" ] workspaceVersion;
   pyprojectVersion = dir:
     let v = (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project.version;
-    in if v == workspaceVersion then v
-       else throw "${dir}/pyproject.toml has version ${v}; the workspace is ${workspaceVersion} (Cargo.toml)";
+    in if v == pythonVersion then v
+       else throw "${dir}/pyproject.toml has version ${v}; the workspace is ${workspaceVersion} (Cargo.toml), so ${pythonVersion}";
   prototextVersion = workspaceVersion;
   protolensVersion = workspaceVersion;
 

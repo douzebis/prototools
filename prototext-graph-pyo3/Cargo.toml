@@ -13,7 +13,7 @@ name       = "prototext_graph_lib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-prototext-graph      = { path = "../prototext-graph" }
+prototext-graph      = { workspace = true }
 pyo3                 = { version = "0.29", features = ["extension-module"] }
 pyo3_stub_gen        = { version = "0.23", package = "pyo3-stub-gen" }
 pyo3_stub_gen_derive = { version = "0.23", package = "pyo3-stub-gen-derive" }

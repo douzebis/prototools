@@ -47,12 +47,17 @@ exclude = [
 # pyproject.toml files cannot inherit it; nix/rust.nix fails evaluation when
 # one of them disagrees.
 [workspace.package]
-version    = "0.3.0"
+version    = "0.3.1-dev"
 repository = "https://github.com/douzebis/prototools"
 
 [workspace.dependencies]
-prototext-core   = { path = "prototext-core", version = "0.3.0", features = ["prost-bug-workaround"] }
-prototext-schema = { path = "prototext-schema", version = "0.3.0" }
+# Internal crates, with the workspace version as their requirement (crates.io
+# needs one). Updated together with workspace.package.version at a release.
+prototext           = { path = "prototext", version = "0.3.1-dev" }
+prototext-core      = { path = "prototext-core", version = "0.3.1-dev", features = ["prost-bug-workaround"] }
+prototext-graph     = { path = "prototext-graph", version = "0.3.1-dev" }
+prototext-schema    = { path = "prototext-schema", version = "0.3.1-dev" }
+prototools-complete = { path = "prototools-complete", version = "0.3.1-dev" }
 
 [profile.release]
 codegen-units   = 1

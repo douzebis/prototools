@@ -38,14 +38,14 @@ name = "prototext-gen-man"
 path = "src/gen_man.rs"
 
 [dependencies]
-prototext-core  = { path = "../prototext-core", version = "0.3.0", features = ["prost-bug-workaround"] }
-prototext-graph = { path = "../prototext-graph", version = "0.3.0" }
+prototext-core  = { workspace = true }
+prototext-graph = { workspace = true }
 prototext-schema = { workspace = true }
 memmap2         = "0.9"
 rkyv            = { version = "0.8", features = ["little_endian"] }
 clap            = { version = "4.5", features = ["derive"] }
 clap_complete   = { version = "4.5", features = ["unstable-dynamic"] }
-prototools-complete = { version = "0.3.0", path = "../prototools-complete" }
+prototools-complete = { workspace = true }
 clap_mangen     = "0.2"
 globset         = "0.4"
 serde           = { version = "1", features = ["derive"] }

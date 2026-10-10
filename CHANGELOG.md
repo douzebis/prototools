@@ -6,6 +6,8 @@ SPDX-License-Identifier: MIT
 
 # Changelog
 
+## [Unreleased]
+
 ## 0.3.0 — 2026-10-10
 
 The first release with one version for every tool, crate and Python

@@ -22,11 +22,17 @@ one, which nixpkgs ships, is older. Both are part of `ci`.
 The other packages (protoscan, the Python extensions, reproto, protolens)
 follow one PR at a time, in the order of spec 0405 S9.
 
+`pr-description.md` and `pr-briefing.md` are the notes for the current PR:
+its description, and what to be ready to answer in review.
+
 ## Releasing
 
-1. Set `workspace.package.version` in `Cargo.toml` and `version` in each
-   `pyproject.toml` to the release (evaluation fails if a `pyproject.toml`
-   disagrees). Add the release's section to `CHANGELOG.md`. Set the same
+1. In `Cargo.toml`, set `workspace.package.version` and the `version` of
+   each internal crate under `workspace.dependencies` to the release; set
+   `version` in each `pyproject.toml` (evaluation fails if one disagrees);
+   run `cargo update -w`, and `cargo update -p prototext-core` in
+   `demo/bobapp` and `grehack2026/game`, which have lock files of their
+   own. Add the release's section to `CHANGELOG.md`. Set the same
    `version` in the staged `package.nix` (the check above requires it).
 2. Commit, tag `vX.Y.Z`, push the tag to douzebis/prototools; then push
    to ThalesGroup/prototools (spec 0405 C3).
@@ -37,6 +43,7 @@ follow one PR at a time, in the order of spec 0405 S9.
      (`prototext: init at X.Y.Z`, then `prototext: A.B.C -> X.Y.Z`).
 4. Copy the updated `package.nix` back here (with its `hash` and
    `cargoHash`), and commit.
-5. Start the next cycle: set the workspace and every `pyproject.toml` to
-   the next version with a `-dev` suffix, add an `[Unreleased]` section to
-   `CHANGELOG.md`, commit.
+5. Start the next cycle: as in step 1, with the next version and a `-dev`
+   suffix (`0.3.1-dev`), which every `pyproject.toml` spells the PEP 440
+   way (`0.3.1.dev0`); add an `[Unreleased]` section to `CHANGELOG.md`;
+   commit.
