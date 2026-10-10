@@ -6,7 +6,8 @@
 
 use std::convert::Infallible;
 use std::io;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -31,17 +32,24 @@ use super::support::*;
 /// Its error type is `io::Error` rather than `TestBackend`'s own
 /// `Infallible`, because `run_loop` requires `io::Error: From<B::Error>`
 /// and no such conversion exists.
+///
+/// The counter is shared so that another thread can read it while the
+/// loop runs: [`run_idle_after`] reads it at the end of the idle period.
 struct CountingBackend {
     inner: TestBackend,
-    draws: usize,
+    draws: Arc<AtomicUsize>,
 }
 
 impl CountingBackend {
     fn new(width: u16, height: u16) -> Self {
         Self {
             inner: TestBackend::new(width, height),
-            draws: 0,
+            draws: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    fn draws(&self) -> usize {
+        self.draws.load(Ordering::SeqCst)
     }
 }
 
@@ -56,7 +64,7 @@ impl Backend for CountingBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        self.draws += 1;
+        self.draws.fetch_add(1, Ordering::SeqCst);
         never(self.inner.draw(content))
     }
 
@@ -132,11 +140,11 @@ fn run_over(app: &mut App, events: Vec<AppEvent>) -> (usize, usize) {
     )
     .expect("`:q` must return cleanly");
     let left = rx.try_iter().count();
-    (terminal.backend().draws, left)
+    (terminal.backend().draws(), left)
 }
 
 /// Drives `run_loop` with an idle terminal, quitting from another thread
-/// after `idle`, and reports the frames it drew.
+/// after `idle`, and reports the frames it drew during `idle`.
 ///
 /// The pane is deliberately tiny — one document row — so the fixture's
 /// stops all sit off screen and every bake step is `Progressed`. That is
@@ -151,18 +159,28 @@ fn run_idle(app: &mut App, idle: Duration) -> usize {
 /// A test that leaves the search prompt open needs it: `quit_keys`
 /// opens with `:`, which an open prompt takes as a character rather
 /// than as a command, and the loop would then never return.
+///
+/// The count is read by the quitting thread just before it sends anything,
+/// so it covers the idle period only. The prefix and the quit keys are sent
+/// one at a time, and a loop scheduled between two sends wakes on the first
+/// alone and draws for it: counting at the end, as this did before, added
+/// one or two such frames under load (a CI runner with the whole suite
+/// running), and the idle control then saw 3 frames instead of 1.
 fn run_idle_after(app: &mut App, idle: Duration, prefix: Vec<AppEvent>) -> usize {
     let (tx, rx) = mpsc::channel();
+    let mut terminal = Terminal::new(CountingBackend::new(40, 3)).unwrap();
     let quitter = {
         let tx = tx.clone();
+        let draws = Arc::clone(&terminal.backend().draws);
         std::thread::spawn(move || {
             std::thread::sleep(idle);
+            let idle_draws = draws.load(Ordering::SeqCst);
             for ev in prefix.into_iter().chain(quit_keys()) {
                 let _ = tx.send(ev);
             }
+            idle_draws
         })
     };
-    let mut terminal = Terminal::new(CountingBackend::new(40, 3)).unwrap();
     let mut reader = None;
     run_loop(
         &mut terminal,
@@ -173,8 +191,7 @@ fn run_idle_after(app: &mut App, idle: Duration, prefix: Vec<AppEvent>) -> usize
         &InputPending::default(),
     )
     .expect("`:q` must return cleanly");
-    quitter.join().expect("the quitter must not panic");
-    terminal.backend().draws
+    quitter.join().expect("the quitter must not panic")
 }
 
 /// Spec 0255 S6, and the bug that shipped with it: narrowing the loop's
