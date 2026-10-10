@@ -79,7 +79,7 @@ jobs:
             "docker-archive:prototools-workshop-${{ matrix.arch }}.tar:$IMAGE:grehack2026"
 
       - name: Upload the USB-key archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prototools-workshop-${{ matrix.arch }}
           path: prototools-workshop-${{ matrix.arch }}.tar
@@ -137,7 +137,7 @@ jobs:
           crane tag "$IMAGE:$GITHUB_SHA" grehack2026
 
       - name: Download the archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: prototools-workshop-*
           path: archives/
@@ -158,7 +158,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the USB-key bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: usb-key
           path: usb-key/
