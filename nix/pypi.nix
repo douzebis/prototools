@@ -28,18 +28,25 @@ let
   # Platform tag — computed at Nix eval time from stdenv.
   #
   # PyPI wheel filenames use a platform tag:
-  #   Linux x86_64:  manylinux_2_28_x86_64
-  #   Linux aarch64: manylinux_2_28_aarch64
+  #   Linux x86_64:  manylinux_2_34_x86_64
+  #   Linux aarch64: manylinux_2_34_aarch64
   #   macOS arm64:   macosx_11_0_arm64
   #   macOS x86_64:  macosx_10_15_x86_64
   #
-  # We use manylinux_2_28 because the Nix glibc is >= 2.28 on nixos-25.11.
+  # manylinux_2_34: the tag must name the newest glibc the extensions
+  # actually require, not the build's glibc. Linked against nixpkgs' glibc,
+  # Rust's std picks up symbols versioned up to GLIBC_2.34
+  # (pthread_key_create and friends; stat64 at 2.33, gettid at 2.30), on
+  # 25.11 and 26.05 alike. Tagged 2_28 until 2026-10-10, which let pip
+  # install the wheels on glibc 2.28-2.33 systems (RHEL 8, Debian 11),
+  # where the import then failed. Check with
+  #   objdump -T <ext>.so | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1
   # For macOS we use conservative deployment targets (11.0 for arm64,
   # 10.15 for x86_64) matching the GitHub Actions runner base.
   # ---------------------------------------------------------------------------
   platformTag =
-    if pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64  then "manylinux_2_28_x86_64"
-    else if pkgs.stdenv.isLinux && pkgs.stdenv.isAarch64 then "manylinux_2_28_aarch64"
+    if pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64  then "manylinux_2_34_x86_64"
+    else if pkgs.stdenv.isLinux && pkgs.stdenv.isAarch64 then "manylinux_2_34_aarch64"
     else if pkgs.stdenv.isDarwin && pkgs.stdenv.isAarch64  then "macosx_11_0_arm64"
     else if pkgs.stdenv.isDarwin && pkgs.stdenv.isx86_64   then "macosx_10_15_x86_64"
     else throw "Unsupported platform for PyPI wheel assembly";
