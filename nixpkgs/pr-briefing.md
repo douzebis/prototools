@@ -34,6 +34,12 @@ AI tool).
 
 ## Questions a reviewer may ask
 
+- **"Upstream is submitting its own project; does it have users?"**
+  `pkgs/README.md` ("Before adding a new package") warns that
+  self-submitted projects often lack a userbase. Be ready to say who uses
+  it: the internal ThalesGroup/S3NS package built on it, and the talks
+  (gRPConf 2026, GreHack 2026, with a workshop image).
+
 - **"The repository contains binary files (`*.pb`, `*.rkyv`); are they
   prebuilt artifacts?"** They are data, not code: protobuf descriptor sets
   (compiled from the well-known types and three test schemas) and a scoring
