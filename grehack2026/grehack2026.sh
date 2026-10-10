@@ -260,7 +260,6 @@ protolens --descriptor-set life.desc eve/server.log \
 
 
 clear && header "5. Takeaways" && picture images/takeaways.jpeg 22
-
 # \
 #                                                                              \
 # No schema at hand  → descriptors usually hide in the binary: protoscan       \
@@ -279,10 +278,10 @@ clear && header "5. Takeaways" && picture images/takeaways.jpeg 22
 
 
 clear && picture images/goodbye.jpeg 22
-
-# https://github.com/ThalesGroup/prototools — pull requests welcome 🙂
-
-# Thank you 👋
+# \
+# https://github.com/ThalesGroup/prototools — pull requests welcome 🙂         \
+#                                                                              \
+# Thank you 👋                                                                 \
 
 
 
