@@ -14,26 +14,17 @@
 #   5. Exposes all public attributes.
 
 { pkgs ? (import (fetchTarball {
-    # nixos-25.11 @ 2026-03-30 (git rev 1073dad219cb244572b74da2b20c7fe39cb3fa9e)
-    url    = "https://github.com/NixOS/nixpkgs/archive/1073dad219cb244572b74da2b20c7fe39cb3fa9e.tar.gz";
-    sha256 = "0xgsq0cfjnl2axbzzw579jrjq9g8mhbgjgfippl3qx03im636p5l";
+    # nixos-26.05 @ 2026-10-09 (git rev 7c8764b7c7b09b34f632464276218ef9090eaa11)
+    url    = "https://github.com/NixOS/nixpkgs/archive/7c8764b7c7b09b34f632464276218ef9090eaa11.tar.gz";
+    sha256 = "01ybz131ld1aq6n302jq4wqpjd7d57wz9pxnjw4ly53dy6sn8s1i";
   }) {})
 , pythonPkgs ? pkgs.python313Packages
-# buf — narrow override, pinned separately from the main nixpkgs revision
-# above: the main pin's buf is 1.59.0, which predates upstream fixes
-# critical to protolens's Neovim integration (spec 0145/0146) —
-# v1.60.0 changed `buf lsp serve`'s default --timeout from 2m0s to 0 (no
-# timeout), and v1.61.0 fixed a regression in LSP well-known-types
-# handling that reliably crashed `buf lsp serve` (SIGSEGV in
-# buflsp.(*file).RefreshIR) when navigating to a locally-materialized WKT
-# file such as google/protobuf/any.proto (as reproto emits under -O, spec
-# 0146) — live-reproduced and root-caused 2026-07-18. Rest of the
-# toolchain (rustc, protobuf, etc.) stays on the main pin.
-, buf ? (import (fetchTarball {
-    # nixpkgs-unstable @ 2026-07-18 (git rev 31cd72fdba8fa052e437ce7e6879c4fe62def10f)
-    url    = "https://github.com/NixOS/nixpkgs/archive/31cd72fdba8fa052e437ce7e6879c4fe62def10f.tar.gz";
-    sha256 = "107f6kp5kjxsh9aggnqfanlfn5mw24gq19alkdvld75vimv5r3jl";
-  }) {}).buf
+# buf from the main pin (spec 0402 S2): 26.05's is 1.73.0, past the two
+# fixes protolens's Neovim integration needs (spec 0145/0146) — v1.60.0's
+# `buf lsp serve` --timeout default of 0, and v1.61.0's fix for the
+# SIGSEGV in buflsp.(*file).RefreshIR on a locally-materialized WKT file —
+# which a separate nixpkgs-unstable pin supplied until then.
+, buf ? pkgs.buf
 # The commit an image is built from, for its org.opencontainers.image.revision
 # label (spec 0374 S5). CI passes `--argstr gitRevision "$GITHUB_SHA"`; a local
 # build leaves it out, and the image has no revision label.

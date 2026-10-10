@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0402 — a nixpkgs-friendly build
 
-Status: implemented in part (S1, S3–S8); S2 waits for the nixpkgs pin bump, S9–S10 for a decision to submit to nixpkgs
+Status: implemented in part (S1–S8); S9–S10 wait for a decision to submit to nixpkgs
 Implemented in: 2026-10-09
 App: build (default.nix, nix/*, nixpkgs/pkgs/)
 Refs: docs/specs/0401-a-faster-nix-build.md (the speed work this must
@@ -267,4 +267,22 @@ wait until the project is submitted to nixpkgs.
   - none of the three binary wheels in `pypi` links libpython
     (`readelf`);
   - rustfmt, clippy (the three pyo3 crates) and `reuse lint` are clean.
+
+**S2, 2026-10-10.** The main pin moved to the nixos-26.05 head
+(`7c8764b`, 2026-10-09), four weeks before GreHack, for the security
+fixes 25.11 no longer receives. `buf` comes from it (1.73.0), and the
+nixpkgs-unstable pin is gone. What the bump changed:
+- Rust 1.95's clippy added `collapsible_match`, at two places, both an
+  arm whose body was a single `if`. They became match guards, falling
+  through to the match's `_ => {}`, so behavior is unchanged.
+- protobuf 34.1's `descriptor.proto` added `Edition.EDITION_UNSTABLE`
+  and `FieldOptions.FeatureSupport.removal_error`, so the committed WKT
+  graph was refreshed (`wkt-prebuilt-check`). Nothing was removed or
+  changed.
+
+Verified:
+- `ci`, the image, `pypi` and `crates-io` build;
+- the image passes all 27 smoke checks, the headless Neovim 0.12
+  editor check among them; it is 1,327 MiB unpacked, against 1,246 on
+  25.11.
 

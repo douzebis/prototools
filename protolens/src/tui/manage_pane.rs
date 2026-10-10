@@ -629,12 +629,12 @@ impl App {
             // Spec 0124 G3: duplicate the highlighted entry as a new,
             // always-inactive copy. Bound to `D`, leaving `d` to delete
             // as in most other list-oriented tools.
-            KeyCode::Char('D') => {
-                if !self.overrides.entries().is_empty() {
-                    let to = self.overrides.duplicate(self.manage_highlight);
-                    self.set_manage_highlight(to);
-                    self.render_overrides(self.first_node);
-                }
+            // With no entries, nothing to duplicate: `D` falls through to
+            // the final `_ => {}`.
+            KeyCode::Char('D') if !self.overrides.entries().is_empty() => {
+                let to = self.overrides.duplicate(self.manage_highlight);
+                self.set_manage_highlight(to);
+                self.render_overrides(self.first_node);
             }
             // Spec 0125 §G2: an in-scope `auto` entry is deactivated
             // instead of removed — deleting it would just make

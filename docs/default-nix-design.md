@@ -14,8 +14,9 @@ workspace.  It is parameterised by two arguments:
 
 | Argument | Default | Purpose |
 |---|---|---|
-| `pkgs` | nixos-25.11 @ pinned rev | nixpkgs universe |
-| `pythonPkgs` | `pkgs.python312Packages` | Python package set |
+| `pkgs` | nixos-26.05 @ pinned rev | nixpkgs universe |
+| `pythonPkgs` | `pkgs.python313Packages` | Python package set |
+| `buf` | `pkgs.buf` | overridable; a separate pin until 26.05 (spec 0402 S2) |
 
 The file exposes a flat attribute set at the bottom; every attribute is
 a distinct Nix derivation or shell.  `default` and `ci` both point at

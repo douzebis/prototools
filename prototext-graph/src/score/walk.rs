@@ -1376,11 +1376,9 @@ fn apply_cardinality_multi(
             .map(|i| ae.occurrences[i].1)
             .unwrap_or(0);
         match entry.label {
-            0 => {
-                if count > 1 {
-                    for &e in &ae.entries {
-                        scores[e as usize].non_canonical += (count - 1) as u64;
-                    }
+            0 if count > 1 => {
+                for &e in &ae.entries {
+                    scores[e as usize].non_canonical += (count - 1) as u64;
                 }
             }
             1 => {
@@ -1396,7 +1394,9 @@ fn apply_cardinality_multi(
                     }
                 }
             }
-            _ => {} // Repeated: no constraint
+            // Repeated: no constraint. Optional and seen at most once: none
+            // broken.
+            _ => {}
         }
     }
 }
