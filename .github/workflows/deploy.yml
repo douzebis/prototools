@@ -34,9 +34,9 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get install -y mandoc
 
-      # Note: prototext-gen-man is not built here — doing so requires a full
-      # Nix+Crane build of the prototext crate (~10 min) just for one man page.
-      # The prototext.1 man page is therefore omitted from the website.
+      # Note: prototext and protoscan (a Rust binary since spec 0407) are not
+      # built here — that is a full Rust build (~10 min) for two man pages.
+      # Their man pages are therefore omitted from the website.
       # See docs/specs/0102-prototext-args-crate.md for the dropped refactor
       # that would have made this fast.
 
@@ -46,10 +46,9 @@ jobs:
       - name: Generate man pages
         run: |
           mkdir -p man/man1
-          # prototext-gen-man omitted — see comment above.
+          # prototext and protoscan omitted — see comment above.
           PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
           PYTHONPATH=reproto/src python3 -m reproto.gen_man_instantiate man/man1
-          PYTHONPATH=protoscan/src python3 -m protoscan.gen_man man/man1
 
       - name: Copy docs into website/content
         run: |
@@ -102,7 +101,7 @@ jobs:
             done
             # Also skip the bp-protodb companion (no number prefix match needed,
             # catch by filename).
-            case "$(basename $f)" in
+            case "$(basename "$f")" in
               0043-hopcroft-db-bp-protodb.md) skip=1 ;;
             esac
             [ "$skip" = "1" ] && continue
@@ -130,15 +129,6 @@ jobs:
               || cat man/man1/reproto-instantiate-schema.1
             printf '</div>\n'
           } > website/content/reproto-instantiate-schema-man-page.md
-
-          # protoscan man page
-          {
-            printf '+++\ntitle = "protoscan Man Page"\n+++\n\n'
-            printf '<div class="manpage">\n'
-            mandoc -T html -O fragment man/man1/protoscan.1 2>/dev/null \
-              || cat man/man1/protoscan.1
-            printf '</div>\n'
-          } > website/content/protoscan-man-page.md
 
       - name: Build
         run: cd website && zola build

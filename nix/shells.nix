@@ -22,7 +22,7 @@
 #                                  writes rust-toolchain.toml; rustup toolchain
 #                                  install
 #               _hook_cargo      — cargo build --release -p prototext / -p
-#                                  protolens (guarded); runs after _hook_rust
+#                                  protolens / -p protoscan (guarded); runs after _hook_rust
 #                                  since protolens's build.rs requires
 #                                  TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR
 #               _hook_man        — generates man pages into man/man1/
@@ -226,7 +226,7 @@ in
         # reprotoTestDeps: that list is also the dep set of reprotoTests,
         # googleapisTests and customTests, and nothing that runs under
         # `ci` needs a terminal emulator.
-        export PYTHONPATH="$PWD/reproto/src:$PWD/protoscan/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
+        export PYTHONPATH="$PWD/reproto/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
       }
 
       _hook_python() {
@@ -341,6 +341,30 @@ RUFFEOF
         else
           echo "[hook] cargo: protolens binary up to date — skipping"
         fi
+
+        # Same staleness guard for protoscan (spec 0407): its scanner,
+        # fdp-scan, scores against prototext's embedded graph.
+        local bin3="$PWD/target/release/protoscan"
+        local watch3=(protoscan/src fdp-scan/src prototext/src prototext-core/src
+                      prototext-graph/src prototools-complete/src
+                      protoscan/Cargo.toml fdp-scan/Cargo.toml Cargo.lock)
+        local stale3=0
+        if [[ ! -f "$bin3" ]]; then
+          stale3=1
+        else
+          for p in "''${watch3[@]}"; do
+            if [[ -e "$p" && -n "$(find "$p" -newer "$bin3" -print -quit 2>/dev/null)" ]]; then
+              stale3=1
+              break
+            fi
+          done
+        fi
+        if [[ "$stale3" -eq 1 ]]; then
+          echo "[hook] cargo: cargo build --release -p protoscan"
+          cargo build --release --locked -p protoscan
+        else
+          echo "[hook] cargo: protoscan binary up to date — skipping"
+        fi
       }
 
       _hook_rust() {
@@ -379,8 +403,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         if python3 -c "import reproto.gen_man" 2>/dev/null; then
           python3 -m reproto.gen_man man/man1
         fi
-        if python3 -c "import protoscan.gen_man" 2>/dev/null; then
-          python3 -m protoscan.gen_man man/man1
+        if command -v protoscan &>/dev/null; then
+          PROTOSCAN_GEN_MAN=man/man1 protoscan
         fi
         export MANPATH="$PWD/man:''${MANPATH:-}"
         makewhatis "$PWD/man" 2>/dev/null || true
@@ -518,23 +542,22 @@ LUAEOF
         echo "[hook] completions: prototext, protolens, reproto, protoscan"
         # bash completion for prototext
         if command -v prototext &>/dev/null; then
-          source <(PROTOTEXT_COMPLETE=bash prototext | sed \
-            -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
-            -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
+          # As printed: the binary's own bash script (spec 0406), unpatched.
+          source <(PROTOTEXT_COMPLETE=bash prototext)
         fi
 
         # bash completion for protolens
         if command -v protolens &>/dev/null; then
-          source <(PROTOLENS_COMPLETE=bash protolens | sed \
-            -e 's|-o nospace -o bashdefault|-o nospace -o filenames -o bashdefault|g' \
-            -e 's|words\[COMP_CWORD\]="$2"|local _cur="''${COMP_LINE:0:''${COMP_POINT}}"; _cur="''${_cur##* }"; words[COMP_CWORD]="''${_cur}"|')
+          source <(PROTOLENS_COMPLETE=bash protolens)
         fi
 
         # bash completion for reproto (pre-built script, avoids slow click invocation)
         eval "$(cat $PWD/reproto/src/reproto/completions.sh)"
 
         # bash completion for protoscan
-        eval "$(_PROTOSCAN_COMPLETE=bash_source protoscan)"
+        if command -v protoscan &>/dev/null; then
+          source <(PROTOSCAN_COMPLETE=bash protoscan)
+        fi
       }
 
       # ── Run all hook steps in order ────────────────────────────────────────

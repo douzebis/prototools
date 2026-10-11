@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+name: nixpkgs staging
+
+# Spec 0405 S7: build the recipes staged for nixpkgs (nixpkgs/pkgs/), as
+# nixpkgs builds them, from the local tree. Each is a full buildRustPackage
+# that compiles every dependency again, so it runs apart from the everyday
+# Nix CI: when the recipes or the dependencies change, at every release tag,
+# and by hand. nixpkgs-staging-check (nixfmt, the version rule) stays in ci.
+
+on:
+  push:
+    branches: [main]
+    # Branch pushes only: a tag push ignores this filter, so every release
+    # tag builds the recipes whatever it changed.
+    paths:
+      - "nixpkgs/**"
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - ".github/workflows/nixpkgs-staging.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    name: Staged recipes (${{ matrix.os }})
+    # Never in the ThalesGroup mirror, whose build budget is strict.
+    if: github.repository == 'douzebis/prototools'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
+
+      - name: Build the staged nixpkgs recipes
+        run: nix-build -A nixpkgs-staging -A nixpkgs-staging-check

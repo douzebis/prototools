@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "protoscan"
+version.workspace    = true
+edition     = "2021"
+description = "Find the protobuf descriptors embedded in a binary"
+license     = "MIT"
+repository.workspace = true
+readme      = "../README.md"
+keywords    = ["protobuf", "descriptor", "reverse-engineering", "cli"]
+categories  = ["command-line-utilities", "encoding"]
+
+[[bin]]
+name = "protoscan"
+path = "src/main.rs"
+
+[dependencies]
+fdp-scan            = { workspace = true }
+prototools-complete = { workspace = true }
+clap                = { version = "4.5", features = ["derive"] }
+clap_complete       = { version = "4.5", features = ["unstable-dynamic"] }
+clap_mangen         = "0.2"
+prost               = "0.14"
+prost-types         = "0.14"
+workspace-hack      = { version = "0.1", path = "../workspace-hack" }

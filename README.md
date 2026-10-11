@@ -54,23 +54,23 @@ files, one per proto file descriptor found.  The extracted blobs can be
 fed directly to `reproto` to recover `.proto` source.
 
 ```
-protoscan --proto_out extracted/ some_binary
+protoscan --proto-out extracted/ some_binary
 reproto --use-variant descriptor -O src/ -I extracted/ extracted/*.pb
 ```
 
 ## Installation
 
-### Rust CLI (`prototext`)
+### Rust CLIs (`prototext`, `protoscan`)
 
 ```shell
 cargo install prototext
+cargo install protoscan
 ```
 
-### Python tools (`reproto`, `protoscan`, …)
+### Python tools (`reproto`, …)
 
 ```shell
 pip install prototext-reproto   # reproto, reproto-instantiate-schema
-pip install protoscan           # protoscan
 pip install prototext-codec     # Python extension (lossless codec)
 pip install prototext-graph     # Python extension (scoring graph)
 pip install fdp-scan            # Python extension (descriptor scanner)

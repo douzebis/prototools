@@ -6,7 +6,7 @@
 #
 # Produces $out/ with one tarball per publishable workspace crate:
 #   prototext-core, prototext-graph, prototext-schema, prototools-complete,
-#   prototext
+#   prototext, fdp-scan, protoscan
 # (that is also their dependency order, which publish.sh must follow —
 # see .github/workflows/nix.yml).
 #
@@ -68,6 +68,8 @@ prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }
 prototext-schema = { path = "$PWD/prototext-schema" }
 prototools-complete = { path = "$PWD/prototools-complete" }
+prototext        = { path = "$PWD/prototext" }
+fdp-scan         = { path = "$PWD/fdp-scan" }
 workspace-hack   = { path = "$PWD/workspace-hack" }
 EOF
   '';
@@ -79,6 +81,8 @@ EOF
     cargo package -p prototext-schema --no-verify
     cargo package -p prototools-complete --no-verify
     cargo package -p prototext        --no-verify
+    cargo package -p fdp-scan         --no-verify
+    cargo package -p protoscan        --no-verify
   '';
 
   installPhase = ''
@@ -88,6 +92,8 @@ EOF
     cp target/package/prototext-schema-*.crate $out/
     cp target/package/prototools-complete-*.crate $out/
     cp target/package/prototext-*.crate        $out/
+    cp target/package/fdp-scan-*.crate         $out/
+    cp target/package/protoscan-*.crate        $out/
   '';
 
   # No tests to run — cargo package --no-verify handles validation.

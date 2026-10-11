@@ -9,7 +9,7 @@
 #   prototext_codec-0.2.1-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
 #   fdp_scan-0.2.1-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
 #   prototext_reproto-0.2.1-py3-none-any.whl             (pure Python, dist: prototext-reproto)
-#   protoscan-0.2.1-py3-none-any.whl                    (pure Python)
+# protoscan is a Rust binary since spec 0407: no wheel, crates.io only.
 #
 # The derivation does not publish — publish.sh is assembled by the CI
 # assemble job (spec 0098 S6).
@@ -208,12 +208,5 @@ in pkgs.runCommand "prototools-pypi" {
     version = versionOf "reproto";
     src     = reprotoSrcFull;
     pkgDir  = "reproto";
-  }}/*.whl "$out/"
-
-  cp ${makePureWheel {
-    pkgName = "protoscan";
-    version = versionOf "protoscan";
-    src     = ../protoscan;
-    pkgDir  = "protoscan";
   }}/*.whl "$out/"
 ''

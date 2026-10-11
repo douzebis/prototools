@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "fdp-scan"
+version.workspace    = true
+edition     = "2021"
+description = "Find the protobuf FileDescriptorProto records embedded in a binary"
+license     = "MIT"
+repository.workspace = true
+keywords    = ["protobuf", "descriptor", "scanner"]
+categories  = ["encoding", "parsing"]
+
+[dependencies]
+# The scoring walk (spec 0239 S3) and the WKT graph it walks against. The
+# graph is `prototext`'s embedded copy: descriptor.proto is already in
+# prototext/wkt/SOURCES, so a second artifact would be a second copy of the
+# same bytes to keep regenerated (spec 0239 S1).
+prototext       = { workspace = true }
+prototext-graph = { workspace = true }
+workspace-hack  = { version = "0.1", path = "../workspace-hack" }

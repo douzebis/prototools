@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 # nix/python.nix — Python packages: prototextCodec, fdpScanLib,
-#                  prototextGraphLib, reproto pipeline, protoscan,
+#                  prototextGraphLib, reproto pipeline,
 #                  lint and ruff checks, stress tests.
 #
 # Source pipeline:
@@ -37,7 +37,6 @@
 let
   # Spec 0402 S3: versions from the manifests (see nix/rust.nix).
   reprotoVersion   = pyprojectVersion "reproto";
-  protoscanVersion = pyprojectVersion "protoscan";
   # Spec 0402 S7: what runs a freshly installed script runs only where the
   # host's binaries can run.
   whenRunnable = pkgs.lib.optionalString
@@ -212,61 +211,6 @@ let
   } ''
     export PYTHONPATH="${reprotoSrcFull}/src"
     pytest -p no:cacheprovider ${reprotoSrcFull}/src/reproto/tests/ -x
-    touch $out
-  '';
-
-  # ---------------------------------------------------------------------------
-  # protoscan — Python CLI for scanning binaries for embedded FDP blobs
-  # ---------------------------------------------------------------------------
-
-  protoscan = pythonPkgs.buildPythonPackage {
-    pname   = "protoscan";
-    version = protoscanVersion;
-    meta = metaCommon // {
-      description = "Find the protobuf descriptors embedded in binaries";
-      mainProgram = "protoscan";
-    };
-    src     = ../protoscan;
-    pyproject = true;
-
-    # Spec 0402 S5, as for reproto. A library as well as a CLI:
-    # protoscanTests imports it through python.withPackages.
-    build-system = [ pythonPkgs.setuptools ];
-    nativeBuildInputs = [ pkgs.installShellFiles ];
-    dependencies = [
-      pythonPkgs.click
-      pythonPkgs.protobuf
-      fdpScanLib
-    ];
-
-    doCheck = false;
-    doInstallCheck = true;
-    pythonImportsCheck = [ "protoscan" ];
-    # Spec 0402 S8. No version check: protoscan has no --version.
-    passthru.tests = { inherit protoscanTests; };
-
-    postInstall = whenRunnable ''
-      installShellCompletion --cmd protoscan \
-        --bash <(_PROTOSCAN_COMPLETE=bash_source $out/bin/protoscan)
-
-      $out/bin/protoscan-gen-man $out/share/man/man1
-    '';
-  };
-
-  # Tests run separately so that the installable protoscan package has doCheck = false
-  # (avoiding pytest during nix-shell) while ci still enforces test passage.
-  protoscanTests = pkgs.runCommand "protoscan-tests" {
-    strictDeps = true;
-    nativeBuildInputs = [
-      (pythonPkgs.python.withPackages (_: [
-        protoscan
-        pythonPkgs.pytest
-        pythonPkgs."pytest-xdist"
-      ]))
-    ];
-  } ''
-    export PYTHONPATH="${../protoscan}/src"
-    pytest -p no:cacheprovider ${../protoscan}/src/protoscan/tests/ -x
     touch $out
   '';
 
@@ -672,8 +616,6 @@ in {
     reprotoTestDeps
     reproto
     reprotoTests
-    protoscan
-    protoscanTests
     fdpScanTests
     prototextCodecTests
     pythonLint

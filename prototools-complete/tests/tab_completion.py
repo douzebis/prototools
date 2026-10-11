@@ -42,11 +42,21 @@ PATH_ROWS = [
     ("{sub}data/x", "{sub}data/x.pb "),
 ]
 
+# protoscan (spec 0407) takes a positional FILE and --proto-out DIR, so its
+# option rows are --proto-out's. "--proto-o" must complete to --proto-out
+# alone: the deprecated --proto_out is a hidden alias, never offered.
+PROTOSCAN_ROWS = [
+    (typed.replace("--descriptor-set", "--proto-out"),
+     expected.replace("--descriptor-set", "--proto-out"))
+    for typed, expected in PATH_ROWS
+] + [("--proto-o", "--proto-out ")]
+
 TOOLS = {
     "prototext": PATH_ROWS + [("decode --t", "decode --type "), ("dec", "decode ")],
     "protolens": PATH_ROWS + [("--ty", "--type ")],
+    "protoscan": PROTOSCAN_ROWS,
 }
-SUB = {"prototext": "decode ", "protolens": ""}
+SUB = {"prototext": "decode ", "protolens": "", "protoscan": ""}
 
 
 def make_tree(root):

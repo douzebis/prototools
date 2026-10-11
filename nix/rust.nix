@@ -305,7 +305,7 @@ let
     installPhaseCommand                = ''
       mkdir -p $out/bin
       cp ${profileDir}/prototext ${profileDir}/prototext-gen-man \
-         ${profileDir}/protolens $out/bin/
+         ${profileDir}/protolens ${profileDir}/protoscan $out/bin/
     '' + pkgs.lib.concatMapStrings (e: ''
       mkdir -p $out/ext/${e.libName}
       cp ${profileDir}/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
@@ -340,6 +340,30 @@ let
     cp ${workspaceBuild}/bin/prototext ${workspaceBuild}/bin/prototext-gen-man $out/bin/
     ${prototextPostInstall}
   '';
+
+  # ---------------------------------------------------------------------------
+  # protoscan — find the protobuf descriptors embedded in a binary (spec 0407).
+  # A Rust binary since 0407, copied out of workspaceBuild like prototext; its
+  # man page comes from the binary itself (PROTOSCAN_GEN_MAN), as protolens's.
+  # ---------------------------------------------------------------------------
+  protoscan = pkgs.runCommand "protoscan-${workspaceVersion}" {
+    nativeBuildInputs = [ pkgs.installShellFiles ];
+    meta = metaCommon // {
+      description = "Find the protobuf descriptors embedded in binaries";
+      mainProgram = "protoscan";
+    };
+    passthru.tests = { inherit rustTests; };
+  } (''
+    mkdir -p $out/bin
+    cp ${workspaceBuild}/bin/protoscan $out/bin/
+  '' + whenRunnable ''
+    installShellCompletion --cmd protoscan \
+      --bash <(PROTOSCAN_COMPLETE=bash $out/bin/protoscan) \
+      --zsh  <(PROTOSCAN_COMPLETE=zsh  $out/bin/protoscan) \
+      --fish <(PROTOSCAN_COMPLETE=fish $out/bin/protoscan)
+    PROTOSCAN_GEN_MAN=$out/share/man/man1 $out/bin/protoscan
+    $out/bin/protoscan --version | grep -qF ${workspaceVersion}
+  '');
 
   # ---------------------------------------------------------------------------
   # protolens — interactive TUI to decode/navigate/extract a binary protobuf.
@@ -483,6 +507,7 @@ in {
     rustTests
     workspaceBuild
     prototext
+    protoscan
     protolens
     protolensUnwrapped
     protolensLean

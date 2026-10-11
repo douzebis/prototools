@@ -27,6 +27,8 @@ members = [
     "prototext-schema",
     "protolens",
     "prototools-complete",
+    "fdp-scan",
+    "protoscan",
     "workspace-hack",
 ]
 
@@ -58,6 +60,7 @@ prototext-core      = { path = "prototext-core", version = "0.3.1-dev", features
 prototext-graph     = { path = "prototext-graph", version = "0.3.1-dev" }
 prototext-schema    = { path = "prototext-schema", version = "0.3.1-dev" }
 prototools-complete = { path = "prototools-complete", version = "0.3.1-dev" }
+fdp-scan            = { path = "fdp-scan", version = "0.3.1-dev" }
 
 [profile.release]
 codegen-units   = 1

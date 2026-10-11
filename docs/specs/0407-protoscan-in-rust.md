@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0407 — protoscan in Rust
 
-Status: draft
+Status: implemented, except S7 (at the internal package's next pin update) and S8's PR (after prototext's review)
+Implemented in: 2026-10-11
 App: protoscan, fdp-scan-pyo3
 Refs: docs/specs/0405-prototools-in-nixpkgs-one-small-pr-at-a-time.md
       (S9 step 2: protoscan is nixpkgs PR 2, with prototext's shape; C2,
@@ -158,4 +159,49 @@ wrapper, and keeps click's bash completion, which has the problems spec
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-11.
+
+- **S1–S2:** `fdp-scan` holds the scanner, with its 11 tests (3 ignored),
+  exactly as before the move. `fdp-scan-pyo3` is its binding, and its
+  stub is unchanged.
+- **S3–S5:**
+  - `protoscan/` is the Rust binary: `src/main.rs`, `src/man.rs` and
+    `tests/cli.rs` with 9 tests (the 8 former cases, plus one for the
+    deprecated spelling).
+  - `--help` shows only `--proto-out`.
+  - `--proto_out` works and prints the deprecation warning.
+  - The Python package is deleted.
+- **Test plan 4:** against the Python protoscan, both versions print the
+  same names and write byte-identical files, on `life-client` (2
+  descriptors) and bob's app (33).
+- **Test plan 5:** `completionTests` passes 46 rows: 16 for prototext, 15
+  for protolens, 15 for protoscan, among them `--proto-o` completing to
+  `--proto-out` alone, never the hidden alias.
+- **S6:**
+  - `default.nix`'s `protoscan` is the binary from `workspaceBuild`;
+  - the protoscan wheel and the Python tests are gone;
+  - the crates.io bundle and the publish order include `fdp-scan` and
+    `protoscan`;
+  - the website no longer builds protoscan's man page, like prototext's:
+    neither is built there.
+  - The dev-shell builds protoscan in its cargo hook. Its completion hook
+    still piped prototext's and protolens's scripts through spec 0406's
+    removed `sed`, which 0406 had missed; that is fixed too.
+- **S7:** not done. It is one line in `../prototools`'s import check,
+  made at that package's next pin update.
+- **S8:**
+  - `nixpkgs/pkgs/by-name/pr/protoscan/package.nix` is staged at 0.3.1,
+    the next release, with fake hashes until the tag.
+  - The staging check's version rule became "at most the next release"
+    during development, so a package awaiting its first release fits;
+    a staged 0.3.2 is rejected.
+  - The two staged builds (full `buildRustPackage`s) moved from `ci` to
+    their own workflow, `nixpkgs-staging.yml`. It runs when the recipes
+    or the dependencies change, at release tags, and by hand. The check
+    stays in `ci`.
+- **Test plan 7:** `ci`, `nixpkgs-staging` (both recipes), the image (27
+  of 27 smoke checks), crates.io, PyPI and `bobapp` pass.
+  - The first full run sank the VM into swap: five targets, twelve
+    parallel jobs, and the two new independent Rust builds.
+  - Builds here now run with `--max-jobs 2 --cores 6`, one target at a
+    time.

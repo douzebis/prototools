@@ -125,7 +125,8 @@ jobs:
 
           echo "=== Publishing to crates.io ==="
           # Publish in dependency order: core, graph, schema, completion,
-          # then the CLI. Must match nix/crates-io.nix's buildPhase.
+          # prototext, the scanner, then protoscan. Must match
+          # nix/crates-io.nix's buildPhase.
           cargo publish -p prototext-core
           sleep 30
           cargo publish -p prototext-graph
@@ -135,6 +136,10 @@ jobs:
           cargo publish -p prototools-complete
           sleep 30
           cargo publish -p prototext
+          sleep 30
+          cargo publish -p fdp-scan
+          sleep 30
+          cargo publish -p protoscan
 
           echo "=== Publishing to PyPI ==="
           # --skip-existing lets the script resume safely after a partial run.

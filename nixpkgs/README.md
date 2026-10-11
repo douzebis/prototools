@@ -6,18 +6,22 @@ nixpkgs tree (spec 0405):
 | Here | In nixpkgs |
 |---|---|
 | `pkgs/by-name/pr/prototext/package.nix` | same path |
+| `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407; not yet submitted) |
 
 They are what a nixpkgs PR submits, copied verbatim: nixfmt-formatted, with
 no SPDX header (their licensing is declared in `REUSE.toml`).
 
-`nix-build -A nixpkgs-staging` builds the prototext recipe from the local
+`nix-build -A nixpkgs-staging` builds each staged recipe from the local
 tree, through the same `callPackage`, with `src` and the vendored
 dependencies taken from here instead of the tag, so its tests and version
 check run on today's code. `nix-build -A nixpkgs-staging-check` checks the
 formatting and the version: at a release the staged `version` equals the
 workspace's (`Cargo.toml`, `workspace.package.version`); between releases
 the workspace carries the next version with a `-dev` suffix and the staged
-one, which nixpkgs ships, is older. Both are part of `ci`.
+one, which nixpkgs ships, is at most the next release. The check is part
+of `ci`; the builds, which compile everything again, run in their own
+workflow (`.github/workflows/nixpkgs-staging.yml`) when the recipes or the
+dependencies change, and at every release tag.
 
 The other packages (protoscan, the Python extensions, reproto, protolens)
 follow one PR at a time, in the order of spec 0405 S9.

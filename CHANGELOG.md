@@ -8,6 +8,28 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Changed
+
+- **protoscan is a Rust binary** (spec 0407), with the same command line
+  and output, built on a new scanner crate, `fdp-scan`, which the
+  `fdp_scan_lib` Python extension now wraps. It gains bash completion that
+  handles `:`, `=` and quotes (spec 0406), zsh and fish completions, a man
+  page and `--version`. Install it with `cargo install protoscan`; the
+  Python package `protoscan` is no longer published.
+
+### Deprecated
+
+- **protoscan `--proto_out`**: use `--proto-out`, spelled like every other
+  long option. The old spelling still works, prints a warning, and will be
+  removed in a later release.
+
+### Fixed
+
+- The Python extensions' type stubs name their real module: the
+  `prototext-codec` stub declared `register_schema` as returning an
+  undefined `prototextSchemaHandle`, and the `prototext-graph` stub lacked
+  `build_fds_index`'s `ext_to_file` parameter.
+
 ## 0.3.0 — 2026-10-10
 
 The first release with one version for every tool, crate and Python
